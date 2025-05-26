@@ -19,8 +19,7 @@ inventory::collect!(ToolInfo);
 #[derive(Parser)]
 #[command(version, about = "A CLI for LLM project management.")]
 struct Args {
-    /// Path to the SQLite database file
-    db_path: Option<String>,
+    user_message: Option<String>,
 }
 
 const SQL_INIT: &str = r#"
@@ -32,11 +31,17 @@ CREATE TABLE IF NOT EXISTS needs (
 
 const TODO_FILE: &str = "VIZIER.md";
 
-fn init_db(db_path: std::path::PathBuf) -> Result<Connection, Box<dyn std::error::Error>> {
-    let conn = Connection::open(db_path)?;
-    conn.execute_batch(&SQL_INIT)?;
+static DB: std::sync::Mutex<Option<Connection>> = std::sync::Mutex::new(None);
 
-    Ok(conn)
+fn init_db(db_path: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let mut db = DB.lock().unwrap();
+    if db.is_none() {
+        let conn = Connection::open(db_path)?;
+        conn.execute_batch(&SQL_INIT)?;
+        *db = Some(conn);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +105,12 @@ fn is_binary(path: &std::path::Path) -> std::io::Result<bool> {
     Ok(byte[0] == 0)
 }
 
+fn default_walker() -> ignore::Walk {
+    WalkBuilder::new(std::env::current_dir().unwrap())
+        .add_custom_ignore_filename("vizier.db")
+        .build()
+}
+
 fn get_todos() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let matcher = RegexMatcher::new("TODO:")?;
     let mut searcher = SearcherBuilder::new()
@@ -113,9 +124,7 @@ fn get_todos() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         context_before: Vec::new(),
     };
 
-    let walker = WalkBuilder::new(std::env::current_dir()?)
-        .add_custom_ignore_filename("vizier.db")
-        .build();
+    let walker = default_walker();
 
     for result in walker {
         if let Ok(entry) = result {
@@ -145,32 +154,76 @@ fn diff() -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+#[tool]
+fn add_todo(description: String) -> Result<(), Box<dyn std::error::Error>> {
+    let db = DB.lock().unwrap();
+    if let Some(conn) = db.as_ref() {
+        conn.execute("INSERT INTO needs (content) VALUES (?1)", [&description])?;
+    }
+
+    Ok(())
+}
+
 // TODO: This should probably be generalized at some point
 fn get_tools_context() -> String {
     let mut prompt =
-        "You are a provided a variety of tools for gathering more information or context.\n\n"
+        "You are a provided a variety of tools for gathering more information or context, or for interacting with the persistent state of the system.\n\n"
             .to_string();
 
-    prompt.push_str("");
+    let readme = match std::fs::read_to_string("README.md") {
+        Ok(r) => r,
+        Err(_) => {
+            panic!("Error reading README.md");
+        }
+    };
+
+    prompt.push_str(&format!(r#"
+
+Here is the project readme:
+<readme>
+{}
+</readme>
+<task>
+You must respond in EITHER one of the following formats:
+- a normal response, nothing special
+- a JSON response matching your desired tool with specified arg values to best fulfill the user's request
+
+You are an administrative assistant and your goal is to keep track of the user's project through your conversations and interactions with them.
+Given the user's message, create todo items with the given toolsto mark down what needs to be done.
+</task>
+"#, readme));
+
+    for tool in inventory::iter::<ToolInfo> {
+        let tool_string = format!("{}", (tool.schema)());
+        prompt.push_str(&format!("<tool>{}</tool>", tool_string));
+    }
+
+    println!("{}", prompt);
+
     prompt
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let db_path = if args.db_path.is_none() {
-        std::path::PathBuf::from("./vizier.db")
-    } else {
-        std::path::PathBuf::from(args.db_path.unwrap().clone())
-    };
+    let db_path = std::path::PathBuf::from("./vizier.db");
 
-    // let conn = init_db(db_path)?;
-    //
-    // let todos = get_todos()?;
+    init_db(db_path)?;
 
-    for tool in inventory::iter::<ToolInfo> {
-        println!("{}: {}", tool.name, (tool.schema)());
-    }
+    let mut wire = wire::Wire::new(None).await?;
+    let system_prompt = get_tools_context();
+    let api = wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o);
+
+    let conversation = vec![wire::types::Message {
+        message_type: wire::types::MessageType::User,
+        content: args.user_message.unwrap(),
+        api: api.clone(),
+        system_prompt: system_prompt.clone(),
+    }];
+
+    let response = wire.prompt(api, &system_prompt, &conversation).await?;
+    println!("response: {}", response.content);
 
     Ok(())
 }
