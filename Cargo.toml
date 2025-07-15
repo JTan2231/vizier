@@ -3,5 +3,4 @@ members = [
     "cli",
     "dewey",
     "dewey-macros",
-    "vizier-macros",
 ]

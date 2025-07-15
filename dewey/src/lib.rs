@@ -7,6 +7,7 @@ pub mod cache;
 pub mod config;
 pub mod dbio;
 pub mod hnsw;
+pub mod network;
 pub mod serialization;
 
 #[macro_export]
@@ -26,7 +27,6 @@ macro_rules! error {
 }
 
 // TODO: Absolute nightmare crate. This needs to be rewritten as a SQLite plugin or something.
-//       Dear God.
 
 /// This is an old in-memory programmatic API
 /// This should really be deprecated/refactored
@@ -54,11 +54,18 @@ impl Dewey {
     // TODO: better define how filters should be passed
     pub fn query(
         &mut self,
-        embedding: Embedding,
+        query: String,
         k: usize,
-    ) -> Result<Vec<EmbeddingSource>, std::io::Error> {
+    ) -> Result<Vec<EmbeddingSource>, Box<dyn std::error::Error>> {
         // TODO:
         let filters = vec![];
+
+        let net_embedding = network::embed(query)?;
+        let embedding = Embedding {
+            id: net_embedding.id,
+            source_file: EmbeddingSource::new(),
+            data: net_embedding.data,
+        };
 
         let query = Query { embedding, filters };
 
@@ -117,4 +124,30 @@ impl Dewey {
 
         Ok(())
     }
+}
+
+/// Add a new embedding to the system from the given file
+///
+/// This updates just the embedding store in the OS file system
+///
+/// Alongside related metadata + other housekeeping files in the OS filesystem:
+/// - Embedding store directory
+/// - HNSW index file
+pub fn upsert_embedding(filepath: String) -> Result<(), Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(filepath.clone())?;
+    let net_embedding = network::embed(content)?;
+    let mut embedding = Embedding {
+        id: net_embedding.id,
+        source_file: EmbeddingSource {
+            filepath,
+            subset: None,
+        },
+        data: net_embedding.data,
+    };
+
+    println!("embedding acquired");
+
+    dbio::upsert_embedding(&mut embedding)?;
+
+    Ok(())
 }

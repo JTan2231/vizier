@@ -14,10 +14,19 @@ pub const BLOCK_SIZE: usize = 1024;
 
 pub const EMBED_DIM: usize = 1536;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct EmbeddingSource {
     pub filepath: String,
     pub subset: Option<(u64, u64)>,
+}
+
+impl EmbeddingSource {
+    pub fn new() -> Self {
+        EmbeddingSource {
+            filepath: String::new(),
+            subset: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,7 +36,7 @@ pub struct Embedding {
     pub data: [f32; EMBED_DIM],
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct EmbeddingBlock {
     block: u64,
     pub embeddings: Vec<Embedding>,
@@ -53,13 +62,11 @@ struct DirectoryEntry {
     filepath: String,
 }
 
-// TODO: more clarification needed
-//
 // directory for which embeddings are in which blocks
 pub struct Directory {
-    pub file_map: HashMap<String, u64>,
-    pub id_map: HashMap<u32, u64>,
-    pub file_id_map: HashMap<String, u32>,
+    pub file_map: HashMap<String, u64>, // Embedding source filepath -> block number
+    pub id_map: HashMap<u32, u64>,      // Embedding ID -> block number
+    pub file_id_map: HashMap<String, u32>, // Embedding source filepath -> embedding ID
 }
 
 impl Directory {
@@ -97,10 +104,13 @@ fn get_next_id() -> Result<u64, std::io::Error> {
                 c
             }
         }
-        Err(e) => {
-            error!("error opening ID counter file: {e}");
-            return Err(e);
-        }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => "0".to_string(),
+            _ => {
+                error!("error opening ID counter file: {}", e);
+                return Err(e);
+            }
+        },
     };
 
     let last_id = match contents.parse::<u64>() {
@@ -265,17 +275,30 @@ pub fn read_embedding_block(block_number: u64) -> Result<EmbeddingBlock, std::io
         block_number
     )) {
         Ok(b) => b,
-        Err(e) => {
-            error!("error reading block file {}: {}", block_number, e);
-            return Err(e);
-        }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => Vec::new(),
+            _ => {
+                error!("error reading block file {}: {}", block_number, e);
+                return Err(e);
+            }
+        },
     };
 
-    let (block, _) = match EmbeddingBlock::from_bytes(&bytes, 0) {
-        Ok(b) => b,
-        Err(e) => {
-            error!("error parsing block file {}: {}", block_number, e);
-            return Err(e);
+    let (block, _) = if bytes.is_empty() {
+        (
+            EmbeddingBlock {
+                block: 0,
+                embeddings: Vec::new(),
+            },
+            0,
+        )
+    } else {
+        match EmbeddingBlock::from_bytes(&bytes, 0) {
+            Ok(b) => b,
+            Err(e) => {
+                error!("error parsing block file {}: {}", block_number, e);
+                return Err(e);
+            }
         }
     };
 
@@ -440,6 +463,97 @@ pub fn add_new_embedding(embedding: &mut Embedding) -> Result<(), std::io::Error
     )?;
 
     info!("Directory updated");
+
+    Ok(())
+}
+
+/// this adds a new embedding to the embedding store
+///
+/// the last block is chosen (arbitrarily) as its new home
+/// the directory file is also updated with an entry for the new embedding
+///
+/// this _does not_ affect the HNSW index--in-memory or otherwise
+/// updates to the index should take place with that struct directly
+/// this function here is specifically for adding the embeddings
+/// to the file system
+pub fn upsert_embedding(embedding: &mut Embedding) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = get_directory()?;
+
+    let (block_num, embed_id) = (
+        directory.file_map.get(&embedding.source_file.filepath),
+        directory.file_id_map.get(&embedding.source_file.filepath),
+    );
+
+    let is_insert = block_num.is_none() || embed_id.is_none();
+
+    let target_block_number = if is_insert {
+        match std::fs::read_dir(get_data_dir())
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let filename = entry.file_name();
+                let filename_str = filename.to_str()?;
+
+                // Try to parse the filename as a number
+                filename_str.parse::<u64>().ok()
+            })
+            .max()
+        {
+            Some(bn) => bn,
+            None => 0,
+        }
+    } else {
+        *block_num.unwrap()
+    };
+
+    let mut block = match read_embedding_block(target_block_number) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => EmbeddingBlock {
+            block: 0,
+            embeddings: Vec::new(),
+        },
+        Err(e) => {
+            return Err(Box::new(e));
+        }
+    };
+
+    if is_insert {
+        embedding.id = get_next_id()?;
+        block.embeddings.push(embedding.clone());
+    } else {
+        let block_embed = block
+            .embeddings
+            .iter_mut()
+            .find(|e| e.source_file == embedding.source_file)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Embedding not found",
+            ))?;
+
+        block_embed.data = embedding.data;
+    }
+
+    let filepath = format!("{}/{}", get_data_dir().to_str().unwrap(), block.block);
+    block.to_file(&filepath)?;
+
+    info!("Saved embedding to {}", filepath);
+
+    // the embedding will only have moved if it's being inserted--updates will be in place
+    if is_insert {
+        let mut directory = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(get_data_dir().join("directory"))?;
+
+        writeln!(
+            directory,
+            "\n{} {} {}",
+            embedding.id, embedding.source_file.filepath, target_block_number
+        )?;
+
+        info!("Directory updated");
+    }
 
     Ok(())
 }

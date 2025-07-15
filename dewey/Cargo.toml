@@ -33,3 +33,5 @@ tree-sitter-rust = "0.21"
 tree-sitter-python = "0.21"
 tree-sitter-javascript = "0.21"
 ordered-float = "4.5.0"
+reqwest = { version = "0.12.11", features = ["blocking", "json"] }
+tokio = { version = "1", features = ["full"] }
