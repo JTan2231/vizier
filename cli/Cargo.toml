@@ -19,3 +19,4 @@ wire = { git = "https://github.com/JTan2231/wire.git" }
 dewey = { path = "../dewey" }
 tokio = { version = "1", features = ["full"] }
 lazy_static = "1.4"
+tui = { path = "../tui" }

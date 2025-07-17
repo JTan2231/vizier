@@ -2,5 +2,5 @@
 members = [
     "cli",
     "dewey",
-    "dewey-macros",
+    "dewey-macros", "tui",
 ]

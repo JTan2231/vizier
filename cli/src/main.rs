@@ -14,6 +14,10 @@ mod walker;
 #[command(version, about = "A CLI for LLM project management.")]
 struct Args {
     user_message: Option<String>,
+
+    /// List and browse existing TODOs
+    #[arg(short = 'l', long)]
+    list: bool,
 }
 
 fn get_todos() -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -99,12 +103,41 @@ fn get_system_prompt() -> Result<String, Box<dyn std::error::Error>> {
     Ok(prompt)
 }
 
+fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
+    let mut current_dir = std::env::current_dir()?;
+
+    loop {
+        if current_dir.join(".git").is_dir() {
+            return Ok(Some(current_dir));
+        }
+
+        if let Some(parent) = current_dir.parent() {
+            current_dir = parent.to_path_buf();
+        } else {
+            return Ok(None);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     if !std::fs::metadata(TODO_DIR).is_ok() {
         std::fs::create_dir_all(TODO_DIR)?;
+    }
+
+    let project_root = match find_project_root() {
+        Ok(p) => match p {
+            Some(pp) => pp,
+            None => panic!("vizier cannot be used outside a git repository"),
+        },
+        Err(e) => panic!("error finding project root: {}", e),
+    };
+
+    if args.list {
+        tui::tui(project_root.join(TODO_DIR))?;
+        return Ok(());
     }
 
     dewey_lib::config::setup()?;
