@@ -22,7 +22,7 @@ struct Args {
 
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
-    provider: String,
+    provider: Option<String>,
 }
 
 fn get_todos() -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -149,7 +149,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut config = config::get_config();
-    config.provider = args.provider;
+
+    if let Some(p) = args.provider {
+        config.provider = p;
+    }
 
     config::set_config(config);
 
