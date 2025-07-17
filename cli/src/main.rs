@@ -5,6 +5,7 @@ use grep_searcher::SearcherBuilder;
 use crate::tools::TODO_DIR;
 use crate::walker::{MatchCollector, default_walker, is_binary};
 
+mod config;
 mod file_tracking;
 mod tools;
 mod tree;
@@ -18,6 +19,10 @@ struct Args {
     /// List and browse existing TODOs
     #[arg(short = 'l', long)]
     list: bool,
+
+    /// Set LLM provider to use for main prompting + tool usage
+    #[arg(short = 'p', long)]
+    provider: String,
 }
 
 fn get_todos() -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -119,6 +124,14 @@ fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
     }
 }
 
+fn provider_arg_to_enum(provider: String) -> wire::types::API {
+    match provider.as_str() {
+        "anthropic" => wire::types::API::Anthropic(wire::types::AnthropicModel::Claude35Sonnet),
+        "openai" => wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o),
+        _ => panic!("Unrecognized LLM provider: {}", provider),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -135,6 +148,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => panic!("error finding project root: {}", e),
     };
 
+    let mut config = config::get_config();
+    config.provider = args.provider;
+
+    config::set_config(config);
+
     if args.list {
         tui::tui(project_root.join(TODO_DIR))?;
         return Ok(());
@@ -142,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     dewey_lib::config::setup()?;
 
-    let api = wire::types::API::Anthropic(wire::types::AnthropicModel::Claude35Sonnet);
+    let api = provider_arg_to_enum(config::get_config().provider);
 
     let conversation = vec![wire::types::Message {
         message_type: wire::types::MessageType::User,
