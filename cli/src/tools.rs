@@ -13,25 +13,6 @@ pub fn get_tools() -> Vec<Tool> {
     ]
 }
 
-fn rectify_path(filepath: String) -> String {
-    let cwd = std::env::current_dir()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    let cwd_parts: Vec<_> = cwd.split('/').collect();
-    let path_parts: Vec<_> = filepath.split('/').collect();
-
-    let overlap = path_parts
-        .iter()
-        .zip(cwd_parts.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    path_parts[overlap..].join("/")
-}
-
 #[tool(description = "Get the `git diff` of the project")]
 fn diff() -> String {
     let output = std::process::Command::new("git")
@@ -71,7 +52,7 @@ fn update_todo(todo_name: String, update: String) {
 
 #[tool(description = "Read the contents of a file.")]
 fn read_file(filepath: String) -> String {
-    let contents = std::fs::read_to_string(rectify_path(filepath.clone()));
+    let contents = crate::file_tracking::FileTracker::read(&filepath);
     if let Err(e) = contents {
         return format!("Failed to read todo file {}: {}", filepath, e);
     }
@@ -109,7 +90,7 @@ pub fn list_todos() -> String {
 fn read_todo(todo_name: String) -> String {
     let filename = format!("{}{}", TODO_DIR, todo_name);
 
-    let contents = std::fs::read_to_string(filename.clone());
+    let contents = crate::file_tracking::FileTracker::read(&filename.clone());
     if let Err(e) = contents {
         panic!("Failed to read todo file {}: {}", filename, e);
     }

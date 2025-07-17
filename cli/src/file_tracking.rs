@@ -1,3 +1,5 @@
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use lazy_static::lazy_static;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -10,12 +12,19 @@ lazy_static! {
 
 pub struct FileTracker {
     updated_files: HashSet<String>,
+    all_files: Vec<String>,
 }
 
 impl FileTracker {
     fn new() -> Self {
+        let all_files = crate::walker::get_non_ignored_files();
+
         FileTracker {
             updated_files: HashSet::new(),
+            all_files: all_files
+                .iter()
+                .map(|p| p.to_str().unwrap().to_string())
+                .collect::<Vec<_>>(),
         }
     }
 
@@ -40,7 +49,27 @@ impl FileTracker {
         Ok(())
     }
 
+    pub fn read(path: &str) -> std::io::Result<String> {
+        let matched = FileTracker::fuzzy_match_path(path);
+        std::fs::read_to_string(matched)
+    }
+
     fn clear() {
         FILE_TRACKER.lock().unwrap().updated_files.clear();
+    }
+
+    fn fuzzy_match_path(input: &str) -> String {
+        let paths = &FILE_TRACKER.lock().unwrap().all_files;
+
+        let matcher = SkimMatcherV2::default();
+        let best_match = paths
+            .iter()
+            .filter_map(|path| matcher.fuzzy_match(path, input).map(|score| (score, path)))
+            .max_by_key(|(score, _)| *score);
+
+        match best_match {
+            Some((score, path)) if (score as f64 / 100.0) > 0.8 => path.clone(),
+            _ => input.to_string(),
+        }
     }
 }

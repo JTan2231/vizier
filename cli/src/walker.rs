@@ -69,3 +69,22 @@ pub fn default_walker() -> ignore::Walk {
         .add_custom_ignore_filename("vizier.db")
         .build()
 }
+
+pub fn get_non_ignored_files() -> Vec<std::path::PathBuf> {
+    let mut files = default_walker()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+        .map(|entry| entry.path().to_owned())
+        .collect::<Vec<_>>();
+
+    if let Ok(extra_entries) = std::fs::read_dir(crate::TODO_DIR) {
+        files.extend(
+            extra_entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+                .map(|entry| entry.path()),
+        );
+    }
+
+    files
+}

@@ -1,9 +1,6 @@
 use clap::Parser;
-use grep_regex::RegexMatcher;
-use grep_searcher::SearcherBuilder;
 
 use crate::tools::TODO_DIR;
-use crate::walker::{MatchCollector, default_walker, is_binary};
 
 mod config;
 mod file_tracking;
@@ -25,38 +22,6 @@ struct Args {
     provider: Option<String>,
 }
 
-fn get_todos() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let matcher = RegexMatcher::new("TODO:")?;
-    let mut searcher = SearcherBuilder::new()
-        .before_context(10)
-        .after_context(10)
-        .build();
-
-    let mut collector = MatchCollector {
-        current_match: None,
-        matches: Vec::new(),
-        context_before: Vec::new(),
-    };
-
-    let walker = default_walker();
-
-    for result in walker {
-        if let Ok(entry) = result {
-            let path = entry.path();
-            // not happy about having to check whether a given file is a binary
-            if path.is_file() && !is_binary(&path)? {
-                searcher.search_path(&matcher, path, &mut collector)?;
-            }
-        }
-    }
-
-    Ok(collector
-        .matches
-        .iter()
-        .map(|m| format!("{}{}{}", m.before.join(""), m.line, m.after.join("")))
-        .collect::<Vec<String>>())
-}
-
 const SYSTEM_PROMPT_BASE: &str = r#"
 <mainInstruction>
 Your Job: Convert TODOs into Actionable Tasks
@@ -75,6 +40,7 @@ RULES:
 - Your output should _always_ be through creating or updating a TODO item with the given tools
 - NEVER ask the user if they want something done--always assume
 - _Aggressively_ search the project for additional context to answer any questions you may have
+- _Aggressively_ update existing TODOs as much as you create new ones
 
 Example:
 BAD: "Investigate performance issues in search"
