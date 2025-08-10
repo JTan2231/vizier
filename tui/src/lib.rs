@@ -1,10 +1,8 @@
+use std::error::Error;
 use std::fs;
 use std::io::{Result, stdout};
 use std::path::PathBuf;
-
 use std::process::Command;
-
-use tempfile::{Builder, TempPath};
 
 use crossterm::{
     ExecutableCommand,
@@ -15,6 +13,9 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+use tempfile::{Builder, TempPath};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::time::Duration;
 
 /// Application state
 struct App {
@@ -325,4 +326,65 @@ fn user_editor(file_contents: &str) -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+pub enum Status {
+    Working(String),
+    Done,
+    Error(String),
+}
+
+// TODO: There's a really annoying setup we have where we need to put carriage returns at the
+//       beginning of task outputs to keep the terminal cursor from hovering the spinner/message
+//       Essentially meaning that this function _does not_ clean up its message
+async fn display_status(mut rx: Receiver<Status>) {
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let mut i = 0usize;
+    let mut last_message = String::new();
+
+    use std::io::{Write, stdout};
+
+    loop {
+        tokio::select! {
+            Some(status) = rx.recv() => match status {
+                Status::Working(msg) => {
+                    last_message = msg.clone();
+                    print!("\r{} {}", spinner[i % spinner.len()], msg);
+                    let _ = stdout().flush();
+                    i = i.wrapping_add(1);
+                }
+                Status::Done => {
+                    break;
+                }
+                Status::Error(e) => {
+                    println!("\rError: {}", e);
+                    break;
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                print!("\r{} {}", spinner[i % spinner.len()], last_message);
+                let _ = stdout().flush();
+                i = i.wrapping_add(1);
+            }
+        }
+    }
+}
+
+pub async fn call_with_status<F, Fut>(f: F) -> std::result::Result<(), Box<dyn Error + Send + Sync>>
+where
+    F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = std::result::Result<(), Box<dyn std::error::Error>>>
+        + Send
+        + 'static,
+{
+    let (tx, rx) = channel(10);
+    let status_handle = tokio::spawn(display_status(rx));
+
+    if let Err(e) = f(tx.clone()).await {
+        let _ = tx.send(Status::Error(e.to_string())).await;
+    }
+
+    let _ = tx.send(Status::Done).await;
+
+    status_handle.await.map_err(|e| e.into())
 }
