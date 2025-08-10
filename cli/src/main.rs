@@ -17,61 +17,32 @@ struct Args {
     #[arg(short = 'l', long)]
     list: bool,
 
+    /// Summarize outstanding TODOs
+    #[arg(short = 's', long)]
+    summarize: bool,
+
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
     provider: Option<String>,
 }
 
-const SYSTEM_PROMPT_BASE: &str = r#"
-<mainInstruction>
-Your Job: Convert TODOs into Actionable Tasks
+fn print_usage() {
+    println!(
+        r#"
+A CLI for LLM project management.
 
-RULES:
-- Convert any TODO comments into specific, actionable requirements
-- Every task MUST include:
-  - Exact file location (with line numbers when possible)
-  - Concrete technical solution/approach
-  - Direct references to existing code/structure
-- NO investigation/research tasks - you do that work first
-- NO maybes or suggestions - be decisive
-- NO progress updates or explanations to the user
-- Format as a simple task list
-- Assume authority to make technical decisions
-- Your output should _always_ be through creating or updating a TODO item with the given tools
-- NEVER ask the user if they want something done--always assume
-- _Aggressively_ search the project for additional context to answer any questions you may have
-- _Aggressively_ update existing TODOs as much as you create new ones
+Usage: llm-cli [OPTIONS] [USER_MESSAGE]
 
-Example:
-BAD: "Investigate performance issues in search"
-GOOD: "Replace recursive DFS in hnsw.rs:156 with iterative stack-based implementation using Vec<Node>"
+Arguments:
+  [USER_MESSAGE]  Message to process with the LLM
 
-Using these rules, convert TODOs from the codebase into actionable tasks.
-</mainInstruction>
-"#;
-
-fn get_system_prompt() -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = SYSTEM_PROMPT_BASE.to_string();
-
-    prompt.push_str("<meta>");
-
-    let file_tree = crate::tree::build_tree()?;
-
-    prompt.push_str(&format!(
-        "<fileTree>{}</fileTree>",
-        crate::tree::tree_to_string(&file_tree, "")
-    ));
-
-    prompt.push_str(&format!("<todos>{}</todos>", crate::tools::list_todos()));
-
-    prompt.push_str(&format!(
-        "<currentWorkingDirectory>{}</currentWorkingDirectory>",
-        std::env::current_dir().unwrap().to_str().unwrap()
-    ));
-
-    prompt.push_str("</meta>");
-
-    Ok(prompt)
+Options:
+  -l, --list              List and browse existing TODOs
+  -p, --provider <NAME>   Set LLM provider (e.g., 'openai', 'anthropic')
+  -h, --help             Show this help message
+  -V, --version          Show version information
+"#
+    );
 }
 
 fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
@@ -102,6 +73,17 @@ fn provider_arg_to_enum(provider: String) -> wire::types::API {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    // TODO: Bro
+    if args.user_message.is_none() && !args.list && !args.summarize {
+        print_usage();
+        std::process::exit(1);
+    }
+
+    if args.summarize {
+        println!("{}", tools::summarize_todos().await?);
+        std::process::exit(0);
+    }
+
     if !std::fs::metadata(TODO_DIR).is_ok() {
         std::fs::create_dir_all(TODO_DIR)?;
     }
@@ -117,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = config::get_config();
 
     if let Some(p) = args.provider {
-        config.provider = p;
+        config.provider = provider_arg_to_enum(p);
     }
 
     config::set_config(config);
@@ -129,22 +111,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     dewey_lib::config::setup()?;
 
-    let api = provider_arg_to_enum(config::get_config().provider);
-
-    let conversation = vec![wire::types::Message {
-        message_type: wire::types::MessageType::User,
-        content: args.user_message.unwrap(),
-        api: api.clone(),
-        system_prompt: get_system_prompt()?,
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-    }];
-
-    let response = wire::prompt_with_tools(
-        api,
-        &get_system_prompt()?,
-        conversation,
+    let response = crate::config::llm_request_with_tools(
+        vec![],
+        crate::config::get_system_prompt()?,
+        args.user_message.unwrap(),
         crate::tools::get_tools(),
     )
     .await?;

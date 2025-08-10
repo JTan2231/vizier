@@ -97,3 +97,20 @@ fn read_todo(todo_name: String) -> String {
 
     contents.unwrap()
 }
+
+// TODO: this will need to account for statuses and whatnot in the future--it doesn't right now
+pub async fn summarize_todos() -> Result<String, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_dir(TODO_DIR)
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<String>>()
+        .join("\n\n###\n\n");
+
+    let prompt =
+        "You will be given a list of TODO items. Return a summary of all the outstanding work. Focus on broad themes and directions."
+            .to_string();
+
+    let response = crate::config::llm_request(vec![], prompt, contents).await?;
+
+    Ok(response.iter().last().unwrap().content.clone())
+}
