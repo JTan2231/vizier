@@ -80,14 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.summarize {
-        tui::call_with_status(async move |tx| {
-            tx.send(tui::Status::Working("Summarizing TODOs...".into()))
-                .await?;
-            println!("\r{}", tools::summarize_todos().await?);
-            Ok(())
-        })
-        .await
-        .unwrap();
+        println!("\r{}", tools::summarize_todos().await?);
 
         std::process::exit(0);
     }
@@ -127,10 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!(
-        "FINAL RESPONSE: {}",
-        response.iter().last().unwrap().content
-    );
+    println!("FINAL RESPONSE: {}", response);
 
     Ok(())
 }

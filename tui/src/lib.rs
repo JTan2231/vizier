@@ -370,21 +370,28 @@ async fn display_status(mut rx: Receiver<Status>) {
     }
 }
 
-pub async fn call_with_status<F, Fut>(f: F) -> std::result::Result<(), Box<dyn Error + Send + Sync>>
+// TODO: Proper error handling
+pub async fn call_with_status<F, Fut>(
+    f: F,
+) -> std::result::Result<String, Box<dyn Error + Send + Sync>>
 where
     F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = std::result::Result<(), Box<dyn std::error::Error>>>
+    Fut: std::future::Future<Output = std::result::Result<String, Box<dyn std::error::Error>>>
         + Send
         + 'static,
 {
     let (tx, rx) = channel(10);
-    let status_handle = tokio::spawn(display_status(rx));
+    let _ = tokio::spawn(display_status(rx));
 
-    if let Err(e) = f(tx.clone()).await {
-        let _ = tx.send(Status::Error(e.to_string())).await;
-    }
+    let output = match f(tx.clone()).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = tx.send(Status::Error(e.to_string())).await;
+            String::new()
+        }
+    };
 
     let _ = tx.send(Status::Done).await;
 
-    status_handle.await.map_err(|e| e.into())
+    Ok(output)
 }

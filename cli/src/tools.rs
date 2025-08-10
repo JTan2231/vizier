@@ -112,5 +112,5 @@ pub async fn summarize_todos() -> Result<String, Box<dyn std::error::Error>> {
 
     let response = crate::config::llm_request(vec![], prompt, contents).await?;
 
-    Ok(response.iter().last().unwrap().content.clone())
+    Ok(response)
 }
