@@ -14,7 +14,7 @@ pub struct Config {
 impl Config {
     pub fn default() -> Self {
         Self {
-            provider: wire::types::API::Anthropic(wire::types::AnthropicModel::Claude35Sonnet),
+            provider: wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o),
         }
     }
 }
@@ -46,6 +46,7 @@ RULES:
 - NEVER ask the user if they want something done--always assume
 - _Aggressively_ search the project for additional context to answer any questions you may have
 - _Aggressively_ update existing TODOs as much as you create new ones
+- _Always_ update the project snapshot when the TODOs are changed
 
 Example:
 BAD: "Investigate performance issues in search"

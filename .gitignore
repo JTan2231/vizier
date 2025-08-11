@@ -4,4 +4,4 @@ Cargo.lock
 **/*db
 
 .dewey
-.todos
+.vizier
