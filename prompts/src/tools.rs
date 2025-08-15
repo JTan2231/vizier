@@ -23,14 +23,21 @@ pub fn get_tools() -> Vec<Tool> {
 //       Right now the current approach is to just unwrap them and that really isn't working at
 //       all in terms of maintaining flow with the language models.
 
+fn llm_error(message: &str) -> String {
+    format!("<error>{}</error>", message)
+}
+
 #[tool(description = "Get the `git diff` of the project")]
 fn diff() -> String {
-    let output = std::process::Command::new("git")
-        .arg("diff")
-        .output()
-        .expect("failed to run");
+    let output = match std::process::Command::new("git").arg("diff").output() {
+        Ok(o) => o,
+        Err(e) => return llm_error(&format!("Error running git diff: {}", e)),
+    };
 
-    String::from_utf8(output.stdout).unwrap()
+    match String::from_utf8(output.stdout) {
+        Ok(o) => o,
+        Err(e) => llm_error(&format!("Error converting output to utf8: {}", e)),
+    }
 }
 
 #[tool(description = "
@@ -40,10 +47,12 @@ Notes:
 - `name` will be a name for a markdown file--_do not_ assign its directory, just give it a name
 - `description` should be in markdown
 ")]
-fn add_todo(name: String, description: String) {
+fn add_todo(name: String, description: String) -> String {
     let filename = format!("{}todo_{}.md", TODO_DIR, name);
     if let Err(e) = crate::file_tracking::FileTracker::write(&filename, &description) {
-        panic!("Failed to create todo file {}: {}", filename, e);
+        llm_error(&format!("Failed to create todo file {}: {}", filename, e))
+    } else {
+        "Todo added successfully".to_string()
     }
 }
 
@@ -55,13 +64,15 @@ Parameters:
 
 Notes: Content is appended with separator lines for readability
 ")]
-fn update_todo(todo_name: String, update: String) {
+fn update_todo(todo_name: String, update: String) -> String {
     let filename = format!("{}{}", TODO_DIR, todo_name.clone());
 
     if let Err(e) =
         crate::file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
     {
-        panic!("Failed to create todo file {}: {}", filename, e);
+        llm_error(&format!("Failed to create todo file {}: {}", filename, e))
+    } else {
+        "Todo updated successfully".to_string()
     }
 }
 
@@ -74,43 +85,23 @@ Returns: String containing file contents or error message if read fails")]
 fn read_file(filepath: String) -> String {
     let contents = crate::file_tracking::FileTracker::read(&filepath);
     if let Err(e) = contents {
-        return format!("Failed to read todo file {}: {}", filepath, e);
+        return llm_error(&format!("Failed to read todo file {}: {}", filepath, e));
     }
 
-    contents.unwrap()
-}
-
-#[tool(
-    description = "Finds and returns the most relevant TODO item using semantic search.
-
-Parameters:
-    query: Search query to match against TODO contents
-
-Returns: Content of the best-matching TODO item, optionally limited to relevant subset"
-)]
-fn todo_lookup(query: String) -> String {
-    let mut dewey = dewey_lib::Dewey::new().unwrap();
-
-    let source = dewey.query(query, 1).unwrap()[0].clone();
-
-    let todo_contents = std::fs::read_to_string(source.filepath).unwrap();
-
-    if let Some(subset) = source.subset {
-        todo_contents[subset.0 as usize..subset.1 as usize].to_string()
-    } else {
-        todo_contents
-    }
+    contents.unwrap_or_default()
 }
 
 #[tool(description = "Lists all existing TODO items.
 
 Returns: Semicolon-separated string of TODO item names")]
 pub fn list_todos() -> String {
-    std::fs::read_dir(TODO_DIR)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<String>>()
-        .join("; ")
+    match std::fs::read_dir(TODO_DIR) {
+        Ok(d) => d
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<String>>()
+            .join("; "),
+        Err(e) => llm_error(&format!("Error reading directory {}: {}", TODO_DIR, e)),
+    }
 }
 
 #[tool(description = "Retrieves the contents of a specific TODO item.
@@ -124,10 +115,10 @@ fn read_todo(todo_name: String) -> String {
 
     let contents = crate::file_tracking::FileTracker::read(&filename.clone());
     if let Err(e) = contents {
-        panic!("Failed to read todo file {}: {}", filename, e);
+        llm_error(&format!("Failed to read todo file {}: {}", filename, e))
+    } else {
+        contents.unwrap_or_default()
     }
-
-    contents.unwrap()
 }
 
 #[tool(description = "Retrieves the current project trajectory snapshot.
@@ -146,11 +137,13 @@ Parameters:
 
 Notes: Overwrites any existing snapshot"
 )]
-fn update_snapshot(content: String) {
+fn update_snapshot(content: String) -> String {
     let filename = format!("{}{}", TODO_DIR, ".snapshot");
 
     if let Err(e) = std::fs::write(&filename, &content) {
-        panic!("Failed to update snapshot: {}", e);
+        llm_error(&format!("Failed to update snapshot: {}", e))
+    } else {
+        "Snapshot updated successfully".to_string()
     }
 }
 
@@ -202,29 +195,41 @@ Parameters:
 
 Returns:
     None. Updates are saved to storage directly.")]
-fn update_todo_status(todo_name: String, status: String, notes: String) {
-    let mut todos = load_todos().unwrap();
+fn update_todo_status(todo_name: String, status: String, notes: String) -> String {
+    let mut todos = load_todos();
 
-    if let Some(existing) = todos.get(&todo_name) {
-        todos.insert(
-            todo_name,
-            TodoEntry {
-                status: status.parse::<Status>().unwrap(),
-                notes: if notes.is_empty() {
-                    existing.notes.clone()
-                } else {
-                    notes
+    if let Ok(t) = &mut todos {
+        if let Some(existing) = t.get(&todo_name) {
+            t.insert(
+                todo_name,
+                TodoEntry {
+                    status: match status.parse::<Status>() {
+                        Ok(s) => s,
+                        Err(e) => return llm_error(&format!("Error parsing status: {}", e)),
+                    },
+                    notes: if notes.is_empty() {
+                        existing.notes.clone()
+                    } else {
+                        notes
+                    },
                 },
-            },
-        );
+            );
+        } else {
+            t.insert(
+                todo_name,
+                TodoEntry {
+                    status: match status.parse::<Status>() {
+                        Ok(s) => s,
+                        Err(e) => return llm_error(&format!("Error parsing status: {}", e)),
+                    },
+                    notes,
+                },
+            );
+        }
+
+        "Status updated successfully".to_string()
     } else {
-        todos.insert(
-            todo_name,
-            TodoEntry {
-                status: status.parse::<Status>().unwrap(),
-                notes,
-            },
-        );
+        llm_error(&format!("Error loading todos: {}", todos.err().unwrap()))
     }
 }
 
@@ -237,35 +242,22 @@ Returns:
     XML string containing the TODO details if found (<todo><name>...</name><status>...</status><notes>...</notes></todo>)
     or an error message if not found (<error>...</error>)")]
 fn read_todo_status(todo_name: String) -> String {
-    let todos = load_todos().unwrap();
+    let todos = load_todos();
 
-    match todos.get(&todo_name) {
-        Some(todo) => format!(
-            "<todo><name>{}</name><status>{}</status><notes>{}</notes></todo>",
-            todo_name, todo.status, todo.notes
-        ),
-        None => format!("<error>TODO '{}' not found</error>", todo_name),
+    if let Ok(t) = todos {
+        match t.get(&todo_name) {
+            Some(todo) => format!(
+                "<todo><name>{}</name><status>{}</status><notes>{}</notes></todo>",
+                todo_name, todo.status, todo.notes
+            ),
+            None => format!("<error>TODO '{}' not found</error>", todo_name),
+        }
+    } else {
+        llm_error(&format!("Error loading todos: {}", todos.err().unwrap()))
     }
 }
 
 fn load_todos() -> Result<TodoMap, std::io::Error> {
     let data = std::fs::read_to_string("todos.json")?;
     Ok(serde_json::from_str(&data)?)
-}
-
-// TODO: this will need to account for statuses and whatnot in the future--it doesn't right now
-pub async fn summarize_todos() -> Result<String, Box<dyn std::error::Error>> {
-    let contents = std::fs::read_dir(TODO_DIR)
-        .unwrap()
-        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-        .collect::<Vec<String>>()
-        .join("\n\n###\n\n");
-
-    let prompt =
-        "You will be given a list of TODO items. Return a summary of all the outstanding work. Focus on broad themes and directions."
-            .to_string();
-
-    let response = crate::config::llm_request(vec![], prompt, contents).await?;
-
-    Ok(response)
 }

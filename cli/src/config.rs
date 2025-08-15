@@ -27,49 +27,19 @@ pub fn get_config() -> Config {
     CONFIG.read().unwrap().clone()
 }
 
-pub const SYSTEM_PROMPT_BASE: &str = r#"
-<mainInstruction>
-Your Job: Convert TODOs into Actionable Tasks
-
-RULES:
-- Convert any TODO comments into specific, actionable requirements
-- Every task MUST include:
-  - Exact file location (with line numbers when possible)
-  - Concrete technical solution/approach
-  - Direct references to existing code/structure
-- NO investigation/research tasks - you do that work first
-- NO maybes or suggestions - be decisive
-- NO progress updates or explanations to the user
-- Format as a simple task list
-- Assume authority to make technical decisions
-- Your output should _always_ be through creating or updating a TODO item with the given tools
-- NEVER ask the user if they want something done--always assume
-- _Aggressively_ search the project for additional context to answer any questions you may have
-- _Aggressively_ update existing TODOs as much as you create new ones
-- _Always_ update the project snapshot when the TODOs are changed
-- _Always_ assume the user is speaking with the expectation of action on your part
-
-Example:
-BAD: "Investigate performance issues in search"
-GOOD: "Replace recursive DFS in hnsw.rs:156 with iterative stack-based implementation using Vec<Node>"
-
-Using these rules, convert TODOs from the codebase into actionable tasks.
-</mainInstruction>
-"#;
-
 pub fn get_system_prompt() -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = SYSTEM_PROMPT_BASE.to_string();
+    let mut prompt = prompts::SYSTEM_PROMPT_BASE.to_string();
 
     prompt.push_str("<meta>");
 
-    let file_tree = crate::tree::build_tree()?;
+    let file_tree = prompts::tree::build_tree()?;
 
     prompt.push_str(&format!(
         "<fileTree>{}</fileTree>",
-        crate::tree::tree_to_string(&file_tree, "")
+        prompts::tree::tree_to_string(&file_tree, "")
     ));
 
-    prompt.push_str(&format!("<todos>{}</todos>", crate::tools::list_todos()));
+    prompt.push_str(&format!("<todos>{}</todos>", prompts::tools::list_todos()));
 
     prompt.push_str(&format!(
         "<currentWorkingDirectory>{}</currentWorkingDirectory>",
@@ -123,6 +93,8 @@ pub async fn llm_request(
         )
         .await?;
 
+        println!();
+
         Ok(output.iter().last().unwrap().content.clone())
     })
     .await
@@ -169,6 +141,8 @@ pub async fn llm_request_with_tools(
             tools,
         )
         .await?;
+
+        println!();
 
         Ok(output.iter().last().unwrap().content.clone())
     })

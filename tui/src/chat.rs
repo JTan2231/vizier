@@ -59,9 +59,14 @@ impl Chat {
             let api_clone = self.api.clone();
             let message_history = self.messages.clone();
             self.receiving_handle = Some(tokio::spawn(async move {
-                wire::prompt_stream(api_clone, "", &message_history, tx_clone)
-                    .await
-                    .unwrap()
+                wire::prompt_stream(
+                    api_clone,
+                    prompts::SYSTEM_PROMPT_BASE,
+                    &message_history,
+                    tx_clone,
+                )
+                .await
+                .unwrap()
             }));
 
             self.messages.extend(vec![wire::types::Message {
@@ -116,14 +121,18 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                 .collect();
 
             let messages_list = List::new(messages)
-                .block(Block::default().borders(Borders::ALL).title("Messages"))
+                .block(Block::default().borders(Borders::ALL).title("Chat"))
                 .style(Style::default().fg(Color::White));
 
             f.render_widget(messages_list, chunks[0]);
 
             let input = Paragraph::new(app.input.as_str())
                 .style(Style::default().fg(Color::Yellow))
-                .block(Block::default().borders(Borders::ALL).title("Input"));
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Input (ctrl + q to quit)"),
+                );
             f.render_widget(input, chunks[1]);
         })?;
 

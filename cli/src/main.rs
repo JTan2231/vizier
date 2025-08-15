@@ -1,12 +1,8 @@
 use clap::Parser;
 
-use crate::tools::TODO_DIR;
+use prompts::tools::TODO_DIR;
 
 mod config;
-mod file_tracking;
-mod tools;
-mod tree;
-mod walker;
 
 #[derive(Parser)]
 #[command(version, about = "A CLI for LLM project management.")]
@@ -73,6 +69,23 @@ fn provider_arg_to_enum(provider: String) -> wire::types::API {
     }
 }
 
+// TODO: this will need to account for statuses and whatnot in the future--it doesn't right now
+pub async fn summarize_todos() -> Result<String, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_dir(prompts::tools::TODO_DIR)
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<String>>()
+        .join("\n\n###\n\n");
+
+    let prompt =
+        "You will be given a list of TODO items. Return a summary of all the outstanding work. Focus on broad themes and directions."
+            .to_string();
+
+    let response = crate::config::llm_request(vec![], prompt, contents).await?;
+
+    Ok(response)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -84,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.summarize {
-        println!("\r{}", tools::summarize_todos().await?);
+        println!("\r{}", summarize_todos().await?);
 
         std::process::exit(0);
     }
@@ -125,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
         crate::config::get_system_prompt()?,
         args.user_message.unwrap(),
-        crate::tools::get_tools(),
+        prompts::tools::get_tools(),
     )
     .await?;
 
