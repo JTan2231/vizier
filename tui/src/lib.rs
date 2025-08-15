@@ -6,9 +6,11 @@ use std::process::Command;
 
 use crossterm::{
     ExecutableCommand,
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
@@ -16,6 +18,8 @@ use ratatui::{
 use tempfile::{Builder, TempPath};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::Duration;
+
+mod chat;
 
 /// Application state
 struct App {
@@ -166,7 +170,7 @@ impl App {
     }
 }
 
-pub fn tui(todos_path: PathBuf) -> Result<()> {
+pub fn list_tui(todos_path: PathBuf) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -194,6 +198,31 @@ pub fn tui(todos_path: PathBuf) -> Result<()> {
 
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
+
+    Ok(())
+}
+
+pub async fn chat_tui() -> std::result::Result<(), Box<dyn Error>> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let app = chat::Chat::new();
+    let res = chat::run_chat(&mut terminal, app).await;
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    if let Err(err) = res {
+        println!("{:?}", err)
+    }
 
     Ok(())
 }

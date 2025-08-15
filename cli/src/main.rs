@@ -24,6 +24,10 @@ struct Args {
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
     provider: Option<String>,
+
+    /// Chat interface with LLM
+    #[arg(short = 'c', long)]
+    chat: bool,
 }
 
 fn print_usage() {
@@ -63,7 +67,7 @@ fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
 
 fn provider_arg_to_enum(provider: String) -> wire::types::API {
     match provider.as_str() {
-        "anthropic" => wire::types::API::Anthropic(wire::types::AnthropicModel::Claude35Sonnet),
+        "anthropic" => wire::types::API::Anthropic(wire::types::AnthropicModel::Claude35SonnetNew),
         "openai" => wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o),
         _ => panic!("Unrecognized LLM provider: {}", provider),
     }
@@ -74,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // TODO: Bro
-    if args.user_message.is_none() && !args.list && !args.summarize {
+    if args.user_message.is_none() && !args.list && !args.summarize && !args.chat {
         print_usage();
         std::process::exit(1);
     }
@@ -106,7 +110,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config::set_config(config);
 
     if args.list {
-        tui::tui(project_root.join(TODO_DIR))?;
+        tui::list_tui(project_root.join(TODO_DIR))?;
+        return Ok(());
+    }
+
+    if args.chat {
+        tui::chat_tui().await?;
         return Ok(());
     }
 

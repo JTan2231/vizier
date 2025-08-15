@@ -47,6 +47,7 @@ RULES:
 - _Aggressively_ search the project for additional context to answer any questions you may have
 - _Aggressively_ update existing TODOs as much as you create new ones
 - _Always_ update the project snapshot when the TODOs are changed
+- _Always_ assume the user is speaking with the expectation of action on your part
 
 Example:
 BAD: "Investigate performance issues in search"
