@@ -8,14 +8,9 @@ use ratatui::{
 };
 use std::time::Duration;
 
-// TODO: System prompt?
-pub async fn llm_request(
-    api: wire::types::API,
-    history: Vec<wire::types::Message>,
-) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-    let response = wire::prompt_with_tools(api, "", history, vec![]).await?;
-
-    Ok(response.iter().last().unwrap().clone())
+fn get_spinner_char(index: usize) -> String {
+    const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    SPINNER_CHARS[index % SPINNER_CHARS.len()].to_string()
 }
 
 pub struct Chat {
@@ -23,9 +18,15 @@ pub struct Chat {
     messages: Vec<wire::types::Message>,
     input: String,
     scroll: u16,
+    spinner_increment: usize,
+
+    // UI updates while the model is responding
     tx: tokio::sync::mpsc::Sender<String>,
     rx: tokio::sync::mpsc::Receiver<String>,
-    receiving_handle: Option<tokio::task::JoinHandle<wire::types::Message>>,
+
+    // NOTE: This should _always_ be None when we are not waiting on the model, and should have a
+    //       value otherwise
+    receiving_handle: Option<tokio::task::JoinHandle<Vec<wire::types::Message>>>,
 }
 
 impl Chat {
@@ -37,6 +38,7 @@ impl Chat {
             messages: vec![],
             input: String::new(),
             scroll: 0,
+            spinner_increment: 0,
             tx,
             rx,
             receiving_handle: None,
@@ -59,25 +61,16 @@ impl Chat {
             let api_clone = self.api.clone();
             let message_history = self.messages.clone();
             self.receiving_handle = Some(tokio::spawn(async move {
-                wire::prompt_stream(
+                wire::prompt_with_tools_and_status(
+                    tx_clone,
                     api_clone,
                     prompts::SYSTEM_PROMPT_BASE,
-                    &message_history,
-                    tx_clone,
+                    message_history,
+                    prompts::tools::get_tools(),
                 )
                 .await
                 .unwrap()
             }));
-
-            self.messages.extend(vec![wire::types::Message {
-                system_prompt: String::new(),
-                api: self.api.clone(),
-                message_type: wire::types::MessageType::Assistant,
-                content: String::new(),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-            }]);
 
             self.input.clear();
             self.scroll = 0;
@@ -98,27 +91,59 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                 .constraints([Constraint::Min(1), Constraint::Length(3)].as_ref())
                 .split(f.area());
 
-            let messages: Vec<ListItem> = app
+            let mut messages: Vec<ListItem> = app
                 .messages
                 .iter()
+                .filter(|m| {
+                    m.message_type != wire::types::MessageType::FunctionCallOutput
+                        && m.message_type != wire::types::MessageType::System
+                })
                 .map(|m| {
-                    let content = vec![Line::from(vec![
-                        Span::styled(
-                            format!(
-                                "{}: ",
-                                match m.message_type {
-                                    wire::types::MessageType::User => "You",
-                                    wire::types::MessageType::Assistant => "Assistant",
-                                    _ => "???",
-                                }
-                            ),
-                            Style::default().fg(Color::Cyan),
-                        ),
-                        Span::raw(&m.content),
-                    ])];
-                    ListItem::new(content)
+                    let prefix = format!(
+                        "{}: ",
+                        match m.message_type {
+                            wire::types::MessageType::User => "You",
+                            wire::types::MessageType::Assistant => "Assistant",
+                            wire::types::MessageType::FunctionCall => "Assistant Tool Call",
+                            _ => "",
+                        }
+                    );
+
+                    let text = match m.message_type {
+                        wire::types::MessageType::User | wire::types::MessageType::Assistant => {
+                            &m.content
+                        }
+                        wire::types::MessageType::FunctionCall => m.name.as_ref().unwrap(),
+                        _ => "???",
+                    };
+
+                    let lines: Vec<Line> = text
+                        .lines()
+                        .enumerate()
+                        .map(|(i, line)| {
+                            if i == 0 {
+                                Line::from(vec![
+                                    Span::styled(prefix.clone(), Style::default().fg(Color::Cyan)),
+                                    Span::raw(line),
+                                ])
+                            } else {
+                                Line::from(Span::raw(line))
+                            }
+                        })
+                        .collect();
+
+                    ListItem::new(lines)
                 })
                 .collect();
+
+            // display a little spinner if we're waiting on the model to complete
+            if let Some(_) = app.receiving_handle {
+                messages.extend(vec![ListItem::new(vec![Line::from(get_spinner_char(
+                    app.spinner_increment,
+                ))])]);
+
+                app.spinner_increment += 1;
+            }
 
             let messages_list = List::new(messages)
                 .block(Block::default().borders(Borders::ALL).title("Chat"))
@@ -136,17 +161,25 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             f.render_widget(input, chunks[1]);
         })?;
 
-        if let Ok(delta) = app.rx.try_recv() {
-            app.messages
-                .iter_mut()
-                .last()
-                .unwrap()
-                .content
-                .push_str(&delta);
+        // TODO: These two should probably be used for streaming later on, but for now it's just for
+        //       tool updates
+        if let Ok(status) = app.rx.try_recv() {
+            app.messages.extend(vec![wire::types::Message {
+                system_prompt: String::new(),
+                api: app.messages.iter().last().unwrap().api.clone(),
+                message_type: wire::types::MessageType::Assistant,
+                content: status,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }]);
         }
 
-        if let Some(handle) = &app.receiving_handle {
+        if let Some(handle) = &mut app.receiving_handle {
             if handle.is_finished() {
+                let new_messages = handle.await?;
+                app.messages
+                    .extend(vec![new_messages.iter().last().unwrap().clone()]);
                 app.receiving_handle = None;
             }
         }
