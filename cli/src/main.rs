@@ -132,8 +132,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    dewey_lib::config::setup()?;
-
     let response = crate::config::llm_request_with_tools(
         vec![],
         crate::config::get_system_prompt()?,

@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "cli",
-    "dewey",
-    "dewey-macros", "prompts", "tui",
+    "prompts",
+    "tui",
 ]

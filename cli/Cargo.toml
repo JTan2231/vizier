@@ -17,7 +17,6 @@ serde_json = "1.0"
 inventory = "0.3"
 #wire = { git = "https://github.com/JTan2231/wire.git" }
 wire = { path = "../../wire/crates/wire" }
-dewey = { path = "../dewey" }
 tokio = { version = "1", features = ["full"] }
 lazy_static = "1.4"
 tui = { path = "../tui" }

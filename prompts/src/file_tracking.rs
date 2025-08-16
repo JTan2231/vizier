@@ -40,10 +40,6 @@ impl FileTracker {
             .updated_files
             .insert(path.to_string());
 
-        // println!("Updating Dewey...");
-
-        // TODO: Figure out what to do with dewey
-        // dewey_lib::upsert_embedding(path.to_string()).unwrap();
         FileTracker::clear();
 
         Ok(())
