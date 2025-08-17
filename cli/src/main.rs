@@ -28,19 +28,27 @@ struct Args {
 
 fn print_usage() {
     println!(
-        r#"
-A CLI for LLM project management.
+        r#"vizier - AI-powered project management assistant
 
-Usage: llm-cli [OPTIONS] [USER_MESSAGE]
+USAGE:
+    vizier [OPTIONS] [MESSAGE]
 
-Arguments:
-  [USER_MESSAGE]  Message to process with the LLM
+ARGS:
+    [MESSAGE]    Send a message to the AI assistant
 
-Options:
-  -l, --list              List and browse existing TODOs
-  -p, --provider <NAME>   Set LLM provider (e.g., 'openai', 'anthropic')
-  -h, --help             Show this help message
-  -V, --version          Show version information
+OPTIONS:
+    -c, --chat               Start interactive chat session
+    -l, --list               Browse and manage TODOs interactively
+    -s, --summarize          Get AI summary of current TODOs
+    -p, --provider <NAME>    Set LLM provider (openai, anthropic, etc.)
+    -h, --help               Print help
+    -V, --version            Print version
+
+EXAMPLES:
+    vizier "add a TODO to implement auth"
+    vizier --chat
+    vizier --list
+    vizier --summarize --provider anthropic"
 "#
     );
 }
