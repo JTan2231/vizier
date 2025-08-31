@@ -59,7 +59,7 @@ pub async fn llm_request(
     history: Vec<wire::types::Message>,
     system_prompt: String,
     user_message: String,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
     let api = get_config().provider;
 
     let mut conversation = history;
@@ -71,6 +71,8 @@ pub async fn llm_request(
         tool_calls: None,
         tool_call_id: None,
         name: None,
+        input_tokens: 0,
+        output_tokens: 0,
     }]);
 
     let response = tui::call_with_status(async move |tx| {
@@ -95,7 +97,7 @@ pub async fn llm_request(
 
         println!();
 
-        Ok(output.iter().last().unwrap().content.clone())
+        Ok(output.iter().last().unwrap().clone())
     })
     .await
     .unwrap();
@@ -108,7 +110,7 @@ pub async fn llm_request_with_tools(
     system_prompt: String,
     user_message: String,
     tools: Vec<wire::types::Tool>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
     let api = get_config().provider;
 
     let mut conversation = history;
@@ -120,6 +122,8 @@ pub async fn llm_request_with_tools(
         tool_calls: None,
         tool_call_id: None,
         name: None,
+        input_tokens: 0,
+        output_tokens: 0,
     }]);
 
     let response = tui::call_with_status(async move |tx| {
@@ -144,7 +148,7 @@ pub async fn llm_request_with_tools(
 
         println!();
 
-        Ok(output.iter().last().unwrap().content.clone())
+        Ok(output.iter().last().unwrap().clone())
     })
     .await
     .unwrap();

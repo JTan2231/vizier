@@ -11,8 +11,11 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 
+use colored::*;
 use ratatui::{
-    prelude::*,
+    Frame, Terminal,
+    prelude::{Color, Constraint, CrosstermBackend, Direction, Layout, Style},
+    style::Modifier,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tempfile::{Builder, TempPath};
@@ -240,7 +243,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .iter()
         .map(|path| {
             let filename = path.file_name().unwrap().to_str().unwrap_or("?");
-            let mut style = Style::default();
+            let mut style = ratatui::style::Style::default();
             if path.is_dir() {
                 style = style.fg(Color::Cyan);
             }
@@ -378,7 +381,7 @@ async fn display_status(mut rx: Receiver<Status>) {
             Some(status) = rx.recv() => match status {
                 Status::Working(msg) => {
                     last_message = msg.clone();
-                    print!("\r{} {}", spinner[i % spinner.len()], msg);
+                    print!("\r{} {}", spinner[i % spinner.len()].blue(), msg.blue());
                     let _ = stdout().flush();
                     i = i.wrapping_add(1);
                 }
@@ -391,7 +394,7 @@ async fn display_status(mut rx: Receiver<Status>) {
                 }
             },
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                print!("\r{} {}", spinner[i % spinner.len()], last_message);
+                print!("\r{} {}", spinner[i % spinner.len()].blue(), last_message.blue());
                 let _ = stdout().flush();
                 i = i.wrapping_add(1);
             }
@@ -402,11 +405,12 @@ async fn display_status(mut rx: Receiver<Status>) {
 // TODO: Proper error handling
 pub async fn call_with_status<F, Fut>(
     f: F,
-) -> std::result::Result<String, Box<dyn Error + Send + Sync>>
+) -> std::result::Result<wire::types::Message, Box<dyn Error + Send + Sync>>
 where
     F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = std::result::Result<String, Box<dyn std::error::Error>>>
-        + Send
+    Fut: std::future::Future<
+            Output = std::result::Result<wire::types::Message, Box<dyn std::error::Error>>,
+        > + Send
         + 'static,
 {
     let (tx, rx) = channel(10);
@@ -416,7 +420,18 @@ where
         Ok(s) => s,
         Err(e) => {
             let _ = tx.send(Status::Error(e.to_string())).await;
-            String::new()
+            // This is sloppy, but we really only care about the input/output tokens
+            wire::types::Message {
+                message_type: wire::types::MessageType::Assistant,
+                content: String::new(),
+                api: wire::types::API::OpenAI(wire::types::OpenAIModel::GPT5),
+                system_prompt: String::new(),
+                tool_call_id: None,
+                tool_calls: None,
+                name: None,
+                input_tokens: 0,
+                output_tokens: 0,
+            }
         }
     };
 

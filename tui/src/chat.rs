@@ -20,6 +20,10 @@ pub struct Chat {
     scroll: u16,
     spinner_increment: usize,
 
+    // These two are both cumulative
+    input_tokens: usize,
+    output_tokens: usize,
+
     // UI updates while the model is responding
     tx: tokio::sync::mpsc::Sender<String>,
     rx: tokio::sync::mpsc::Receiver<String>,
@@ -39,6 +43,8 @@ impl Chat {
             input: String::new(),
             scroll: 0,
             spinner_increment: 0,
+            input_tokens: 0,
+            output_tokens: 0,
             tx,
             rx,
             receiving_handle: None,
@@ -55,6 +61,8 @@ impl Chat {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                input_tokens: 0,
+                output_tokens: 0,
             }]);
 
             let tx_clone = self.tx.clone();
@@ -146,7 +154,12 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             }
 
             let messages_list = List::new(messages)
-                .block(Block::default().borders(Borders::ALL).title("Chat"))
+                .block(Block::default().borders(Borders::ALL).title(format!(
+                    "Chat (Total tokens: {}, prompt tokens: {}, completion tokens: {})",
+                    app.input_tokens + app.output_tokens,
+                    app.input_tokens,
+                    app.output_tokens,
+                )))
                 .style(Style::default().fg(Color::White));
 
             f.render_widget(messages_list, chunks[0]);
@@ -161,7 +174,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             f.render_widget(input, chunks[1]);
         })?;
 
-        // TODO: These two should probably be used for streaming later on, but for now it's just for
+        // TODO: This should probably be used for streaming later on, but for now it's just for
         //       tool updates
         if let Ok(status) = app.rx.try_recv() {
             app.messages.extend(vec![wire::types::Message {
@@ -172,14 +185,20 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                input_tokens: 0,
+                output_tokens: 0,
             }]);
         }
 
         if let Some(handle) = &mut app.receiving_handle {
             if handle.is_finished() {
                 let new_messages = handle.await?;
-                app.messages
-                    .extend(vec![new_messages.iter().last().unwrap().clone()]);
+                let last_message = new_messages.last().unwrap().clone();
+
+                app.input_tokens += last_message.input_tokens;
+                app.output_tokens += last_message.output_tokens;
+
+                app.messages.extend(vec![last_message]);
                 app.receiving_handle = None;
             }
         }

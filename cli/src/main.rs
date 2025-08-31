@@ -1,4 +1,5 @@
 use clap::Parser;
+use colored::*;
 
 use prompts::tools::TODO_DIR;
 
@@ -28,28 +29,50 @@ struct Args {
 
 fn print_usage() {
     println!(
-        r#"vizier - AI-powered project management assistant
+        r#"{} - AI-powered project management assistant
 
-USAGE:
-    vizier [OPTIONS] [MESSAGE]
+{}
+    {} [OPTIONS] [MESSAGE]
 
-ARGS:
-    [MESSAGE]    Send a message to the AI assistant
+{}
+    {}    Send a message to the AI assistant
 
-OPTIONS:
-    -c, --chat               Start interactive chat session
-    -l, --list               Browse and manage TODOs interactively
-    -s, --summarize          Get AI summary of current TODOs
-    -p, --provider <NAME>    Set LLM provider (openai, anthropic, etc.)
-    -h, --help               Print help
-    -V, --version            Print version
+{}
+    {}, {}               Start interactive chat session
+    {}, {}               Browse and manage TODOs interactively
+    {}, {}          Get AI summary of current TODOs
+    {}, {} <NAME>    Set LLM provider (openai, anthropic, etc.)
+    {}, {}               Print help
+    {}, {}            Print version
 
-EXAMPLES:
-    vizier "add a TODO to implement auth"
-    vizier --chat
-    vizier --list
-    vizier --summarize --provider anthropic"
-"#
+{}
+    {} "add a TODO to implement auth"
+    {} --chat
+    {} --list
+    {} --summarize --provider anthropic"#,
+        "vizier".bright_cyan().bold(),
+        "USAGE:".bright_yellow().bold(),
+        "vizier".bright_green(),
+        "ARGS:".bright_yellow().bold(),
+        "[MESSAGE]".bright_blue(),
+        "OPTIONS:".bright_yellow().bold(),
+        "-c".bright_green(),
+        "--chat".bright_green(),
+        "-l".bright_green(),
+        "--list".bright_green(),
+        "-s".bright_green(),
+        "--summarize".bright_green(),
+        "-p".bright_green(),
+        "--provider".bright_green(),
+        "-h".bright_green(),
+        "--help".bright_green(),
+        "-V".bright_green(),
+        "--version".bright_green(),
+        "EXAMPLES:".bright_yellow().bold(),
+        "vizier".bright_green(),
+        "vizier".bright_green(),
+        "vizier".bright_green(),
+        "vizier".bright_green()
     );
 }
 
@@ -78,7 +101,7 @@ fn provider_arg_to_enum(provider: String) -> wire::types::API {
 }
 
 // TODO: this will need to account for statuses and whatnot in the future--it doesn't right now
-pub async fn summarize_todos() -> Result<String, Box<dyn std::error::Error>> {
+pub async fn summarize_todos() -> Result<wire::types::Message, Box<dyn std::error::Error>> {
     let contents = std::fs::read_dir(prompts::tools::TODO_DIR)
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
@@ -94,25 +117,36 @@ pub async fn summarize_todos() -> Result<String, Box<dyn std::error::Error>> {
     Ok(response)
 }
 
+// Make sure the gitignore contains our .vizier folder, don't want to cause a mess
+fn gitignore_check(project_root: &std::path::PathBuf) {
+    let gitignore =
+        std::fs::read_to_string(project_root.join(".gitignore")).unwrap_or(String::new());
+
+    for line in gitignore.lines() {
+        if line.starts_with(".vizier") {
+            return;
+        }
+    }
+
+    println!(
+        "{} You should add .vizier to your .gitignore",
+        "Warning:".yellow()
+    );
+}
+
+fn print_token_usage(response: &wire::types::Message) {
+    println!("{}", "Token Usage:".yellow());
+    println!("- {} {}", "Prompt Tokens:".green(), response.input_tokens);
+    println!(
+        "- {} {}",
+        "Completion Tokens:".green(),
+        response.output_tokens
+    );
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-
-    // TODO: Bro
-    if args.user_message.is_none() && !args.list && !args.summarize && !args.chat {
-        print_usage();
-        std::process::exit(1);
-    }
-
-    if args.summarize {
-        println!("\r{}", summarize_todos().await?);
-
-        std::process::exit(0);
-    }
-
-    if !std::fs::metadata(TODO_DIR).is_ok() {
-        std::fs::create_dir_all(TODO_DIR)?;
-    }
 
     let project_root = match find_project_root() {
         Ok(p) => match p {
@@ -121,6 +155,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Err(e) => panic!("error finding project root: {}", e),
     };
+
+    gitignore_check(&project_root);
+
+    // TODO: Bro this condition has got to go
+    if args.user_message.is_none() && !args.list && !args.summarize && !args.chat {
+        print_usage();
+        std::process::exit(1);
+    }
+
+    if args.summarize {
+        let response = summarize_todos().await?;
+        println!("\r{}", response.content);
+        print_token_usage(&response);
+
+        std::process::exit(0);
+    }
+
+    if !std::fs::metadata(TODO_DIR).is_ok() {
+        std::fs::create_dir_all(TODO_DIR)?;
+    }
 
     let mut config = config::get_config();
 
@@ -148,7 +202,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("FINAL RESPONSE: {}", response);
+    println!("{} {}", "Assistant:".blue(), response.content);
+    print_token_usage(&response);
 
     Ok(())
 }
