@@ -15,7 +15,7 @@ struct Args {
     list: bool,
 
     /// Summarize outstanding TODOs
-    #[arg(short = 's', long)]
+    #[arg(short = 'S', long)]
     summarize: bool,
 
     /// Set LLM provider to use for main prompting + tool usage
@@ -25,6 +25,15 @@ struct Args {
     /// Chat interface with LLM
     #[arg(short = 'c', long)]
     chat: bool,
+
+    /// Force the agent to perform an action
+    #[arg(short = 'f', long)]
+    force_action: bool,
+
+    /// "Save" button--git commit tracked changes with LLM-generated commit message and update TODOs/snapshot
+    /// to reflect the changes
+    #[arg(short = 's', long)]
+    save: bool,
 }
 
 fn print_usage() {
@@ -144,6 +153,19 @@ fn print_token_usage(response: &wire::types::Message) {
     );
 }
 
+const COMMIT_PROMPT: &str = r#"
+You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
+
+Structure your commit message as:
+- First line: <type>: <brief summary> (50 chars or less)
+- Blank line
+- Body: Explain what changed and why (wrap at 72 chars)
+
+Common types: feat, fix, docs, style, refactor, test, chore
+
+Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
+"#;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -159,9 +181,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     gitignore_check(&project_root);
 
     // TODO: Bro this condition has got to go
-    if args.user_message.is_none() && !args.list && !args.summarize && !args.chat {
+    if args.user_message.is_none() && !args.list && !args.summarize && !args.chat && !args.save {
         print_usage();
         std::process::exit(1);
+    }
+
+    if args.save {
+        let diff = prompts::tools::diff();
+        let response = crate::config::llm_request_with_tools(
+            vec![],
+            crate::config::get_system_prompt()?,
+            format!("Update the snapshot and existing TODOs as needed",),
+            prompts::tools::get_tools(),
+        )
+        .await?;
+
+        println!("{} {}", "Assistant:".blue(), response.content);
+        print_token_usage(&response);
+
+        let commit_message = config::llm_request(vec![], COMMIT_PROMPT.to_string(), diff)
+            .await?
+            .content;
+
+        std::process::Command::new("git")
+            .args(&["add", "-u"])
+            .status()?;
+
+        std::process::Command::new("git")
+            .args(&["commit", "-m", &commit_message])
+            .status()?;
+
+        println!("Changes committed with message: {}", commit_message);
+
+        std::process::exit(0);
     }
 
     if args.summarize {
@@ -181,6 +233,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(p) = args.provider {
         config.provider = provider_arg_to_enum(p);
     }
+
+    config.force_action = args.force_action;
 
     config::set_config(config);
 

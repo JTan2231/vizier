@@ -19,6 +19,13 @@ pub fn get_tools() -> Vec<Tool> {
     ]
 }
 
+pub fn is_action(name: &str) -> bool {
+    name == "add_todo"
+        || name == "update_todo"
+        || name == "update_snapshot"
+        || name == "update_todo_status"
+}
+
 // TODO: We need a better way of handling errors as they happen here.
 //       Right now the current approach is to just unwrap them and that really isn't working at
 //       all in terms of maintaining flow with the language models.
@@ -28,7 +35,7 @@ fn llm_error(message: &str) -> String {
 }
 
 #[tool(description = "Get the `git diff` of the project")]
-fn diff() -> String {
+pub fn diff() -> String {
     let output = match std::process::Command::new("git").arg("diff").output() {
         Ok(o) => o,
         Err(e) => return llm_error(&format!("Error running git diff: {}", e)),

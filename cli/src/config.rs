@@ -9,12 +9,14 @@ lazy_static! {
 #[derive(Clone)]
 pub struct Config {
     pub provider: wire::types::API,
+    pub force_action: bool,
 }
 
 impl Config {
     pub fn default() -> Self {
         Self {
-            provider: wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o),
+            provider: wire::types::API::OpenAI(wire::types::OpenAIModel::GPT5),
+            force_action: false,
         }
     }
 }
@@ -137,14 +139,44 @@ pub async fn llm_request_with_tools(
             }
         });
 
-        let output = wire::prompt_with_tools_and_status(
-            request_tx,
+        // TODO: The number of clones here is outrageous
+
+        let mut output = wire::prompt_with_tools_and_status(
+            request_tx.clone(),
             get_config().provider,
             &system_prompt,
-            conversation,
-            tools,
+            conversation.clone(),
+            tools.clone(),
         )
         .await?;
+
+        // while get_config().force_action
+        //     && !output
+        //         .iter()
+        //         .any(|m| prompts::tools::is_action(&m.clone().name.unwrap_or(String::new())))
+        // {
+        //     output.push(wire::types::Message {
+        //         message_type: wire::types::MessageType::User,
+        //         content: "SYSTEM: Perform an action--the user has the `force_action` flag set."
+        //             .to_string(),
+        //         api: api.clone(),
+        //         system_prompt: system_prompt.clone(),
+        //         tool_calls: None,
+        //         tool_call_id: None,
+        //         name: None,
+        //         input_tokens: 0,
+        //         output_tokens: 0,
+        //     });
+        //
+        //     output = wire::prompt_with_tools_and_status(
+        //         request_tx.clone(),
+        //         get_config().provider,
+        //         &system_prompt,
+        //         conversation.clone(),
+        //         tools.clone(),
+        //     )
+        //     .await?;
+        // }
 
         println!();
 
