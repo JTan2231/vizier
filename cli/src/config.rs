@@ -53,9 +53,6 @@ pub fn get_system_prompt() -> Result<String, Box<dyn std::error::Error>> {
     Ok(prompt)
 }
 
-// TODO: Why are we still managing conversation history here? These should represent the beginning
-//       and end of a conversation
-
 // Basic LLM request without tools
 pub async fn llm_request(
     history: Vec<wire::types::Message>,
@@ -150,33 +147,33 @@ pub async fn llm_request_with_tools(
         )
         .await?;
 
-        // while get_config().force_action
-        //     && !output
-        //         .iter()
-        //         .any(|m| prompts::tools::is_action(&m.clone().name.unwrap_or(String::new())))
-        // {
-        //     output.push(wire::types::Message {
-        //         message_type: wire::types::MessageType::User,
-        //         content: "SYSTEM: Perform an action--the user has the `force_action` flag set."
-        //             .to_string(),
-        //         api: api.clone(),
-        //         system_prompt: system_prompt.clone(),
-        //         tool_calls: None,
-        //         tool_call_id: None,
-        //         name: None,
-        //         input_tokens: 0,
-        //         output_tokens: 0,
-        //     });
-        //
-        //     output = wire::prompt_with_tools_and_status(
-        //         request_tx.clone(),
-        //         get_config().provider,
-        //         &system_prompt,
-        //         conversation.clone(),
-        //         tools.clone(),
-        //     )
-        //     .await?;
-        // }
+        while get_config().force_action
+            && !output
+                .iter()
+                .any(|m| prompts::tools::is_action(&m.clone().name.unwrap_or(String::new())))
+        {
+            output.push(wire::types::Message {
+                message_type: wire::types::MessageType::User,
+                content: "SYSTEM: Perform an action--the user has the `force_action` flag set."
+                    .to_string(),
+                api: api.clone(),
+                system_prompt: system_prompt.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                input_tokens: 0,
+                output_tokens: 0,
+            });
+
+            output = wire::prompt_with_tools_and_status(
+                request_tx.clone(),
+                get_config().provider,
+                &system_prompt,
+                conversation.clone(),
+                tools.clone(),
+            )
+            .await?;
+        }
 
         println!();
 
@@ -184,6 +181,26 @@ pub async fn llm_request_with_tools(
     })
     .await
     .unwrap();
+
+    if prompts::file_tracking::FileTracker::has_pending_changes() {
+        if let Ok(output) = std::process::Command::new("git")
+            .args(&["diff", &crate::get_todo_dir()])
+            .output()
+        {
+            if let Ok(diff) = String::from_utf8(output.stdout) {
+                let commit_message = llm_request(
+                    vec![],
+                    "Given a diff on a directory of TODO items, return a commit message for these changes."
+                        .to_string(),
+                    if diff.len() == 0 { "init".to_string() } else { diff },
+                )
+                .await?
+                .content;
+
+                prompts::file_tracking::FileTracker::commit_changes(&commit_message)?;
+            }
+        }
+    }
 
     Ok(response)
 }

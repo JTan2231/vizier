@@ -1,7 +1,7 @@
 use clap::Parser;
 use colored::*;
 
-use prompts::tools::TODO_DIR;
+use prompts::tools::get_todo_dir;
 
 mod config;
 
@@ -111,7 +111,7 @@ fn provider_arg_to_enum(provider: String) -> wire::types::API {
 
 // TODO: this will need to account for statuses and whatnot in the future--it doesn't right now
 pub async fn summarize_todos() -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-    let contents = std::fs::read_dir(prompts::tools::TODO_DIR)
+    let contents = std::fs::read_dir(prompts::tools::get_todo_dir())
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
         .collect::<Vec<String>>()
@@ -126,23 +126,6 @@ pub async fn summarize_todos() -> Result<wire::types::Message, Box<dyn std::erro
     Ok(response)
 }
 
-// Make sure the gitignore contains our .vizier folder, don't want to cause a mess
-fn gitignore_check(project_root: &std::path::PathBuf) {
-    let gitignore =
-        std::fs::read_to_string(project_root.join(".gitignore")).unwrap_or(String::new());
-
-    for line in gitignore.lines() {
-        if line.starts_with(".vizier") {
-            return;
-        }
-    }
-
-    println!(
-        "{} You should add .vizier to your .gitignore",
-        "Warning:".yellow()
-    );
-}
-
 fn print_token_usage(response: &wire::types::Message) {
     println!("{}", "Token Usage:".yellow());
     println!("- {} {}", "Prompt Tokens:".green(), response.input_tokens);
@@ -153,6 +136,7 @@ fn print_token_usage(response: &wire::types::Message) {
     );
 }
 
+// TODO: This shouldn't be here
 const COMMIT_PROMPT: &str = r#"
 You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
 
@@ -178,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => panic!("error finding project root: {}", e),
     };
 
-    gitignore_check(&project_root);
+    std::fs::create_dir_all(project_root.join(".vizier"))?;
 
     // TODO: Bro this condition has got to go
     if args.user_message.is_none() && !args.list && !args.summarize && !args.chat && !args.save {
@@ -224,8 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    if !std::fs::metadata(TODO_DIR).is_ok() {
-        std::fs::create_dir_all(TODO_DIR)?;
+    if !std::fs::metadata(get_todo_dir()).is_ok() {
+        std::fs::create_dir_all(get_todo_dir())?;
     }
 
     let mut config = config::get_config();
@@ -239,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config::set_config(config);
 
     if args.list {
-        tui::list_tui(project_root.join(TODO_DIR))?;
+        tui::list_tui(project_root.join(get_todo_dir()))?;
         return Ok(());
     }
 

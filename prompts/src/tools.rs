@@ -2,7 +2,36 @@ use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
 use serde::{Deserialize, Serialize};
 
-pub const TODO_DIR: &str = "./.vizier/";
+// does this _always_ assume we're at the root of a project?
+const TODO_DIR: &str = ".vizier/";
+
+pub fn get_todo_dir() -> String {
+    let start_dir = std::env::current_dir()
+        .ok()
+        .expect("Couldn't grab the current working directory");
+    let mut current = start_dir.clone();
+    let mut levels_up = 0;
+
+    loop {
+        if current.join(TODO_DIR).exists() {
+            let mut path = "../".repeat(levels_up);
+            path.push_str(TODO_DIR);
+            return path;
+        }
+
+        if current.join(".git").exists() {
+            panic!("Couldn't find `.vizier/`! How'd this happen?");
+        }
+
+        match current.parent() {
+            Some(parent) => {
+                current = parent.to_path_buf();
+                levels_up += 1;
+            }
+            None => panic!("Couldn't find `.vizier/`! How'd this happen?"),
+        }
+    }
+}
 
 pub fn get_tools() -> Vec<Tool> {
     vec![
@@ -55,7 +84,7 @@ Notes:
 - `description` should be in markdown
 ")]
 fn add_todo(name: String, description: String) -> String {
-    let filename = format!("{}todo_{}.md", TODO_DIR, name);
+    let filename = format!("{}todo_{}.md", get_todo_dir(), name);
     if let Err(e) = crate::file_tracking::FileTracker::write(&filename, &description) {
         llm_error(&format!("Failed to create todo file {}: {}", filename, e))
     } else {
@@ -72,7 +101,7 @@ Parameters:
 Notes: Content is appended with separator lines for readability
 ")]
 fn update_todo(todo_name: String, update: String) -> String {
-    let filename = format!("{}{}", TODO_DIR, todo_name.clone());
+    let filename = format!("{}{}", get_todo_dir(), todo_name.clone());
 
     if let Err(e) =
         crate::file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
@@ -102,12 +131,16 @@ fn read_file(filepath: String) -> String {
 
 Returns: Semicolon-separated string of TODO item names")]
 pub fn list_todos() -> String {
-    match std::fs::read_dir(TODO_DIR) {
+    match std::fs::read_dir(get_todo_dir()) {
         Ok(d) => d
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect::<Vec<String>>()
             .join("; "),
-        Err(e) => llm_error(&format!("Error reading directory {}: {}", TODO_DIR, e)),
+        Err(e) => llm_error(&format!(
+            "Error reading directory {}: {}",
+            get_todo_dir(),
+            e
+        )),
     }
 }
 
@@ -118,7 +151,7 @@ Parameters:
 
 Returns: String containing the TODO item's contents")]
 fn read_todo(todo_name: String) -> String {
-    let filename = format!("{}{}", TODO_DIR, todo_name);
+    let filename = format!("{}{}", get_todo_dir(), todo_name);
 
     let contents = crate::file_tracking::FileTracker::read(&filename.clone());
     if let Err(e) = contents {
@@ -132,7 +165,7 @@ fn read_todo(todo_name: String) -> String {
 
 Returns: String containing snapshot contents or empty string if none exists")]
 fn read_snapshot() -> String {
-    let filename = format!("{}{}", TODO_DIR, ".snapshot");
+    let filename = format!("{}{}", get_todo_dir(), ".snapshot");
     std::fs::read_to_string(&filename).unwrap_or_default()
 }
 
@@ -145,7 +178,7 @@ Parameters:
 Notes: Overwrites any existing snapshot"
 )]
 fn update_snapshot(content: String) -> String {
-    let filename = format!("{}{}", TODO_DIR, ".snapshot");
+    let filename = format!("{}{}", get_todo_dir(), ".snapshot");
 
     if let Err(e) = std::fs::write(&filename, &content) {
         llm_error(&format!("Failed to update snapshot: {}", e))

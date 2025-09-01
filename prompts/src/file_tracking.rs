@@ -40,7 +40,28 @@ impl FileTracker {
             .updated_files
             .insert(path.to_string());
 
-        FileTracker::clear();
+        Ok(())
+    }
+
+    pub fn has_pending_changes() -> bool {
+        FILE_TRACKER.lock().unwrap().updated_files.len() > 0
+    }
+
+    /// Doesn't do anything if there are no changes to commit
+    pub fn commit_changes(message: &str) -> std::io::Result<()> {
+        if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
+            return Ok(());
+        }
+
+        std::process::Command::new("git")
+            .args(&["add", &crate::tools::get_todo_dir()])
+            .output()?;
+
+        std::process::Command::new("git")
+            .args(&["commit", "-m", &format!("VIZIER: {}", message)])
+            .output()?;
+
+        Self::clear();
 
         Ok(())
     }

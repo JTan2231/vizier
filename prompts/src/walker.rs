@@ -77,7 +77,7 @@ pub fn get_non_ignored_files() -> Vec<std::path::PathBuf> {
         .map(|entry| entry.path().to_owned())
         .collect::<Vec<_>>();
 
-    if let Ok(extra_entries) = std::fs::read_dir(crate::tools::TODO_DIR) {
+    if let Ok(extra_entries) = std::fs::read_dir(crate::tools::get_todo_dir()) {
         files.extend(
             extra_entries
                 .filter_map(Result::ok)
