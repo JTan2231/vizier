@@ -1,0 +1,55 @@
+Project Snapshot — Active Narrative Threads and Concrete Plot Points
+
+Theme: Close the loop between promise and delivery in two areas: (1) the TUI must be an uninterrupted editing/browsing experience; (2) the --save pipeline must compose cleanly with git so commits describe exactly what changed.
+
+Thread A — TUI editing and responsiveness
+Conflict: The TUI exits to edit and leaves artifacts during status updates, breaking immersion.
+
+Required scenes (all tied to current code):
+- Persist edits without terminating the app
+  • tui/src/lib.rs::App::enter_directory(): stop calling std::process::exit(0) after user_editor(). Leave alt screen before edit, re-enter after, refresh selection and preview.
+- Write-back semantics for the editor
+  • tui/src/lib.rs::user_editor(): change signature to accept original_path; write edited temp contents back to that path on success; handle and surface errors in preview pane.
+- Remove carriage-return spinner hack
+  • tui/src/lib.rs::display_status(): replace raw \r printing with crossterm::terminal::Clear(ClearType::CurrentLine) before rendering the spinner/message. Ensure no stray glyphs remain.
+- In-TUI edit shortcut and safe reload
+  • tui/src/lib.rs::list_tui(): bind 'e' to edit currently selected file if it is a file; upon return, reload content and redraw.
+- Bounded scrolling and jump keys
+  • Cap scroll to visible height; add Home (top) and End (bottom) keybindings in list_tui() event loop.
+- Focused TODO browsing
+  • tui/src/lib.rs::App::refresh_files(): when in TODO_DIR, filter *.md and ignore hidden files.
+- Shell arg duplication fix
+  • tui/src/lib.rs::user_editor(): do not append an extra "-c" after get_interactive_args(); ensure Bash/Zsh/Fish work.
+
+Acceptance:
+- Editing a TODO returns to the TUI with changes saved and preview updated.
+- Spinner renders cleanly with no artifacts.
+- Scroll bounds respected; Home/End work.
+- Pressing 'e' edits selected TODO.
+
+Thread B — Version-control composability for --save
+Conflict: Commit message is generated from a stale diff; CLI help mismatches flags; status tools assume todos.json exists.
+
+Required scenes (all tied to current code):
+- Commit from the final, staged diff
+  • cli/src/main.rs (args.save path): move prompts::tools::diff() invocation to after snapshot/TODO updates and after `git add -u`, then generate commit message.
+- Extract save flow for composability
+  • cli/src/main.rs: factor the --save steps into fn save_project() -> Result<(), Box<dyn Error>> executing (a) LLM update of snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate message, (e) git commit.
+- Fix help to reflect actual flags
+  • cli/src/main.rs::print_usage(): show -S/--summarize and -s/--save correctly.
+- First-run robustness for status store
+  • prompts/src/tools.rs::load_todos() and callers: if todos.json is missing, initialize an empty map so update_todo_status/read_todo_status work on fresh repos.
+
+Acceptance:
+- --save commits a message that reflects all LLM-produced changes, including .vizier updates.
+- `vizier --help` shows -S summarize and -s save consistently.
+- save_project() is testable and returns errors instead of panicking.
+- Status updates succeed without a preexisting todos.json.
+
+What changed in this snapshot:
+- Replaced vague “vision” and “composability review” with specific code-bound plot points and acceptance criteria.
+- Updated existing TODOs (tui and version-control) to mirror these exact scenes so work feels inevitable given the code’s state.
+
+Open TODO files tracking these threads:
+- todo_enhance_tui_interaction.md — now specifies editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
+- todo_enhance_version_control_composability.md — now specifies final-diff commit, factored save flow, help text correction, and first-run status store.
