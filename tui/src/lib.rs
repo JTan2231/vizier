@@ -224,7 +224,7 @@ pub async fn chat_tui() -> std::result::Result<(), Box<dyn Error>> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        println!("{:?}", err)
+        eprintln!("{:?}", err)
     }
 
     Ok(())
@@ -327,7 +327,7 @@ fn user_editor(file_contents: &str) -> std::io::Result<()> {
     match std::fs::write(temp_path.to_path_buf(), file_contents) {
         Ok(_) => {}
         Err(e) => {
-            println!("Error writing to temp file");
+            eprintln!("Error writing to temp file");
             return Err(e);
         }
     };
@@ -389,7 +389,7 @@ async fn display_status(mut rx: Receiver<Status>) {
                     break;
                 }
                 Status::Error(e) => {
-                    println!("\rError: {}", e);
+                    eprintln!("\rError: {}", e);
                     break;
                 }
             },
@@ -405,11 +405,11 @@ async fn display_status(mut rx: Receiver<Status>) {
 // TODO: Proper error handling
 pub async fn call_with_status<F, Fut>(
     f: F,
-) -> std::result::Result<wire::types::Message, Box<dyn Error + Send + Sync>>
+) -> std::result::Result<Vec<wire::types::Message>, Box<dyn Error + Send + Sync>>
 where
     F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
     Fut: std::future::Future<
-            Output = std::result::Result<wire::types::Message, Box<dyn std::error::Error>>,
+            Output = std::result::Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>,
         > + Send
         + 'static,
 {
@@ -420,18 +420,7 @@ where
         Ok(s) => s,
         Err(e) => {
             let _ = tx.send(Status::Error(e.to_string())).await;
-            // This is sloppy, but we really only care about the input/output tokens
-            wire::types::Message {
-                message_type: wire::types::MessageType::Assistant,
-                content: String::new(),
-                api: wire::types::API::OpenAI(wire::types::OpenAIModel::GPT5),
-                system_prompt: String::new(),
-                tool_call_id: None,
-                tool_calls: None,
-                name: None,
-                input_tokens: 0,
-                output_tokens: 0,
-            }
+            Vec::new()
         }
     };
 

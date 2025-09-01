@@ -137,6 +137,34 @@ Common types: feat, fix, docs, style, refactor, test, chore
 Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
 "#;
 
+async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
+    let response = Auditor::llm_request_with_tools(
+        crate::config::get_system_prompt()?,
+        format!("Update the snapshot and existing TODOs as needed",),
+        prompts::tools::get_tools(),
+    )
+    .await?;
+
+    eprintln!("{} {}", "Assistant:".blue(), response.content);
+    print_token_usage(&response);
+
+    let commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
+        .await?
+        .content;
+
+    std::process::Command::new("git")
+        .args(&["add", "-u"])
+        .status()?;
+
+    std::process::Command::new("git")
+        .args(&["commit", "-m", &commit_message])
+        .status()?;
+
+    eprintln!("Changes committed with message: {}", commit_message);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -152,7 +180,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(project_root.join(".vizier"))?;
 
     // TODO: Bro this condition has got to go
-    if args.user_message.is_none() && !args.list && !args.chat && args.save.is_none() {
+    if args.user_message.is_none()
+        && !args.list
+        && !args.chat
+        && args.save.is_none()
+        && !args.save_latest
+    {
         print_usage();
         std::process::exit(1);
     }
@@ -163,30 +196,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .output()
         {
             if let Ok(diff) = String::from_utf8(output.stdout) {
-                let response = Auditor::llm_request_with_tools(
-                    crate::config::get_system_prompt()?,
-                    format!("Update the snapshot and existing TODOs as needed",),
-                    prompts::tools::get_tools(),
-                )
-                .await?;
+                save(diff).await?;
+                std::process::exit(0);
+            }
+        }
+    }
 
-                eprintln!("{} {}", "Assistant:".blue(), response.content);
-                print_token_usage(&response);
-
-                let commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
-                    .await?
-                    .content;
-
-                std::process::Command::new("git")
-                    .args(&["add", "-u"])
-                    .status()?;
-
-                std::process::Command::new("git")
-                    .args(&["commit", "-m", &commit_message])
-                    .status()?;
-
-                eprintln!("Changes committed with message: {}", commit_message);
-
+    if args.save_latest {
+        if let Ok(output) = std::process::Command::new("git")
+            .args(&["diff", "HEAD", "--", ":!.vizier/"])
+            .output()
+        {
+            if let Ok(diff) = String::from_utf8(output.stdout) {
+                save(diff).await?;
                 std::process::exit(0);
             }
         }

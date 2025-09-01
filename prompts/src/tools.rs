@@ -1,8 +1,5 @@
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
-use serde::{Deserialize, Serialize};
-
-// does this _always_ assume we're at the root of a project?
 const TODO_DIR: &str = ".vizier/";
 
 pub fn get_todo_dir() -> String {
@@ -43,8 +40,6 @@ pub fn get_tools() -> Vec<Tool> {
         get_tool!(read_todo),
         get_tool!(read_snapshot),
         get_tool!(update_snapshot),
-        get_tool!(update_todo_status),
-        get_tool!(read_todo_status),
     ]
 }
 
@@ -185,119 +180,4 @@ fn update_snapshot(content: String) -> String {
     } else {
         "Snapshot updated successfully".to_string()
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-enum Status {
-    Ready,
-    InProgress,
-    Done,
-}
-
-impl std::fmt::Display for Status {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Status::Ready => write!(f, "ready"),
-            Status::InProgress => write!(f, "in_progress"),
-            Status::Done => write!(f, "done"),
-        }
-    }
-}
-
-impl std::str::FromStr for Status {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "ready" => Ok(Status::Ready),
-            "in_progress" => Ok(Status::InProgress),
-            "done" => Ok(Status::Done),
-            _ => Err(format!("Invalid status: {}", s)),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct TodoEntry {
-    status: Status,
-    notes: String,
-}
-
-type TodoMap = std::collections::HashMap<String, TodoEntry>;
-
-// TODO: When the model gets the filename wrong?
-#[tool(description = "Updates the status and notes of an existing TODO item.
-
-Parameters:
-    todo_name: The unique identifier of the TODO to update
-    status: New status to set (Ready/In Progress/Done)
-    notes: Additional notes or context for the status update. If empty, existing notes are preserved.
-
-Returns:
-    None. Updates are saved to storage directly.")]
-fn update_todo_status(todo_name: String, status: String, notes: String) -> String {
-    let mut todos = load_todos();
-
-    if let Ok(t) = &mut todos {
-        if let Some(existing) = t.get(&todo_name) {
-            t.insert(
-                todo_name,
-                TodoEntry {
-                    status: match status.parse::<Status>() {
-                        Ok(s) => s,
-                        Err(e) => return llm_error(&format!("Error parsing status: {}", e)),
-                    },
-                    notes: if notes.is_empty() {
-                        existing.notes.clone()
-                    } else {
-                        notes
-                    },
-                },
-            );
-        } else {
-            t.insert(
-                todo_name,
-                TodoEntry {
-                    status: match status.parse::<Status>() {
-                        Ok(s) => s,
-                        Err(e) => return llm_error(&format!("Error parsing status: {}", e)),
-                    },
-                    notes,
-                },
-            );
-        }
-
-        "Status updated successfully".to_string()
-    } else {
-        llm_error(&format!("Error loading todos: {}", todos.err().unwrap()))
-    }
-}
-
-#[tool(description = "Retrieves the status and notes of a TODO item.
-
-Parameters:
-    todo_name: The unique identifier of the TODO to look up
-
-Returns:
-    XML string containing the TODO details if found (<todo><name>...</name><status>...</status><notes>...</notes></todo>)
-    or an error message if not found (<error>...</error>)")]
-fn read_todo_status(todo_name: String) -> String {
-    let todos = load_todos();
-
-    if let Ok(t) = todos {
-        match t.get(&todo_name) {
-            Some(todo) => format!(
-                "<todo><name>{}</name><status>{}</status><notes>{}</notes></todo>",
-                todo_name, todo.status, todo.notes
-            ),
-            None => format!("<error>TODO '{}' not found</error>", todo_name),
-        }
-    } else {
-        llm_error(&format!("Error loading todos: {}", todos.err().unwrap()))
-    }
-}
-
-fn load_todos() -> Result<TodoMap, std::io::Error> {
-    let data = std::fs::read_to_string("todos.json")?;
-    Ok(serde_json::from_str(&data)?)
 }

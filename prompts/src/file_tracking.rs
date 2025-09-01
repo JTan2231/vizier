@@ -10,6 +10,8 @@ lazy_static! {
     static ref FILE_TRACKER: Mutex<FileTracker> = Mutex::new(FileTracker::new());
 }
 
+// TODO: This feels confused with the auditor. Why is that?
+
 pub struct FileTracker {
     updated_files: HashSet<String>,
     all_files: Vec<String>,
