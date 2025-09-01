@@ -3,6 +3,9 @@ use colored::*;
 
 use prompts::tools::get_todo_dir;
 
+use crate::auditor::Auditor;
+
+mod auditor;
 mod config;
 
 #[derive(Parser)]
@@ -13,10 +16,6 @@ struct Args {
     /// List and browse existing TODOs
     #[arg(short = 'l', long)]
     list: bool,
-
-    /// Summarize outstanding TODOs
-    #[arg(short = 'S', long)]
-    summarize: bool,
 
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
@@ -30,14 +29,19 @@ struct Args {
     #[arg(short = 'f', long)]
     force_action: bool,
 
-    /// "Save" button--git commit tracked changes with LLM-generated commit message and update TODOs/snapshot
+    /// "Save" button--git commit tracked changes w.r.t given commit reference/range with LLM-generated commit message and update TODOs/snapshot
     /// to reflect the changes
+    /// e.g., `vizier -s HEAD~3..HEAD`, or `vizier -s HEAD`
     #[arg(short = 's', long)]
-    save: bool,
+    save: Option<String>,
+
+    /// Equivalent to `vizier -s HEAD`
+    #[arg(short = 'S', long)]
+    save_latest: bool,
 }
 
 fn print_usage() {
-    println!(
+    eprintln!(
         r#"{} - AI-powered project management assistant
 
 {}
@@ -109,27 +113,10 @@ fn provider_arg_to_enum(provider: String) -> wire::types::API {
     }
 }
 
-// TODO: this will need to account for statuses and whatnot in the future--it doesn't right now
-pub async fn summarize_todos() -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-    let contents = std::fs::read_dir(prompts::tools::get_todo_dir())
-        .unwrap()
-        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-        .collect::<Vec<String>>()
-        .join("\n\n###\n\n");
-
-    let prompt =
-        "You will be given a list of TODO items. Return a summary of all the outstanding work. Focus on broad themes and directions."
-            .to_string();
-
-    let response = crate::config::llm_request(vec![], prompt, contents).await?;
-
-    Ok(response)
-}
-
 fn print_token_usage(response: &wire::types::Message) {
-    println!("{}", "Token Usage:".yellow());
-    println!("- {} {}", "Prompt Tokens:".green(), response.input_tokens);
-    println!(
+    eprintln!("{}", "Token Usage:".yellow());
+    eprintln!("- {} {}", "Prompt Tokens:".green(), response.input_tokens);
+    eprintln!(
         "- {} {}",
         "Completion Tokens:".green(),
         response.output_tokens
@@ -165,47 +152,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(project_root.join(".vizier"))?;
 
     // TODO: Bro this condition has got to go
-    if args.user_message.is_none() && !args.list && !args.summarize && !args.chat && !args.save {
+    if args.user_message.is_none() && !args.list && !args.chat && args.save.is_none() {
         print_usage();
         std::process::exit(1);
     }
 
-    if args.save {
-        let diff = prompts::tools::diff();
-        let response = crate::config::llm_request_with_tools(
-            vec![],
-            crate::config::get_system_prompt()?,
-            format!("Update the snapshot and existing TODOs as needed",),
-            prompts::tools::get_tools(),
-        )
-        .await?;
+    if let Some(commit_reference) = args.save {
+        if let Ok(output) = std::process::Command::new("git")
+            .args(&["diff", &commit_reference, "--", ":!.vizier/"])
+            .output()
+        {
+            if let Ok(diff) = String::from_utf8(output.stdout) {
+                let response = Auditor::llm_request_with_tools(
+                    crate::config::get_system_prompt()?,
+                    format!("Update the snapshot and existing TODOs as needed",),
+                    prompts::tools::get_tools(),
+                )
+                .await?;
 
-        println!("{} {}", "Assistant:".blue(), response.content);
-        print_token_usage(&response);
+                eprintln!("{} {}", "Assistant:".blue(), response.content);
+                print_token_usage(&response);
 
-        let commit_message = config::llm_request(vec![], COMMIT_PROMPT.to_string(), diff)
-            .await?
-            .content;
+                let commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
+                    .await?
+                    .content;
 
-        std::process::Command::new("git")
-            .args(&["add", "-u"])
-            .status()?;
+                std::process::Command::new("git")
+                    .args(&["add", "-u"])
+                    .status()?;
 
-        std::process::Command::new("git")
-            .args(&["commit", "-m", &commit_message])
-            .status()?;
+                std::process::Command::new("git")
+                    .args(&["commit", "-m", &commit_message])
+                    .status()?;
 
-        println!("Changes committed with message: {}", commit_message);
+                eprintln!("Changes committed with message: {}", commit_message);
 
-        std::process::exit(0);
-    }
-
-    if args.summarize {
-        let response = summarize_todos().await?;
-        println!("\r{}", response.content);
-        print_token_usage(&response);
-
-        std::process::exit(0);
+                std::process::exit(0);
+            }
+        }
     }
 
     if !std::fs::metadata(get_todo_dir()).is_ok() {
@@ -232,15 +216,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let response = crate::config::llm_request_with_tools(
-        vec![],
+    // Default case, `vizier "some message"`
+
+    let response = Auditor::llm_request_with_tools(
         crate::config::get_system_prompt()?,
         args.user_message.unwrap(),
         prompts::tools::get_tools(),
     )
     .await?;
 
-    println!("{} {}", "Assistant:".blue(), response.content);
+    eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage(&response);
 
     Ok(())

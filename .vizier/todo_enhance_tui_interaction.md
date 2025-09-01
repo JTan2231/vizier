@@ -50,3 +50,32 @@ Acceptance: Opening the editor works in Bash, Zsh, and Fish without duplicated o
 
 ---
 
+Updates bound to current code after reading tui/src/lib.rs:
+
+- App::enter_directory() currently disables raw mode, leaves alt screen, calls user_editor(&self.file_content) and then std::process::exit(0). Replace with:
+  • Capture selected path; if file, call user_editor(&path, &self.file_content). On Ok, reload via self.read_selected_file_content(); on Err(e), set file_content to format!("Edit failed: {}", e).
+  • Before launching editor: disable_raw_mode + LeaveAlternateScreen; after return: EnterAlternateScreen + enable_raw_mode and redraw.
+
+- user_editor signature and shell args:
+  • Change to fn user_editor(original_path: &Path, file_contents: &str) -> io::Result<()>
+  • Remove the extra .arg("-c"); rely solely on Shell::get_interactive_args() to include the command flag.
+  • After editor exit, read temp file and write back to original_path.
+
+- display_status cleanup:
+  • Replace print!("\r…") with crossterm::execute!(stdout(), crossterm::terminal::Clear(ClearType::CurrentLine)); then write spinner + message; flush.
+
+- list_tui improvements:
+  • Map 'e' to trigger edit for currently selected file (use App::get_selected_file_path()).
+  • Add KeyCode::Home to reset scroll=0; KeyCode::End to scroll to bottom using computed bounds.
+
+- Scroll bounds:
+  • Track visible height from frame.area() right pane and file_content line count; cap scroll with saturating_sub.
+
+- File filtering in refresh_files():
+  • When path ends_with("todos") or matches known TODO dir, include only *.md and exclude dotfiles.
+
+Acceptance unchanged.
+
+
+---
+

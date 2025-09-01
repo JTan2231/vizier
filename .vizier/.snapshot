@@ -5,7 +5,7 @@ Theme: Close the loop between promise and delivery in two areas: (1) the TUI mus
 Thread A — TUI editing and responsiveness
 Conflict: The TUI exits to edit and leaves artifacts during status updates, breaking immersion.
 
-Required scenes (all tied to current code):
+Required scenes (code-bound):
 - Persist edits without terminating the app
   • tui/src/lib.rs::App::enter_directory(): stop calling std::process::exit(0) after user_editor(). Leave alt screen before edit, re-enter after, refresh selection and preview.
 - Write-back semantics for the editor
@@ -30,7 +30,7 @@ Acceptance:
 Thread B — Version-control composability for --save
 Conflict: Commit message is generated from a stale diff; CLI help mismatches flags; status tools assume todos.json exists.
 
-Required scenes (all tied to current code):
+Required scenes (code-bound):
 - Commit from the final, staged diff
   • cli/src/main.rs (args.save path): move prompts::tools::diff() invocation to after snapshot/TODO updates and after `git add -u`, then generate commit message.
 - Extract save flow for composability
@@ -47,9 +47,9 @@ Acceptance:
 - Status updates succeed without a preexisting todos.json.
 
 What changed in this snapshot:
-- Replaced vague “vision” and “composability review” with specific code-bound plot points and acceptance criteria.
-- Updated existing TODOs (tui and version-control) to mirror these exact scenes so work feels inevitable given the code’s state.
+- Confirmed code references against current tui/src/lib.rs; the carriage-return spinner hack and exit-on-edit are present and called out explicitly. Added explicit shell arg duplication fix with location.
+- No new threads; refined existing scenes to be immediately actionable.
 
 Open TODO files tracking these threads:
-- todo_enhance_tui_interaction.md — now specifies editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
-- todo_enhance_version_control_composability.md — now specifies final-diff commit, factored save flow, help text correction, and first-run status store.
+- todo_enhance_tui_interaction.md — specifies editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
+- todo_enhance_version_control_composability.md — specifies final-diff commit, factored save flow, help text correction, and first-run status store.
