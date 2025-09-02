@@ -1,4 +1,6 @@
+use chrono::Utc;
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::sync::mpsc::channel;
 
@@ -6,19 +8,72 @@ lazy_static! {
     static ref AUDITOR: Mutex<Auditor> = Mutex::new(Auditor::new());
 }
 
+pub struct TokenUsage {
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+}
+
 // TODO: We should probably include timestamps somewhere
 // TODO: Should this be in this crate?
 
+pub fn get_audit_dir() -> std::path::PathBuf {
+    let todo_dir = std::path::PathBuf::from(crate::get_todo_dir());
+    todo_dir.join("audit")
+}
+
+// dump the collected messages
+pub struct AuditorCleanup;
+
+impl Drop for AuditorCleanup {
+    fn drop(&mut self) {
+        if let Ok(auditor) = AUDITOR.lock() {
+            match std::fs::create_dir_all(get_audit_dir()) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!(
+                        "Error creating audit directory {}: {}",
+                        get_audit_dir().to_string_lossy(),
+                        e
+                    );
+
+                    return;
+                }
+            };
+
+            if auditor.messages.len() > 0 {
+                let output_path =
+                    get_audit_dir().join(format!("{}.json", auditor.session_start.clone()));
+                match std::fs::write(
+                    output_path.clone(),
+                    serde_json::to_string_pretty(&auditor.messages).unwrap(),
+                ) {
+                    Ok(_) => eprintln!("Session saved to {}", auditor.session_start),
+                    Err(e) => eprintln!(
+                        "Error writing session file {}: {}",
+                        output_path.to_string_lossy(),
+                        e
+                    ),
+                };
+            }
+        }
+    }
+}
+
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Auditor {
     messages: Vec<wire::types::Message>,
+    session_start: String,
 }
 
 impl Auditor {
     pub fn new() -> Self {
+        let now = Utc::now();
+
         Auditor {
             messages: Vec::new(),
+            session_start: now.to_string(),
         }
     }
 
@@ -28,6 +83,20 @@ impl Auditor {
 
     fn replace_messages(messages: &Vec<wire::types::Message>) {
         AUDITOR.lock().unwrap().messages = messages.clone();
+    }
+
+    pub fn get_total_usage() -> TokenUsage {
+        let mut usage = TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+
+        for message in AUDITOR.lock().unwrap().messages.iter() {
+            usage.input_tokens += message.input_tokens;
+            usage.output_tokens += message.output_tokens;
+        }
+
+        usage
     }
 
     pub async fn llm_request(

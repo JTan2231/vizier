@@ -34,6 +34,7 @@ pub fn get_tools() -> Vec<Tool> {
     vec![
         get_tool!(diff),
         get_tool!(add_todo),
+        get_tool!(delete_todo),
         get_tool!(update_todo),
         get_tool!(list_todos),
         get_tool!(read_file),
@@ -84,6 +85,22 @@ fn add_todo(name: String, description: String) -> String {
         llm_error(&format!("Failed to create todo file {}: {}", filename, e))
     } else {
         "Todo added successfully".to_string()
+    }
+}
+
+#[tool(description = "
+Delete a TODO item.
+
+Notes:
+- `name` should match the name used when creating the todo (without the 'todo_' prefix or '.md' extension)
+- This will permanently remove the todo file
+")]
+fn delete_todo(name: String) -> String {
+    let filename = format!("{}todo_{}.md", get_todo_dir(), name);
+    if let Err(e) = crate::file_tracking::FileTracker::delete(&filename) {
+        llm_error(&format!("Failed to create delete file {}: {}", filename, e))
+    } else {
+        "Todo deleted successfully".to_string()
     }
 }
 

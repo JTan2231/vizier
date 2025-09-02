@@ -48,21 +48,26 @@ fn print_usage() {
     {} [OPTIONS] [MESSAGE]
 
 {}
-    {}    Send a message to the AI assistant
+    {}    Optional free-form message to the assistant
 
 {}
-    {}, {}               Start interactive chat session
-    {}, {}               Browse and manage TODOs interactively
-    {}, {}          Get AI summary of current TODOs
-    {}, {} <NAME>    Set LLM provider (openai, anthropic, etc.)
-    {}, {}               Print help
-    {}, {}            Print version
+    {}, {}                 Start interactive chat session
+    {}, {}                 List and browse existing TODOs
+    {}, {} <REF|RANGE>     "Save" tracked changes since REF/RANGE with AI commit message and update TODOs/snapshot
+    {}, {}          Equivalent to `-s HEAD`
+    {}, {} <NAME>      Set LLM provider (openai, anthropic, etc.)
+    {}, {}         Force the agent to perform an action it selected
+    {}, {}                 Print help
+    {}, {}              Print version
 
 {}
     {} "add a TODO to implement auth"
     {} --chat
     {} --list
-    {} --summarize --provider anthropic"#,
+    {} --save HEAD~3..HEAD
+    {} --save-latest
+    {} --provider anthropic "what's my next task?"
+"#,
         "vizier".bright_cyan().bold(),
         "USAGE:".bright_yellow().bold(),
         "vizier".bright_green(),
@@ -74,14 +79,20 @@ fn print_usage() {
         "-l".bright_green(),
         "--list".bright_green(),
         "-s".bright_green(),
-        "--summarize".bright_green(),
+        "--save".bright_green(),
+        "-S".bright_green(),
+        "--save-latest".bright_green(),
         "-p".bright_green(),
         "--provider".bright_green(),
+        "-f".bright_green(),
+        "--force-action".bright_green(),
         "-h".bright_green(),
         "--help".bright_green(),
         "-V".bright_green(),
         "--version".bright_green(),
         "EXAMPLES:".bright_yellow().bold(),
+        "vizier".bright_green(),
+        "vizier".bright_green(),
         "vizier".bright_green(),
         "vizier".bright_green(),
         "vizier".bright_green(),
@@ -113,14 +124,11 @@ fn provider_arg_to_enum(provider: String) -> wire::types::API {
     }
 }
 
-fn print_token_usage(response: &wire::types::Message) {
+fn print_token_usage() {
+    let usage = Auditor::get_total_usage();
     eprintln!("{}", "Token Usage:".yellow());
-    eprintln!("- {} {}", "Prompt Tokens:".green(), response.input_tokens);
-    eprintln!(
-        "- {} {}",
-        "Completion Tokens:".green(),
-        response.output_tokens
-    );
+    eprintln!("- {} {}", "Prompt Tokens:".green(), usage.input_tokens);
+    eprintln!("- {} {}", "Completion Tokens:".green(), usage.output_tokens);
 }
 
 // TODO: This shouldn't be here
@@ -146,7 +154,7 @@ async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
-    print_token_usage(&response);
+    print_token_usage();
 
     let commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
         .await?
@@ -167,6 +175,8 @@ async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _auditor_cleanup = auditor::AuditorCleanup;
+
     let args = Args::parse();
 
     let project_root = match find_project_root() {
@@ -187,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         && !args.save_latest
     {
         print_usage();
-        std::process::exit(1);
+        return Ok(());
     }
 
     if let Some(commit_reference) = args.save {
@@ -197,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             if let Ok(diff) = String::from_utf8(output.stdout) {
                 save(diff).await?;
-                std::process::exit(0);
+                return Ok(());
             }
         }
     }
@@ -209,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             if let Ok(diff) = String::from_utf8(output.stdout) {
                 save(diff).await?;
-                std::process::exit(0);
+                return Ok(());
             }
         }
     }
@@ -248,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
-    print_token_usage(&response);
+    print_token_usage();
 
     Ok(())
 }

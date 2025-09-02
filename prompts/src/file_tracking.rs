@@ -68,6 +68,15 @@ impl FileTracker {
         Ok(())
     }
 
+    pub fn delete(path: &str) -> std::io::Result<()> {
+        let mut tracker = FILE_TRACKER.lock().unwrap();
+
+        tracker.updated_files.insert(path.to_string());
+        tracker.all_files.retain(|f| f != path);
+
+        Ok(())
+    }
+
     pub fn read(path: &str) -> std::io::Result<String> {
         let matched = FileTracker::fuzzy_match_path(path);
         std::fs::read_to_string(matched)
