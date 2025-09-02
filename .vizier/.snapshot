@@ -47,9 +47,9 @@ Acceptance:
 - Status updates succeed without a preexisting todos.json.
 
 What changed in this snapshot:
-- Confirmed code references against current tui/src/lib.rs; the carriage-return spinner hack and exit-on-edit are present and called out explicitly. Added explicit shell arg duplication fix with location.
-- No new threads; refined existing scenes to be immediately actionable.
+- Verified current code in tui/src/lib.rs: exit-on-edit, duplicate "-c" in user_editor, spinner CR hack all present; scenes call out exact fixes and locations.
+- No new threads introduced; refined existing TODOs for immediate implementation with specific file/line targets where applicable.
 
 Open TODO files tracking these threads:
-- todo_enhance_tui_interaction.md — specifies editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
-- todo_enhance_version_control_composability.md — specifies final-diff commit, factored save flow, help text correction, and first-run status store.
+- todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
+- todo_enhance_version_control_composability.md — final-diff commit, factored save flow, help text correction, and first-run status store.

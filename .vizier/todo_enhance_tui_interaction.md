@@ -79,3 +79,19 @@ Acceptance unchanged.
 
 ---
 
+Refinement after reading current tui/src/lib.rs (confirmed code anchors):
+
+- App::enter_directory(): explicitly remove std::process::exit(0) after user_editor(); surround editor launch with disable_raw_mode + LeaveAlternateScreen before, and EnterAlternateScreen + enable_raw_mode after. On Ok, call self.read_selected_file_content(); on Err(e), set self.file_content = format!("Edit failed: {}", e).
+
+- user_editor(): adjust signature to fn user_editor(original_path: &Path, file_contents: &str) -> io::Result<()>; remove extra .arg("-c") so we rely solely on Shell::get_interactive_args() which should include the command flag. After editor exits, read temp file back and write to original_path.
+
+- display_status(): replace CR hack with crossterm::terminal::Clear(ClearType::CurrentLine) + redraw spinner/message every tick; ensure no artifacts remain.
+
+- list_tui(): map 'e' to launch edit for current file (skip dirs) via App::get_selected_file_path(); add KeyCode::Home to set scroll=0 and KeyCode::End to scroll to bottom using computed bounds from preview height and content lines.
+
+- App::refresh_files(): when browsing TODO dir, filter *.md and ignore dotfiles; keep dir-first sort.
+
+Acceptance unchanged.
+
+---
+
