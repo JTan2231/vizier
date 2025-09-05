@@ -66,3 +66,41 @@ Notes:
 
 ---
 
+Refinement based on goal: unify auditing in Git history while avoiding log bloat
+
+Additions/Changes:
+
+9) Consolidate audit persistence with Git-first strategy and bounded local buffers
+- Files: prompts/src/lib.rs, prompts/src/file_tracking.rs, cli/src/main.rs, README.md
+- Default sink hybrid: write JSONL to session file as before, and opportunistically checkpoint compact audit frames into Git as notes and optional worktree files:
+  - Define CompactAuditFrame { ts, level, brief, ref_id } where brief <= 512 bytes; ref_id is a stable blake3 of the full JSON event.
+  - Writer flow: for every event, write full JSONL to disk; additionally, batch compact frames into 4KB chunks and append to a git note on HEAD under refs/notes/vizier/frames every N seconds (default 10s) or when chunk >= 4KB. This keeps Git history lightweight while still providing an internally referencable breadcrumb trail.
+  - Provide env toggles: VIZIER_AUDIT_GIT_NOTES=1 (default on), VIZIER_AUDIT_GIT_FRAMES_CHUNK=4096, VIZIER_AUDIT_GIT_FLUSH_SECS=10. If repo is absent or notes disabled, silently skip notes emission.
+
+10) Log levels and selective capture policy to avoid “clogging the pipes”
+- Files: prompts/src/lib.rs, tui/src/chat.rs, cli/src/config.rs, README.md
+- Introduce AuditLevel { Error, Important, Info, Verbose, Debug }. Map events:
+  - User/Assistant final messages -> Important
+  - ToolStart/ToolDone -> Info
+  - ToolOutput streaming -> Verbose (summarize to 120 chars and mark truncated)
+  - Token usage, internal traces -> Debug
+- Add capture policy via env/config: VIZIER_AUDIT_LEVEL=Info (default). File sink stores all events >= level. Git compact frames additionally apply a stricter floor: min(Important, configured level) to keep notes concise.
+- Provide per-session override commands in TUI (keys: F2 cycles levels) and CLI flags.
+
+11) Structured size guards and backpressure
+- Files: prompts/src/lib.rs
+- Enforce per-event size caps before enqueue: max 64KB for content fields after redaction; serialize large payloads as EventAttachment records saved under $VIZIER_AUDIT_DIR/attachments/<session>/<ref_id>.json and reference from the main event by ref_id. Background writer persists attachments asynchronously. This keeps the JSONL stream lightweight and prevents I/O stalls.
+- Channel bounds: writer channel size default 8192 events; on overflow, drop lowest-priority events first (Verbose/Debug) and emit a single Error event “audit_drop” with counts by level.
+
+12) Tight Git linkage: squash JSONL ranges into notes on commit
+- Files: cli/src/main.rs, prompts/src/lib.rs
+- On CommitCreated, compute byte offsets of session JSONL since last CommitLink and write a git note refs/notes/vizier/ranges with JSON { session_id, start, end, file } for deterministic retrieval. This complements the existing Audit-Anchor trailer and allows shallow clones to resolve audits without scanning full files.
+
+13) README guidance: what to log and why
+- Clarify defaults: Everything user-visible and all irreversible tool effects are logged at Important/Info; high-volume streams summarized; raw data gated behind size caps and redaction. Show examples and disk budget math: at default policy, typical session ~200KB JSONL; rotation 50MB -> ~250 sessions per shard before rotate.
+
+Migration Note: No changes required to call sites beyond passing Audit and selecting levels; existing events will be auto-classified by the new mapper.
+
+
+---
+
