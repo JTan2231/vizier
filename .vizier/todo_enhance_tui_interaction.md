@@ -95,3 +95,25 @@ Acceptance unchanged.
 
 ---
 
+Anchor acceptance to precise code changes and expand keybindings:
+
+- Keybindings summary to implement in tui/src/lib.rs::list_tui():
+  • e — Edit selected file (if file)
+  • r — Reload selected file from disk (discard scroll to 0)
+  • Home/End — Jump to start/end of file
+  • PageUp/PageDown — Scroll by visible_height minus 1
+
+- Preview height bound: compute from layout chunks each render; enforce scroll <= max(0, file_lines.saturating_sub(preview_height)). When file changes on disk after edit, reset scroll to min(current_scroll, new_max_scroll).
+
+- Editor lifecycle resilience: if $EDITOR not set, fallback to `vi` on Unix and `notepad` on Windows; log a Warn into App.errors and proceed.
+
+- TODO dir detection: derive at runtime from env VIZIER_TODO_DIR or default ".vizier/todos"; use this to filter *.md and ignore dotfiles.
+
+- Spinner cleanup: ensure display_status clears line on each tick using crossterm::execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine)); on completion, render a final message without spinner and leave a trailing newline so subsequent frames start clean.
+
+- Shell arg matrix validation (note): update Shell::get_interactive_args() docstring to specify returned args include the command flag (e.g., ["-lc"] for zsh, ["-lc"] for bash, ["-C"] for fish) and that user_editor must not append another flag.
+
+Acceptance remains as previously specified.
+
+---
+

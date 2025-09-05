@@ -40,3 +40,23 @@ Deliverables (tight, code-anchored):
 Notes:
 - Keep narrative continuity: errors and events appear inline where users already look (chat log and bottom Events pane).
 - Avoid generic "investigate" tasks; implement concrete rendering and propagation points.
+Tighten integration with .vizier logs and SAFE_APPLY gate to align with Snapshot Thread C:
+
+8) Emit .vizier/logs/errors.jsonl records from TUI-visible errors
+- Files: tui/src/lib.rs and tui/src/chat.rs
+- On every pushed App.errors entry and every Assistant "Error:" message, append a JSON line to .vizier/logs/errors.jsonl with fields: ts (rfc3339), source (tui|chat), action (read_dir|read_file|editor_spawn|llm_request|tool_call), path (opt), message, stderr (opt), correlation_id (opt). Ensure parent dir exists.
+
+9) Correlate TUI events with prompts tool audit trail
+- Files: prompts/src/lib.rs
+- When emitting plan and audit events, include correlation_id from caller if provided. Update call sites in chat.rs to generate a UUID per user message, pass it to prompt_with_tools_and_status, and include it in TUI error/event entries.
+
+10) SAFE_APPLY-aware UI affordance
+- Files: tui/src/chat.rs
+- If SAFE_APPLY is not set, display a non-intrusive yellow banner message in chat: "Dry-run: tools not executed. Use SAFE_APPLY=1 to apply." Ensure it appears once per session and again after each user message that triggers a plan-only response.
+
+Acceptance additions:
+- Every surfaced error also exists in errors.jsonl with correlation_id when applicable.
+- Dry-run state is clearly communicated in the chat UI and correlates with plan.jsonl entries.
+
+---
+

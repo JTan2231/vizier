@@ -1,6 +1,6 @@
 Project Snapshot — Active Narrative Threads and Concrete Plot Points
 
-Theme: Close the loop between promise and delivery in two areas: (1) the TUI must be an uninterrupted editing/browsing experience; (2) the --save pipeline must compose cleanly with git so commits describe exactly what changed.
+Theme: Close the loop between promise and delivery in two areas: (1) the TUI must be an uninterrupted editing/browsing experience; (2) the --save pipeline must compose cleanly with git so commits describe exactly what changed; (3) Observability and safety rails must make tool effects auditable and reversible.
 
 Thread A — TUI editing and responsiveness
 Conflict: The TUI exits to edit and leaves artifacts during status updates, breaking immersion.
@@ -46,10 +46,31 @@ Acceptance:
 - save_project() is testable and returns errors instead of panicking.
 - Status updates succeed without a preexisting todos.json.
 
+Thread C — Safety rails, observability, and reversible tool effects
+Conflict: Tool invocations are opaque; failures are hard to attribute; users can’t see or replay what the LLM decided versus what the tool executed.
+
+Required scenes (code-bound):
+- Conversation/LLM audit log
+  • prompts/src/lib.rs and prompts/src/tools.rs: append a structured event to .vizier/logs/llm_audit.jsonl for each tool-call plan and result. Include timestamp, tool name, args, truncated result, token counts, and correlation_id.
+- Execution plan capture + safe-apply gate
+  • prompts/src/lib.rs: before executing tools, persist an execution_plan step to .vizier/logs/plan.jsonl; introduce a SAFE_APPLY env flag that if unset, only writes the plan and returns a dry-run summary to the caller; when set, proceeds to execute and records outcomes.
+- Error reporting and user event tracing
+  • cli/src/auditor.rs and tui/src/chat.rs: on any tool error, emit a .vizier/logs/errors.jsonl record with context (thread, file path, command, stderr) and surface a concise message to the UI.
+- Bootstrap status store
+  • prompts/src/tools.rs::load_todos(): create .vizier/ if missing and initialize todos.json with an empty map; return Ok(empty) to callers.
+
+Acceptance:
+- Every tool call produces an audit event; plans are captured; SAFE_APPLY allows dry-run; errors are both visible to the user and logged.
+- Fresh repos don’t crash due to missing .vizier/ artifacts.
+
 What changed in this snapshot:
-- Verified current code in tui/src/lib.rs: exit-on-edit, duplicate "-c" in user_editor, spinner CR hack all present; scenes call out exact fixes and locations.
-- No new threads introduced; refined existing TODOs for immediate implementation with specific file/line targets where applicable.
+- Elevated observability and safety rails into a first-class thread (C) and tied it to concrete files and behaviors already hinted at by existing TODOs.
+- Threads A and B kept intact; acceptance tightened to user-visible results.
 
 Open TODO files tracking these threads:
 - todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
 - todo_enhance_version_control_composability.md — final-diff commit, factored save flow, help text correction, and first-run status store.
+- todo_todo_llm_audit_log_and_conversation_event_journal.md.md — conversation and tool audit log specifics.
+- todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — plan capture and SAFE_APPLY gate.
+- todo_todo_observable_error_reporting_and_user_event_tracing.md.md — user-facing error surfacing + logs.
+- todo_todo_bootstrap_status_store.md.md — unify bootstrap responsibilities with tools.rs changes.
