@@ -47,3 +47,22 @@ Notes:
 - Keep codepaths minimal: avoid scattering logging; centralize through Audit handle.
 - All logging must be non-blocking: use a bounded crossbeam channel in FileAuditSink and a background writer thread; drop with warn when buffer full to avoid UI stalls.
 - This aligns with existing error/status bus and will replace ad-hoc printlns.
+8) Tie audit sessions to Git commits (bidirectional, reproducible linkage)
+- Files: cli/src/main.rs, prompts/src/lib.rs, prompts/src/file_tracking.rs, README.md
+- Add a deterministic session anchor per commit: compute audit_anchor = blake3(<repo_root_relative_paths_and_hashes_of_modified_files_after_save> || <parent_commit_oid> || <utc_minute>) and store it in both the audit stream and the commit metadata.
+  - In save_project() after staging but before commit, call prompts::file_tracking::staged_fingerprint() -> String that returns a stable blake3 hex over: for each staged path, write "<mode> <path>\n<blob_oid>\n" in sorted order; prepend parent_oid; append utc timestamp truncated to minute for privacy. Hash this to get anchor.
+  - Emit an Audit event ConversationEvent::CommitLink { commit_parent: parent_oid, anchor, staged_paths: Vec<String> } just before committing. This ensures the JSONL audit file contains the anchor used for the upcoming commit.
+  - Write the same anchor into the Git commit as a trailer line in the message: "Audit-Anchor: <anchor>" and set a git note under refs/notes/vizier with JSON { session_id, anchor, started_ts, ended_ts, event_offsets: [start_byte,end_byte] }.
+  - After commit, emit ConversationEvent::CommitCreated { commit_oid, anchor } to close the loop.
+- Implement helper in prompts/src/lib.rs: fn compute_audit_anchor(parent_oid: &str, staged: &[StagedEntry], ts_minute: i64) -> String using blake3; ensure stable encoding and unit test vectors.
+- CLI subcommands:
+  - vizier audit link <commit-ish>: Opens the audit dir, scans session JSONL files for CommitCreated events matching the commit's anchor trailer; prints the path and byte range of the session log for exact reproduction. Exit non-zero if not found.
+  - vizier audit show <commit-ish>: Pretty-prints the associated session conversation by slicing the JSONL between the session start and CommitCreated for that anchor.
+- Reproducibility considerations:
+  - Anchor does not disclose raw content; only hashes of blob oids and paths + parent commit + minute epoch. Two collaborators staging the same changes in the same minute against the same parent will produce the same anchor.
+  - If time skew causes mismatch, allow override: env VIZIER_ANCHOR_TS_MINUTE to set a specific minute for recompute during link/show.
+- README: Document the flow, the trailer, and how to opt-out via VIZIER_AUDIT_GIT_DISABLE_TRAILER=1.
+- Tests: verify the trailer is added, link resolves, and anchors collide for identical staged states while differing for path changes or different parents.
+
+---
+
