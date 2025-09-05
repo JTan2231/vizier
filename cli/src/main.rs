@@ -153,6 +153,8 @@ async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    auditor::Auditor::commit_audit().await?;
+
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();
 
@@ -175,8 +177,6 @@ async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _auditor_cleanup = auditor::AuditorCleanup;
-
     let args = Args::parse();
 
     let project_root = match find_project_root() {
@@ -249,13 +249,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Default case, `vizier "some message"`
-
     let response = Auditor::llm_request_with_tools(
         crate::config::get_system_prompt()?,
         args.user_message.unwrap(),
         prompts::tools::get_tools(),
     )
     .await?;
+
+    auditor::Auditor::commit_audit().await?;
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();

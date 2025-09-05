@@ -13,6 +13,8 @@ fn get_spinner_char(index: usize) -> String {
     SPINNER_CHARS[index % SPINNER_CHARS.len()].to_string()
 }
 
+// TODO: This interacts directly over the wire and doesn't go through the auditor
+
 pub struct Chat {
     api: wire::types::API,
     messages: Vec<wire::types::Message>,

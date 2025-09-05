@@ -13,52 +13,6 @@ pub struct TokenUsage {
     pub output_tokens: usize,
 }
 
-// TODO: We should probably include timestamps somewhere
-// TODO: Should this be in this crate?
-
-pub fn get_audit_dir() -> std::path::PathBuf {
-    let todo_dir = std::path::PathBuf::from(crate::get_todo_dir());
-    todo_dir.join("audit")
-}
-
-// dump the collected messages
-pub struct AuditorCleanup;
-
-impl Drop for AuditorCleanup {
-    fn drop(&mut self) {
-        if let Ok(auditor) = AUDITOR.lock() {
-            match std::fs::create_dir_all(get_audit_dir()) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!(
-                        "Error creating audit directory {}: {}",
-                        get_audit_dir().to_string_lossy(),
-                        e
-                    );
-
-                    return;
-                }
-            };
-
-            if auditor.messages.len() > 0 {
-                let output_path =
-                    get_audit_dir().join(format!("{}.json", auditor.session_start.clone()));
-                match std::fs::write(
-                    output_path.clone(),
-                    serde_json::to_string_pretty(&auditor.messages).unwrap(),
-                ) {
-                    Ok(_) => eprintln!("Session saved to {}", auditor.session_start),
-                    Err(e) => eprintln!(
-                        "Error writing session file {}: {}",
-                        output_path.to_string_lossy(),
-                        e
-                    ),
-                };
-            }
-        }
-    }
-}
-
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,6 +39,25 @@ impl Auditor {
         AUDITOR.lock().unwrap().messages = messages.clone();
     }
 
+    pub fn conversation_to_string() -> String {
+        let messages = AUDITOR.lock().unwrap().messages.clone();
+        let mut conversation = String::new();
+
+        for message in messages.iter() {
+            conversation.push_str(&format!(
+                "{}: {}\n\n###\n\n",
+                message.message_type.to_string(),
+                if let Some(name) = message.name.clone() {
+                    name.clone()
+                } else {
+                    message.content.clone()
+                }
+            ));
+        }
+
+        conversation
+    }
+
     pub fn get_total_usage() -> TokenUsage {
         let mut usage = TokenUsage {
             input_tokens: 0,
@@ -99,6 +72,48 @@ impl Auditor {
         usage
     }
 
+    /// Commit the conversation (if it exists), then the diff (if it exists)
+    pub async fn commit_audit() -> Result<(), Box<dyn std::error::Error>> {
+        if prompts::file_tracking::FileTracker::has_pending_changes() {
+            let mut diff_message = None;
+
+            if let Ok(output) = std::process::Command::new("git")
+                .args(&["diff", &crate::get_todo_dir()])
+                .output()
+            {
+                if let Ok(diff) = String::from_utf8(output.stdout) {
+                    diff_message = Some(Self::llm_request(
+                        "Given a diff on a directory of TODO items, return a commit message for these changes."
+                            .to_string(),
+                        if diff.len() == 0 { "init".to_string() } else { diff },
+                    )
+                    .await?
+                    .content);
+                }
+            }
+
+            if AUDITOR.lock().unwrap().messages.len() > 0 {
+                let conversation = Self::conversation_to_string();
+
+                std::process::Command::new("git")
+                    .args(&[
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        &format!("VIZIER (conversation):\n\n{}", conversation),
+                    ])
+                    .output()?;
+            }
+
+            if let Some(commit_message) = diff_message {
+                prompts::file_tracking::FileTracker::commit_changes(&commit_message)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Basic LLM request without tool usage
     pub async fn llm_request(
         system_prompt: String,
         user_message: String,
@@ -151,6 +166,8 @@ impl Auditor {
         Ok(response.last().unwrap().clone())
     }
 
+    /// Basic LLM request with tool usage
+    /// NOTE: Returns the _entire_ conversation, up to date with the LLM's responses
     pub async fn llm_request_with_tools(
         system_prompt: String,
         user_message: String,
@@ -202,25 +219,6 @@ impl Auditor {
         .unwrap();
 
         Self::replace_messages(&response);
-
-        if prompts::file_tracking::FileTracker::has_pending_changes() {
-            if let Ok(output) = std::process::Command::new("git")
-                .args(&["diff", &crate::get_todo_dir()])
-                .output()
-            {
-                if let Ok(diff) = String::from_utf8(output.stdout) {
-                    let commit_message = Self::llm_request(
-                    "Given a diff on a directory of TODO items, return a commit message for these changes."
-                        .to_string(),
-                    if diff.len() == 0 { "init".to_string() } else { diff },
-                )
-                .await?
-                .content;
-
-                    prompts::file_tracking::FileTracker::commit_changes(&commit_message)?;
-                }
-            }
-        }
 
         Ok(response.last().unwrap().clone())
     }
