@@ -17,6 +17,7 @@ pub struct AuditorCleanup {
     pub debug: bool,
 }
 
+// TODO: Still feels very incomplete
 impl Drop for AuditorCleanup {
     fn drop(&mut self) {
         if self.debug {
