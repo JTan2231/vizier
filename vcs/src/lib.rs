@@ -1,5 +1,11 @@
 use git2::{DiffOptions, Error, Repository, Signature};
 
+fn normalize_pathspec(path: &str) -> String {
+    path.trim_end_matches('/')
+        .trim_end_matches('\\')
+        .to_string()
+}
+
 pub fn get_diff(
     repo_path: &str,
     target: Option<&str>, // commit/range or directory path
@@ -7,12 +13,6 @@ pub fn get_diff(
 ) -> Result<String, Error> {
     let repo = Repository::open(repo_path)?;
     let mut opts = DiffOptions::new();
-
-    let normalize_pathspec = |path: &str| -> String {
-        path.trim_end_matches('/')
-            .trim_end_matches('\\')
-            .to_string()
-    };
 
     if let Some(excludes) = exclude {
         for ex in excludes {
@@ -68,7 +68,8 @@ pub fn add_and_commit(
     match paths {
         Some(paths) => {
             for path in paths {
-                let path = std::path::Path::new(path);
+                let normal = normalize_pathspec(path);
+                let path = std::path::Path::new(&normal);
                 if path.is_dir() {
                     // Recursively add all files in the directory
                     index.add_all([path], git2::IndexAddOption::DEFAULT, None)?;
