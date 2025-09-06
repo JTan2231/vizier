@@ -68,7 +68,13 @@ pub fn add_and_commit(
     match paths {
         Some(paths) => {
             for path in paths {
-                index.add_path(std::path::Path::new(path))?;
+                let path = std::path::Path::new(path);
+                if path.is_dir() {
+                    // Recursively add all files in the directory
+                    index.add_all([path], git2::IndexAddOption::DEFAULT, None)?;
+                } else {
+                    index.add_path(path)?;
+                }
             }
         }
         None => {
