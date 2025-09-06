@@ -1,23 +1,21 @@
 Project Snapshot — Active Narrative Threads and Concrete Plot Points
 
-Theme: Tighten the loop between intent, effect, and accountability. Three fronts: (A) TUI must keep users in flow; (B) `--save` must produce a truthful, composable commit; (C) Tooling must be auditable, reversible, and safe by default.
+Theme: Tighten the loop between intent, effect, and accountability. Three fronts: (A) TUI must keep users in flow; (B) --save must produce a truthful, composable commit; (C) Tooling must be auditable, reversible, and safe by default.
 
 Thread A — TUI editing and responsiveness
-Conflict: Editing kicks users out and status rendering leaves artifacts; scrolling exceeds bounds; shell args to $EDITOR are brittle.
+Conflict: Editing kicks users out and status rendering leaves artifacts; scrolling exceeds bounds; shell args to $EDITOR are brittle; errors don’t persist.
 
 Scenes (code-bound):
 - App lifecycle keeps editor round-trips inside the TUI
   • tui/src/lib.rs::App::enter_directory(): stop terminating after edit; wrap editor launch with disable_raw_mode + LeaveAlternateScreen, then EnterAlternateScreen + enable_raw_mode; on success reload selection/preview; on error, show concise message in preview.
-- Editor writes back to original file
-  • tui/src/lib.rs::user_editor(original_path, contents) -> io::Result<()>: write contents to temp, launch $EDITOR using Shell::get_interactive_args() (no extra "-c"), on exit write temp back to original_path.
+- Editor writes back to original file with cross-shell args
+  • tui/src/lib.rs::user_editor(original_path, contents) -> io::Result<()>: write contents to temp, launch $EDITOR using Shell::get_interactive_args() only, on exit write temp back to original_path. Fallback editor if EDITOR unset: vi/notepad; warn in status.
 - Clean status line rendering
   • tui/src/lib.rs::display_status(): replace carriage-return hack with crossterm::execute!(MoveToColumn(0), Clear(ClearType::CurrentLine)) before drawing spinner/message.
 - In-app edit + navigation discipline
   • tui/src/lib.rs::list_tui(): bind 'e' to edit selected file; add Home/End; PageUp/PageDown scroll by visible_height-1; cap scroll to file_lines.saturating_sub(visible_height).
 - Focused TODO browsing and defaults
   • tui/src/lib.rs::App::refresh_files(): when in TODO dir (VIZIER_TODO_DIR or .vizier/todos), include only *.md, ignore dotfiles.
-- Cross-shell editor args fixed
-  • tui/src/lib.rs::user_editor(): rely entirely on Shell::get_interactive_args() to include command flag; do not append another "-c".
 - Events pane + durable errors
   • tui/src/lib.rs: Add App.errors deque, render bottom "Events" pane with last 3 entries; colorize Error:/Warn:; append JSONL to .vizier/logs/errors.jsonl on failures.
 - Chat-visible Assistant error frames
@@ -29,7 +27,7 @@ Acceptance:
 - Edit returns to TUI with changes saved and preview updated; spinner has no artifacts; scroll bounds enforced; 'e' edits selected TODO; editor works across Bash/Zsh/Fish; errors surface inline and into .vizier/logs/errors.jsonl.
 
 Thread B — Version-control composability for --save
-Conflict: Commit messages were based on stale diffs; help text mismatched flags; first-run status storage brittle.
+Conflict: Commit messages were based on stale diffs; help text mismatched flags; first-run status storage brittle; audit linkage missing.
 
 Scenes (code-bound):
 - Commit from final, staged diff
@@ -65,11 +63,12 @@ Acceptance:
 - Every tool call logs an audit event; SAFE_APPLY allows dry-run; errors get logged and surfaced; fresh repos don’t crash; commits carry Audit-Anchor linking to session logs.
 
 What changed in this snapshot:
-- Promoted Git audit anchor/notes from open item to explicit scenes under Thread B to tie commits to audit streams.
-- Consolidated duplicate TUI error/event tasks into enhance_tui_interaction canonical TODO; marked older observable_error_reporting TODO for merge/removal once implemented.
+- Elevated durable error logging and correlation ids in TUI/chat to first-class scenes under Thread A/C; aligned enhance_tui_interaction accordingly.
+- Clarified that Git audit anchor + notes are part of the save flow acceptance, not optional.
+- Marked legacy/duplicate TODOs for consolidation and removal once canonical tasks land.
 
 Open TODOs aligned to threads (canonical list):
-- enhance_tui_interaction.md — TUI editor lifecycle, spinner cleanup, scroll bounds, filtering, keybindings, shell args fix, Events pane, SAFE_APPLY banner, durable errors.jsonl.
+- enhance_tui_interaction.md — TUI editor lifecycle, spinner cleanup, scroll bounds, filtering, keybindings, Events pane, SAFE_APPLY banner, durable errors.jsonl, correlation ids.
 - enhance_version_control_composability.md — staged-diff commit, factored save flow, help text, first-run status store, audit anchor/notes integration.
 - todo_todo_llm_audit_log_and_conversation_event_journal.md.md — event schema, sinks, CLI/TUI integration, rotation, redaction, git linkage.
 - todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — execution plan persistence and SAFE_APPLY gate.
