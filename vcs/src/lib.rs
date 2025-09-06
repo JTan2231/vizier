@@ -8,14 +8,19 @@ pub fn get_diff(
     let repo = Repository::open(repo_path)?;
     let mut opts = DiffOptions::new();
 
-    // Add excludes
+    let normalize_pathspec = |path: &str| -> String {
+        path.trim_end_matches('/')
+            .trim_end_matches('\\')
+            .to_string()
+    };
+
     if let Some(excludes) = exclude {
         for ex in excludes {
-            opts.pathspec(&format!(":!{}", ex));
+            let normalized = normalize_pathspec(ex);
+            opts.pathspec(&format!(":!{}", normalized));
         }
     }
 
-    // Handle different target types
     let diff = match target {
         Some(spec) if spec.contains("..") => {
             // Commit range (e.g., "main..feature")
@@ -30,8 +35,8 @@ pub fn get_diff(
                 let tree = obj.peel_to_tree()?;
                 repo.diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))?
             } else {
-                // Treat as directory path
-                opts.pathspec(spec);
+                let normalized = normalize_pathspec(spec);
+                opts.pathspec(&normalized);
                 let head = repo.head()?.peel_to_tree()?;
                 repo.diff_tree_to_workdir_with_index(Some(&head), Some(&mut opts))?
             }
