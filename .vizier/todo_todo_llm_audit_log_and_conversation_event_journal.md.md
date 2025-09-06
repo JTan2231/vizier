@@ -104,3 +104,23 @@ Migration Note: No changes required to call sites beyond passing Audit and selec
 
 ---
 
+Elevated from concept to implementable plan with Git linkage and controls:
+
+- Add Audit handle and FileAuditSink writing JSONL under .vizier/logs (rotation default 50MB) with non-blocking writer and bounded channel. Event variants: UserMessage, AssistantMessage (with token counts), ToolStart/ToolOutput/ToolDone, Error, CommitLink, CommitCreated.
+
+- Thread Audit through prompts/src/lib.rs, prompts/src/tools.rs, tui/src/chat.rs, cli/src/main.rs. Each tool call emits start/output/done; chat sends user/assistant events; errors emit Error.
+
+- Redaction and levels
+  • DefaultRedactor masks common secret fields and trims large blobs; VIZIER_AUDIT_REDACT toggles. Introduce AuditLevel with capture policy via VIZIER_AUDIT_LEVEL.
+
+- CLI: vizier audit tail/show/link with filters, follow, and notes-backed lookup using the Audit-Anchor trailer in commits.
+
+- Git linkage
+  • Compute Audit-Anchor from staged state; include commit trailer and write git notes for JSONL ranges; emit CommitLink and CommitCreated events.
+
+- TUI audit inspector: toggle 'a' to view latest session events with per-level filters.
+
+- Tests: JSONL shape, rotation, redaction, linkage resolution, and UI tail rendering.
+
+---
+

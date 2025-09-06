@@ -1,76 +1,69 @@
 Project Snapshot — Active Narrative Threads and Concrete Plot Points
 
-Theme: Close the loop between promise and delivery in three areas: (1) the TUI must be an uninterrupted editing/browsing experience; (2) the --save pipeline must compose cleanly with git so commits describe exactly what changed; (3) Observability and safety rails must make tool effects auditable and reversible.
+Theme: Tighten the loop between intent, effect, and accountability. Three fronts: (A) TUI must keep users in flow; (B) `--save` must produce a truthful, composable commit; (C) Tooling must be auditable, reversible, and safe by default.
 
 Thread A — TUI editing and responsiveness
-Conflict: The TUI exits to edit and leaves artifacts during status updates, breaking immersion.
+Conflict: Editing kicks users out and status rendering leaves artifacts; scrolling exceeds bounds; shell args to $EDITOR are brittle.
 
-Required scenes (code-bound):
-- Persist edits without terminating the app
-  • tui/src/lib.rs::App::enter_directory(): stop calling std::process::exit(0) after user_editor(). Leave alt screen before edit, re-enter after, refresh selection and preview.
-- Write-back semantics for the editor
-  • tui/src/lib.rs::user_editor(): change signature to accept original_path; write edited temp contents back to that path on success; handle and surface errors in preview pane.
-- Remove carriage-return spinner hack
-  • tui/src/lib.rs::display_status(): replace raw \r printing with crossterm::terminal::Clear(ClearType::CurrentLine) before rendering the spinner/message. Ensure no stray glyphs remain.
-- In-TUI edit shortcut and safe reload
-  • tui/src/lib.rs::list_tui(): bind 'e' to edit currently selected file if it is a file; upon return, reload content and redraw.
-- Bounded scrolling and jump keys
-  • Cap scroll to visible height; add Home (top) and End (bottom) keybindings in list_tui() event loop.
-- Focused TODO browsing
-  • tui/src/lib.rs::App::refresh_files(): when in TODO_DIR, filter *.md and ignore hidden files.
-- Shell arg duplication fix
-  • tui/src/lib.rs::user_editor(): do not append an extra "-c" after get_interactive_args(); ensure Bash/Zsh/Fish work.
+Scenes (code-bound):
+- App lifecycle keeps editor round-trips inside the TUI
+  • tui/src/lib.rs::App::enter_directory(): stop terminating after edit; wrap editor launch with disable_raw_mode + LeaveAlternateScreen, then EnterAlternateScreen + enable_raw_mode; on success reload selection/preview; on error, show concise message in preview.
+- Editor writes back to original file
+  • tui/src/lib.rs::user_editor(original_path, contents) -> io::Result<()>: write contents to temp, launch $EDITOR using Shell::get_interactive_args() (no extra "-c"), on exit write temp back to original_path.
+- Clean status line rendering
+  • tui/src/lib.rs::display_status(): replace carriage-return hack with crossterm::execute!(MoveToColumn(0), Clear(ClearType::CurrentLine)) before drawing spinner/message.
+- In-app edit + navigation discipline
+  • tui/src/lib.rs::list_tui(): bind 'e' to edit selected file; add Home/End; PageUp/PageDown scroll by visible_height-1; cap scroll to file_lines.saturating_sub(visible_height).
+- Focused TODO browsing and defaults
+  • tui/src/lib.rs::App::refresh_files(): when in TODO dir (VIZIER_TODO_DIR or .vizier/todos), include only *.md, ignore dotfiles.
+- Cross-shell editor args fixed
+  • tui/src/lib.rs::user_editor(): rely entirely on Shell::get_interactive_args() to include command flag; do not append another "-c".
 
 Acceptance:
-- Editing a TODO returns to the TUI with changes saved and preview updated.
-- Spinner renders cleanly with no artifacts.
-- Scroll bounds respected; Home/End work.
-- Pressing 'e' edits selected TODO.
+- Edit returns to TUI with changes saved and preview updated; spinner has no artifacts; scroll bounds enforced; 'e' edits selected TODO; editor works across Bash/Zsh/Fish.
 
 Thread B — Version-control composability for --save
-Conflict: Commit message is generated from a stale diff; CLI help mismatches flags; status tools assume todos.json exists.
+Conflict: Commit messages were based on stale diffs; help text mismatched flags; first-run status storage brittle.
 
-Required scenes (code-bound):
-- Commit from the final, staged diff
-  • cli/src/main.rs (args.save path): move prompts::tools::diff() invocation to after snapshot/TODO updates and after `git add -u`, then generate commit message.
-- Extract save flow for composability
-  • cli/src/main.rs: factor the --save steps into fn save_project() -> Result<(), Box<dyn Error>> executing (a) LLM update of snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate message, (e) git commit.
-- Fix help to reflect actual flags
+Scenes (code-bound):
+- Commit from final, staged diff
+  • cli/src/main.rs (args.save): compute prompts::tools::diff() after LLM updates and after `git add -u`.
+- Single, testable save flow
+  • cli/src/main.rs: extract fn save_project() -> Result<(), Box<dyn Error>> performing: (a) LLM snapshot/TODO updates, (b) git add -u, (c) recompute diff, (d) build commit msg, (e) git commit.
+- Help text parity
   • cli/src/main.rs::print_usage(): show -S/--summarize and -s/--save correctly.
 - First-run robustness for status store
-  • prompts/src/tools.rs::load_todos() and callers: if todos.json is missing, initialize an empty map so update_todo_status/read_todo_status work on fresh repos.
+  • prompts/src/tools.rs::load_todos(): create .vizier/ and empty todos.json if missing; return Ok(empty map).
 
 Acceptance:
-- --save commits a message that reflects all LLM-produced changes, including .vizier updates.
-- `vizier --help` shows -S summarize and -s save consistently.
-- save_project() is testable and returns errors instead of panicking.
-- Status updates succeed without a preexisting todos.json.
+- --save commit message reflects all staged changes including .vizier updates; help flags match; save_project() returns errors; status updates work without preexisting todos.json.
 
-Thread C — Safety rails, observability, and reversible tool effects
-Conflict: Tool invocations are opaque; failures are hard to attribute; users can’t see or replay what the LLM decided versus what the tool executed.
+Thread C — Safety rails, observability, and reversible effects
+Conflict: Tool execution is opaque; users can’t link conversations to commits; failures lack durable context.
 
-Required scenes (code-bound):
-- Conversation/LLM audit log
-  • prompts/src/lib.rs and prompts/src/tools.rs: append a structured event to .vizier/logs/llm_audit.jsonl for each tool-call plan and result. Include timestamp, tool name, args, truncated result, token counts, and correlation_id.
-- Execution plan capture + safe-apply gate
-  • prompts/src/lib.rs: before executing tools, persist an execution_plan step to .vizier/logs/plan.jsonl; introduce a SAFE_APPLY env flag that if unset, only writes the plan and returns a dry-run summary to the caller; when set, proceeds to execute and records outcomes.
-- Error reporting and user event tracing
-  • cli/src/auditor.rs and tui/src/chat.rs: on any tool error, emit a .vizier/logs/errors.jsonl record with context (thread, file path, command, stderr) and surface a concise message to the UI.
+Scenes (code-bound):
+- Conversation/LLM audit stream
+  • prompts/src/lib.rs, prompts/src/tools.rs, tui/src/chat.rs: add Audit handle + FileAuditSink to append JSONL events (user/assistant/tool/error) to .vizier/logs/llm_audit.jsonl with token counts and correlation ids.
+- Plan capture + SAFE_APPLY gate
+  • prompts/src/lib.rs: persist execution plans to .vizier/logs/plan.jsonl; if SAFE_APPLY not set, return dry-run summary; when set, execute and record outcomes.
+- Error surfacing and event tracing
+  • cli/src/auditor.rs, tui/src/chat.rs: on tool error, emit .vizier/logs/errors.jsonl and show concise UI message.
 - Bootstrap status store
-  • prompts/src/tools.rs::load_todos(): create .vizier/ if missing and initialize todos.json with an empty map; return Ok(empty) to callers.
+  • prompts/src/tools.rs::load_todos(): ensure .vizier/ exists and todos.json initialized on first use.
+- Git linkage for audits (anchor + notes)
+  • cli/src/main.rs, prompts/src/file_tracking.rs: compute Audit-Anchor from staged state; include trailer in commit, emit CommitLink/CommitCreated events, and write git notes for ranges.
 
 Acceptance:
-- Every tool call produces an audit event; plans are captured; SAFE_APPLY allows dry-run; errors are both visible to the user and logged.
-- Fresh repos don’t crash due to missing .vizier/ artifacts.
+- Every tool call logs an audit event; SAFE_APPLY allows dry-run; errors get logged and surfaced; fresh repos don’t crash; commits carry Audit-Anchor linking to session logs.
 
 What changed in this snapshot:
-- Elevated observability and safety rails into a first-class thread (C) and tied it to concrete files and behaviors already hinted at by existing TODOs.
-- Threads A and B kept intact; acceptance tightened to user-visible results.
+- Consolidated and grounded prior TODOs into three coherent threads with concrete file anchors and acceptance tests.
+- Elevated observability into first-class workflow with explicit Git linkage.
 
-Open TODO files tracking these threads:
-- todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
-- todo_enhance_version_control_composability.md — final-diff commit, factored save flow, help text correction, and first-run status store.
-- todo_todo_llm_audit_log_and_conversation_event_journal.md.md — conversation and tool audit log specifics.
-- todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — plan capture and SAFE_APPLY gate.
-- todo_todo_observable_error_reporting_and_user_event_tracing.md.md — user-facing error surfacing + logs.
-- todo_todo_bootstrap_status_store.md.md — unify bootstrap responsibilities with tools.rs changes.
+Open TODOs aligned to threads:
+- enhance_tui_interaction.md — TUI editor lifecycle, spinner cleanup, scroll bounds, filtering, keybindings, shell args fix.
+- enhance_version_control_composability.md — staged-diff commit, factored save flow, help text, first-run status store.
+- todo_todo_llm_audit_log_and_conversation_event_journal.md.md — event schema, sinks, CLI/TUI integration, rotation, redaction, git linkage.
+- todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — execution plan persistence and SAFE_APPLY gate.
+- todo_todo_observable_error_reporting_and_user_event_tracing.md.md — durable errors + UI surfacing.
+- todo_todo_bootstrap_status_store.md.md — unify bootstrap path with tools.rs changes.

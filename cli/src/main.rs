@@ -207,13 +207,7 @@ async fn save(
         }
     }
 
-    std::process::Command::new("git")
-        .args(&["add", "-u"])
-        .status()?;
-
-    std::process::Command::new("git")
-        .args(&["commit", "-m", &commit_message])
-        .status()?;
+    vcs::add_and_commit(None, &commit_message, false)?;
 
     eprintln!("Changes committed with message: {}", commit_message);
 
@@ -347,26 +341,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(commit_reference) = args.save {
-        if let Ok(output) = std::process::Command::new("git")
-            .args(&["diff", &commit_reference, "--", ":!.vizier/"])
-            .output()
-        {
-            if let Ok(diff) = String::from_utf8(output.stdout) {
-                save(diff, args.commit_message, args.commit_message_editor).await?;
-                return Ok(());
-            }
+        if let Ok(diff) = vcs::get_diff(".", Some(&commit_reference), Some(&[".vizier/"])) {
+            save(diff, args.commit_message, args.commit_message_editor).await?;
+            return Ok(());
         }
     }
 
     if args.save_latest {
-        if let Ok(output) = std::process::Command::new("git")
-            .args(&["diff", "HEAD", "--", ":!.vizier/"])
-            .output()
-        {
-            if let Ok(diff) = String::from_utf8(output.stdout) {
-                save(diff, args.commit_message, args.commit_message_editor).await?;
-                return Ok(());
-            }
+        if let Ok(diff) = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"])) {
+            save(diff, args.commit_message, args.commit_message_editor).await?;
+            return Ok(());
         }
     }
 
