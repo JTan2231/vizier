@@ -104,3 +104,13 @@ Migration Note: No changes required to call sites beyond passing Audit and selec
 
 ---
 
+Added Git linkage and compact frames to keep logs queryable and git-visible without bloat.
+
+- Tie sessions to commits with Audit-Anchor trailer and git notes under refs/notes/vizier and refs/notes/vizier/ranges.
+- Hybrid sink: JSONL on disk + compact frames batched into git notes with env toggles.
+- Levels and backpressure: AuditLevel, per-event size caps, attachments for oversize, bounded channel with drop policy and a single audit_drop error summary.
+- CLI: vizier audit tail/link/show with filters and follow.
+- TUI: inline audit inspector pane toggle (key: a) with level filters.
+
+---
+

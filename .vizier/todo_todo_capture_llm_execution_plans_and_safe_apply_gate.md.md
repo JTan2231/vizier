@@ -61,4 +61,7 @@ Notes:
 - Plans must be serializable and logged in audit JSONL for replay.
 - Keep I/O non-blocking; use background threads for plan parsing and apply execution.
 - Security: sanitize displayed commands; never execute arbitrary content unless it came from an approved Plan with matching hash.
-- This extends and composes with the Audit Log TODO; reuse its types and sink infrastructure.
+- This extends and composes with the Audit Log TODO; reuse its types and sink infrastructure.Clarified plan lifecycle, human gate in TUI, CLI approvals, and idempotent ApplyQueue. Tools must implement plan()/apply() with drift detection and default requires_confirmation=true for destructive operations. Added Terraform adapter sketch. Tests cover approval flow, drift, duplicates.
+
+---
+

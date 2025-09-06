@@ -1,99 +1,167 @@
-# Vizier 🧙
+# Vizier
 
-**Vizier** is an AI-powered project management assistant that lives in your terminal. It's designed to deeply understand your codebase, manage its narrative threads by converting conversations and `TODO`s into concrete tasks, and streamline your development workflow through intelligent git integration.
+A terminal-native, LLM-assisted project steward. Vizier turns natural-language intent into concrete, code-anchored TODOs, maintains a living “snapshot” of project direction, and records every conversation and change as auditable git history.
 
-At its core, Vizier treats software development as a storytelling process. Every `TODO` is a "plot point," and every change moves the project's "narrative" forward.
+---
 
------
+## Philosophy
 
-## ✨ Core Features
+* **Code as narrative.** A codebase tells a story about promises and constraints. Vizier treats TODOs as plot points and the snapshot as the story bible. Tasks must resolve real tensions in the code—not decorate them.
+* **Context before action.** The model receives a file-tree, current TODOs, and diffs. If a task can’t be tied to existing code, it isn’t ready. No “investigate X” placeholders.
+* **Maintainer mindset.** Responses do work. The assistant updates TODOs/snapshot first; explanation is secondary. Duplicate TODOs are plot holes; Vizier develops existing threads instead of spawning parallel ones.
+* **Auditability is product, not paperwork.** Every session’s conversation and every `.vizier/` change can be committed—reconstructable after the fact. LLM involvement increases traceability, not ambiguity.
 
-  * **🤖 Intelligent Task Management**: Vizier analyzes your project's context—including the file tree and `git diff`—to convert high-level goals and `TODO` comments into actionable, code-aware tasks stored in a local `.vizier/` directory.
-  * **🧰 Filesystem & Git Tools**: The assistant is equipped with tools to read/write files, manage TODOs, and inspect the current `git diff`, allowing it to perform meaningful work on your behalf.
-  * **💬 Interactive Chat**: A full-featured terminal chat interface (`vizier --chat`) for having conversations with the project assistant, allowing for iterative development and problem-solving.
-  * **📝 TUI Task Browser**: An interactive terminal UI (`vizier --list`) for browsing, viewing, and editing the project's TODOs and snapshot.
-  * **💾 AI-Powered Commits**: A `--save` command that automatically updates the project snapshot, stages changes, and generates a conventional commit message based on the work done.
+---
 
------
+## Product focus
 
-## 🚀 How It Works
+* **Inputs**
 
-Vizier operates through a sophisticated, context-aware workflow:
+  * Free-form user message (CLI or chat TUI)
+  * Repository context: file tree, existing `.vizier/` TODOs, optional `git diff`
+  * Provider selection (`-p openai|anthropic`)
 
-1.  **Context Gathering**: When invoked, Vizier builds a comprehensive snapshot of your project. This includes the file structure, the contents of existing TODOs, and the output of `git diff`.
-2.  **Narrative-Driven Prompting**: This context is fed into a powerful system prompt that instructs the LLM to act as a "story editor" for the codebase. Its goal is to resolve narrative tensions (e.g., bugs, missing features) by creating or updating specific, code-anchored tasks.
-3.  **Tool-Augmented Execution**: The LLM is given access to a suite of tools that allow it to interact with your project:
-      * `list_todos()`, `read_todo(name)`, `add_todo(name, description)`, `update_todo(...)`: Manage task files in the `.vizier/` directory.
-      * `read_snapshot()`, `update_snapshot(content)`: Maintain the high-level project narrative.
-      * `read_file(path)`: Read source code to inform its decisions.
-      * `diff()`: Get the current `git diff`.
-      * `update_todo_status(...)`, `read_todo_status(...)`: Manage the lifecycle of tasks.
-4.  **Action and Output**: The LLM uses these tools to execute the user's request, resulting in a well-managed `.vizier/` directory that reflects the actionable steps needed to move the project forward.
+* **Outputs**
 
------
+  * Updated `.vizier/` state:
 
-## 🛠️ Project Structure
+    * `todo_*.md` files (markdown)
+    * `.snapshot` (project trajectory)
+  * Optional code commit with AI-generated, conventional message
+  * Optional “conversation commit” embedding the session transcript
 
-Vizier is a Rust workspace composed of three main crates:
+* **Contracts**
 
-  * **`cli`**: The main binary and user entry point. It handles command-line argument parsing, orchestrates the context-gathering process, and manages the interaction with the LLM and TUI.
-  * **`prompts`**: Defines the core system prompt, the tools available to the LLM, and file system interaction logic (e.g., building the file tree, finding the project root).
-  * **`tui`**: Implements the `ratatui`-based user interfaces for the interactive chat (`--chat`) and the TODO browser (`--list`).
+  * Each TODO references concrete files/locations or clearly scoped modules.
+  * No research tasks; Vizier uses tools to gather context and writes actionable items.
+  * Commits separate **conversation** from **code** and **.vizier** updates for clean history.
 
------
+* **Boundaries**
 
-## 🏁 Getting Started
+  * Focused on terminal workflows and git repositories.
+  * Not a live editor; it appends/updates TODO files and snapshot, and helps you commit.
 
-### Prerequisites
+---
 
-  * **Rust & Cargo**: Make sure you have a recent version of the Rust toolchain installed.
-  * **Git**: Vizier must be run inside a `git` repository.
+## Architecture (workspace)
 
-### Installation & Build
+* **`cli`** — entrypoint, argument parsing, provider config, auditing/commits.
 
-1.  **Clone the repository:**
+  * `auditor.rs` captures every LLM exchange, tallies tokens, writes a transcript commit, and (if needed) commits `.vizier/` changes.
+  * `main.rs` wires commands, builds system prompt, calls tools, and manages save flows.
 
-    ```bash
-    git clone <repository-url>
-    cd vizier
-    ```
+* **`prompts`** — prompt system and project tools.
 
-2.  **Build the project:**
-    For the best performance, build the project in release mode.
+  * `SYSTEM_PROMPT_BASE` encodes the “story-editor” rules.
+  * `tools.rs` exposes functions to the model:
 
-    ```bash
-    cargo build --release
-    ```
+    * `diff()`
+    * `add_todo()`, `update_todo()`, `delete_todo()`, `list_todos()`, `read_todo()`
+    * `read_snapshot()`, `update_snapshot()`
+  * `file_tracking.rs` tracks writes inside `.vizier/` and batches their commit.
+  * `tree.rs`, `walker.rs` build a lightweight, ignore-aware view of the repo.
 
-    The final executable will be located at `target/release/vizier`.
+* **`tui`** — terminal UIs.
 
------
+  * **List TUI**: browse/edit `.vizier/` items and snapshot (opens `$EDITOR` for files).
+  * **Chat TUI**: stream conversations with status updates and token counters.
 
-## ⚙️ Usage
+---
 
-Vizier can be used for one-off commands or in an interactive session.
+## Workflow
 
-| Command                                                    | Description                                                                                                   |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `vizier [MESSAGE]`                                         | Send a one-off request to the assistant.                                                                      |
-| `vizier --chat` or `-c`                                    | Start an interactive chat session in the terminal.                                                            |
-| `vizier --list` or `-l`                                    | Open the TUI to browse and manage project TODOs and snapshots.                                                |
-| `vizier --summarize` or `-S`                               | Get an LLM-generated summary of all outstanding TODOs.                                                        |
-| `vizier --save` or `-s`                                    | **"Save button"**: updates project state, stages changes, and generates a conventional commit with the results. |
-| `vizier --provider <anthropic\|openai>` or `-p`            | Specify the LLM provider to use for the request.                                                              |
+1. **Context build** — Vizier assembles a prompt with file tree, `.vizier/` contents, working directory, and (when saving) a diff.
+2. **Action** — The model uses tools to append/update `todo_*.md` and `.snapshot`, grounded in real files.
+3. **Audit** — The `Auditor` can:
 
-### Examples
+   * Create a **conversation commit** (empty commit with the full transcript).
+   * Create a **.vizier commit** summarizing changes (message derived from the diff).
+   * Optionally create a **code commit** (excluding `.vizier/`) with an AI-generated conventional message, plus your author note if provided.
+
+---
+
+## Commands (CLI)
+
+```
+vizier [OPTIONS] [MESSAGE]
+```
+
+* `-c, --chat` — interactive chat session.
+* `-l, --list` — browse `.vizier/` TODOs and snapshot in a TUI.
+* `-s, --save <REF|RANGE>` — “save button”:
+
+  * Updates snapshot/TODOs via tools,
+  * Commits conversation and `.vizier/` changes,
+  * Generates a conventional commit for code based on `git diff <REF|RANGE>` (excludes `.vizier/`).
+* `-S, --save-latest` — like `-s HEAD`.
+* `-m, --commit-message <MSG>` — append an author note to the code commit (mutually exclusive with `-M`).
+* `-M, --commit-message-editor` — open `$EDITOR` to author the note (mutually exclusive with `-m`).
+* `-p, --provider <NAME>` — select LLM provider (`openai`, `anthropic`).
+* `-f, --force-action` — hint that the agent should perform an action.
+* Standard `-h/--help`, `-V/--version`.
+
+**Positional `[MESSAGE]`**: one-shot request to generate/update TODOs/snapshot via tools.
+
+---
+
+## Auditing & commits (behavior)
+
+* **Conversation commit**
+
+  * Empty commit whose message embeds the full user/assistant transcript (non-tool messages).
+  * Serves as an immutable anchor (`rev-parse` recorded) for later references.
+
+* **`.vizier/` commit**
+
+  * Stages `.vizier/` changes and commits them with an LLM-generated summary referencing the conversation hash.
+  * File tracking is internal; only created when `.vizier/` actually changed.
+
+* **Code commit**
+
+  * Uses `git diff` of your specified ref/range (or `HEAD` for `--save-latest`), excluding `.vizier/`.
+  * Message follows conventional-commit structure produced by a dedicated commit-writer prompt.
+  * Optional author note is prefixed and the conversation hash is included for traceability.
+
+---
+
+## `.vizier/` data model
+
+* `todo_*.md` — Markdown TODOs; `add_todo(name, description)` names the file, `update_todo(todo_name, update)` appends with separators.
+* `.snapshot` — Overwritten by `update_snapshot(content)`; represents current project trajectory.
+* Tools operate with fuzzy path matching when reading files for convenience; creation and updates target `.vizier/` explicitly.
+
+---
+
+## Build & run
 
 ```bash
-# Create tasks from all TODO comments in the codebase
-./target/release/vizier "Go through the codebase and turn all the TODO comments into tasks."
+# Build
+cargo build --release
 
-# Start an interactive chat to refactor a specific module
-./target/release/vizier --chat
+# One-shot message
+target/release/vizier "turn TODOs in code comments into actionable items"
 
-# Browse existing tasks
-./target/release/vizier --list
+# Chat
+target/release/vizier --chat
 
-# Commit all staged changes with an AI-generated message
-./target/release/vizier --save
+# Browse project TODOs/snapshot
+target/release/vizier --list
+
+# Save latest work into auditable history and generate a code commit
+target/release/vizier --save-latest -m "cleanup parser edge cases"
 ```
+
+**Requirements:** recent Rust toolchain; run inside a git repository.
+
+---
+
+## Notes on provider & tokens
+
+* Provider defaults are configurable; `-p` switches between supported backends at runtime.
+* The auditor accumulates prompt/completion token counts across the session and displays totals on completion.
+
+---
+
+## License
+
+MIT

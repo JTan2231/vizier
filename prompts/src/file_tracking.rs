@@ -52,25 +52,22 @@ impl FileTracker {
     /// Commits changes specific to the `.vizier` directory--primarily intended as a log for Vizier
     /// changes to existing TODOs and narrative threads
     /// Doesn't do anything if there are no changes to commit
-    pub fn commit_changes(conversation_hash: &str, message: &str) -> std::io::Result<()> {
+    pub fn commit_changes(
+        conversation_hash: &str,
+        message: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
             return Ok(());
         }
 
-        std::process::Command::new("git")
-            .args(&["add", &crate::tools::get_todo_dir()])
-            .output()?;
-
-        std::process::Command::new("git")
-            .args(&[
-                "commit",
-                "-m",
-                &format!(
-                    "VIZIER\n\nConversation: {}\n\nVIZIER: {}",
-                    conversation_hash, message
-                ),
-            ])
-            .output()?;
+        vcs::add_and_commit(
+            Some(vec![&crate::tools::get_todo_dir()]),
+            &format!(
+                "VIZIER\n\nConversation: {}\n\nVIZIER: {}",
+                conversation_hash, message
+            ),
+            false,
+        )?;
 
         Self::clear();
 

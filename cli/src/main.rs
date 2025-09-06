@@ -22,6 +22,9 @@ struct Args {
     #[arg(short = 'l', long)]
     list: bool,
 
+    #[arg(short = 'd', long)]
+    debug: bool,
+
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
     provider: Option<String>,
@@ -207,13 +210,7 @@ async fn save(
         }
     }
 
-    std::process::Command::new("git")
-        .args(&["add", "-u"])
-        .status()?;
-
-    std::process::Command::new("git")
-        .args(&["commit", "-m", &commit_message])
-        .status()?;
+    vcs::add_and_commit(None, &commit_message, false)?;
 
     eprintln!("Changes committed with message: {}", commit_message);
 
@@ -325,84 +322,136 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let project_root = match find_project_root() {
-        Ok(p) => match p {
-            Some(pp) => pp,
-            None => panic!("vizier cannot be used outside a git repository"),
-        },
-        Err(e) => panic!("error finding project root: {}", e),
+        Ok(Some(root)) => root,
+        Ok(None) => {
+            eprintln!("vizier cannot be used outside a git repository");
+            return Err("not a git repository".into());
+        }
+        Err(e) => {
+            eprintln!("Error finding project root: {e}");
+            return Err(Box::<dyn std::error::Error>::from(e));
+        }
     };
 
-    std::fs::create_dir_all(project_root.join(".vizier"))?;
+    if let Err(e) = std::fs::create_dir_all(project_root.join(".vizier")) {
+        eprintln!("Error creating .vizier directory: {e}");
+        return Err(Box::<dyn std::error::Error>::from(e));
+    }
 
-    // TODO: Bro this condition has got to go
-    if args.user_message.is_none()
+    let no_primary_action = args.user_message.is_none()
         && !args.list
         && !args.chat
         && args.save.is_none()
-        && !args.save_latest
-        || (args.commit_message.is_some() && args.commit_message_editor)
-    {
+        && !args.save_latest;
+
+    let invalid_commit_msg_flags = args.commit_message.is_some() && args.commit_message_editor;
+
+    if no_primary_action || invalid_commit_msg_flags {
         print_usage();
         return Ok(());
     }
 
-    if let Some(commit_reference) = args.save {
-        if let Ok(output) = std::process::Command::new("git")
-            .args(&["diff", &commit_reference, "--", ":!.vizier/"])
-            .output()
-        {
-            if let Ok(diff) = String::from_utf8(output.stdout) {
-                save(diff, args.commit_message, args.commit_message_editor).await?;
-                return Ok(());
+    let _auditor_cleanup = auditor::AuditorCleanup { debug: args.debug };
+
+    async fn run_save(
+        commit_ref: &str,
+        exclude: &[&str],
+        commit_message: Option<String>,
+        use_editor: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match vcs::get_diff(".", Some(commit_ref), Some(exclude)) {
+            Ok(diff) => match save(diff, commit_message, use_editor).await {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    eprintln!("Error running --save: {e}");
+                    Err(Box::<dyn std::error::Error>::from(e))
+                }
+            },
+            Err(e) => {
+                eprintln!("Error generating diff for {commit_ref}: {e}");
+                Err(Box::<dyn std::error::Error>::from(e))
             }
         }
+    }
+
+    if let Some(commit_reference) = args.save.as_deref() {
+        return run_save(
+            commit_reference,
+            &[".vizier/"],
+            args.commit_message,
+            args.commit_message_editor,
+        )
+        .await;
     }
 
     if args.save_latest {
-        if let Ok(output) = std::process::Command::new("git")
-            .args(&["diff", "HEAD", "--", ":!.vizier/"])
-            .output()
-        {
-            if let Ok(diff) = String::from_utf8(output.stdout) {
-                save(diff, args.commit_message, args.commit_message_editor).await?;
-                return Ok(());
+        return run_save(
+            "HEAD",
+            &[".vizier/"],
+            args.commit_message,
+            args.commit_message_editor,
+        )
+        .await;
+    }
+
+    if let Err(e) = std::fs::create_dir_all(get_todo_dir()) {
+        eprintln!("Error creating TODO directory {:?}: {e}", get_todo_dir());
+        return Err(Box::<dyn std::error::Error>::from(e));
+    }
+
+    let mut cfg = config::get_config();
+    if let Some(p) = args.provider {
+        cfg.provider = provider_arg_to_enum(p);
+    }
+
+    cfg.force_action = args.force_action;
+    config::set_config(cfg);
+
+    if args.list {
+        match tui::list_tui(project_root.join(get_todo_dir())) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                eprintln!("Error running list TUI: {e}");
+                return Err(Box::<dyn std::error::Error>::from(e));
             }
         }
     }
 
-    if !std::fs::metadata(get_todo_dir()).is_ok() {
-        std::fs::create_dir_all(get_todo_dir())?;
-    }
-
-    let mut config = config::get_config();
-
-    if let Some(p) = args.provider {
-        config.provider = provider_arg_to_enum(p);
-    }
-
-    config.force_action = args.force_action;
-
-    config::set_config(config);
-
-    if args.list {
-        tui::list_tui(project_root.join(get_todo_dir()))?;
-        return Ok(());
-    }
-
     if args.chat {
-        tui::chat_tui().await?;
-        return Ok(());
+        match tui::chat_tui().await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                eprintln!("Error running chat TUI: {e}");
+                return Err(Box::<dyn std::error::Error>::from(e));
+            }
+        }
     }
 
-    // Default case, `vizier "some message"`
-    let response = Auditor::llm_request_with_tools(
-        crate::config::get_system_prompt()?,
-        args.user_message.unwrap(),
-        prompts::tools::get_tools(),
-    )
-    .await?;
+    let system_prompt = match crate::config::get_system_prompt() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error loading system prompt: {e}");
+            return Err(Box::<dyn std::error::Error>::from(e));
+        }
+    };
 
-    let _ = auditor::Auditor::commit_audit().await?;
+    let user_msg = args.user_message.expect("guarded above");
+
+    let response =
+        match Auditor::llm_request_with_tools(system_prompt, user_msg, prompts::tools::get_tools())
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error during LLM request: {e}");
+                return Err(Box::<dyn std::error::Error>::from(e));
+            }
+        };
+
+    if let Err(e) = auditor::Auditor::commit_audit().await {
+        eprintln!("Error committing audit: {e}");
+        return Err(Box::<dyn std::error::Error>::from(e));
+    }
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();

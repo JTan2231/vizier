@@ -60,3 +60,7 @@ Acceptance additions:
 
 ---
 
+Integrated with TUI status bus and errors.jsonl. Chat error surfaces as Assistant frame, structured prefixes map to colors, bottom Events pane shows last entries, spinner cleanup with proper Clear. Add VIZIER_DEBUG toggle and regression tests. Correlate with audit via correlation_id passed from chat into prompts and tools.
+
+---
+

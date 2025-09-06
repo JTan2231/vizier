@@ -61,23 +61,23 @@ fn llm_error(message: &str) -> String {
 
 #[tool(description = "Get the `git diff` of the project")]
 pub fn diff() -> String {
-    let output = match std::process::Command::new("git").arg("diff").output() {
-        Ok(o) => o,
-        Err(e) => return llm_error(&format!("Error running git diff: {}", e)),
-    };
-
-    match String::from_utf8(output.stdout) {
-        Ok(o) => o,
-        Err(e) => llm_error(&format!("Error converting output to utf8: {}", e)),
+    match vcs::get_diff(".", None, None) {
+        Ok(d) => d,
+        Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
     }
 }
 
 #[tool(description = "
 Add a TODO item.
 
+Parameters:
+    todo_name: Name of the TODO item to add
+    description: Content of the TODO item
+
 Notes:
 - `name` will be a name for a markdown file--_do not_ assign its directory, just give it a name
 - `description` should be in markdown
+- The provided `todo_name` argument will be formatted as `todo_{todo_name}.md` for the final filename
 ")]
 fn add_todo(name: String, description: String) -> String {
     let filename = format!("{}todo_{}.md", get_todo_dir(), name);
@@ -90,6 +90,9 @@ fn add_todo(name: String, description: String) -> String {
 
 #[tool(description = "
 Delete a TODO item.
+
+Parameters:
+    name: Name of the TODO item to delete
 
 Notes:
 - `name` should match the name used when creating the todo (without the 'todo_' prefix or '.md' extension)

@@ -13,6 +13,29 @@ pub struct TokenUsage {
     pub output_tokens: usize,
 }
 
+pub struct AuditorCleanup {
+    pub debug: bool,
+}
+
+// TODO: Still feels very incomplete
+impl Drop for AuditorCleanup {
+    fn drop(&mut self) {
+        if self.debug {
+            if let Ok(auditor) = AUDITOR.lock() {
+                if auditor.messages.len() > 0 {
+                    match std::fs::write(
+                        "./debug.json",
+                        serde_json::to_string_pretty(&auditor.messages).unwrap(),
+                    ) {
+                        Ok(_) => eprintln!("Session saved to {}", auditor.session_start),
+                        Err(e) => eprintln!("Error writing session file {}: {}", "./debug.json", e),
+                    };
+                }
+            }
+        }
+    }
+}
+
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
 #[derive(Debug, Serialize, Deserialize)]
@@ -80,39 +103,26 @@ impl Auditor {
         Ok(
             if prompts::file_tracking::FileTracker::has_pending_changes() {
                 let mut diff_message = None;
-                if let Ok(output) = std::process::Command::new("git")
-                    .args(&["diff", &crate::get_todo_dir()])
-                    .output()
-                {
-                    if let Ok(diff) = String::from_utf8(output.stdout) {
-                        diff_message = Some(Self::llm_request(
+                if let Ok(diff) = vcs::get_diff(".", Some(&crate::get_todo_dir()), None) {
+                    diff_message = Some(Self::llm_request(
                         "Given a diff on a directory of TODO items, return a commit message for these changes."
                             .to_string(),
                         if diff.len() == 0 { "init".to_string() } else { diff },
                     )
                     .await?
                     .content);
-                    }
                 }
 
                 // starting to think that this should always be the case
                 let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
                     let conversation = Self::conversation_to_string();
 
-                    std::process::Command::new("git")
-                        .args(&[
-                            "commit",
-                            "--allow-empty",
-                            "-m",
-                            &format!("VIZIER CONVERSATION:\n\n{}", conversation),
-                        ])
-                        .output()?;
-
-                    let output = std::process::Command::new("git")
-                        .args(&["rev-parse", "HEAD"])
-                        .output()?;
-
-                    String::from_utf8(output.stdout)?.trim().to_string()
+                    vcs::add_and_commit(
+                        None,
+                        &format!("VIZIER CONVERSATION:\n\n{}", conversation),
+                        true,
+                    )?
+                    .to_string()
                 } else {
                     String::new()
                 };
