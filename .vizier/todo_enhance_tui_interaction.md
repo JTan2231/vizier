@@ -131,3 +131,21 @@ Acceptance unchanged.
 
 ---
 
+Refocus from vision to concrete, code-anchored fixes aligned with current tui/src/lib.rs:
+
+- App::enter_directory(): stop terminating the app after user_editor(); wrap editor launch with disable_raw_mode + LeaveAlternateScreen before, EnterAlternateScreen + enable_raw_mode after. On Ok, refresh selected file and preview; on Err(e), display concise failure text in the preview.
+
+- user_editor(original_path, contents): change signature to accept original path, write contents to a temp file, launch $EDITOR using Shell::get_interactive_args() without appending another "-c"; on editor exit, write edited temp back to original_path; return io::Result.
+
+- display_status(): replace carriage-return spinner with crossterm::execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine)) then render spinner/message per tick; ensure no stray glyphs remain.
+
+- list_tui(): bind 'e' to edit currently selected file (if not a dir); add Home/End; compute visible preview height per render and clamp scroll to lines.saturating_sub(height); add PageUp/PageDown steps of height-1.
+
+- App::refresh_files(): when browsing the TODO dir (env VIZIER_TODO_DIR or .vizier/todos), include only *.md and exclude dotfiles; keep dir-first sort.
+
+- Editor fallback: if $EDITOR unset, use vi on Unix and notepad on Windows; surface a warning line in the status area.
+
+Acceptance unchanged: edit returns to TUI with saved changes and updated preview; spinner clean; scroll bounded; 'e' edits selected TODO; shell args work across Bash/Zsh/Fish.
+
+---
+

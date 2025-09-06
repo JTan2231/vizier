@@ -61,3 +61,22 @@ Acceptance unchanged.
 
 ---
 
+Tighten implementation details and acceptance around the --save pipeline with concrete anchors:
+
+- cli/src/main.rs (args.save): compute prompts::tools::diff() only after snapshot/TODO updates and after `git add -u` so the commit message reflects the actual staged diff.
+
+- Extract fn save_project() -> Result<(), Box<dyn std::error::Error>> encapsulating:
+  a) LLM-driven snapshot/TODO updates
+  b) `git add -u`
+  c) Recompute diff
+  d) Build commit message from COMMIT_PROMPT + fresh diff
+  e) `git commit -m <message>`
+
+- print_usage(): correct flags to -S/--summarize and -s/--save to match actual behavior.
+
+- prompts/src/tools.rs::load_todos(): on NotFound, create .vizier/ and an empty todos.json, return Ok(empty). Ensure update_todo_status/read_todo_status paths accept this and do not crash.
+
+Acceptance remains: final commit message covers all changes; help text matches flags; save_project() returns errors; first-run status updates succeed without existing todos.json.
+
+---
+
