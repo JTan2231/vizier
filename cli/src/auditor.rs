@@ -13,6 +13,28 @@ pub struct TokenUsage {
     pub output_tokens: usize,
 }
 
+pub struct AuditorCleanup {
+    pub debug: bool,
+}
+
+impl Drop for AuditorCleanup {
+    fn drop(&mut self) {
+        if self.debug {
+            if let Ok(auditor) = AUDITOR.lock() {
+                if auditor.messages.len() > 0 {
+                    match std::fs::write(
+                        "./debug.json",
+                        serde_json::to_string_pretty(&auditor.messages).unwrap(),
+                    ) {
+                        Ok(_) => eprintln!("Session saved to {}", auditor.session_start),
+                        Err(e) => eprintln!("Error writing session file {}: {}", "./debug.json", e),
+                    };
+                }
+            }
+        }
+    }
+}
+
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
 #[derive(Debug, Serialize, Deserialize)]

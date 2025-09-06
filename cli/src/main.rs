@@ -22,6 +22,9 @@ struct Args {
     #[arg(short = 'l', long)]
     list: bool,
 
+    #[arg(short = 'd', long)]
+    debug: bool,
+
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
     provider: Option<String>,
@@ -367,6 +370,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.force_action = args.force_action;
 
     config::set_config(config);
+
+    let _ = auditor::AuditorCleanup { debug: args.debug };
 
     if args.list {
         tui::list_tui(project_root.join(get_todo_dir()))?;
