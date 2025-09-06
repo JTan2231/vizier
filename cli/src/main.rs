@@ -1,5 +1,10 @@
+use std::env;
+use std::fs;
+use std::process::Command;
+
 use clap::Parser;
 use colored::*;
+use tempfile::{Builder, TempPath};
 
 use prompts::tools::get_todo_dir;
 
@@ -38,11 +43,22 @@ struct Args {
     /// Equivalent to `vizier -s HEAD`
     #[arg(short = 'S', long)]
     save_latest: bool,
+
+    /// Developer note to append to the commit message. Note that this goes on to the _code_ commit
+    /// messaging--it doesn't affect any commits surrounding conversations or the `.vizier`
+    /// directory. Note that this is mutually exclusive with `-M`.
+    #[arg(short = 'm', long)]
+    commit_message: Option<String>,
+
+    /// Same as `-m`, but opens the default terminal editor ($EDITOR) instead of accepting an
+    /// argument
+    #[arg(short = 'M', long)]
+    commit_message_editor: bool,
 }
 
 fn print_usage() {
     eprintln!(
-        r#"{} - AI-powered project management assistant
+        r#"{} - A CLI for LLM project management
 
 {}
     {} [OPTIONS] [MESSAGE]
@@ -55,8 +71,10 @@ fn print_usage() {
     {}, {}                 List and browse existing TODOs
     {}, {} <REF|RANGE>     "Save" tracked changes since REF/RANGE with AI commit message and update TODOs/snapshot
     {}, {}          Equivalent to `-s HEAD`
+    {}, {} <MSG>   Developer note to append to the commit message (mutually exclusive with `-M`)
+    {}, {}  Open editor for commit message (mutually exclusive with `-m`)
     {}, {} <NAME>      Set LLM provider (openai, anthropic, etc.)
-    {}, {}         Force the agent to perform an action it selected
+    {}, {}         Force the agent to perform an action
     {}, {}                 Print help
     {}, {}              Print version
 
@@ -66,6 +84,7 @@ fn print_usage() {
     {} --list
     {} --save HEAD~3..HEAD
     {} --save-latest
+    {} --save-latest -m "my commit message"
     {} --provider anthropic "what's my next task?"
 "#,
         "vizier".bright_cyan().bold(),
@@ -82,6 +101,10 @@ fn print_usage() {
         "--save".bright_green(),
         "-S".bright_green(),
         "--save-latest".bright_green(),
+        "-m".bright_green(),
+        "--commit-message".bright_green(),
+        "-M".bright_green(),
+        "--commit-message-editor".bright_green(),
         "-p".bright_green(),
         "--provider".bright_green(),
         "-f".bright_green(),
@@ -91,6 +114,7 @@ fn print_usage() {
         "-V".bright_green(),
         "--version".bright_green(),
         "EXAMPLES:".bright_yellow().bold(),
+        "vizier".bright_green(),
         "vizier".bright_green(),
         "vizier".bright_green(),
         "vizier".bright_green(),
@@ -145,7 +169,12 @@ Common types: feat, fix, docs, style, refactor, test, chore
 Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
 "#;
 
-async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn save(
+    diff: String,
+    // NOTE: These two should never be Some(...) && true
+    user_message: Option<String>,
+    use_message_editor: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let response = Auditor::llm_request_with_tools(
         crate::config::get_system_prompt()?,
         format!("Update the snapshot and existing TODOs as needed",),
@@ -153,14 +182,30 @@ async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    auditor::Auditor::commit_audit().await?;
+    let conversation_hash = auditor::Auditor::commit_audit().await?;
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();
 
-    let commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
+    let mut commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
         .await?
         .content;
+
+    if let Some(message) = user_message {
+        commit_message = format!(
+            "VIZIER\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
+            message, conversation_hash, commit_message
+        );
+    }
+
+    if use_message_editor {
+        if let Ok(edited_message) = get_editor_message() {
+            commit_message = format!(
+                "VIZIER\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
+                edited_message, conversation_hash, commit_message
+            );
+        }
+    }
 
     std::process::Command::new("git")
         .args(&["add", "-u"])
@@ -173,6 +218,106 @@ async fn save(diff: String) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Changes committed with message: {}", commit_message);
 
     Ok(())
+}
+
+enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    Other(String),
+}
+
+impl Shell {
+    fn from_path(shell_path: &str) -> Self {
+        let shell_name = std::path::PathBuf::from(shell_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        match shell_name.as_str() {
+            "bash" => Shell::Bash,
+            "zsh" => Shell::Zsh,
+            "fish" => Shell::Fish,
+            other => Shell::Other(other.to_string()),
+        }
+    }
+
+    fn get_rc_source_command(&self) -> String {
+        match self {
+            Shell::Bash => ". ~/.bashrc".to_string(),
+            Shell::Zsh => ". ~/.zshrc".to_string(),
+            Shell::Fish => "source ~/.config/fish/config.fish".to_string(),
+            Shell::Other(_) => "".to_string(),
+        }
+    }
+
+    fn get_interactive_args(&self) -> Vec<String> {
+        match self {
+            Shell::Fish => vec!["-C".to_string()],
+            _ => vec!["-i".to_string(), "-c".to_string()],
+        }
+    }
+}
+
+fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
+    let temp_file = Builder::new()
+        .prefix("tllm_input")
+        .suffix(".md")
+        .tempfile()?;
+
+    let temp_path: TempPath = temp_file.into_temp_path();
+
+    match std::fs::write(temp_path.to_path_buf(), "") {
+        Ok(_) => {}
+        Err(e) => {
+            println!("Error writing to temp file");
+            return Err(Box::new(e));
+        }
+    };
+
+    let shell_path = env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+    let shell = Shell::from_path(&shell_path);
+
+    let command = format!("{} {}", editor, temp_path.to_str().unwrap());
+    let rc_source = shell.get_rc_source_command();
+    let full_command = if rc_source.is_empty() {
+        command
+    } else {
+        format!("{} && {}", rc_source, command)
+    };
+
+    let status = Command::new(shell_path)
+        .args(shell.get_interactive_args())
+        .arg("-c")
+        .arg(&full_command)
+        .status()?;
+
+    if !status.success() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Editor command failed",
+        )));
+    }
+
+    let user_message = match fs::read_to_string(&temp_path) {
+        Ok(contents) => {
+            if contents.is_empty() {
+                return Ok(String::new());
+            }
+
+            contents
+        }
+        Err(e) => {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Error reading file: {}", e),
+            )));
+        }
+    };
+
+    Ok(user_message)
 }
 
 #[tokio::main]
@@ -195,6 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         && !args.chat
         && args.save.is_none()
         && !args.save_latest
+        || (args.commit_message.is_some() && args.commit_message_editor)
     {
         print_usage();
         return Ok(());
@@ -206,7 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .output()
         {
             if let Ok(diff) = String::from_utf8(output.stdout) {
-                save(diff).await?;
+                save(diff, args.commit_message, args.commit_message_editor).await?;
                 return Ok(());
             }
         }
@@ -218,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .output()
         {
             if let Ok(diff) = String::from_utf8(output.stdout) {
-                save(diff).await?;
+                save(diff, args.commit_message, args.commit_message_editor).await?;
                 return Ok(());
             }
         }
@@ -256,7 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    auditor::Auditor::commit_audit().await?;
+    let _ = auditor::Auditor::commit_audit().await?;
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();

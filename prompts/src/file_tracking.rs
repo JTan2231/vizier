@@ -49,6 +49,8 @@ impl FileTracker {
         FILE_TRACKER.lock().unwrap().updated_files.len() > 0
     }
 
+    /// Commits changes specific to the `.vizier` directory--primarily intended as a log for Vizier
+    /// changes to existing TODOs and narrative threads
     /// Doesn't do anything if there are no changes to commit
     pub fn commit_changes(conversation_hash: &str, message: &str) -> std::io::Result<()> {
         if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
@@ -63,7 +65,10 @@ impl FileTracker {
             .args(&[
                 "commit",
                 "-m",
-                &format!("VIZIER\nConversation: {}\n\n{}", conversation_hash, message),
+                &format!(
+                    "VIZIER\n\nConversation: {}\n\nVIZIER: {}",
+                    conversation_hash, message
+                ),
             ])
             .output()?;
 

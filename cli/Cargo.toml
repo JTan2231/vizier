@@ -24,3 +24,4 @@ fuzzy-matcher = "*"
 prompts = { path = "../prompts" }
 colored = "2"
 chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"

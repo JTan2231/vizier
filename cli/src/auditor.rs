@@ -43,7 +43,10 @@ impl Auditor {
         let messages = AUDITOR.lock().unwrap().messages.clone();
         let mut conversation = String::new();
 
-        for message in messages.iter() {
+        for message in messages
+            .iter()
+            .filter(|m| m.message_type != wire::types::MessageType::FunctionCall)
+        {
             conversation.push_str(&format!(
                 "{}: {}\n\n###\n\n",
                 message.message_type.to_string(),
@@ -68,56 +71,64 @@ impl Auditor {
         usage
     }
 
-    /// Commit the conversation (if it exists), then the diff (if it exists)
-    pub async fn commit_audit() -> Result<(), Box<dyn std::error::Error>> {
-        if prompts::file_tracking::FileTracker::has_pending_changes() {
-            let mut diff_message = None;
-            let mut conversation_commit_hash = None;
-
-            if let Ok(output) = std::process::Command::new("git")
-                .args(&["diff", &crate::get_todo_dir()])
-                .output()
-            {
-                if let Ok(diff) = String::from_utf8(output.stdout) {
-                    diff_message = Some(Self::llm_request(
+    /// Commit the conversation (if it exists, which it should), then the diff (if it exists)
+    /// Returns the commit hash for the conversation, or an empty string if there's nothing to
+    /// commit
+    ///
+    /// Really, though, if this is called then there should _always_ be a resulting commit hash
+    pub async fn commit_audit() -> Result<String, Box<dyn std::error::Error>> {
+        Ok(
+            if prompts::file_tracking::FileTracker::has_pending_changes() {
+                let mut diff_message = None;
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(&["diff", &crate::get_todo_dir()])
+                    .output()
+                {
+                    if let Ok(diff) = String::from_utf8(output.stdout) {
+                        diff_message = Some(Self::llm_request(
                         "Given a diff on a directory of TODO items, return a commit message for these changes."
                             .to_string(),
                         if diff.len() == 0 { "init".to_string() } else { diff },
                     )
                     .await?
                     .content);
+                    }
                 }
-            }
 
-            if AUDITOR.lock().unwrap().messages.len() > 0 {
-                let conversation = Self::conversation_to_string();
+                // starting to think that this should always be the case
+                let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
+                    let conversation = Self::conversation_to_string();
 
-                std::process::Command::new("git")
-                    .args(&[
-                        "commit",
-                        "--allow-empty",
-                        "-m",
-                        &format!("VIZIER (conversation):\n\n{}", conversation),
-                    ])
-                    .output()?;
+                    std::process::Command::new("git")
+                        .args(&[
+                            "commit",
+                            "--allow-empty",
+                            "-m",
+                            &format!("VIZIER CONVERSATION:\n\n{}", conversation),
+                        ])
+                        .output()?;
 
-                let output = std::process::Command::new("git")
-                    .args(&["rev-parse", "HEAD"])
-                    .output()?;
+                    let output = std::process::Command::new("git")
+                        .args(&["rev-parse", "HEAD"])
+                        .output()?;
 
-                conversation_commit_hash =
-                    Some(String::from_utf8(output.stdout)?.trim().to_string());
-            }
+                    String::from_utf8(output.stdout)?.trim().to_string()
+                } else {
+                    String::new()
+                };
 
-            if let Some(commit_message) = diff_message {
-                prompts::file_tracking::FileTracker::commit_changes(
-                    &conversation_commit_hash.unwrap_or_default(),
-                    &commit_message,
-                )?;
-            }
-        }
+                if let Some(commit_message) = diff_message {
+                    prompts::file_tracking::FileTracker::commit_changes(
+                        &conversation_hash,
+                        &commit_message,
+                    )?;
+                }
 
-        Ok(())
+                conversation_hash
+            } else {
+                String::new()
+            },
+        )
     }
 
     /// Basic LLM request without tool usage
