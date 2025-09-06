@@ -1,5 +1,7 @@
 use git2::{DiffFormat, DiffOptions, Error, Oid, Repository, Signature, Tree};
 
+// TODO: Please god write a testing harness for this, or at least the flows using this
+
 fn normalize_pathspec(path: &str) -> String {
     let mut s = path
         .trim()
@@ -133,8 +135,10 @@ pub fn add_and_commit(
             }
         }
         None => {
-            // git add -u (update tracked, remove deleted)
-            index.update_all(["."], None)?;
+            if !allow_empty {
+                // git add -u (update tracked, remove deleted)
+                index.update_all(["."], None)?;
+            }
         }
     }
 
