@@ -117,3 +117,17 @@ Acceptance remains as previously specified.
 
 ---
 
+Refined, code-anchored tasks aligned with current files:
+
+- App::enter_directory(): remove std::process::exit(0) after user_editor(); wrap editor launch with disable_raw_mode + LeaveAlternateScreen before, EnterAlternateScreen + enable_raw_mode after; on success reload selected file, on error display concise failure in preview.
+- user_editor(original_path, contents): change signature to accept original path; create temp file, write contents, launch $EDITOR using Shell::get_interactive_args() without appending extra "-c"; on exit, write edited temp back to original_path; return io::Result.
+- display_status(): replace CR hack with crossterm::execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine)) then render spinner+message.
+- list_tui(): bind 'e' to edit selected file; add Home/End; compute visible preview height each render and clamp scroll to lines.saturating_sub(height).
+- App::refresh_files(): when in TODO dir (.vizier/todos by default or VIZIER_TODO_DIR), include only *.md and exclude dotfiles.
+- Keybinding doc: e(edit), r(reload), Home/End, PageUp/PageDown (height-1 step).
+- Editor fallback: if EDITOR unset, default to vi (Unix) or notepad (Windows); surface warn in UI.
+
+Acceptance unchanged.
+
+---
+

@@ -42,3 +42,22 @@ Acceptance criteria:
 
 ---
 
+Concrete, code-bound changes:
+
+1) Final staged diff drives commit message
+- cli/src/main.rs (args.save branch): move prompts::tools::diff() to after LLM-driven snapshot/TODO updates and after `git add -u`. Use this fresh diff to craft the commit message.
+
+2) Extract save flow
+- Introduce fn save_project() -> Result<(), Box<dyn std::error::Error>> encapsulating: (a) LLM update to snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate commit message via COMMIT_PROMPT + diff, (e) git commit -m. Return errors; main() simply delegates.
+
+3) Help text parity
+- cli/src/main.rs::print_usage(): correct flags to show -S/--summarize and -s/--save. Ensure clap/argh match implementation if used.
+
+4) First-run status store
+- prompts/src/tools.rs::load_todos(): if file missing, auto-create .vizier/ and an empty todos.json; return Ok(empty map). Ensure update_todo_status/read_todo_status handle this path.
+
+Acceptance unchanged.
+
+
+---
+

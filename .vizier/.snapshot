@@ -1,6 +1,6 @@
 Project Snapshot — Active Narrative Threads and Concrete Plot Points
 
-Theme: Close the loop between promise and delivery in two areas: (1) the TUI must be an uninterrupted editing/browsing experience; (2) the --save pipeline must compose cleanly with git so commits describe exactly what changed; (3) Observability and safety rails must make tool effects auditable and reversible.
+Theme: Close the loop between promise and delivery in three areas: (1) the TUI must be an uninterrupted editing/browsing experience; (2) the --save pipeline must compose cleanly with git so commits describe exactly what changed; (3) Observability and safety rails must make tool effects auditable and reversible.
 
 Thread A — TUI editing and responsiveness
 Conflict: The TUI exits to edit and leaves artifacts during status updates, breaking immersion.
