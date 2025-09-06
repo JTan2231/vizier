@@ -68,3 +68,12 @@ Wire correlation ids end-to-end:
 
 ---
 
+Status: Consolidated into enhance_tui_interaction.md and Thread C scenes. This TODO is now marked legacy.
+
+Action:
+- Do not add new work here; implement remaining items in enhance_tui_interaction.md and audit/logging TODOs.
+- Delete this file after Events pane + errors.jsonl + Assistant error frames are merged.
+
+
+---
+
