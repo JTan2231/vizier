@@ -20,12 +20,14 @@ Required scenes (code-bound):
   • tui/src/lib.rs::App::refresh_files(): when in TODO_DIR, filter *.md and ignore hidden files.
 - Shell arg duplication fix
   • tui/src/lib.rs::user_editor(): do not append an extra "-c" after get_interactive_args(); ensure Bash/Zsh/Fish work.
+- Editor fallback + error log plumbing
+  • Default to vi/notepad if $EDITOR unset; surface warning in status; append editor failures to .vizier/logs/errors.jsonl with {ts, source:"tui", action, path, message, stderr?}.
 
 Acceptance:
 - Editing a TODO returns to the TUI with changes saved and preview updated.
 - Spinner renders cleanly with no artifacts.
 - Scroll bounds respected; Home/End work.
-- Pressing 'e' edits selected TODO.
+- Pressing 'e' edits selected TODO; $EDITOR fallback warns once; failures logged.
 
 Thread B — Version-control composability for --save
 Conflict: Commit message is generated from a stale diff; CLI help mismatches flags; status tools assume todos.json exists.
@@ -36,15 +38,17 @@ Required scenes (code-bound):
 - Extract save flow for composability
   • cli/src/main.rs: factor the --save steps into fn save_project() -> Result<(), Box<dyn Error>> executing (a) LLM update of snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate message, (e) git commit.
 - Fix help to reflect actual flags
-  • cli/src/main.rs::print_usage(): show -S/--summarize and -s/--save correctly.
+  • cli/src/main.rs::print_usage(): show -s/--save <REF|RANGE> and -S/--save-latest alias; document -m/-M semantics and exclusivity.
 - First-run robustness for status store
-  • prompts/src/tools.rs::load_todos() and callers: if todos.json is missing, initialize an empty map so update_todo_status/read_todo_status work on fresh repos.
+  • prompts/src/tools.rs::load_todos(): if todos.json is missing, initialize an empty map and create .vizier/; callers work on fresh repos.
+- Audit trailer linkage
+  • cli/src/main.rs::save_project(): append "Audit-Anchor: <anchor>" trailer to commit message when prompts::file_tracking::staged_fingerprint() available.
 
 Acceptance:
 - --save commits a message that reflects all LLM-produced changes, including .vizier updates.
-- `vizier --help` shows -S summarize and -s save consistently.
+- `vizier --help` shows -S summarize and -s save correctly with -m/-M.
 - save_project() is testable and returns errors instead of panicking.
-- Status updates succeed without a preexisting todos.json.
+- Status updates succeed without a preexisting todos.json; commits include Audit-Anchor when available.
 
 Thread C — Safety rails, observability, and reversible tool effects
 Conflict: Tool invocations are opaque; failures are hard to attribute; users can’t see or replay what the LLM decided versus what the tool executed.
@@ -64,12 +68,12 @@ Acceptance:
 - Fresh repos don’t crash due to missing .vizier/ artifacts.
 
 What changed in this snapshot:
-- Elevated observability and safety rails into a first-class thread (C) and tied it to concrete files and behaviors already hinted at by existing TODOs.
-- Threads A and B kept intact; acceptance tightened to user-visible results.
+- Added explicit editor fallback and error logging to Thread A for consistency with Thread C.
+- Tightened Thread B help text and Audit-Anchor linkage.
 
 Open TODO files tracking these threads:
-- todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, and shell arg fix.
-- todo_enhance_version_control_composability.md — final-diff commit, factored save flow, help text correction, and first-run status store.
+- todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, shell arg fix, fallback + error logs.
+- todo_enhance_version_control_composability.md — final-diff commit, factored save flow, help text correction, first-run status store, Audit-Anchor trailer.
 - todo_todo_llm_audit_log_and_conversation_event_journal.md.md — conversation and tool audit log specifics.
 - todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — plan capture and SAFE_APPLY gate.
 - todo_todo_observable_error_reporting_and_user_event_tracing.md.md — user-facing error surfacing + logs.

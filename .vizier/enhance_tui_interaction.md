@@ -29,3 +29,24 @@ Acceptance addition:
 
 ---
 
+Add concrete code anchors for fallback/editor errors and spinner cleanup integration with audit logs:
+
+- tui/src/lib.rs::user_editor(original_path: &Path)
+  • Detect $EDITOR; if None, set editor = vi (unix) or notepad (windows) and set warn flag.
+  • Before spawn: crossterm::execute!(LeaveAlternateScreen); disable_raw_mode(); after child exits, re-enter alt screen and enable_raw_mode.
+  • On spawn or wait failure: append JSON line to .vizier/logs/errors.jsonl:
+    {"ts": <iso8601>, "source":"tui", "action":"editor_spawn"|"editor_wait", "path": original_path, "message": err.to_string(), "stderr": <captured?>}
+    and render a single-line status error.
+  • After successful edit: write temp contents back to original_path; on IO error, log {action:"file_write"} to errors.jsonl and render failure in preview.
+  • Do not append extra shell control flags beyond Shell::get_interactive_args().
+
+- tui/src/lib.rs::display_status()
+  • Replace \r updates with Clear(ClearType::CurrentLine) and explicit draw of spinner/message. Ensure final state prints a newline and clears spinner artifacts.
+
+- Acceptance test hints:
+  • Launch with EDITOR=cat to simulate no-op edit and verify write-back path.
+  • Force editor spawn failure to see a single errors.jsonl entry and a concise UI error.
+
+
+---
+
