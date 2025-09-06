@@ -1,6 +1,6 @@
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
-const TODO_DIR: &str = ".vizier/";
+const TODO_DIR: &str = ".vizier";
 
 pub fn get_todo_dir() -> String {
     let start_dir = std::env::current_dir()
@@ -13,11 +13,11 @@ pub fn get_todo_dir() -> String {
         if current.join(TODO_DIR).exists() {
             let mut path = "../".repeat(levels_up);
             path.push_str(TODO_DIR);
-            return path;
+            return path.trim_end_matches('/').to_string();
         }
 
         if current.join(".git").exists() {
-            panic!("Couldn't find `.vizier/`! How'd this happen?");
+            panic!("Couldn't find `.vizier`! How'd this happen?");
         }
 
         match current.parent() {
@@ -25,7 +25,7 @@ pub fn get_todo_dir() -> String {
                 current = parent.to_path_buf();
                 levels_up += 1;
             }
-            None => panic!("Couldn't find `.vizier/`! How'd this happen?"),
+            None => panic!("Couldn't find `.vizier`! How'd this happen?"),
         }
     }
 }
