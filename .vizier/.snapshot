@@ -47,23 +47,27 @@ Scenes (code-bound):
 - Plan capture + SAFE_APPLY gate
   • prompts/src/lib.rs: persist execution plans to .vizier/logs/plan.jsonl; if SAFE_APPLY not set, return dry-run summary; when set, execute and record outcomes.
 - Error surfacing and event tracing
-  • cli/src/auditor.rs, tui/src/chat.rs: on tool error, emit .vizier/logs/errors.jsonl and show concise UI message.
+  • tui/src/chat.rs, tui/src/lib.rs: render Assistant "Error:" frames; bottom Events pane; write .vizier/logs/errors.jsonl with correlation ids.
 - Bootstrap status store
   • prompts/src/tools.rs::load_todos(): ensure .vizier/ exists and todos.json initialized on first use.
 - Git linkage for audits (anchor + notes)
-  • cli/src/main.rs, prompts/src/file_tracking.rs: compute Audit-Anchor from staged state; include trailer in commit, emit CommitLink/CommitCreated events, and write git notes for ranges.
+  • cli/src/main.rs, prompts/src/file_tracking.rs: compute Audit-Anchor from staged state; include trailer in commit, emit CommitLink/CommitCreated events, and write git notes for JSONL ranges.
 
 Acceptance:
 - Every tool call logs an audit event; SAFE_APPLY allows dry-run; errors get logged and surfaced; fresh repos don’t crash; commits carry Audit-Anchor linking to session logs.
 
 What changed in this snapshot:
-- Consolidated and grounded prior TODOs into three coherent threads with concrete file anchors and acceptance tests.
-- Elevated observability into first-class workflow with explicit Git linkage.
+- Thread C’s error surfacing scenes adjusted to match current TUI contract: Assistant error frames + Events pane + durable errors.jsonl. Commit linkage clarified: notes store JSONL byte ranges for retrieval.
+- Snapshot reconciled with existing TODO filenames; duplicate/placeholder TODOs marked for pruning or merge below.
 
-Open TODOs aligned to threads:
+Open TODOs aligned to threads (canonical list):
 - enhance_tui_interaction.md — TUI editor lifecycle, spinner cleanup, scroll bounds, filtering, keybindings, shell args fix.
 - enhance_version_control_composability.md — staged-diff commit, factored save flow, help text, first-run status store.
 - todo_todo_llm_audit_log_and_conversation_event_journal.md.md — event schema, sinks, CLI/TUI integration, rotation, redaction, git linkage.
 - todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — execution plan persistence and SAFE_APPLY gate.
-- todo_todo_observable_error_reporting_and_user_event_tracing.md.md — durable errors + UI surfacing.
-- todo_todo_bootstrap_status_store.md.md — unify bootstrap path with tools.rs changes.
+- todo_todo_observable_error_reporting_and_user_event_tracing.md.md — durable errors + UI surfacing + correlation ids.
+- todo_todo_bootstrap_status_store.md.md — redundant with enhance_version_control_composability.md bootstrap scene; to be merged/deleted.
+- todo_migrate_git_cli_to_libgit2_in_cli_main_commit_and_diff_paths.md — future-proof Git integration; keep dormant until save flow stabilized.
+- todo_todo_cli_stdout_stderr_contract_and_monitorability.md.md — unify CLI output contract with audit/log levels.
+- todo_introduce_local_llm_testing_harness_with_record_replay.md.md — record/replay harness for deterministic tests of save/audit flows.
+- todo_add_confirmation_gate_before_commits_and_toolside_effects.md — superseded by SAFE_APPLY plan gate; to be merged/deleted.

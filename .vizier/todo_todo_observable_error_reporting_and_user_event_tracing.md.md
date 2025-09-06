@@ -60,3 +60,11 @@ Acceptance additions:
 
 ---
 
+Wire correlation ids end-to-end:
+
+- chat.rs: generate a per-user-message correlation_id = Uuid::now_v7(); include in calls into prompts and in all errors/events appended to errors.jsonl.
+
+- prompts/src/lib.rs and tools.rs: accept optional correlation_id and include in Audit events (ToolStart/ToolDone/Error).
+
+---
+

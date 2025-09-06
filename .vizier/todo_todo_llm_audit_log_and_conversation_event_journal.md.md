@@ -124,3 +124,16 @@ Elevated from concept to implementable plan with Git linkage and controls:
 
 ---
 
+Tighten capture policy and storage details per snapshot:
+
+- Implement AuditLevel { Error, Important, Info, Verbose, Debug } with env VIZIER_AUDIT_LEVEL=Info default. File sink stores >= configured; Git notes store >= Important.
+
+- Add attachment offloading for oversized events: when content >64KB after redaction, persist under .vizier/logs/attachments/<session>/<ref_id>.json and reference from main event.
+
+- Non-blocking writer: bounded channel (8192). On overflow, drop lowest-level first and emit a single Error event "audit_drop" with counts.
+
+- CLI: audit tail/show/link subcommands; link/show resolve via Audit-Anchor trailer and notes ranges.
+
+
+---
+

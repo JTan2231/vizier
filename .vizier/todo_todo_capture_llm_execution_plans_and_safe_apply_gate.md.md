@@ -61,4 +61,12 @@ Notes:
 - Plans must be serializable and logged in audit JSONL for replay.
 - Keep I/O non-blocking; use background threads for plan parsing and apply execution.
 - Security: sanitize displayed commands; never execute arbitrary content unless it came from an approved Plan with matching hash.
-- This extends and composes with the Audit Log TODO; reuse its types and sink infrastructure.
+- This extends and composes with the Audit Log TODO; reuse its types and sink infrastructure.Integrations and guardrails:
+
+- Require apply() to verify a hash of proposed_commands and salient context (cwd fingerprint, env whitelist) recorded in Plan; reject drift with a clear Error event and Assistant message suggestion to re-plan.
+
+- CLI/TUI should store Plan artifacts under .vizier/logs/plans/<plan_id>.json on proposal for offline review.
+
+
+---
+
