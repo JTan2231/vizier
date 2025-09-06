@@ -50,7 +50,7 @@ impl FileTracker {
     }
 
     /// Doesn't do anything if there are no changes to commit
-    pub fn commit_changes(message: &str) -> std::io::Result<()> {
+    pub fn commit_changes(conversation_hash: &str, message: &str) -> std::io::Result<()> {
         if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
             return Ok(());
         }
@@ -60,7 +60,11 @@ impl FileTracker {
             .output()?;
 
         std::process::Command::new("git")
-            .args(&["commit", "-m", &format!("VIZIER: {}", message)])
+            .args(&[
+                "commit",
+                "-m",
+                &format!("VIZIER\nConversation: {}\n\n{}", conversation_hash, message),
+            ])
             .output()?;
 
         Self::clear();

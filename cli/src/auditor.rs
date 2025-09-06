@@ -47,11 +47,7 @@ impl Auditor {
             conversation.push_str(&format!(
                 "{}: {}\n\n###\n\n",
                 message.message_type.to_string(),
-                if let Some(name) = message.name.clone() {
-                    name.clone()
-                } else {
-                    message.content.clone()
-                }
+                message.content
             ));
         }
 
@@ -76,6 +72,7 @@ impl Auditor {
     pub async fn commit_audit() -> Result<(), Box<dyn std::error::Error>> {
         if prompts::file_tracking::FileTracker::has_pending_changes() {
             let mut diff_message = None;
+            let mut conversation_commit_hash = None;
 
             if let Ok(output) = std::process::Command::new("git")
                 .args(&["diff", &crate::get_todo_dir()])
@@ -103,10 +100,20 @@ impl Auditor {
                         &format!("VIZIER (conversation):\n\n{}", conversation),
                     ])
                     .output()?;
+
+                let output = std::process::Command::new("git")
+                    .args(&["rev-parse", "HEAD"])
+                    .output()?;
+
+                conversation_commit_hash =
+                    Some(String::from_utf8(output.stdout)?.trim().to_string());
             }
 
             if let Some(commit_message) = diff_message {
-                prompts::file_tracking::FileTracker::commit_changes(&commit_message)?;
+                prompts::file_tracking::FileTracker::commit_changes(
+                    &conversation_commit_hash.unwrap_or_default(),
+                    &commit_message,
+                )?;
             }
         }
 
