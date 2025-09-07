@@ -1,14 +1,18 @@
 use std::error::Error;
 use std::fs;
-use std::io::{Result, stdout};
+use std::io::{Result, stderr, stdout};
 use std::path::PathBuf;
 use std::process::Command;
 
 use crossterm::{
     ExecutableCommand,
+    cursor::MoveToColumn,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 
 use colored::*;
@@ -381,21 +385,23 @@ async fn display_status(mut rx: Receiver<Status>) {
             Some(status) = rx.recv() => match status {
                 Status::Working(msg) => {
                     last_message = msg.clone();
-                    print!("\r{} {}", spinner[i % spinner.len()].blue(), msg.blue());
-                    let _ = stdout().flush();
+                    let _ = execute!(stderr(), MoveToColumn(0), Clear(ClearType::CurrentLine));
+                    eprint!("{} {}", spinner[i % spinner.len()].blue(), msg.blue());
                     i = i.wrapping_add(1);
                 }
                 Status::Done => {
+                    let _ = execute!(stderr(), MoveToColumn(0), Clear(ClearType::CurrentLine));
                     break;
                 }
                 Status::Error(e) => {
-                    eprintln!("\rError: {}", e);
+                    let _ = execute!(stderr(), MoveToColumn(0), Clear(ClearType::CurrentLine));
+                    eprintln!("Error: {}", e);
                     break;
                 }
             },
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                print!("\r{} {}", spinner[i % spinner.len()].blue(), last_message.blue());
-                let _ = stdout().flush();
+                let _ = execute!(stderr(), MoveToColumn(0), Clear(ClearType::CurrentLine));
+                eprint!("{} {}", spinner[i % spinner.len()].blue(), last_message.blue());
                 i = i.wrapping_add(1);
             }
         }

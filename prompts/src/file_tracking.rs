@@ -63,7 +63,7 @@ impl FileTracker {
         vcs::add_and_commit(
             Some(vec![&crate::tools::get_todo_dir()]),
             &format!(
-                "VIZIER\n\nConversation: {}\n\nVIZIER: {}",
+                "VIZIER THREAD UPDATE\n\nConversation: {}\n\nVIZIER: {}",
                 conversation_hash, message
             ),
             false,

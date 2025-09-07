@@ -57,6 +57,10 @@ struct Args {
     /// argument
     #[arg(short = 'M', long)]
     commit_message_editor: bool,
+
+    /// Spit out the audit in JSON to stdout
+    #[arg(short = 'j', long)]
+    json: bool,
 }
 
 fn print_usage() {
@@ -196,7 +200,7 @@ async fn save(
 
     if let Some(message) = user_message {
         commit_message = format!(
-            "VIZIER\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
+            "VIZIER CODE CHANGE\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
             message, conversation_hash, commit_message
         );
     }
@@ -204,7 +208,7 @@ async fn save(
     if use_message_editor {
         if let Ok(edited_message) = get_editor_message() {
             commit_message = format!(
-                "VIZIER\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
+                "VIZIER CODE CHANGE\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
                 edited_message, conversation_hash, commit_message
             );
         }
@@ -351,7 +355,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let _auditor_cleanup = auditor::AuditorCleanup { debug: args.debug };
+    let _auditor_cleanup = auditor::AuditorCleanup {
+        debug: args.debug,
+        print_json: args.json,
+    };
 
     async fn run_save(
         commit_ref: &str,
