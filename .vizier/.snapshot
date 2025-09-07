@@ -68,8 +68,9 @@ Acceptance:
 - Fresh repos don’t crash due to missing .vizier/ artifacts.
 
 What changed in this snapshot:
-- Added explicit editor fallback and error logging to Thread A for consistency with Thread C.
-- Tightened Thread B help text and Audit-Anchor linkage.
+- Consolidated Thread A into concrete, code-anchored tasks already reflected in its TODO; clarified spinner cleanup and keybinding bounds.
+- Tightened Thread B with explicit save_project() extraction and Audit-Anchor trailer.
+- Reconciled Thread C bootstrap with Thread B’s first-run status store to avoid duplicate responsibilities.
 
 Open TODO files tracking these threads:
 - todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds, filter, keybindings, shell arg fix, fallback + error logs.

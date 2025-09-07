@@ -93,3 +93,19 @@ Acceptance: `vizier --help` shows correct flags and message options; commits pro
 
 ---
 
+Refinement — extract save_project(), commit from staged diff, correct help, and add Audit-Anchor trailer (matches snapshot Thread B):
+
+- cli/src/main.rs::save_project(): New function returning Result<(), Box<dyn Error>> encapsulating:
+  1) Call into prompts to update snapshot and TODOs
+  2) git add -u
+  3) Recompute prompts::tools::diff() from the index
+  4) Build commit message from COMMIT_PROMPT + fresh diff; if prompts::file_tracking::staged_fingerprint() -> Some(anchor), append "\n\nAudit-Anchor: <anchor>"
+  5) git commit -m <message>
+- Args path: replace inline save logic with a call to save_project(); bubble up errors instead of panicking.
+- print_usage(): Correct flags to show -S/--summarize and -s/--save; document -m/-M semantics and exclusivity.
+- prompts/src/tools.rs::load_todos(): on NotFound, create .vizier/ and write an empty todos.json; return Ok(empty). Ensure update_todo_status/read_todo_status handle this without special-casing.
+
+Acceptance unchanged: final commit reflects all LLM-produced changes; help text correct; save_project() testable; first-run status store works; commit includes Audit-Anchor when available.
+
+---
+

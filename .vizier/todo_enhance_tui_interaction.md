@@ -161,3 +161,15 @@ Acceptance: Missing $EDITOR degrades gracefully with a warning; any editor-relat
 
 ---
 
+Refinement — lock in spinner cleanup, keybound scroll limits, and editor fallback/error logging to match snapshot Thread A:
+
+- display_status(): Always execute Clear(ClearType::CurrentLine) and MoveToColumn(0) before rendering spinner/message; flush stdout each tick. On completion, render final line with trailing newline.
+- Scroll bounds: compute preview_height from layout; clamp scroll to lines.saturating_sub(preview_height). Add PageUp/PageDown to move by preview_height-1. Preserve scroll within new bounds after edits/reloads.
+- Editor fallback + error logs: if $EDITOR unset use vi (Unix) or notepad (Windows); show one-time warning in status. On any editor launch or write-back failure, append JSONL to .vizier/logs/errors.jsonl with {ts, source:"tui", action:"user_editor", path, message, stderr?}. Do not crash; display concise error in preview.
+- Shell arg duplication fix: rely solely on Shell::get_interactive_args() to include correct command flag (-lc for bash/zsh, -C for fish); remove any extra "-c" in user_editor().
+- TODO dir filtering: when browsing TODO dir (VIZIER_TODO_DIR or .vizier/todos), include only *.md and exclude dotfiles; keep dir-first sort.
+
+Acceptance unchanged: edit returns to TUI with saved changes and updated preview; spinner clean; scroll bounded; keybindings work across terminals; missing $EDITOR degrades gracefully and logs errors.
+
+---
+
