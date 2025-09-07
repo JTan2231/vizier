@@ -149,3 +149,15 @@ Acceptance unchanged: edit returns to TUI with saved changes and updated preview
 
 ---
 
+Refinement — Editor fallback and error logging aligned with observability thread:
+
+8) Editor fallback + error log plumbing
+- If $EDITOR is unset, default to `vi` on Unix and `notepad` on Windows. Show a one-line warning in the TUI status area on first use during a session.
+- On editor launch or write-back failure, append a JSON line to .vizier/logs/errors.jsonl with fields: { ts, source: "tui", action: "user_editor", path, message, stderr? }.
+- Ensure failures do not crash the TUI; keep the app in a recoverable state and display a concise error in the preview pane.
+
+Acceptance: Missing $EDITOR degrades gracefully with a warning; any editor-related failure is logged to errors.jsonl and surfaced in the UI without terminating the app.
+
+
+---
+

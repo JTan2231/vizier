@@ -80,3 +80,16 @@ Acceptance remains: final commit message covers all changes; help text matches f
 
 ---
 
+Refinement — Help text and audit trailer linkage:
+
+5) Fix help text parity in cli/src/main.rs::print_usage()
+- Ensure -S/--summarize and -s/--save are documented exactly as implemented; clarify -m/-M semantics and exclusivity.
+
+6) Audit trailer linkage for traceability
+- In save_project(), when prompts::file_tracking::staged_fingerprint() returns Some(anchor), append an "Audit-Anchor: <anchor>" trailer to the generated commit message.
+
+Acceptance: `vizier --help` shows correct flags and message options; commits produced by --save include an Audit-Anchor trailer when available.
+
+
+---
+
