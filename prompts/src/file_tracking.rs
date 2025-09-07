@@ -60,6 +60,7 @@ impl FileTracker {
             return Ok(());
         }
 
+        // TODO: Commit message builder
         vcs::add_and_commit(
             Some(vec![&crate::tools::get_todo_dir()]),
             &format!(

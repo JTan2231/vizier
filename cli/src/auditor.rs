@@ -123,7 +123,9 @@ impl Auditor {
                     eprintln!("Committing conversation...");
                     vcs::add_and_commit(
                         None,
-                        &format!("VIZIER CONVERSATION\n\n{}", conversation),
+                        &CommitMessageBuilder::new(conversation)
+                            .set_header(CommitMessageType::Conversation)
+                            .build(),
                         true,
                     )?
                     .to_string()
@@ -135,7 +137,10 @@ impl Auditor {
                     eprintln!("Committing TODO changes...");
                     prompts::file_tracking::FileTracker::commit_changes(
                         &conversation_hash,
-                        &commit_message,
+                        &CommitMessageBuilder::new(commit_message)
+                            .set_header(CommitMessageType::NarrativeChange)
+                            .with_conversation_hash(conversation_hash.clone())
+                            .build(),
                     )?;
                 }
 
@@ -254,5 +259,68 @@ impl Auditor {
         Self::replace_messages(&response);
 
         Ok(response.last().unwrap().clone())
+    }
+}
+
+pub enum CommitMessageType {
+    CodeChange,
+    Conversation,
+    NarrativeChange,
+}
+
+pub struct CommitMessageBuilder {
+    header: String,
+    // This should only be None for the conversation commits themselves
+    conversation_hash: Option<String>,
+    author_note: Option<String>,
+    body: String,
+}
+
+impl CommitMessageBuilder {
+    pub fn new(body: String) -> Self {
+        Self {
+            header: "VIZIER".to_string(),
+            conversation_hash: None,
+            author_note: None,
+            body,
+        }
+    }
+
+    pub fn set_header(&mut self, message_type: CommitMessageType) -> &mut Self {
+        match message_type {
+            CommitMessageType::CodeChange => self.header = "VIZIER CODE CHANGE".to_string(),
+            CommitMessageType::Conversation => self.header = "VIZIER CONVERSATION".to_string(),
+            CommitMessageType::NarrativeChange => {
+                self.header = "VIZIER NARRATIVE CHANGE".to_string()
+            }
+        };
+
+        self
+    }
+
+    pub fn with_author_note(&mut self, note: String) -> &mut Self {
+        self.author_note = Some(note);
+
+        self
+    }
+
+    pub fn with_conversation_hash(&mut self, conversation_hash: String) -> &mut Self {
+        self.conversation_hash = Some(conversation_hash);
+
+        self
+    }
+
+    pub fn build(&self) -> String {
+        let mut message = self.header.clone();
+
+        if let Some(ch) = &self.conversation_hash {
+            message = format!("{}\n{}", message, ch);
+        }
+
+        if let Some(an) = &self.author_note {
+            message = format!("{}\n{}", message, an);
+        }
+
+        format!("{}\n\n{}", message, self.body)
     }
 }

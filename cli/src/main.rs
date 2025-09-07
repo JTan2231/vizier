@@ -8,7 +8,7 @@ use tempfile::{Builder, TempPath};
 
 use prompts::tools::get_todo_dir;
 
-use crate::auditor::Auditor;
+use crate::auditor::{Auditor, CommitMessageBuilder, CommitMessageType};
 
 mod auditor;
 mod config;
@@ -194,28 +194,28 @@ async fn save(
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();
 
-    let mut commit_message = Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
-        .await?
-        .content;
+    let mut message_builder = CommitMessageBuilder::new(
+        Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
+            .await?
+            .content,
+    );
+
+    message_builder
+        .set_header(CommitMessageType::CodeChange)
+        .with_conversation_hash(conversation_hash.clone());
 
     if let Some(message) = user_message {
-        commit_message = format!(
-            "VIZIER CODE CHANGE\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
-            message, conversation_hash, commit_message
-        );
+        message_builder.with_author_note(message);
     }
 
     if use_message_editor {
         if let Ok(edited_message) = get_editor_message() {
-            commit_message = format!(
-                "VIZIER CODE CHANGE\n\nAuthor note: {}\n\nConversation: {}\n\nVIZIER: {}",
-                edited_message, conversation_hash, commit_message
-            );
+            message_builder.with_author_note(edited_message);
         }
     }
 
+    let commit_message = message_builder.build();
     vcs::add_and_commit(None, &commit_message, false)?;
-
     eprintln!("Changes committed with message: {}", commit_message);
 
     Ok(())
