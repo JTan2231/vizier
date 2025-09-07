@@ -2,6 +2,8 @@ use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
 const TODO_DIR: &str = ".vizier/";
 
+// TODO: We should only default to the current directory if there isn't a configured target
+//       directory (for more automated/transient uses)
 pub fn get_todo_dir() -> String {
     let start_dir = std::env::current_dir()
         .ok()
@@ -33,6 +35,7 @@ pub fn get_todo_dir() -> String {
 pub fn get_tools() -> Vec<Tool> {
     vec![
         get_tool!(diff),
+        get_tool!(git_log),
         get_tool!(add_todo),
         get_tool!(delete_todo),
         get_tool!(update_todo),
@@ -55,6 +58,8 @@ pub fn is_action(name: &str) -> bool {
 //       Right now the current approach is to just unwrap them and that really isn't working at
 //       all in terms of maintaining flow with the language models.
 
+// TODO: The wire needs updated to accept more kinds of types for the function arguments
+
 fn llm_error(message: &str) -> String {
     format!("<error>{}</error>", message)
 }
@@ -64,6 +69,38 @@ pub fn diff() -> String {
     match vcs::get_diff(".", None, None) {
         Ok(d) => d,
         Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
+    }
+}
+
+#[tool(description = "
+Display recent commits from the current Git repository.
+
+Parameters:
+    depth: Maximum number of commits to display (default: 10 if parsing fails--this is also the maximum).
+    commit_message_type: Optional filter; only commits whose messages contain this string
+                         (case-insensitive) will be shown. If empty, no filtering is applied.
+
+Output:
+- Each commit is listed on a new line in the format:
+    <short_sha>  <summary> — <author>
+
+Notes:
+- Commits are ordered chronologically descending (most recent first).
+- `depth` applies *after* filtering, so fewer than `depth` commits may appear if
+  not enough commits match the filter.
+- If no commit messages match, output will be empty.
+")]
+pub fn git_log(depth: String, commit_message_type: String) -> String {
+    match vcs::get_log(
+        depth.parse::<usize>().unwrap_or(10).max(10),
+        if commit_message_type.len() > 0 {
+            Some(vec![commit_message_type])
+        } else {
+            None
+        },
+    ) {
+        Ok(d) => d,
+        Err(e) => return llm_error(&format!("Error getting git log: {}", e)),
     }
 }
 
