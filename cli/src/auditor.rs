@@ -314,11 +314,11 @@ impl CommitMessageBuilder {
         let mut message = self.header.clone();
 
         if let Some(ch) = &self.conversation_hash {
-            message = format!("{}\n{}", message, ch);
+            message = format!("{}\nConversation: {}", message, ch);
         }
 
         if let Some(an) = &self.author_note {
-            message = format!("{}\n{}", message, an);
+            message = format!("{}\nAuthor note: {}", message, an);
         }
 
         format!("{}\n\n{}", message, self.body)
