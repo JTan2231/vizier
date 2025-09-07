@@ -173,3 +173,20 @@ Acceptance unchanged: edit returns to TUI with saved changes and updated preview
 
 ---
 
+Refinement — cement spinner, keybindings, $EDITOR fallback, and error logging:
+
+- display_status(): Always execute MoveToColumn(0) then Clear(ClearType::CurrentLine) before rendering spinner/message; flush stdout each tick. On completion, render a final non-spinning message with a trailing newline so subsequent frames start clean.
+- Keybindings in list_tui():
+  • e — Edit selected file (if file)
+  • r — Reload selected file from disk and reset scroll to 0
+  • Home/End — Jump to start/end of file
+  • PageUp/PageDown — Scroll by (visible_height - 1)
+- Scroll bounds: compute preview_height from layout; clamp scroll to lines.saturating_sub(preview_height). After edits or reloads, preserve scroll within new bounds.
+- Editor fallback + error logs: if $EDITOR unset use vi (Unix) or notepad (Windows). Show a one-time warning in the status area for the session. On any editor launch or write-back failure, append JSONL to .vizier/logs/errors.jsonl with {ts, source:"tui", action:"user_editor", path, message, stderr?}. Do not crash; display concise error in preview.
+- Shell arg duplication fix: rely solely on Shell::get_interactive_args() to include correct command flag (-lc for bash/zsh, -C for fish); remove any extra "-c" in user_editor().
+- TODO dir filtering: when browsing TODO dir (VIZIER_TODO_DIR or .vizier/todos), include only *.md and exclude dotfiles; keep dir-first sort.
+
+Acceptance remains: edit returns to TUI with saved changes and updated preview; spinner clean; scroll bounded; keybindings work across terminals; missing $EDITOR degrades gracefully and logs errors.
+
+---
+
