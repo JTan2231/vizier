@@ -1,0 +1,27 @@
+Project trajectory snapshot
+
+Theme: Give operators precise, explicit control over the AI’s levers and its footprint on the workspace, with reversible operations and clear gates.
+
+Active threads
+- Control levers in Config: Expand vizier-core/src/config.rs to express model-level params, safety gates, and history capacity, while remaining backward compatible.
+- CLI/TUI surface area: Flags and UI affordances must map 1:1 to config, exposing confirmation gates and visibility of current settings.
+- Operation history + reversibility: First-class Operation records with ring buffer, confirmation workflow, and revert via stored patches or git.
+- Headless discipline: Non-interactive runs require explicit allowlists; defaults lean safe.
+
+Recent decisions
+- Config will own: model, temperature, top_p, max_tokens, system_prompt_overrides, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode.
+- System prompt gains a <config> section (no secrets) so the model operates within declared constraints.
+- CLI will add flags mapping to the new config surface; numeric ranges validated with safe fallbacks and warnings.
+- History layer stores minimal patches and metadata; revert prefers patch apply, falls back to VCS.
+
+Acceptance checkpoints
+- vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit updates the prompt’s <meta><config> and enforces confirmation gates per allowlist.
+- TUI shows history and can revert last operation.
+- Non-interactive run fails fast on destructive ops unless explicitly allowed.
+
+Next concrete moves
+1) config.rs: Add fields + Default, map legacy provider/force_action, and implement get_system_prompt() embedding <config>.
+2) vizier-cli main.rs: Add flags, parse, validate, merge, and set_config().
+3) vizier-core history.rs (new) + tools.rs hooks: Operation struct, ring buffer, record/require_confirmation/revert APIs; expose to TUI/CLI.
+4) vizier-tui: Status line for LLM settings, confirmation prompts, and History sidebar with revert.
+5) CLI README: JSON schema for headless control and --config-json merge semantics.
