@@ -64,3 +64,25 @@ Integrated with TUI status bus and errors.jsonl. Chat error surfaces as Assistan
 
 ---
 
+Refinement (2025-09-08) — Consolidate with Snapshot Thread C and wire JSONL logs across TUI and core tools.
+
+- Error reporting
+  • Files: vizier-core/src/auditor.rs, vizier-tui/src/chat.rs, vizier-tui/src/lib.rs
+  • Action: Provide append_error(event) that writes .vizier/logs/errors.jsonl lines with {ts, source, action, path?, command?, stderr?, message}. TUI calls on editor and tool failures; core tools call on process errors. Ensure directory creation on first run.
+
+- Conversation/LLM audit
+  • Files: vizier-core/src/auditor.rs
+  • Action: add append_llm_audit(event) writing to .vizier/logs/llm_audit.jsonl with {ts, thread_id?, correlation_id, tool, args_preview, result_preview, token_in, token_out, duration_ms}.
+
+- User event tracing
+  • Files: vizier-tui/src/chat.rs, vizier-tui/src/lib.rs
+  • Action: emit user_action events to .vizier/logs/events.jsonl for key actions (open_editor, commit_save, navigate_dir) with {ts, source:"tui", action, target?}.
+
+- SAFE_APPLY gate integration
+  • Files: vizier-core/src/auditor.rs
+  • Action: When SAFE_APPLY is unset/false, record plan entries to .vizier/logs/plan.jsonl and skip side-effects; when true, execute and record outcomes/errors.
+
+Acceptance: Errors are logged with actionable fields; LLM/tool interactions produce audit lines; user actions are traceable; SAFE_APPLY toggles dry-run behavior with plans recorded.
+
+---
+

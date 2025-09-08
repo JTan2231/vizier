@@ -95,3 +95,34 @@ Acceptance unchanged: edit returns to TUI without exiting, saved changes visible
 
 ---
 
+Refinement (2025-09-08) — Align with Snapshot Thread A and collapse duplication with todo_enhance_tui_interaction.md:
+
+- Remove exit-after-edit
+  • File: vizier-tui/src/lib.rs::App::enter_directory()
+  • Action: Delete std::process::exit(0) after user_editor(); after editor returns, EnterAlternateScreen + enable_raw_mode; call refresh_files() and read_selected_file_content(); redraw.
+
+- Editor write-back + shell flag fix
+  • File: vizier-tui/src/lib.rs::user_editor(original_path: &Path, contents: &str)
+  • Action: Write contents to temp, launch $EDITOR using Shell::get_interactive_args() only (no extra "-c"), on return write temp back to original_path. Fallback to vi/notepad if $EDITOR unset; show one-time warning.
+
+- Keybindings and scroll bounds
+  • File: vizier-tui/src/lib.rs::list_tui()
+  • Action: Bind e(edit), r(reload/reset scroll), Home/End, PageUp/PageDown(height-1). Clamp scroll to lines.saturating_sub(visible_height) computed per render.
+
+- TODO dir filtering
+  • File: vizier-tui/src/lib.rs::App::refresh_files()
+  • Action: When browsing TODO dir (VIZIER_TODO_DIR or .vizier/todos), include only *.md and exclude dotfiles; keep dir-first sort.
+
+- Status/spinner hygiene
+  • File: vizier-tui/src/lib.rs::display_status()
+  • Action: Use MoveToColumn(0) + Clear(ClearType::CurrentLine) before rendering; ensure trailing newline on completion.
+
+- Error logging to match observability thread
+  • Files: vizier-tui/src/lib.rs (user_editor), vizier-tui/src/chat.rs (on tool errors)
+  • Action: Append JSONL to .vizier/logs/errors.jsonl with {ts, source:"tui", action, path, message, stderr?} on failures; surface concise status.
+
+Acceptance: Edit returns to TUI with saved changes; scrolling bounded with page/home/end; 'e' edits current file; no duplicate -c; errors logged.
+
+
+---
+

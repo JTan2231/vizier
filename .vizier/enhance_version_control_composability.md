@@ -60,3 +60,29 @@ Acceptance addition:
 
 ---
 
+Refinement (2025-09-08) — Align with Snapshot Thread B and bind commits to final staged diff with audit trailer:
+
+- Commit from final, staged diff
+  • File: vizier-cli/src/main.rs
+  • Action: After tools mutate files and `git add -u` (plus explicit adds for .vizier if needed), recompute diff from index; feed that to commit message generation; then commit. Skip if diff empty.
+
+- Extract save flow
+  • File: vizier-cli/src/main.rs::save_project()
+  • Action: Orchestrate: (a) run tools to update snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate message, (e) commit. Return Result; log errors via auditor.
+
+- Help text correctness
+  • File: vizier-cli/src/main.rs::print_usage()
+  • Action: Document -m/-M as mutually exclusive; examples use -s/--save and -S/--save-latest consistently.
+
+- First-run robustness
+  • File: vizier-core/src/tools.rs::load_todos()
+  • Action: If .vizier/ or todos.json missing, create dir and empty store; return Ok(empty).
+
+- Audit trailer linkage
+  • File: vizier-cli/src/main.rs::save_project()
+  • Action: If vizier_core::file_tracking::staged_fingerprint() -> Some(anchor), append "Audit-Anchor: <anchor>" as a trailer line to the commit message before committing.
+
+Acceptance: --save reflects final staged diff (including .vizier changes as intended), help text accurate, first-run OK, and commits include Audit-Anchor when available.
+
+---
+
