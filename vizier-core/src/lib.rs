@@ -61,3 +61,16 @@ BAD: "Investigate performance issues in search" [vague, no narrative tension]
 GOOD: "Replace recursive DFS in hnsw.rs:156 with iterative implementation - current approach creates unnecessary stack frames for graphs >1000 nodes" [specific conflict with clear resolution]
 </mainInstruction>
 "#;
+
+pub const COMMIT_PROMPT: &str = r#"
+You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
+
+Structure your commit message as:
+- First line: <type>: <brief summary> (50 chars or less)
+- Blank line
+- Body: Explain what changed and why (wrap at 72 chars)
+
+Common types: feat, fix, docs, style, refactor, test, chore
+
+Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
+"#;

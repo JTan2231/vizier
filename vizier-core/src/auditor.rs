@@ -100,7 +100,7 @@ impl Auditor {
         usage
     }
 
-    /// Commit the conversation (if it exists, which it should), then the diff (if it exists)
+    /// Commit the conversation (if it exists, which it should), then the narrative diff (if it exists)
     /// Returns the commit hash for the conversation, or an empty string if there's nothing to
     /// commit
     ///

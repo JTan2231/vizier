@@ -143,20 +143,6 @@ fn print_token_usage() {
     eprintln!("- {} {}", "Completion Tokens:".green(), usage.output_tokens);
 }
 
-// TODO: This shouldn't be here
-const COMMIT_PROMPT: &str = r#"
-You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
-
-Structure your commit message as:
-- First line: <type>: <brief summary> (50 chars or less)
-- Blank line
-- Body: Explain what changed and why (wrap at 72 chars)
-
-Common types: feat, fix, docs, style, refactor, test, chore
-
-Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
-"#;
-
 async fn save(
     diff: String,
     // NOTE: These two should never be Some(...) && true
@@ -198,7 +184,7 @@ async fn save(
     print_token_usage();
 
     let mut message_builder = CommitMessageBuilder::new(
-        Auditor::llm_request(COMMIT_PROMPT.to_string(), diff)
+        Auditor::llm_request(vizier_core::COMMIT_PROMPT.to_string(), diff)
             .await?
             .content,
     );
@@ -340,9 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let no_primary_action = args.user_message.is_none() && args.save.is_none() && !args.save_latest;
-
     let invalid_commit_msg_flags = args.commit_message.is_some() && args.commit_message_editor;
-
     if no_primary_action || invalid_commit_msg_flags {
         print_usage();
         return Ok(());

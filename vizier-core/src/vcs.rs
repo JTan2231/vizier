@@ -1,4 +1,4 @@
-use git2::{DiffFormat, DiffOptions, Error, Oid, Repository, Signature, Sort, Tree};
+use git2::{DiffFormat, DiffOptions, Error, Oid, Repository, Signature, Sort};
 
 // TODO: Please god write a testing harness for this, or at least the flows using this
 
