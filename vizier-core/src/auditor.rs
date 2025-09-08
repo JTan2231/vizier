@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::sync::mpsc::channel;
 
+use crate::{display, file_tracking, tools, vcs};
+
 lazy_static! {
     static ref AUDITOR: Mutex<Auditor> = Mutex::new(Auditor::new());
 }
@@ -44,6 +46,7 @@ impl Drop for AuditorCleanup {
 pub struct Auditor {
     messages: Vec<wire::types::Message>,
     session_start: String,
+    session_id: String,
 }
 
 impl Auditor {
@@ -53,6 +56,7 @@ impl Auditor {
         Auditor {
             messages: Vec::new(),
             session_start: now.to_string(),
+            session_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -102,53 +106,51 @@ impl Auditor {
     ///
     /// Really, though, if this is called then there should _always_ be a resulting commit hash
     pub async fn commit_audit() -> Result<String, Box<dyn std::error::Error>> {
-        Ok(
-            if prompts::file_tracking::FileTracker::has_pending_changes() {
-                let mut diff_message = None;
-                if let Ok(diff) = vcs::get_diff(".", Some(&crate::get_todo_dir()), None) {
-                    eprintln!("Writing commit message for TODO changes...");
-                    diff_message = Some(Self::llm_request(
+        Ok(if file_tracking::FileTracker::has_pending_changes() {
+            let mut diff_message = None;
+            if let Ok(diff) = vcs::get_diff(".", Some(&tools::get_todo_dir()), None) {
+                eprintln!("Writing commit message for TODO changes...");
+                diff_message = Some(Self::llm_request(
                         "Given a diff on a directory of TODO items, return a commit message for these changes."
                             .to_string(),
                         if diff.len() == 0 { "init".to_string() } else { diff },
                     )
                     .await?
                     .content);
-                }
+            }
 
-                // starting to think that this should always be the case
-                let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
-                    let conversation = Self::conversation_to_string();
+            // starting to think that this should always be the case
+            let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
+                let conversation = Self::conversation_to_string();
 
-                    eprintln!("Committing conversation...");
-                    vcs::add_and_commit(
-                        None,
-                        &CommitMessageBuilder::new(conversation)
-                            .set_header(CommitMessageType::Conversation)
-                            .build(),
-                        true,
-                    )?
-                    .to_string()
-                } else {
-                    String::new()
-                };
-
-                if let Some(commit_message) = diff_message {
-                    eprintln!("Committing TODO changes...");
-                    prompts::file_tracking::FileTracker::commit_changes(
-                        &conversation_hash,
-                        &CommitMessageBuilder::new(commit_message)
-                            .set_header(CommitMessageType::NarrativeChange)
-                            .with_conversation_hash(conversation_hash.clone())
-                            .build(),
-                    )?;
-                }
-
-                conversation_hash
+                eprintln!("Committing conversation...");
+                vcs::add_and_commit(
+                    None,
+                    &CommitMessageBuilder::new(conversation)
+                        .set_header(CommitMessageType::Conversation)
+                        .build(),
+                    true,
+                )?
+                .to_string()
             } else {
                 String::new()
-            },
-        )
+            };
+
+            if let Some(commit_message) = diff_message {
+                eprintln!("Committing TODO changes...");
+                file_tracking::FileTracker::commit_changes(
+                    &conversation_hash,
+                    &CommitMessageBuilder::new(commit_message)
+                        .set_header(CommitMessageType::NarrativeChange)
+                        .with_conversation_hash(conversation_hash.clone())
+                        .build(),
+                )?;
+            }
+
+            conversation_hash
+        } else {
+            String::new()
+        })
     }
 
     /// Basic LLM request without tool usage
@@ -172,14 +174,15 @@ impl Auditor {
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
-        let response = tui::call_with_status(async move |tx| {
-            tx.send(tui::Status::Working("Thinking...".into())).await?;
+        let response = display::call_with_status(async move |tx| {
+            tx.send(display::Status::Working("Thinking...".into()))
+                .await?;
 
             let (request_tx, mut request_rx) = channel(10);
 
             tokio::spawn(async move {
                 while let Some(msg) = request_rx.recv().await {
-                    tx.send(tui::Status::Working(msg)).await.unwrap();
+                    tx.send(display::Status::Working(msg)).await.unwrap();
                 }
             });
 
@@ -227,14 +230,15 @@ impl Auditor {
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
-        let response = tui::call_with_status(async move |tx| {
-            tx.send(tui::Status::Working("Thinking...".into())).await?;
+        let response = display::call_with_status(async move |tx| {
+            tx.send(display::Status::Working("Thinking...".into()))
+                .await?;
 
             let (request_tx, mut request_rx) = channel(10);
 
             tokio::spawn(async move {
                 while let Some(msg) = request_rx.recv().await {
-                    tx.send(tui::Status::Working(msg)).await.unwrap();
+                    tx.send(display::Status::Working(msg)).await.unwrap();
                 }
             });
 
@@ -270,6 +274,7 @@ pub enum CommitMessageType {
 
 pub struct CommitMessageBuilder {
     header: String,
+    session_id: String,
     // This should only be None for the conversation commits themselves
     conversation_hash: Option<String>,
     author_note: Option<String>,
@@ -280,6 +285,7 @@ impl CommitMessageBuilder {
     pub fn new(body: String) -> Self {
         Self {
             header: "VIZIER".to_string(),
+            session_id: AUDITOR.lock().unwrap().session_id.clone(),
             conversation_hash: None,
             author_note: None,
             body,
@@ -311,7 +317,7 @@ impl CommitMessageBuilder {
     }
 
     pub fn build(&self) -> String {
-        let mut message = self.header.clone();
+        let mut message = format!("{}\nSession ID: {}", self.header.clone(), self.session_id);
 
         if let Some(ch) = &self.conversation_hash {
             message = format!("{}\nConversation: {}", message, ch);

@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 use std::sync::RwLock;
 
+use crate::{SYSTEM_PROMPT_BASE, tools, tree};
+
 lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::default());
 }
@@ -29,18 +31,18 @@ pub fn get_config() -> Config {
 }
 
 pub fn get_system_prompt() -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = prompts::SYSTEM_PROMPT_BASE.to_string();
+    let mut prompt = SYSTEM_PROMPT_BASE.to_string();
 
     prompt.push_str("<meta>");
 
-    let file_tree = prompts::tree::build_tree()?;
+    let file_tree = tree::build_tree()?;
 
     prompt.push_str(&format!(
         "<fileTree>{}</fileTree>",
-        prompts::tree::tree_to_string(&file_tree, "")
+        tree::tree_to_string(&file_tree, "")
     ));
 
-    prompt.push_str(&format!("<todos>{}</todos>", prompts::tools::list_todos()));
+    prompt.push_str(&format!("<todos>{}</todos>", tools::list_todos()));
 
     prompt.push_str(&format!(
         "<currentWorkingDirectory>{}</currentWorkingDirectory>",

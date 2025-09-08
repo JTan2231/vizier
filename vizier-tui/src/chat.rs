@@ -14,6 +14,7 @@ fn get_spinner_char(index: usize) -> String {
 }
 
 // TODO: This interacts directly over the wire and doesn't go through the auditor
+// TODO: This is _way out of date_ and shouldn't be considered usable
 
 pub struct Chat {
     api: wire::types::API,
@@ -21,6 +22,9 @@ pub struct Chat {
     input: String,
     scroll: u16,
     spinner_increment: usize,
+
+    base_system_prompt: String,
+    tools: Vec<wire::types::Tool>,
 
     // These two are both cumulative
     input_tokens: usize,
@@ -45,6 +49,11 @@ impl Chat {
             input: String::new(),
             scroll: 0,
             spinner_increment: 0,
+
+            // TODO: Actually set these(I imagine some sort of configuration later on)
+            base_system_prompt: String::new(),
+            tools: Vec::new(),
+
             input_tokens: 0,
             output_tokens: 0,
             tx,
@@ -70,13 +79,15 @@ impl Chat {
             let tx_clone = self.tx.clone();
             let api_clone = self.api.clone();
             let message_history = self.messages.clone();
+            let system_prompt = self.base_system_prompt.clone();
+            let tools = self.tools.clone();
             self.receiving_handle = Some(tokio::spawn(async move {
                 wire::prompt_with_tools_and_status(
                     tx_clone,
                     api_clone,
-                    prompts::SYSTEM_PROMPT_BASE,
+                    &system_prompt,
                     message_history,
-                    prompts::tools::get_tools(),
+                    tools,
                 )
                 .await
                 .unwrap()

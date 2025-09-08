@@ -1,6 +1,11 @@
+pub mod auditor;
+pub mod config;
+pub mod display;
 pub mod file_tracking;
+pub mod observer;
 pub mod tools;
 pub mod tree;
+pub mod vcs;
 pub mod walker;
 
 pub const SYSTEM_PROMPT_BASE: &str = r#"

@@ -1,5 +1,7 @@
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
+use crate::{file_tracking, vcs};
+
 const TODO_DIR: &str = ".vizier/";
 
 // TODO: We should only default to the current directory if there isn't a configured target
@@ -79,6 +81,7 @@ Parameters:
     depth: Maximum number of commits to display (default: 10 if parsing fails--this is also the maximum).
     commit_message_type: Optional filter; only commits whose messages contain this string
                          (case-insensitive) will be shown. If empty, no filtering is applied.
+                         Null is inapplicable here. Use an empty string to omit.
 
 Output:
 - Each commit is listed on a new line in the format:
@@ -118,7 +121,7 @@ Notes:
 ")]
 fn add_todo(name: String, description: String) -> String {
     let filename = format!("{}todo_{}.md", get_todo_dir(), name);
-    if let Err(e) = crate::file_tracking::FileTracker::write(&filename, &description) {
+    if let Err(e) = file_tracking::FileTracker::write(&filename, &description) {
         llm_error(&format!("Failed to create todo file {}: {}", filename, e))
     } else {
         "Todo added successfully".to_string()
@@ -137,7 +140,7 @@ Notes:
 ")]
 fn delete_todo(name: String) -> String {
     let filename = format!("{}todo_{}.md", get_todo_dir(), name);
-    if let Err(e) = crate::file_tracking::FileTracker::delete(&filename) {
+    if let Err(e) = file_tracking::FileTracker::delete(&filename) {
         llm_error(&format!("Failed to create delete file {}: {}", filename, e))
     } else {
         "Todo deleted successfully".to_string()
@@ -155,8 +158,7 @@ Notes: Content is appended with separator lines for readability
 fn update_todo(todo_name: String, update: String) -> String {
     let filename = format!("{}{}", get_todo_dir(), todo_name.clone());
 
-    if let Err(e) =
-        crate::file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
+    if let Err(e) = file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
     {
         llm_error(&format!("Failed to create todo file {}: {}", filename, e))
     } else {
@@ -171,7 +173,7 @@ Parameters:
 
 Returns: String containing file contents or error message if read fails")]
 fn read_file(filepath: String) -> String {
-    let contents = crate::file_tracking::FileTracker::read(&filepath);
+    let contents = file_tracking::FileTracker::read(&filepath);
     if let Err(e) = contents {
         return llm_error(&format!("Failed to read todo file {}: {}", filepath, e));
     }
@@ -205,7 +207,7 @@ Returns: String containing the TODO item's contents")]
 fn read_todo(todo_name: String) -> String {
     let filename = format!("{}{}", get_todo_dir(), todo_name);
 
-    let contents = crate::file_tracking::FileTracker::read(&filename.clone());
+    let contents = file_tracking::FileTracker::read(&filename.clone());
     if let Err(e) = contents {
         llm_error(&format!("Failed to read todo file {}: {}", filename, e))
     } else {

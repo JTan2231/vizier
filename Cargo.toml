@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "cli",
-    "prompts",
-    "tui", "vcs",
+    "vizier-cli",
+    "vizier-core",
+    "vizier-tui"
 ]

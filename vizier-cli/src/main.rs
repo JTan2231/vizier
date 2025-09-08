@@ -6,21 +6,16 @@ use clap::Parser;
 use colored::*;
 use tempfile::{Builder, TempPath};
 
-use prompts::tools::get_todo_dir;
-
-use crate::auditor::{Auditor, CommitMessageBuilder, CommitMessageType};
-
-mod auditor;
-mod config;
+use vizier_core::{
+    auditor,
+    auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
+    config, tools, vcs,
+};
 
 #[derive(Parser)]
 #[command(version, about = "A CLI for LLM project management.")]
 struct Args {
     user_message: Option<String>,
-
-    /// List and browse existing TODOs
-    #[arg(short = 'l', long)]
-    list: bool,
 
     #[arg(short = 'd', long)]
     debug: bool,
@@ -28,10 +23,6 @@ struct Args {
     /// Set LLM provider to use for main prompting + tool usage
     #[arg(short = 'p', long)]
     provider: Option<String>,
-
-    /// Chat interface with LLM
-    #[arg(short = 'c', long)]
-    chat: bool,
 
     /// Force the agent to perform an action
     #[arg(short = 'f', long)]
@@ -74,8 +65,6 @@ fn print_usage() {
     {}    Optional free-form message to the assistant
 
 {}
-    {}, {}                 Start interactive chat session
-    {}, {}                 List and browse existing TODOs
     {}, {} <REF|RANGE>     "Save" tracked changes since REF/RANGE with AI commit message and update TODOs/snapshot
     {}, {}          Equivalent to `-s HEAD`
     {}, {} <MSG>   Developer note to append to the commit message (mutually exclusive with `-M`)
@@ -87,8 +76,6 @@ fn print_usage() {
 
 {}
     {} "add a TODO to implement auth"
-    {} --chat
-    {} --list
     {} --save HEAD~3..HEAD
     {} --save-latest
     {} --save-latest -m "my commit message"
@@ -100,10 +87,6 @@ fn print_usage() {
         "ARGS:".bright_yellow().bold(),
         "[MESSAGE]".bright_blue(),
         "OPTIONS:".bright_yellow().bold(),
-        "-c".bright_green(),
-        "--chat".bright_green(),
-        "-l".bright_green(),
-        "--list".bright_green(),
         "-s".bright_green(),
         "--save".bright_green(),
         "-S".bright_green(),
@@ -121,8 +104,6 @@ fn print_usage() {
         "-V".bright_green(),
         "--version".bright_green(),
         "EXAMPLES:".bright_yellow().bold(),
-        "vizier".bright_green(),
-        "vizier".bright_green(),
         "vizier".bright_green(),
         "vizier".bright_green(),
         "vizier".bright_green(),
@@ -185,7 +166,7 @@ async fn save(
     let response = Auditor::llm_request_with_tools(
         crate::config::get_system_prompt()?,
         format!("Update the snapshot and existing TODOs as needed",),
-        prompts::tools::get_tools(),
+        tools::get_tools(),
     )
     .await?;
 
@@ -342,11 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
-    let no_primary_action = args.user_message.is_none()
-        && !args.list
-        && !args.chat
-        && args.save.is_none()
-        && !args.save_latest;
+    let no_primary_action = args.user_message.is_none() && args.save.is_none() && !args.save_latest;
 
     let invalid_commit_msg_flags = args.commit_message.is_some() && args.commit_message_editor;
 
@@ -401,8 +378,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     }
 
-    if let Err(e) = std::fs::create_dir_all(get_todo_dir()) {
-        eprintln!("Error creating TODO directory {:?}: {e}", get_todo_dir());
+    if let Err(e) = std::fs::create_dir_all(tools::get_todo_dir()) {
+        eprintln!(
+            "Error creating TODO directory {:?}: {e}",
+            tools::get_todo_dir()
+        );
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
@@ -413,26 +393,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cfg.force_action = args.force_action;
     config::set_config(cfg);
-
-    if args.list {
-        match tui::list_tui(project_root.join(get_todo_dir())) {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                eprintln!("Error running list TUI: {e}");
-                return Err(Box::<dyn std::error::Error>::from(e));
-            }
-        }
-    }
-
-    if args.chat {
-        match tui::chat_tui().await {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                eprintln!("Error running chat TUI: {e}");
-                return Err(Box::<dyn std::error::Error>::from(e));
-            }
-        }
-    }
 
     let system_prompt = match crate::config::get_system_prompt() {
         Ok(s) => s,
@@ -445,9 +405,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_msg = args.user_message.expect("guarded above");
 
     let response =
-        match Auditor::llm_request_with_tools(system_prompt, user_msg, prompts::tools::get_tools())
-            .await
-        {
+        match Auditor::llm_request_with_tools(system_prompt, user_msg, tools::get_tools()).await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Error during LLM request: {e}");

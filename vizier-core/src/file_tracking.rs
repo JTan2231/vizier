@@ -1,10 +1,13 @@
-use fuzzy_matcher::FuzzyMatcher;
-use fuzzy_matcher::skim::SkimMatcherV2;
-use lazy_static::lazy_static;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Mutex;
+
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use lazy_static::lazy_static;
+
+use crate::vcs;
 
 lazy_static! {
     static ref FILE_TRACKER: Mutex<FileTracker> = Mutex::new(FileTracker::new());
@@ -53,7 +56,7 @@ impl FileTracker {
     /// changes to existing TODOs and narrative threads
     /// Doesn't do anything if there are no changes to commit
     pub fn commit_changes(
-        conversation_hash: &str,
+        _conversation_hash: &str,
         message: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
@@ -63,10 +66,7 @@ impl FileTracker {
         // TODO: Commit message builder
         vcs::add_and_commit(
             Some(vec![&crate::tools::get_todo_dir()]),
-            &format!(
-                "VIZIER THREAD UPDATE\n\nConversation: {}\n\nVIZIER: {}",
-                conversation_hash, message
-            ),
+            &format!("{}", message),
             false,
         )?;
 
