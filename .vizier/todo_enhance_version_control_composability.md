@@ -128,3 +128,29 @@ Acceptance unchanged: final commit reflects all LLM-produced changes; help text 
 
 ---
 
+Refinement (2025-09-08): Align with Snapshot Thread B; commit from staged diff, extract save_project(), correct help, bootstrap store, and add Audit-Anchor.
+
+- Commit message from final staged diff (including .vizier)
+  • File: vizier-cli/src/main.rs (args.save path)
+  • Change: After LLM updates and git add -u, recompute prompts::tools::diff() from the index and use this to generate the commit message. Ensure .vizier changes are included in staging and diff.
+
+- Extract save_project() orchestration
+  • File: vizier-cli/src/main.rs
+  • Change: Introduce fn save_project() -> Result<(), Box<dyn std::error::Error>> that performs: (1) run tools to update snapshot/TODOs, (2) git add -u, (3) recompute diff from index, (4) build commit message from COMMIT_PROMPT + diff, (5) append Audit-Anchor if available, (6) git commit -m. Main delegates to this function and propagates errors.
+
+- Audit-Anchor trailer linkage
+  • File: vizier-cli/src/main.rs
+  • Change: If vizier_core::file_tracking::staged_fingerprint() -> Some(anchor), append "\n\nAudit-Anchor: <anchor>" to the commit message before committing.
+
+- CLI help parity and exclusivity
+  • File: vizier-cli/src/main.rs::print_usage()
+  • Change: Document -S/--summarize and -s/--save correctly; clarify -m/--commit-message and -M/--commit-message-editor are mutually exclusive, and examples use -s/--save consistently.
+
+- First-run status store bootstrap
+  • File: vizier-core/src/tools.rs (or current location of load_todos)
+  • Change: load_todos(): if store missing, create .vizier/ and an empty todos.json and return Ok(empty). Callers update_todo_status/read_todo_status should work without special-casing.
+
+Acceptance: --save uses staged diff and includes .vizier; help text correct with -m/-M exclusivity; save_project() testable and returns errors; first-run projects don’t crash; commit includes Audit-Anchor when available.
+
+---
+

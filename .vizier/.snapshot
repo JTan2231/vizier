@@ -1,11 +1,11 @@
-Project Snapshot — Active Narrative Threads and Concrete Plot Points
+Project Snapshot — Active Narrative Threads (updated 2025-09-08)
 
 Theme: Close the loop between promise and delivery in three areas: (1) uninterrupted TUI edit/browse; (2) --save pipeline composes with git and reflects final staged diff; (3) safety rails + observability make tool effects auditable and reversible.
 
 Thread A — TUI editing and responsiveness
 Conflict: Editing exits the app; scroll lacks bounds and page keys; editor shell args duplicated; TODO filtering missing.
 
-Required scenes (code-bound):
+Concrete scenes (code-bound):
 - Persist edits without terminating the app
   • vizier-tui/src/lib.rs::App::enter_directory(): remove std::process::exit(0); after user_editor(), re-enter alt screen + raw mode and refresh selection/preview.
 - Editor write-back + fallback
@@ -28,7 +28,7 @@ Acceptance: Editing returns to TUI with saved changes; scroll bounded with page/
 Thread B — Version-control composability for --save
 Conflict: Commit uses pre-staged diff; help text must reflect -m/-M exclusivity; audit anchor trailer missing.
 
-Required scenes (code-bound):
+Concrete scenes (code-bound):
 - Commit from final, staged diff
   • vizier-cli/src/main.rs: after LLM updates and git add -u, recompute diff and feed to commit message generation; then commit.
 - Extract save flow
@@ -45,7 +45,7 @@ Acceptance: --save reflects final staged diff (including .vizier), help text cor
 Thread C — Safety rails, observability, and reversible effects
 Conflict: Tool calls opaque; failures hard to attribute; no dry-run switch.
 
-Required scenes (code-bound):
+Concrete scenes (code-bound):
 - Conversation/LLM audit log
   • vizier-core::auditor/tools: append to .vizier/logs/llm_audit.jsonl per tool plan/result with ts, tool, args, truncated result, token counts, correlation_id.
 - Execution plan capture + SAFE_APPLY gate
@@ -55,9 +55,6 @@ Required scenes (code-bound):
 
 Acceptance: Every tool call produces audit; plans captured; SAFE_APPLY gates execution; errors visible and logged; fresh repos don’t crash.
 
-Notes on current code state after refactor:
-- vizier-tui/src/lib.rs still calls std::process::exit(0) after opening editor and duplicates "-c" while Shell::get_interactive_args() already includes it — both violate Thread A scenes.
-- vizier-cli/src/main.rs generates diff before updates and excludes .vizier from save path; save flow isn’t staged-diff based and lacks Audit-Anchor — violates Thread B.
-- Help text largely aligned but mutual exclusivity check is present only in args validation, not emphasized in usage examples — minor.
-
-Next invariant scenes to implement are captured in TODO files below.
+Status since last update:
+- Conflicts and scenes validated against current code pointers in vizier-tui/src/lib.rs and vizier-cli/src/main.rs; help text still needs exclusivity emphasis; .vizier first-run guards not present yet.
+- TODO files aligned below; duplicates merged into single threads for TUI, VCS composability, and safety/observability.

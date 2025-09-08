@@ -77,3 +77,21 @@ Add concrete code anchors for fallback/editor errors and spinner cleanup integra
 
 ---
 
+Refinement (2025-09-08): Align with Snapshot Thread A and remove duplication with todo_enhance_tui_interaction.md
+
+- App::enter_directory(): delete std::process::exit(0) after user_editor(). Surround editor launch with disable_raw_mode + LeaveAlternateScreen before, EnterAlternateScreen + enable_raw_mode after. On success reload selection via read_selected_file_content(); on error set preview to concise failure and log.
+
+- user_editor(original_path, contents): change signature to accept original path; write contents to tempfile; launch $EDITOR using Shell::get_interactive_args() only (do not append another "-c"); after exit, write edited temp back to original_path. If $EDITOR unset, fallback to vi (Unix) or notepad (Windows) and render a one-time warning.
+
+- Keybindings in list_tui(): e(edit current file), r(reload & reset scroll), Home/End (jump), PageUp/PageDown (height-1). Clamp scroll to lines.saturating_sub(visible_height).
+
+- App::refresh_files(): when browsing TODO dir (env VIZIER_TODO_DIR or .vizier/todos), include only *.md and exclude dotfiles; keep dir-first sort.
+
+- display_status(): replace CR spinner with Clear(ClearType::CurrentLine) + MoveToColumn(0) before rendering; ensure trailing newline on completion.
+
+- Error logging: on editor spawn/wait/write-back failure append to .vizier/logs/errors.jsonl with {ts, source:"tui", action:"user_editor", path, message, stderr?}.
+
+Acceptance unchanged: edit returns to TUI without exiting, saved changes visible; scroll bounded and keybindings work; shell args correct across Bash/Zsh/Fish; errors logged.
+
+---
+
