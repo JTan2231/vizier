@@ -3,72 +3,61 @@ Project Snapshot — Active Narrative Threads and Concrete Plot Points
 Theme: Close the loop between promise and delivery in three areas: (1) uninterrupted TUI edit/browse; (2) --save pipeline composes with git and reflects final staged diff; (3) safety rails + observability make tool effects auditable and reversible.
 
 Thread A — TUI editing and responsiveness
-Conflict: Editing jumps out of the app; spinner artifacts; scrolling overflows; shell args duplicated; missing $EDITOR breaks flow.
+Conflict: Editing exits the app; scroll lacks bounds and page keys; editor shell args duplicated; TODO filtering missing.
 
 Required scenes (code-bound):
 - Persist edits without terminating the app
-  • tui/src/lib.rs::App::enter_directory(): stop std::process::exit(0) after user_editor(); wrap editor with leave/enter alt screen and raw mode toggles; refresh selection and preview on return.
-- Write-back semantics for the editor
-  • tui/src/lib.rs::user_editor(original_path, contents): write temp; launch $EDITOR; on success, write back to original_path; surface errors in preview.
-- Clean spinner rendering
-  • tui/src/lib.rs::display_status(): replace "\r" hack with crossterm::terminal::Clear(ClearType::CurrentLine) + MoveToColumn(0) before rendering spinner/message.
-- In-TUI edit and safe reload
-  • tui/src/lib.rs::list_tui(): bind 'e' to edit current file; on return, reload content and redraw.
-- Bounded scrolling and jump keys
-  • Clamp scroll to visible preview height; add Home/End and PageUp/PageDown (height-1) in list_tui().
+  • vizier-tui/src/lib.rs::App::enter_directory(): remove std::process::exit(0); after user_editor(), re-enter alt screen + raw mode and refresh selection/preview.
+- Editor write-back + fallback
+  • vizier-tui/src/lib.rs::user_editor(path, contents): write temp, launch $EDITOR; on return, write temp contents back to original file; default to vi/notepad if $EDITOR unset; one-time warning when falling back.
+- Clean spinner/status rendering
+  • vizier-tui/src/lib.rs::display_status(): use MoveToColumn(0) + Clear(ClearType::CurrentLine) prior to printing spinner (if/when status UI exists in this crate).
+- In-TUI edit binding
+  • vizier-tui/src/lib.rs::list_tui(): bind 'e' to edit current file via user_editor(); on success, reload content and redraw.
+- Bounded scrolling + jump keys
+  • Clamp scroll to visible height; implement PageUp/PageDown=height-1 and Home/End in list_tui()/ui().
 - Focused TODO browsing
-  • tui/src/lib.rs::App::refresh_files(): when in TODO dir (VIZIER_TODO_DIR or .vizier/todos), include only *.md, ignore dotfiles.
+  • vizier-tui/src/lib.rs::App::refresh_files(): when browsing TODO dir (tools::get_todo_dir or .vizier/todos), include only *.md and skip dotfiles.
 - Shell arg duplication fix
-  • tui/src/lib.rs::user_editor(): rely on Shell::get_interactive_args() for command flag; do not append extra "-c".
-- Editor fallback + error logging
-  • Default to vi/notepad if $EDITOR unset; warn once in status; append editor failures to .vizier/logs/errors.jsonl with {ts, source:"tui", action:"user_editor", path, message, stderr?}.
+  • vizier-tui/src/lib.rs::user_editor(): use Shell::get_interactive_args() as-is; do not append extra "-c" if already provided.
+- Error logging
+  • Failures append to .vizier/logs/errors.jsonl with {ts, source:"tui", action, path, message}.
 
-Acceptance:
-- Editing returns to TUI with saved changes and preview updated; spinner clean; scroll bounded; Home/End and PageUp/PageDown work; 'e' edits selected TODO; $EDITOR fallback warns once; failures logged.
+Acceptance: Editing returns to TUI with saved changes; scroll bounded with page/home/end; 'e' edits file; no duplicate -c flag; errors logged.
 
 Thread B — Version-control composability for --save
-Conflict: Commit uses stale diff; help text mismatches; first-run status store missing; no audit trailer.
+Conflict: Commit uses pre-staged diff; help text must reflect -m/-M exclusivity; audit anchor trailer missing.
 
 Required scenes (code-bound):
 - Commit from final, staged diff
-  • cli/src/main.rs (args.save): move prompts::tools::diff() after LLM updates and git add -u; generate message from the staged diff.
+  • vizier-cli/src/main.rs: after LLM updates and git add -u, recompute diff and feed to commit message generation; then commit.
 - Extract save flow
-  • cli/src/main.rs::save_project() -> Result<(), Box<dyn Error>> performing: (a) LLM update snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate message, (e) git commit.
+  • vizier-cli/src/main.rs::save_project() that orchestrates: (a) run tools to update snapshot/TODOs, (b) git add -u, (c) recompute diff, (d) generate message, (e) commit.
 - Correct help text
-  • cli/src/main.rs::print_usage(): show -S/--summarize and -s/--save; document -m/-M semantics and exclusivity.
+  • vizier-cli/src/main.rs::print_usage(): ensure -m/-M documented as mutually exclusive; examples use -s/--save and -S/--save-latest consistently.
 - First-run robustness
-  • prompts/src/tools.rs::load_todos(): if missing, create .vizier/ and empty todos.json; return Ok(empty map).
+  • vizier-core::tools::load_todos(): create .vizier/ and empty todos.json if missing, return Ok(empty).
 - Audit trailer linkage
-  • save_project(): if prompts::file_tracking::staged_fingerprint() -> Some(anchor), append "Audit-Anchor: <anchor>" trailer.
+  • save_project(): if vizier_core::file_tracking::staged_fingerprint() -> Some(anchor), append "Audit-Anchor: <anchor>" trailer to commit.
 
-Acceptance:
-- --save commits reflect all LLM-produced changes (including .vizier updates) from the staged diff; help text correct; save_project() returns errors; first-run status ok; commit includes Audit-Anchor when available.
+Acceptance: --save reflects final staged diff (including .vizier), help text correct, first-run OK, commit includes Audit-Anchor when available.
 
 Thread C — Safety rails, observability, and reversible effects
-Conflict: Tool calls opaque; failures hard to attribute; no dry-run plan.
+Conflict: Tool calls opaque; failures hard to attribute; no dry-run switch.
 
 Required scenes (code-bound):
 - Conversation/LLM audit log
-  • prompts/src/lib.rs and prompts/src/tools.rs: append to .vizier/logs/llm_audit.jsonl for each tool plan and result with ts, tool, args, truncated result, token counts, correlation_id.
+  • vizier-core::auditor/tools: append to .vizier/logs/llm_audit.jsonl per tool plan/result with ts, tool, args, truncated result, token counts, correlation_id.
 - Execution plan capture + SAFE_APPLY gate
-  • prompts/src/lib.rs: write execution plan events to .vizier/logs/plan.jsonl; if SAFE_APPLY not set, only persist plan and return dry-run summary; when set, execute and record outcomes.
+  • vizier-core::auditor: write plan events to .vizier/logs/plan.jsonl; if SAFE_APPLY unset, persist plan and return dry-run summary; when set, execute and record outcomes.
 - Error reporting and user event tracing
-  • cli/src/auditor.rs and tui/src/chat.rs: on tool error, emit .vizier/logs/errors.jsonl with context (thread, path, command, stderr) and show concise UI message.
-- Bootstrap status store (unified with Thread B)
-  • prompts/src/tools.rs::load_todos(): create .vizier/ and empty todos.json if missing.
+  • vizier-core::auditor + vizier-tui/src/chat.rs: on tool error, emit .vizier/logs/errors.jsonl with context (thread, path, command, stderr) and concise UI message.
 
-Acceptance:
-- Every tool call produces an audit event; plans captured; SAFE_APPLY enables dry-run; errors visible and logged; fresh repos don’t crash.
+Acceptance: Every tool call produces audit; plans captured; SAFE_APPLY gates execution; errors visible and logged; fresh repos don’t crash.
 
-What changed in this snapshot:
-- Tightened Thread A to include PageUp/PageDown behavior and one-time $EDITOR warning; anchored spinner cleanup to MoveToColumn(0)+Clear.
-- Thread B refined with explicit Audit-Anchor trailer and clarified help text -m/-M exclusivity.
-- Thread C reconciled bootstrap step with Thread B to avoid duplication; emphasized dry-run summary behavior under SAFE_APPLY.
+Notes on current code state after refactor:
+- vizier-tui/src/lib.rs still calls std::process::exit(0) after opening editor and duplicates "-c" while Shell::get_interactive_args() already includes it — both violate Thread A scenes.
+- vizier-cli/src/main.rs generates diff before updates and excludes .vizier from save path; save flow isn’t staged-diff based and lacks Audit-Anchor — violates Thread B.
+- Help text largely aligned but mutual exclusivity check is present only in args validation, not emphasized in usage examples — minor.
 
-Open TODO files tracking these threads:
-- todo_enhance_tui_interaction.md — editor lifecycle, spinner cleanup, scroll bounds + keybindings, TODO filtering, shell arg fix, fallback + error logs.
-- todo_enhance_version_control_composability.md — final staged diff, factored save flow, help correction, first-run store, Audit-Anchor trailer.
-- todo_todo_llm_audit_log_and_conversation_event_journal.md.md — conversation/tool audit log.
-- todo_todo_capture_llm_execution_plans_and_safe_apply_gate.md.md — plan capture and SAFE_APPLY gate.
-- todo_todo_observable_error_reporting_and_user_event_tracing.md.md — user-facing error surfacing + logs.
-- todo_todo_bootstrap_status_store.md.md — unify bootstrap responsibilities with tools.rs changes.
+Next invariant scenes to implement are captured in TODO files below.

@@ -109,3 +109,22 @@ Acceptance unchanged: final commit reflects all LLM-produced changes; help text 
 
 ---
 
+- Commit from final, staged diff and include .vizier updates
+  • File: vizier-cli/src/main.rs
+  • Change: Rework save() into save_project(): run LLM/tools to update snapshot/TODOs, then call vcs::add_all_or_update() (including .vizier), recompute diff from index (staged), generate commit message from that staged diff, then commit. Do not exclude .vizier in save path.
+
+- Correct CLI help and mutual exclusivity
+  • File: vizier-cli/src/main.rs::print_usage()
+  • Change: Ensure -m/--commit-message and -M/--commit-message-editor are marked mutually exclusive in usage text and examples use -s/--save consistently.
+
+- Audit-Anchor trailer
+  • File: vizier-cli/src/main.rs
+  • Change: When building commit message, if vizier_core::file_tracking::staged_fingerprint() returns Some(anchor), append an "Audit-Anchor: <anchor>" trailer via CommitMessageBuilder.
+
+- First-run store bootstrap
+  • File: vizier-core/src/tools.rs (or config/observer where load_todos lives after refactor)
+  • Change: On missing .vizier or missing todos store, create directories/files and return Ok(empty) instead of error. Keep behavior unified with Thread C bootstrap to avoid duplication.
+
+
+---
+

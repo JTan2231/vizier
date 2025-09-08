@@ -50,3 +50,30 @@ Add concrete code anchors for fallback/editor errors and spinner cleanup integra
 
 ---
 
+- Replace immediate exit on file edit
+  • File: vizier-tui/src/lib.rs
+  • Change: In App::enter_directory(), remove std::process::exit(0). After user_editor(), re-enable raw mode and re-enter alternate screen, then call refresh_files() and read_selected_file_content() to redraw.
+
+- Editor writes back and avoids duplicate shell flags
+  • File: vizier-tui/src/lib.rs
+  • Change: Modify user_editor() to accept (path: &Path, original_contents: &str). Write to tempfile, launch $EDITOR using Shell::get_interactive_args() only (do not append an extra "-c"), then read the tempfile and write back to the original path. If $EDITOR unset, default to vi/notepad and emit a one-time warning in TUI status.
+
+- Bind 'e' to edit and reload
+  • File: vizier-tui/src/lib.rs
+  • Change: In list_tui(), on KeyCode::Char('e') when selected is a file, call user_editor() and on success reload file content and redraw.
+
+- Bounded scrolling and jump keys
+  • File: vizier-tui/src/lib.rs
+  • Change: Track preview height from frame.area(); clamp app.scroll to (0..=max_scroll). Implement PageUp/PageDown as height-1 increments and Home/End set to 0/max.
+
+- Focus TODO browsing
+  • File: vizier-tui/src/lib.rs
+  • Change: In App::refresh_files(), when path ends with .vizier/todos or equals tools::get_todo_dir(), include only *.md and skip dotfiles.
+
+- Error logging
+  • File: vizier-tui/src/lib.rs
+  • Change: On editor launch failure or write-back error, append event to .vizier/logs/errors.jsonl with {ts, source:"tui", action:"user_editor", path, message} and render concise status message in TUI.
+
+
+---
+
