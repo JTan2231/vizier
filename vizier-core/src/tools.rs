@@ -1,6 +1,6 @@
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
-use crate::{file_tracking, vcs};
+use crate::{file_tracking, observer::CaptureGuard, vcs};
 
 const TODO_DIR: &str = ".vizier/";
 
@@ -66,10 +66,26 @@ fn llm_error(message: &str) -> String {
     format!("<error>{}</error>", message)
 }
 
+fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
+    let mut response = format!("<tool_output>{}</tool_output>", tool_output);
+
+    let (out, err) = guard.take_both();
+    if out.len() > 0 {
+        response = format!("<stdout>{}</stdout>", out);
+    }
+
+    if err.len() > 0 {
+        response = format!("<stderr>{}</stderr>", err);
+    }
+
+    response
+}
+
 #[tool(description = "Get the `git diff` of the project")]
 pub fn diff() -> String {
+    let guard = CaptureGuard::start();
     match vcs::get_diff(".", None, None) {
-        Ok(d) => d,
+        Ok(d) => build_llm_response(d, &guard),
         Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
     }
 }
@@ -94,6 +110,8 @@ Notes:
 - If no commit messages match, output will be empty.
 ")]
 pub fn git_log(depth: String, commit_message_type: String) -> String {
+    let guard = CaptureGuard::start();
+
     match vcs::get_log(
         depth.parse::<usize>().unwrap_or(10).max(10),
         if commit_message_type.len() > 0 {
@@ -102,7 +120,7 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
             None
         },
     ) {
-        Ok(d) => d,
+        Ok(d) => build_llm_response(d, &guard),
         Err(e) => return llm_error(&format!("Error getting git log: {}", e)),
     }
 }

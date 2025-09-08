@@ -163,9 +163,31 @@ async fn save(
     user_message: Option<String>,
     use_message_editor: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let provided_note = if let Some(message) = user_message {
+        Some(message)
+    } else if use_message_editor {
+        if let Ok(edited) = get_editor_message() {
+            Some(edited)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut save_instruction =
+        "<instruction>Update the snapshot and existing TODOs as needed</instruction>".to_string();
+
+    if let Some(note) = &provided_note {
+        save_instruction = format!(
+            "{}<change_author_note>{}</change_author_note>",
+            save_instruction, note
+        );
+    }
+
     let response = Auditor::llm_request_with_tools(
         crate::config::get_system_prompt()?,
-        format!("Update the snapshot and existing TODOs as needed",),
+        save_instruction,
         tools::get_tools(),
     )
     .await?;
@@ -185,14 +207,8 @@ async fn save(
         .set_header(CommitMessageType::CodeChange)
         .with_conversation_hash(conversation_hash.clone());
 
-    if let Some(message) = user_message {
-        message_builder.with_author_note(message);
-    }
-
-    if use_message_editor {
-        if let Ok(edited_message) = get_editor_message() {
-            message_builder.with_author_note(edited_message);
-        }
+    if let Some(note) = provided_note {
+        message_builder.with_author_note(note);
     }
 
     let commit_message = message_builder.build();
