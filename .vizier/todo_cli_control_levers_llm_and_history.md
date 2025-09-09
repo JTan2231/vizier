@@ -48,3 +48,35 @@ Acceptance criteria:
 - Running `vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit` updates the prompt’s <meta><config> block and enforces confirmation gates (skipped only if non-interactive with explicit allow).
 - TUI shows history and can revert last operation.
 - Non-interactive run fails fast on attempted destructive ops unless allowlist permits.
+Add configurable LLM and control levers, history/confirm/revert flows, and non-interactive allowances across CLI/TUI.
+Describe user-visible behavior to allow fine-grained control for both interactive and headless usage, exposing settings in a prompt <config> block and enforcing confirmation and history-based revert. Integrate CLI flags and a JSON config for headless runs. (thread: control-levers)
+
+Acceptance Criteria:
+- Configurable levers:
+  - Users can set provider, model, temperature, top_p, max_tokens, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode, and system_prompt_overrides.
+  - Defaults apply when unspecified; existing configs with only provider/force_action remain valid.
+  - The system prompt includes a <config> block reflecting effective (non-secret) settings.
+- CLI integration:
+  - Running: vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit updates the <config> block and enforces confirmation gates (skipped only when non-interactive and explicitly allowed).
+  - Flags supported: --provider, --model, --temperature, --top-p, --max-tokens, --history-limit, --confirm-destructive/--no-confirm-destructive, --auto-commit/--no-auto-commit, --enable-snapshots/--disable-snapshots, --non-interactive, --system-prompt-override <path|inline>, --config-json <path>.
+  - Numeric inputs are validated (temperature 0..=2, top_p 0..=1, max_tokens bounded); invalid values fall back to defaults with a warning.
+- History and confirmations:
+  - The system records each write/commit-capable operation with description, affected files, diff/patch, timestamp, and reversible flag, honoring history_limit.
+  - Before destructive actions, a confirmation is requested when confirm_destructive is true; behavior respects non_interactive_mode and an explicit allowlist.
+  - Users can revert the last N reversible operations; successful revert restores files with no partial writes.
+- TUI affordances:
+  - A confirmation prompt appears before disk writes or commits unless explicitly allowed.
+  - A History sidebar lists recent operations up to history_limit and allows reverting a selected one.
+  - Status line displays current LLM settings and offers a hotkey to cycle preset model/temperature combinations.
+- Headless (non-interactive) runs:
+  - A JSON control schema maps to Config and includes an allowlist (e.g., allowWrites, allowCommits, maxEdits).
+  - --config-json <path> loads and merges settings; destructive ops fail fast unless permitted by the allowlist.
+
+Pointers:
+- vizier-core/src/config.rs (Config fields, defaults, get_system_prompt() <config> block)
+- vizier-cli/src/main.rs (flag parsing, validation, set_config, --config-json merge)
+- vizier-core (history/confirmation/revert surfaces exported for TUI/CLI)
+- vizier-tui/src/chat.rs, vizier-tui/src/lib.rs (confirmation UI, history sidebar, status line)
+
+Implementation Notes (safety/correctness):
+- Reverts must be atomic and leave no partial writes; use pre/post snapshots or VCS where available. Enforce bounded history storage and avoid secrets in the <config> block. (snapshot: current-config-minimal)
