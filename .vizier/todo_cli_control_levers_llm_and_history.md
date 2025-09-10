@@ -79,4 +79,26 @@ Pointers:
 - vizier-tui/src/chat.rs, vizier-tui/src/lib.rs (confirmation UI, history sidebar, status line)
 
 Implementation Notes (safety/correctness):
-- Reverts must be atomic and leave no partial writes; use pre/post snapshots or VCS where available. Enforce bounded history storage and avoid secrets in the <config> block. (snapshot: current-config-minimal)
+- Reverts must be atomic and leave no partial writes; use pre/post snapshots or VCS where available. Enforce bounded history storage and avoid secrets in the <config> block. (snapshot: current-config-minimal)Add configurable control levers, history/confirm/revert flows, and headless allowances; surface in <config> and enforce across CLI/TUI.
+
+Describe:
+- Extend Config to include: model, temperature, top_p, max_tokens, system_prompt_overrides, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode. Preserve backward compatibility by mapping existing provider/force_action. Update get_system_prompt() to embed a <config> block (no secrets) so the model understands runtime constraints. (thread: CLI/TUI surface area; snapshot: Next concrete moves 1)
+- Wire CLI flags to set/validate these levers and call set_config(); support --config-json merge for headless runs with an allowlist. (thread: Headless discipline; snapshot: Next concrete moves 2,5)
+- Introduce Operation history with ring buffer (size = history_limit), confirmation workflow respecting confirm_destructive and non_interactive_mode, and revert via stored patches or VCS fallback; expose to TUI/CLI. (thread: Operation history + reversibility; snapshot: Next concrete moves 3)
+- TUI affordances: status line showing LLM settings, confirmation prompts before writes/commits, and a History sidebar with revert. (thread: CLI/TUI surface area; snapshot: Next concrete moves 4)
+
+Acceptance Criteria:
+- Running `vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit` updates the prompt’s <meta><config> and enforces confirmation gates; destructive ops are blocked unless explicitly allowed in headless mode.
+- CLI supports: --provider, --model, --temperature, --top-p, --max-tokens, --history-limit, --confirm-destructive/--no-confirm-destructive, --auto-commit/--no-auto-commit, --enable-snapshots/--disable-snapshots, --non-interactive, --system-prompt-override <path|inline>, --config-json <path>. Invalid numeric inputs fall back to defaults with warnings (temperature 0..=2, top_p 0..=1, bounded max_tokens).
+- History and confirmations: operations record description, affected files, diff/patch, timestamp, reversible flag; ring buffer honors history_limit. Confirmation is required before destructive actions when confirm_destructive is true; behavior respects non_interactive_mode and allowlist. Users can revert the last N reversible operations; revert is atomic with no partial writes.
+- TUI: shows current LLM settings in status, prompts for confirmation before writes/commits (unless allowed), and provides a History sidebar listing recent operations with the ability to revert one.
+- Headless runs: JSON control schema maps 1:1 to Config and includes allowlist (e.g., allowWrites, allowCommits, maxEdits). --config-json merges settings; destructive ops fail fast unless permitted.
+
+Pointers:
+- vizier-core/src/config.rs (Config fields, Default/back-compat, get_system_prompt() <config>)
+- vizier-cli/src/main.rs (flag parsing/validation, set_config, --config-json merge)
+- vizier-core history.rs + tools.rs (Operation, ring buffer, confirmation/revert APIs)
+- vizier-tui/src/chat.rs (status line, confirmation prompts, History sidebar)
+
+Implementation Notes (safety/correctness) (snapshot: Next concrete moves 3):
+- Reverts must be atomic; prefer patch apply with VCS fallback. Enforce bounded history and exclude secrets from <config>.
