@@ -51,6 +51,10 @@ struct Args {
     /// Use `*` to address all TODO items
     #[arg(short = 'c', long)]
     clean: Option<String>,
+
+    /// Interactive chat interface
+    #[arg(short = 'i', long)]
+    interactive: bool,
 }
 
 #[tokio::main]
@@ -77,7 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let no_primary_action = args.user_message.is_none()
         && args.save.is_none()
         && args.clean.is_none()
-        && !args.save_latest;
+        && !args.save_latest
+        && !args.interactive;
     let invalid_commit_msg_flags = args.commit_message.is_some() && args.commit_message_editor;
     if no_primary_action || invalid_commit_msg_flags {
         print_usage();
@@ -128,6 +133,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cfg.force_action = args.force_action;
     config::set_config(cfg);
+
+    if args.interactive {
+        match vizier_tui::chat_tui().await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                eprintln!("Error running chat TUI: {e}");
+                return Err(Box::<dyn std::error::Error>::from(e));
+            }
+        }
+    }
 
     inline_command(
         args.user_message

@@ -8,6 +8,6 @@ ratatui = "0.28.1"
 crossterm = "0.27.0"
 tempfile = "3"
 tokio = { version = "1.28", features = ["full"] }
-#wire = { git = "https://github.com/JTan2231/wire.git" }
-wire = { path = "../../wire/crates/wire" }
+wire = { git = "https://github.com/JTan2231/wire.git" }
 colored = "2"
+vizier-core = { path = "../vizier-core" }

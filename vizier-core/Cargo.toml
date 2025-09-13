@@ -15,11 +15,9 @@ ignore = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 inventory = "0.3"
-#wire = { git = "https://github.com/JTan2231/wire.git" }
-wire = { path = "../../wire/crates/wire" }
+wire = { git = "https://github.com/JTan2231/wire.git" }
 tokio = { version = "1", features = ["full"] }
 lazy_static = "1.4"
-vizier-tui = { path = "../vizier-tui" }
 fuzzy-matcher = "*"
 colored = "2"
 chrono = { version = "0.4", features = ["serde"] }

@@ -85,10 +85,10 @@ pub fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
     }
 }
 
-pub fn provider_arg_to_enum(provider: String) -> wire::types::API {
+pub fn provider_arg_to_enum(provider: String) -> wire::api::API {
     match provider.as_str() {
-        "anthropic" => wire::types::API::Anthropic(wire::types::AnthropicModel::Claude35SonnetNew),
-        "openai" => wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o),
+        "anthropic" => wire::api::API::Anthropic(wire::api::AnthropicModel::Claude35SonnetNew),
+        "openai" => wire::api::API::OpenAI(wire::api::OpenAIModel::GPT4o),
         _ => panic!("Unrecognized LLM provider: {}", provider),
     }
 }

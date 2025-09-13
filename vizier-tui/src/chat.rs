@@ -17,7 +17,7 @@ fn get_spinner_char(index: usize) -> String {
 // TODO: This is _way out of date_ and shouldn't be considered usable
 
 pub struct Chat {
-    api: wire::types::API,
+    api: wire::api::API,
     messages: Vec<wire::types::Message>,
     input: String,
     scroll: u16,
@@ -44,7 +44,7 @@ impl Chat {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
 
         Chat {
-            api: wire::types::API::OpenAI(wire::types::OpenAIModel::GPT4o),
+            api: wire::api::API::OpenAI(wire::api::OpenAIModel::GPT4o),
             messages: vec![],
             input: String::new(),
             scroll: 0,
