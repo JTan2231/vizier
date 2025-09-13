@@ -1,13 +1,14 @@
 Project trajectory snapshot
 
-Theme: Give operators precise, explicit control over the AI’s levers and its footprint on the workspace, with reversible operations and clear gates.
+Theme: Give operators precise, explicit control over the AI’s levers and its footprint on the workspace, with reversible operations and clear gates. Expand this into a native TUI chat that pairs conversation with diffs and safe, reversible edits.
 
 Active threads
-- Control levers in Config: Expand vizier-core/src/config.rs to express model-level params, safety gates, and history capacity, while remaining backward compatible. [Supersedes prior drifted snapshot threads]
-- CLI/TUI surface area: Flags and UI affordances must map 1:1 to config, exposing confirmation gates and visibility of current settings.
-- Operation history + reversibility: First-class Operation records with ring buffer, confirmation workflow, and revert via stored patches or git.
-- Headless discipline: Non-interactive runs require explicit allowlists; defaults lean safe.
-- Narrative contract + drift guardrails: System prompt embeds contract; auditor/vcs enforce alignment between code and snapshot/TODOs.
+- Control levers in Config: Expand vizier-core/src/config.rs to express model-level params, safety gates, and history capacity, while remaining backward compatible. [Depends on current code lacking these fields; see Status]
+- CLI/TUI surface area: Flags and UI affordances must map 1:1 to config, exposing confirmation gates and visibility of current settings. [Anchors: vizier-cli main.rs; vizier-tui/src/chat.rs]
+- Operation history + reversibility: First-class Operation records with ring buffer, confirmation workflow, and revert via stored patches or git. [Anchors: vizier-core history (new), tools.rs hooks]
+- Native Chat + Diff/Editing UX: TUI chat gains a split-view with diff and basic editor, enabling per-hunk apply/revert and live session lever controls. Streams token output and shows in-progress markers. [New thread]
+- Headless discipline: Non-interactive runs require explicit allowlists; defaults lean safe. [No change]
+- Narrative contract + drift guardrails: System prompt embeds contract; auditor/vcs enforce alignment between code and snapshot/TODOs. [No change]
 
 Recent decisions
 - Config will own: model, temperature, top_p, max_tokens, system_prompt_overrides, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode.
@@ -15,22 +16,26 @@ Recent decisions
 - CLI will add flags mapping to the new config surface; numeric ranges validated with safe fallbacks and warnings.
 - History layer stores minimal patches and metadata; revert prefers patch apply, falls back to VCS.
 - Contract strictness is configurable (advisory→strict) and can warn/block on drift at pre-commit.
+- TUI will host a split-view Chat + Context panel (diff/editor/history) with per-hunk apply/reject and session lever controls in the chat header. Streaming visibility is in-scope (Phase 1: token stream + in-progress markers; Phase 2: event timeline via observer hooks).
 
 Acceptance checkpoints
 - vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit updates the prompt’s <meta><config> and enforces confirmation gates per allowlist.
 - TUI shows history and can revert last operation.
 - Non-interactive run fails fast on destructive ops unless explicitly allowed.
 - System prompt includes <narrative_contract> and auditor surfaces NarrativeDrift when code changes without paired snapshot/TODO updates (blockable by config).
+- From chat, model-proposed patches render as diffs; user can accept/reject per hunk; applied changes are recorded and revertible. Chat header shows current LLM session settings. Streaming tokens visible during responses.
 
 Next concrete moves
 1) config.rs: Add fields + Default, map legacy provider/force_action, and implement get_system_prompt() embedding <config> and optional <narrative_contract>.
 2) vizier-cli main.rs: Add flags, parse, validate, merge, and set_config().
 3) vizier-core history.rs (new) + tools.rs hooks: Operation struct, ring buffer, record/require_confirmation/revert APIs; expose to TUI/CLI.
-4) vizier-tui: Status line for LLM settings, confirmation prompts, and History sidebar with revert.
-5) CLI README: JSON schema for headless control and --config-json merge semantics.
-6) auditor.rs + vcs.rs: Narrative drift checks and optional pre-commit hook utility aligned with contract strictness.
+4) vizier-tui: Introduce split-view in chat.rs: chat pane + context panel (diff/editor/history). Show LLM settings in header; allow per-hunk apply/reject; wire to history APIs.
+5) observer/instrumentation (Phase 1): Expose lightweight streaming hooks for token deltas and tool-in-progress markers; TUI subscribes to render live activity.
+6) CLI README: JSON schema for headless control and --config-json merge semantics.
+7) auditor.rs + vcs.rs: Narrative drift checks and optional pre-commit hook utility aligned with contract strictness.
 
 Status since last update
 - Code state confirms config surface is still minimal (provider/force_action) and get_system_prompt builds <meta> with fileTree/todos/cwd only; no <config> or contract yet (vizier-core/src/config.rs, display.rs).
 - COMMIT_PROMPT centralized in vizier-core; CLI still needs flags/control levers and history/revert surfaces.
+- TUI chat exists (vizier-tui/src/chat.rs) but lacks integrated diff/editor panels and streaming markers; this is now an active thread.
 - Snapshot/TODO process consolidation in .vizier is current source of truth; older parallel TODOs were pruned. Contract/guardrail TODO introduced to keep narrative/code aligned.
