@@ -236,7 +236,7 @@ fn read_todo(todo_name: String) -> String {
 #[tool(description = "Retrieves the current project trajectory snapshot.
 
 Returns: String containing snapshot contents or empty string if none exists")]
-fn read_snapshot() -> String {
+pub fn read_snapshot() -> String {
     let filename = format!("{}{}", get_todo_dir(), ".snapshot");
     std::fs::read_to_string(&filename).unwrap_or_default()
 }

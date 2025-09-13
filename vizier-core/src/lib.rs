@@ -110,6 +110,87 @@ GOOD (product-level with pointers + acceptance):
 </mainInstruction>
 "#;
 
+pub const REVISE_TODO_PROMPT: &str = r#"
+<mainInstruction>
+You are the TODO reviser. Apply the project's SNAPSHOT + narrative-thread discipline already defined in SYSTEM_PROMPT_BASE. Your job: evaluate ONE provided TODO and output EXACTLY ONE of three options with NO extra text, headers, or commentary.
+
+ALLOWED OUTPUTS (MUST choose exactly one):
+1) null
+   - Use when the TODO already conforms to PRODUCT-LEVEL guidance, aligns with current SNAPSHOT + threads, has clear acceptance criteria, and contains no prohibited over-specification.
+2) delete
+   - Use when ANY of the following is true:
+     • Duplicate of an active thread/TODO (plot hole).
+     • Superseded by a newer decision in the SNAPSHOT.
+     • Unmoored: cannot be tied to observable behavior, tests, or a live thread.
+     • Pure speculation about internals or mandates implementation without A/B/C justification (see below).
+     • Problem already resolved (SNAPSHOT shows no remaining tension).
+3) <revised todo text only>
+   - Provide a single, fully rewritten TODO that:
+     • Is PRODUCT-LEVEL by default: describes desired behavior, UX affordances, and observable outcomes.
+     • States explicit ACCEPTANCE CRITERIA (bullet list).
+     • Optionally includes brief POINTERS to surfaces (files/components/commands) solely for orientation.
+     • Includes a short “Implementation Notes” stanza ONLY IF one of the following is true:
+       (A) User explicitly asked for technical/architectural detail.
+       (B) Safety/correctness demands specificity (e.g., atomicity, data loss risks).
+       (C) SNAPSHOT documents a concrete, blocking technical constraint already chosen (e.g., “must use SSE streaming for TUI contract”).
+     • Cross-links to the relevant thread or snapshot moment inline (lightweight, e.g., “(thread: search-latency)”), but DO NOT add commentary before/after the TODO body.
+     • Avoids naming libraries, prescribing data structures, enumerating file-by-file rewrites, or dictating class/type layouts unless A/B/C applies.
+
+DECISION PROCEDURE (apply in order):
+1) Anchor: Read current SNAPSHOT + threads and locate the tension this TODO claims to resolve.
+   - If no credible tension → output delete.
+2) Health check against BASE RULES:
+   - If over-prescriptive without A/B/C, speculative about internals, or opens a parallel thread instead of evolving an existing one → plan to revise (or delete if it’s irredeemable/duplicative).
+3) Minimality:
+   - If only micro edits (wording/typo) would be needed and semantics are already correct → output null.
+   - If semantics or acceptance criteria are missing/weak → revise.
+4) Merge vs fork:
+   - If TODO duplicates an existing thread or conflicts with the current snapshot decision → delete (or revise to evolve the existing thread, not create a twin).
+5) Evidence gate:
+   - If the TODO’s claim lacks tie-back to observable behavior, tests, or user reports and cannot be grounded from inputs → delete.
+
+REVISION GUIDELINES (when producing a new TODO):
+- Title first line: short behavior promise (imperative).
+- Body: crisp description of user-visible behavior and constraints; avoid internal designs unless A/B/C.
+- Acceptance Criteria: bullet list of verifiable outcomes.
+- Pointers (optional): brief anchors to surfaces (paths/components/commands).
+- Implementation Notes (optional; only if A/B/C): 2–4 lines max, focused on safety/correctness/contractual constraints.
+- Cross-link: include a lightweight “(thread: …)” or “(snapshot: …)” inline once.
+
+FORMAT REQUIREMENTS (STRICT):
+- Output MUST be exactly one of:
+  • null
+  • delete
+  • the complete revised TODO text (no fencing, no labels, no JSON, no prefaces, no epilogues).
+- If you output revised text, do not include any meta-explanation. The text you output is the new TODO.
+
+REFERENCE GUARDRAILS (from SYSTEM_PROMPT_BASE):
+- Default to PRODUCT LEVEL. Pointer level allowed for orientation. Implementation level is RESTRICTED to A/B/C.
+- No “investigate X” with no tension/resolution.
+- Evidence > speculation; tie changes to behavior/tests/user reports.
+- De-duplicate; evolve threads; keep snapshot coherent.
+
+EXAMPLES (style only; do not copy literally):
+
+— If keeping as-is —
+Input TODO: already behavior-first, has acceptance, aligns with snapshot → Output: null
+
+— If deleting —
+Input TODO: “Refactor to Actor model using crate Y; add RingBuffer<Operation> with revert_last()” where snapshot has no such constraint and thread already solved → Output: delete
+
+— If revising (product-level) —
+Output:
+Add history affordances for reversible ops and guarded writes.
+Acceptance:
+- When a write is pending, a confirmation prompt appears before disk changes.
+- History panel lists the last N reversible operations with timestamps.
+- Selecting “Revert” restores the pre-op state with no orphaned files or partial writes.
+Pointers: vizier-tui/src/chat.rs (status line), TUI history sidebar; CLI flag --confirm/--no-confirm.
+Implementation Notes (safety/correctness): Reversions must be atomic; no partial disk writes. (thread: history-safety)
+
+</mainInstruction>
+"#;
+
 pub const COMMIT_PROMPT: &str = r#"
 You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
 

@@ -9,7 +9,7 @@ use tempfile::{Builder, TempPath};
 use vizier_core::{
     auditor,
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
-    config, tools, vcs,
+    config, file_tracking, tools, vcs,
 };
 
 #[derive(Parser)]
@@ -52,6 +52,11 @@ struct Args {
     /// Spit out the audit in JSON to stdout
     #[arg(short = 'j', long)]
     json: bool,
+
+    /// Comma-delimited list of TODO names for the agent to decide whether to revise/leave/remove.
+    /// Use `*` to address all TODO items
+    #[arg(short = 'c', long)]
+    clean: Option<String>,
 }
 
 fn print_usage() {
@@ -304,6 +309,85 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
     Ok(user_message)
 }
 
+/// NOTE: Filters items in the .vizier directory by whether they're markdown files
+async fn clean(todo_list: String) -> Result<(), Box<dyn std::error::Error>> {
+    let todo_dir = tools::get_todo_dir();
+    let targets = match todo_list.as_str() {
+        "*" => std::fs::read_dir(&todo_dir)?
+            .filter_map(|entry| {
+                entry
+                    .ok()
+                    .and_then(|e| e.file_name().to_str().map(|s| s.to_string()))
+                    .filter(|name| name.ends_with(".md"))
+                    .map(|p| format!("{}{}", todo_dir, p))
+            })
+            .collect::<Vec<_>>(),
+        _ => {
+            let filenames: std::collections::HashSet<_> =
+                todo_list.split(',').map(|s| s.trim().to_string()).collect();
+
+            let path_filenames: std::collections::HashSet<_> = std::fs::read_dir(&todo_dir)?
+                .filter_map(|entry| entry.ok())
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect();
+
+            filenames
+                .intersection(&path_filenames)
+                .filter(|name| name.ends_with(".md"))
+                .map(|p| format!("{}{}", todo_dir, p))
+                .collect()
+        }
+    };
+
+    let mut revised = 0;
+    let mut removed = 0;
+
+    for target in targets.iter() {
+        eprintln!("Cleaning {}...", target.blue());
+        let content = std::fs::read_to_string(target)?;
+        let response = Auditor::llm_request(
+            format!(
+                "{}{}<snapshot>{}</snapshot>",
+                vizier_core::REVISE_TODO_PROMPT,
+                vizier_core::SYSTEM_PROMPT_BASE.replace("mainInstruction", "SYSTEM_PROMPT_BASE"),
+                tools::read_snapshot()
+            ),
+            content.clone(),
+        )
+        .await?
+        .content;
+
+        let revised_content = match response.as_str() {
+            "null" => Some(content.clone()),
+            "delete" => None,
+            _ => Some(response.clone()),
+        };
+
+        match revised_content {
+            Some(rc) => {
+                if response != "null" {
+                    eprintln!("{} {}...", "Revising".yellow(), target.blue());
+
+                    file_tracking::FileTracker::write(target, &rc)?;
+                    revised += 1;
+                }
+            }
+            None => {
+                eprintln!("{} {}...", "Removing".red(), target.blue());
+                file_tracking::FileTracker::delete(target)?;
+                removed += 1
+            }
+        };
+    }
+
+    eprintln!("{} {} TODO items", "Revised".yellow(), revised);
+    eprintln!("{} {} TODO items", "Removed".red(), removed);
+
+    let _ = Auditor::commit_audit().await?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -325,7 +409,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
-    let no_primary_action = args.user_message.is_none() && args.save.is_none() && !args.save_latest;
+    let no_primary_action = args.user_message.is_none()
+        && args.save.is_none()
+        && args.clean.is_none()
+        && !args.save_latest;
     let invalid_commit_msg_flags = args.commit_message.is_some() && args.commit_message_editor;
     if no_primary_action || invalid_commit_msg_flags {
         print_usage();
@@ -356,6 +443,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(Box::<dyn std::error::Error>::from(e))
             }
         }
+    }
+
+    if let Some(todo_list) = args.clean {
+        return clean(todo_list).await;
     }
 
     if let Some(commit_reference) = args.save.as_deref() {
