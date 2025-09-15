@@ -1,65 +1,115 @@
-use clap::Parser;
-
+use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
 use vizier_core::{auditor, config, tools};
 
 mod actions;
-
 use crate::actions::*;
 
-#[derive(Parser)]
-#[command(version, about = "A CLI for LLM project management.")]
-struct Args {
-    user_message: Option<String>,
+/// A CLI for LLM project management.
+#[derive(Parser, Debug)]
+#[command(
+    name = "vizier",
+    version,
+    about,
+    // Show help when you forget a subcommand
+    arg_required_else_help = true,
+    // Make version available to subcommands automatically
+    propagate_version = true
+)]
+struct Cli {
+    #[command(flatten)]
+    global: GlobalOpts,
 
-    #[arg(short = 'd', long)]
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(ClapArgs, Debug, Default)]
+struct GlobalOpts {
+    /// Enable debug logging
+    #[arg(short = 'd', long, global = true)]
     debug: bool,
 
     /// Set LLM provider to use for main prompting + tool usage
-    #[arg(short = 'p', long)]
+    #[arg(short = 'p', long, global = true)]
     provider: Option<String>,
 
     /// Force the agent to perform an action
-    #[arg(short = 'f', long)]
+    #[arg(short = 'f', long, global = true)]
     force_action: bool,
 
-    /// "Save" button--git commit tracked changes w.r.t given commit reference/range with LLM-generated commit message and update TODOs/snapshot
-    /// to reflect the changes
-    /// e.g., `vizier -s HEAD~3..HEAD`, or `vizier -s HEAD`
-    #[arg(short = 's', long)]
-    save: Option<String>,
+    /// Emit the audit as JSON to stdout (lifecycle/RAII-driven)
+    #[arg(short = 'j', long, global = true)]
+    json: bool,
+}
 
-    /// Equivalent to `vizier -s HEAD`
-    #[arg(short = 'S', long)]
-    save_latest: bool,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Inline one-shot interaction: send a single message and exit
+    Ask(AskCmd),
 
-    /// Developer note to append to the commit message. Note that this goes on to the _code_ commit
-    /// messaging--it doesn't affect any commits surrounding conversations or the `.vizier`
-    /// directory. Note that this is mutually exclusive with `-M`.
-    #[arg(short = 'm', long)]
+    /// Commit tracked changes with an LLM-generated message and update TODOs/snapshot
+    ///
+    /// Examples:
+    ///   vizier save                # defaults to HEAD
+    ///   vizier save HEAD~3..HEAD   # explicit range
+    ///   vizier save main           # single rev compared to workdir/index
+    Save(SaveCmd),
+
+    /// Decide whether to revise/leave/remove selected TODOs (use "*" for all)
+    ///
+    /// Examples:
+    ///   vizier clean "*"
+    ///   vizier clean "Parser bugs,UI polish"
+    Clean(CleanCmd),
+
+    /// Launch interactive chat TUI
+    Chat(ChatCmd),
+}
+
+#[derive(ClapArgs, Debug)]
+struct AskCmd {
+    /// The user message to process in a single-shot run
+    #[arg(value_name = "MESSAGE")]
+    message: String,
+}
+
+#[derive(ClapArgs, Debug)]
+#[command(
+    group = ArgGroup::new("commit_msg_src")
+        .args(&["commit_message", "commit_message_editor"])
+        .multiple(false)
+)]
+struct SaveCmd {
+    /// Commit reference or range; defaults to HEAD if omitted.
+    ///
+    /// Examples: `HEAD`, `HEAD~3..HEAD`, `feature-branch`
+    #[arg(value_name = "REV_OR_RANGE", default_value = "HEAD")]
+    rev_or_range: String,
+
+    /// Developer note to append to the *code* commit message
+    #[arg(short = 'm', long = "message")]
     commit_message: Option<String>,
 
-    /// Same as `-m`, but opens the default terminal editor ($EDITOR) instead of accepting an
-    /// argument
-    #[arg(short = 'M', long)]
+    /// Open $EDITOR to compose the commit message
+    #[arg(short = 'M', long = "edit-message")]
     commit_message_editor: bool,
-
-    /// Spit out the audit in JSON to stdout
-    #[arg(short = 'j', long)]
-    json: bool,
-
-    /// Comma-delimited list of TODO names for the agent to decide whether to revise/leave/remove.
-    /// Use `*` to address all TODO items
-    #[arg(short = 'c', long)]
-    clean: Option<String>,
-
-    /// Interactive chat interface
-    #[arg(short = 'i', long)]
-    interactive: bool,
 }
+
+#[derive(ClapArgs, Debug)]
+struct CleanCmd {
+    /// Comma-delimited list of TODO names, or "*" for all.
+    ///
+    /// Example: "*"  or  "Parser bugs,UI polish"
+    #[arg(value_name = "TODO_LIST")]
+    todo_list: String,
+}
+
+#[derive(ClapArgs, Debug)]
+struct ChatCmd {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
     let project_root = match auditor::find_project_root() {
         Ok(Some(root)) => root,
@@ -78,45 +128,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
-    let no_primary_action = args.user_message.is_none()
-        && args.save.is_none()
-        && args.clean.is_none()
-        && !args.save_latest
-        && !args.interactive;
-    let invalid_commit_msg_flags = args.commit_message.is_some() && args.commit_message_editor;
-    if no_primary_action || invalid_commit_msg_flags {
-        print_usage();
-        return Ok(());
-    }
-
     let _auditor_cleanup = auditor::AuditorCleanup {
-        debug: args.debug,
-        print_json: args.json,
+        debug: cli.global.debug,
+        print_json: cli.global.json,
     };
-
-    if let Some(todo_list) = args.clean {
-        return clean(todo_list).await;
-    }
-
-    if let Some(commit_reference) = args.save.as_deref() {
-        return run_save(
-            commit_reference,
-            &[".vizier/"],
-            args.commit_message,
-            args.commit_message_editor,
-        )
-        .await;
-    }
-
-    if args.save_latest {
-        return run_save(
-            "HEAD",
-            &[".vizier/"],
-            args.commit_message,
-            args.commit_message_editor,
-        )
-        .await;
-    }
 
     if let Err(e) = std::fs::create_dir_all(tools::get_todo_dir()) {
         eprintln!(
@@ -127,26 +142,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut cfg = config::get_config();
-    if let Some(p) = args.provider {
-        cfg.provider = provider_arg_to_enum(p);
+    if let Some(p) = &cli.global.provider {
+        cfg.provider = provider_arg_to_enum(p.clone());
     }
 
-    cfg.force_action = args.force_action;
+    cfg.force_action = cli.global.force_action;
     config::set_config(cfg);
 
-    if args.interactive {
-        match vizier_tui::chat_tui().await {
-            Ok(_) => return Ok(()),
+    match cli.command {
+        Commands::Clean(CleanCmd { todo_list }) => clean(todo_list).await,
+
+        Commands::Save(SaveCmd {
+            rev_or_range,
+            commit_message,
+            commit_message_editor,
+        }) => {
+            run_save(
+                &rev_or_range,
+                &[".vizier/"],
+                commit_message,
+                commit_message_editor,
+            )
+            .await
+        }
+
+        Commands::Chat(_cmd) => match vizier_tui::chat_tui().await {
+            Ok(_) => Ok(()),
             Err(e) => {
                 eprintln!("Error running chat TUI: {e}");
-                return Err(Box::<dyn std::error::Error>::from(e));
+                Err(Box::<dyn std::error::Error>::from(e))
             }
-        }
-    }
+        },
 
-    inline_command(
-        args.user_message
-            .expect("There should be a user message already guarded against--how'd we get here?"),
-    )
-    .await
+        Commands::Ask(AskCmd { message }) => inline_command(message).await,
+    }
 }

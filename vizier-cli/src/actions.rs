@@ -11,64 +11,6 @@ use vizier_core::{
     file_tracking, tools, vcs,
 };
 
-pub fn print_usage() {
-    eprintln!(
-        r#"{} - A CLI for LLM project management
-
-{}
-    {} [OPTIONS] [MESSAGE]
-
-{}
-    {}    Optional free-form message to the assistant
-
-{}
-    {}, {} <REF|RANGE>     "Save" tracked changes since REF/RANGE with AI commit message and update TODOs/snapshot
-    {}, {}          Equivalent to `-s HEAD`
-    {}, {} <MSG>   Developer note to append to the commit message (mutually exclusive with `-M`)
-    {}, {}  Open editor for commit message (mutually exclusive with `-m`)
-    {}, {} <NAME>      Set LLM provider (openai, anthropic, etc.)
-    {}, {}         Force the agent to perform an action
-    {}, {}                 Print help
-    {}, {}              Print version
-
-{}
-    {} "add a TODO to implement auth"
-    {} --save HEAD~3..HEAD
-    {} --save-latest
-    {} --save-latest -m "my commit message"
-    {} --provider anthropic "what's my next task?"
-"#,
-        "vizier".bright_cyan().bold(),
-        "USAGE:".bright_yellow().bold(),
-        "vizier".bright_green(),
-        "ARGS:".bright_yellow().bold(),
-        "[MESSAGE]".bright_blue(),
-        "OPTIONS:".bright_yellow().bold(),
-        "-s".bright_green(),
-        "--save".bright_green(),
-        "-S".bright_green(),
-        "--save-latest".bright_green(),
-        "-m".bright_green(),
-        "--commit-message".bright_green(),
-        "-M".bright_green(),
-        "--commit-message-editor".bright_green(),
-        "-p".bright_green(),
-        "--provider".bright_green(),
-        "-f".bright_green(),
-        "--force-action".bright_green(),
-        "-h".bright_green(),
-        "--help".bright_green(),
-        "-V".bright_green(),
-        "--version".bright_green(),
-        "EXAMPLES:".bright_yellow().bold(),
-        "vizier".bright_green(),
-        "vizier".bright_green(),
-        "vizier".bright_green(),
-        "vizier".bright_green(),
-        "vizier".bright_green()
-    );
-}
-
 pub fn provider_arg_to_enum(provider: String) -> wire::api::API {
     match provider.as_str() {
         "anthropic" => wire::api::API::Anthropic(wire::api::AnthropicModel::Claude35SonnetNew),
@@ -160,6 +102,7 @@ async fn save(
     }
 
     let commit_message = message_builder.build();
+    eprintln!("Committing remaining code changes...");
     vcs::add_and_commit(None, &commit_message, false)?;
     eprintln!("Changes committed with message: {}", commit_message);
 

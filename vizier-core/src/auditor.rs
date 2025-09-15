@@ -123,8 +123,15 @@ impl Auditor {
     /// Really, though, if this is called then there should _always_ be a resulting commit hash
     pub async fn commit_audit() -> Result<String, Box<dyn std::error::Error>> {
         Ok(if file_tracking::FileTracker::has_pending_changes() {
+            let root = match find_project_root()? {
+                Some(p) => p,
+                None => std::path::PathBuf::from("."),
+            };
+
+            let root = root.to_str().unwrap();
+
             let mut diff_message = None;
-            if let Ok(diff) = vcs::get_diff(".", Some(&tools::get_todo_dir()), None) {
+            if let Ok(diff) = vcs::get_diff(root, Some(&tools::get_todo_dir()), None) {
                 eprintln!("Writing commit message for TODO changes...");
                 diff_message = Some(Self::llm_request(
                         "Given a diff on a directory of TODO items, return a commit message for these changes."
@@ -141,12 +148,6 @@ impl Auditor {
 
                 // unstage staged changes -> commit conversation -> restore staged changes
                 eprintln!("Committing conversation...");
-                let root = match find_project_root()? {
-                    Some(p) => p,
-                    None => std::path::PathBuf::from("."),
-                };
-
-                let root = root.to_str().unwrap();
 
                 let currently_staged = vcs::snapshot_staged(root)?;
                 if currently_staged.len() > 0 {
@@ -160,13 +161,14 @@ impl Auditor {
                 }
 
                 let hash = vcs::add_and_commit(
-                    Some(vec![&tools::get_todo_dir()]),
+                    None,
                     &CommitMessageBuilder::new(conversation)
                         .set_header(CommitMessageType::Conversation)
                         .build(),
                     true,
                 )?
                 .to_string();
+                eprintln!("Committed conversation");
 
                 if currently_staged.len() > 0 {
                     vcs::stage(Some(
@@ -192,6 +194,8 @@ impl Auditor {
                         .with_conversation_hash(conversation_hash.clone())
                         .build(),
                 )?;
+
+                eprintln!("Committed TODO changes");
             }
 
             conversation_hash

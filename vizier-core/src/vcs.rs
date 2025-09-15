@@ -448,8 +448,6 @@ pub fn snapshot_staged(repo_path: &str) -> Result<Vec<StagedItem>, Error> {
             continue;
         };
 
-        println!("PUSHING PATH: {:?} OF KIND: {:?}", path, kind);
-
         out.push(StagedItem { path, kind });
     }
 
