@@ -40,3 +40,15 @@ Pointers:
 Implementation Notes (safety/correctness):
 - Hash normalized .snapshot (ignore whitespace-only diffs) for stable snapshot_version.
 - Auditor should operate on staged content during pre-commit and provide deterministic patches with clear remediation messages.
+---
+Note (staged-content integrity during narrative writes):
+- Pre-commit and auditor flows MUST operate on staged content and avoid polluting user’s staged set when writing narrative artifacts (.vizier/*.md, .snapshot). Conversation/TODO commits should: snapshot staged set, unstage non-.vizier paths, commit narrative-only changes, then restore the staged set.
+
+Acceptance addition:
+- Running a narrative write while a staged set exists results in a commit affecting only .vizier files; `git diff --staged` after the commit shows the original staged set unchanged.
+
+Pointers: vizier-core/src/auditor.rs (commit isolation), vizier-core/src/vcs.rs (snapshot_staged/restore_staged, unstage, stage).
+
+
+---
+

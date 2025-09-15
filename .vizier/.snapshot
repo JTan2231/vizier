@@ -35,7 +35,8 @@ Next concrete moves
 7) auditor.rs + vcs.rs: Narrative drift checks and optional pre-commit hook utility aligned with contract strictness.
 
 Status since last update
-- Code state confirms config surface is still minimal (provider/force_action) and get_system_prompt builds <meta> with fileTree/todos/cwd only; no <config> or contract yet (vizier-core/src/config.rs, display.rs).
-- COMMIT_PROMPT centralized in vizier-core; CLI still needs flags/control levers and history/revert surfaces.
-- TUI chat exists (vizier-tui/src/chat.rs) but lacks integrated diff/editor panels and streaming markers; this is now an active thread.
-- Snapshot/TODO process consolidation in .vizier is current source of truth; older parallel TODOs were pruned. Contract/guardrail TODO introduced to keep narrative/code aligned.
+- New: Fixed a bug where pre-existing staged changes were being included in conversation commits. Auditor now snapshots staged set, temporarily unstages non-.vizier paths, commits the conversation-only changes, and restores the previous staged set. Supporting VCS utilities were added: stage/unstage, snapshot_staged, and restore_staged with tests covering A/M/D/R cases. [Anchors: vizier-core/src/auditor.rs; vizier-core/src/vcs.rs]
+- Code state still shows config surface minimal and prompt lacks <config>/<narrative_contract> (vizier-core/src/config.rs, display.rs) — unchanged.
+- CLI wiring is in progress (find_project_root moved to auditor; provider mapping helper remains). Flags/control levers not yet landed. [vizier-cli/src/main.rs, actions.rs]
+- TUI chat exists but lacks diff/editor panels and streaming markers; thread remains active.
+- Process/TODO docs for contract/levers remain authoritative; no change required.

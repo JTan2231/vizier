@@ -6,3 +6,21 @@ Update (2025-09-13):
 
 ---
 
+
+---
+Update (bug fix context): Conversation commits must not include unrelated staged changes.
+
+Behavioral guardrail to codify (acceptance addition):
+- When the system records a conversation commit, any pre-existing staged changes unrelated to .vizier are preserved but excluded from that commit, then restored exactly after.
+
+Acceptance:
+1) With arbitrary files staged (A/M/D/R), initiating a conversation write creates a commit that touches only .vizier paths; previously staged changes remain staged afterward and are not part of that commit.
+2) Rename scenarios and mixed A/M/D staged sets are preserved across the conversation commit.
+
+Pointers: vizier-core/src/auditor.rs (conversation commit flow), vizier-core/src/vcs.rs (stage/unstage/snapshot_staged/restore_staged tests).
+
+Thread: Operation history + reversibility; Narrative contract + drift guardrails.
+
+
+---
+
