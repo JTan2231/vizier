@@ -24,3 +24,21 @@ Thread: Operation history + reversibility; Narrative contract + drift guardrails
 
 ---
 
+
+---
+Update (2025-09-15): CLI refactor + commit isolation guardrail landed
+
+- CLI refactor: Responsibility for finding the project root moved to vizier-core auditor; CLI now calls auditor::find_project_root(). Keep provider_arg_to_enum in actions.rs for now.
+- Commit isolation (behavioral guardrail): Conversation/TODO commits must exclude unrelated staged changes and preserve the staged set exactly after the commit.
+
+Acceptance additions:
+1) With arbitrary staged changes (A/M/D/R), a conversation commit modifies only .vizier paths; previously staged changes remain staged and untouched after.
+2) Rename scenarios and mixed staged sets are preserved across the conversation commit.
+
+Pointers: vizier-core/src/auditor.rs (conversation commit flow), vizier-core/src/vcs.rs (stage/unstage/snapshot_staged/restore_staged + tests), vizier-cli/src/main.rs (auditor::find_project_root).
+
+Thread: Operation history + reversibility; Narrative contract + drift guardrails.
+
+
+---
+
