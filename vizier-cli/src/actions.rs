@@ -69,22 +69,6 @@ pub fn print_usage() {
     );
 }
 
-pub fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
-    let mut current_dir = std::env::current_dir()?;
-
-    loop {
-        if current_dir.join(".git").is_dir() {
-            return Ok(Some(current_dir));
-        }
-
-        if let Some(parent) = current_dir.parent() {
-            current_dir = parent.to_path_buf();
-        } else {
-            return Ok(None);
-        }
-    }
-}
-
 pub fn provider_arg_to_enum(provider: String) -> wire::api::API {
     match provider.as_str() {
         "anthropic" => wire::api::API::Anthropic(wire::api::AnthropicModel::Claude35SonnetNew),

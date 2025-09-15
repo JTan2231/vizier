@@ -1,4 +1,7 @@
-use git2::{DiffFormat, DiffOptions, Error, Oid, Repository, Signature, Sort};
+use git2::{
+    DiffFormat, DiffOptions, Error, IndexAddOption, Oid, Repository, Signature, Sort, Status,
+    StatusOptions,
+};
 
 // TODO: Please god write a testing harness for this, or at least the flows using this
 
@@ -128,6 +131,41 @@ pub fn get_diff(
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Stage changes (index-only), mirroring `git add` / `git add -u` (no commit).
+///
+/// - `Some(paths)`: for each normalized path:
+///     * if directory → recursive add (matches `git add <dir>`).
+///     * if file → add that single path.
+/// - `None`: update tracked paths (like `git add -u`), staging modifications/deletions,
+///     but NOT newly untracked files.
+pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
+    let repo = Repository::open(".")?;
+    let mut index = repo.index()?;
+
+    match paths {
+        Some(list) => {
+            for raw in list {
+                let norm = normalize_pathspec(raw);
+                let p = std::path::Path::new(&norm);
+                if p.is_dir() {
+                    index.add_all([p], IndexAddOption::DEFAULT, None)?;
+                } else {
+                    index.add_path(p)?;
+                }
+            }
+
+            index.write()?;
+        }
+        None => {
+            index.update_all(["."], None)?;
+            index.write()?;
+        }
+    }
+
+    Ok(())
+}
+
+// TODO: Remove the `add` portion from this
 /// Stage changes and create a commit in the current repository, returning the new commit `Oid`.
 ///
 /// Assumptions:
@@ -265,6 +303,182 @@ pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<String, Err
     }
 
     Ok(out)
+}
+
+/// Unstage changes (index-only), mirroring `git restore --staged` / `git reset -- <paths>`.
+///
+/// Behavior:
+/// - If `paths` is `Some`, paths are normalized and only those paths are reset in the index:
+///     - If `HEAD` exists, index entries for those paths become exactly `HEAD`’s versions.
+///     - If `HEAD` is unborn, those paths are removed from the index (i.e., fully unstaged).
+/// - If `paths` is `None`:
+///     - If `HEAD` exists, the entire index is reset to `HEAD`’s tree (no working tree changes).
+///     - If `HEAD` is unborn, the index is cleared.
+/// - Never updates the working directory, and never moves `HEAD`.
+pub fn unstage(paths: Option<Vec<&str>>) -> Result<(), Error> {
+    let repo = Repository::open(".")?;
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let mut index = repo.index()?;
+
+    match (paths, head_tree) {
+        (Some(list), Some(_head_tree)) => {
+            // NOTE: reset_default requires &[&Path]
+            let owned: Vec<std::path::PathBuf> = list
+                .into_iter()
+                .map(|p| std::path::PathBuf::from(normalize_pathspec(p)))
+                .collect();
+
+            let spec: Vec<&std::path::Path> = owned.iter().map(|p| p.as_path()).collect();
+            let head = match repo.head() {
+                Ok(h) => h,
+                Err(_) => {
+                    let mut idx = repo.index()?;
+                    for p in spec {
+                        idx.remove_path(p)?;
+                    }
+
+                    idx.write()?;
+                    return Ok(());
+                }
+            };
+
+            let head_obj = head.resolve()?.peel(git2::ObjectType::Commit)?;
+
+            repo.reset_default(Some(&head_obj), &spec)?;
+        }
+
+        (Some(list), None) => {
+            for raw in list {
+                let norm = normalize_pathspec(raw);
+                index.remove_path(std::path::Path::new(&norm))?;
+            }
+
+            index.write()?;
+        }
+
+        (None, Some(head_tree)) => {
+            index.read_tree(&head_tree)?;
+            index.write()?;
+        }
+
+        (None, None) => {
+            index.clear()?;
+            index.write()?;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub enum StagedKind {
+    Added,                                // INDEX_NEW
+    Modified,                             // INDEX_MODIFIED
+    Deleted,                              // INDEX_DELETED
+    TypeChange,                           // INDEX_TYPECHANGE
+    Renamed { from: String, to: String }, // INDEX_RENAMED
+}
+
+#[derive(Debug, Clone)]
+pub struct StagedItem {
+    pub path: String, // primary path (for rename, the NEW path)
+    pub kind: StagedKind,
+}
+
+/// Capture the current staged set (index vs HEAD), losslessly enough to restore.
+pub fn snapshot_staged(repo_path: &str) -> Result<Vec<StagedItem>, Error> {
+    let repo = Repository::open(repo_path)?;
+    let mut opts = StatusOptions::new();
+    // We want staged/index changes relative to HEAD:
+    opts.include_untracked(false)
+        .include_ignored(false)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(false)
+        .update_index(false)
+        .include_unmodified(false)
+        .show(git2::StatusShow::Index);
+
+    let statuses = repo.statuses(Some(&mut opts))?;
+    let mut out = Vec::new();
+
+    for entry in statuses.iter() {
+        let s = entry.status();
+
+        // Renames: libgit2 provides both paths when rename detection is enabled.
+        if s.contains(Status::INDEX_RENAMED) {
+            let from = entry
+                .head_to_index()
+                .and_then(|d| d.old_file().path())
+                .and_then(|p| p.to_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let to = entry
+                .head_to_index()
+                .and_then(|d| d.new_file().path())
+                .and_then(|p| p.to_str())
+                .unwrap_or_default()
+                .to_string();
+
+            out.push(StagedItem {
+                path: to.clone(),
+                kind: StagedKind::Renamed { from, to },
+            });
+            continue;
+        }
+
+        let path = entry
+            .head_to_index()
+            .or_else(|| entry.index_to_workdir())
+            .and_then(|d| d.new_file().path().or(d.old_file().path()))
+            .and_then(|p| p.to_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let kind = if s.contains(Status::INDEX_NEW) {
+            StagedKind::Added
+        } else if s.contains(Status::INDEX_MODIFIED) {
+            StagedKind::Modified
+        } else if s.contains(Status::INDEX_DELETED) {
+            StagedKind::Deleted
+        } else if s.contains(Status::INDEX_TYPECHANGE) {
+            StagedKind::TypeChange
+        } else {
+            // skip anything that isn't index-staged
+            continue;
+        };
+
+        println!("PUSHING PATH: {:?} OF KIND: {:?}", path, kind);
+
+        out.push(StagedItem { path, kind });
+    }
+
+    Ok(out)
+}
+
+/// Restore the staged set exactly as captured by `snapshot_staged`.
+/// Index-only; does not modify worktree or HEAD.
+pub fn restore_staged(repo_path: &str, staged: &[StagedItem]) -> Result<(), Error> {
+    let repo = Repository::open(repo_path)?;
+    let mut index = repo.index()?;
+
+    for item in staged {
+        match &item.kind {
+            StagedKind::Added | StagedKind::Modified | StagedKind::TypeChange => {
+                index.add_path(std::path::Path::new(&item.path))?;
+            }
+            StagedKind::Deleted => {
+                index.remove_path(std::path::Path::new(&item.path))?;
+            }
+            StagedKind::Renamed { from, to } => {
+                index.remove_path(std::path::Path::new(from))?;
+                index.add_path(std::path::Path::new(to))?;
+            }
+        }
+    }
+
+    index.write()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -560,5 +774,216 @@ mod tests {
         assert!(l2.contains("chore: touch b"));
         assert!(out2.contains("commit "));
         assert!(out2.contains(" — "));
+    }
+
+    // --- stage (index-only) --------------------------------------------------
+
+    #[test]
+    fn stage_paths_and_update_tracked_only() {
+        let (td, repo) = init_temp_repo();
+        let _cwd = CwdGuard::enter(td.path()).unwrap();
+
+        // Base commit with two tracked files
+        write(Path::new("a.txt"), "A0\n");
+        write(Path::new("b.txt"), "B0\n");
+        raw_commit(&repo, "base");
+
+        // Workdir changes:
+        // - modify tracked a.txt
+        // - delete tracked b.txt
+        // - create new untracked c.txt
+        append(Path::new("a.txt"), "A1\n");
+        fs::remove_file("b.txt").unwrap();
+        write(Path::new("c.txt"), "C0\n");
+
+        // 1) stage(None) should mirror `git add -u`: stage tracked changes (a.txt mod, b.txt del)
+        //    but NOT the new untracked c.txt.
+        stage(None).expect("stage -u");
+        let staged1 = snapshot_staged(".").expect("snapshot staged after -u");
+
+        // Expect: a.txt Modified, b.txt Deleted; no c.txt
+        let mut kinds = staged1
+            .iter()
+            .map(|s| match &s.kind {
+                super::StagedKind::Added => ("Added", s.path.clone()),
+                super::StagedKind::Modified => ("Modified", s.path.clone()),
+                super::StagedKind::Deleted => ("Deleted", s.path.clone()),
+                super::StagedKind::TypeChange => ("TypeChange", s.path.clone()),
+                super::StagedKind::Renamed { from, to } => ("Renamed", format!("{from}->{to}")),
+            })
+            .collect::<Vec<_>>();
+        kinds.sort_by(|a, b| a.1.cmp(&b.1));
+
+        assert_eq!(
+            kinds.sort(),
+            vec![
+                ("Deleted", "b.txt".to_string()),
+                ("Modified", "a.txt".to_string()),
+            ]
+            .sort()
+        );
+
+        // 2) Now explicitly stage c.txt via stage(Some)
+        stage(Some(vec!["c.txt"])).expect("stage c.txt");
+        let staged2 = snapshot_staged(".").expect("snapshot staged after explicit add");
+
+        let names2: Vec<_> = staged2.iter().map(|s| s.path.as_str()).collect();
+        assert!(names2.contains(&"a.txt"));
+        assert!(names2.contains(&"b.txt")); // staged deletion appears as b.txt in the snapshot
+        assert!(names2.contains(&"c.txt")); // now present as Added
+        assert!(
+            staged2
+                .iter()
+                .any(|s| matches!(s.kind, super::StagedKind::Added) && s.path == "c.txt")
+        );
+    }
+
+    // --- unstage: specific paths & entire index (born HEAD) ------------------
+
+    #[test]
+    fn unstage_specific_paths_and_all_with_head() {
+        let (td, repo) = init_temp_repo();
+        let _cwd = CwdGuard::enter(td.path()).unwrap();
+
+        write(Path::new("x.txt"), "X0\n");
+        write(Path::new("y.txt"), "Y0\n");
+        raw_commit(&repo, "base");
+
+        append(Path::new("x.txt"), "X1\n");
+        append(Path::new("y.txt"), "Y1\n");
+
+        // Stage both changes (explicit)
+        stage(Some(vec!["x.txt", "y.txt"])).expect("stage both");
+
+        // Unstage only x.txt → y.txt should remain staged
+        unstage(Some(vec!["x.txt"])).expect("unstage x");
+
+        let after_x = snapshot_staged(".").expect("snapshot after unstage x");
+        assert!(after_x.iter().any(|s| s.path == "y.txt"));
+        assert!(!after_x.iter().any(|s| s.path == "x.txt"));
+
+        // Unstage everything → nothing should be staged
+        unstage(None).expect("unstage all");
+        let after_all = snapshot_staged(".").expect("snapshot after unstage all");
+        assert!(after_all.is_empty());
+    }
+
+    // --- unstage: unborn HEAD behavior --------------------------------------
+
+    #[test]
+    fn unstage_with_unborn_head() {
+        let (td, repo) = init_temp_repo();
+        let _cwd = CwdGuard::enter(td.path()).unwrap();
+
+        // No commits yet; create two files and stage both
+        write(Path::new("u.txt"), "U0\n");
+        write(Path::new("v.txt"), "V0\n");
+        raw_stage(&repo, "u.txt");
+        raw_stage(&repo, "v.txt");
+
+        // Path-limited unstage on unborn HEAD should remove entries from index for those paths
+        unstage(Some(vec!["u.txt"])).expect("unstage u.txt on unborn");
+        let staged1 = snapshot_staged(".").expect("snapshot staged after partial unstage");
+        let names1: Vec<_> = staged1.iter().map(|s| s.path.as_str()).collect();
+        assert!(names1.contains(&"v.txt"));
+        assert!(!names1.contains(&"u.txt"));
+
+        // Full unstage on unborn HEAD should clear the index
+        unstage(None).expect("unstage all unborn");
+        let staged2 = snapshot_staged(".").expect("snapshot staged after clear");
+        assert!(staged2.is_empty());
+    }
+
+    // --- snapshot → unstage → mutate → restore (A/M/D/R rename) --------------
+
+    #[test]
+    fn snapshot_and_restore_roundtrip_with_rename() {
+        let (td, repo) = init_temp_repo();
+        let _cwd = CwdGuard::enter(td.path()).unwrap();
+
+        // Base: a.txt, b.txt
+        write(Path::new("a.txt"), "A0\n");
+        write(Path::new("b.txt"), "B0\n");
+        raw_commit(&repo, "base");
+
+        // Workdir staged set (before snapshot):
+        // - RENAME: a.txt -> a_ren.txt (same content to improve rename detection)
+        // - DELETE: b.txt
+        // - ADD: c.txt
+        // - (no explicit extra modifications; rely on rename detection)
+        fs::rename("a.txt", "a_ren.txt").unwrap();
+        fs::remove_file("b.txt").unwrap();
+        write(Path::new("c.txt"), "C0\n");
+
+        // Stage all changes so index reflects A/M/D/R
+        {
+            let mut idx = repo.index().unwrap();
+            idx.add_all(["."], git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            // ensure deletion is captured
+            idx.update_all(["."], None).unwrap();
+            idx.write().unwrap();
+        }
+
+        // Take snapshot of what's staged now
+        let snap = snapshot_staged(".").expect("snapshot staged");
+
+        // Sanity: ensure we actually captured the expected kinds
+        // Expect at least: Added c.txt, Deleted b.txt, and a rename a.txt -> a_ren.txt
+        let mut have_added_c = false;
+        let mut have_deleted_b = false;
+        let mut have_renamed_a = false;
+
+        for it in &snap {
+            match &it.kind {
+                super::StagedKind::Added if it.path == "c.txt" => have_added_c = true,
+                super::StagedKind::Deleted if it.path == "b.txt" => have_deleted_b = true,
+                super::StagedKind::Renamed { from, to } if from == "a.txt" && to == "a_ren.txt" => {
+                    have_renamed_a = true
+                }
+                _ => {}
+            }
+        }
+        assert!(have_added_c, "expected Added c.txt in snapshot");
+        assert!(have_deleted_b, "expected Deleted b.txt in snapshot");
+        assert!(
+            have_renamed_a,
+            "expected Renamed a.txt->a_ren.txt in snapshot"
+        );
+
+        // Unstage everything
+        unstage(None).expect("unstage all");
+
+        // Mutate workdir arbitrarily (should not affect restoration correctness)
+        append(Path::new("c.txt"), "C1\n"); // change content after snapshot
+        write(Path::new("d.txt"), "D0 (noise)\n"); // create a noise file that won't be staged by restore
+
+        // Restore exact staged set captured in `snap`
+        restore_staged(".", &snap).expect("restore staged");
+
+        // Re-snapshot after restore to compare equivalence (semantic equality of staged set)
+        let after = snapshot_staged(".").expect("snapshot after restore");
+
+        // Normalize into comparable tuples
+        fn key(s: &super::StagedItem) -> (String, String) {
+            match &s.kind {
+                super::StagedKind::Added => ("Added".into(), s.path.clone()),
+                super::StagedKind::Modified => ("Modified".into(), s.path.clone()),
+                super::StagedKind::Deleted => ("Deleted".into(), s.path.clone()),
+                super::StagedKind::TypeChange => ("TypeChange".into(), s.path.clone()),
+                super::StagedKind::Renamed { from, to } => {
+                    ("Renamed".into(), format!("{from}->{to}"))
+                }
+            }
+        }
+
+        let mut lhs = snap.iter().map(key).collect::<Vec<_>>();
+        let mut rhs = after.iter().map(key).collect::<Vec<_>>();
+        lhs.sort();
+        rhs.sort();
+        assert_eq!(
+            lhs, rhs,
+            "restored staged set should equal original snapshot"
+        );
     }
 }

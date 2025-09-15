@@ -40,6 +40,22 @@ impl Drop for AuditorCleanup {
     }
 }
 
+pub fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
+    let mut current_dir = std::env::current_dir()?;
+
+    loop {
+        if current_dir.join(".git").is_dir() {
+            return Ok(Some(current_dir));
+        }
+
+        if let Some(parent) = current_dir.parent() {
+            current_dir = parent.to_path_buf();
+        } else {
+            return Ok(None);
+        }
+    }
+}
+
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,15 +139,46 @@ impl Auditor {
             let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
                 let conversation = Self::conversation_to_string();
 
+                // unstage staged changes -> commit conversation -> restore staged changes
                 eprintln!("Committing conversation...");
-                vcs::add_and_commit(
-                    None,
+                let root = match find_project_root()? {
+                    Some(p) => p,
+                    None => std::path::PathBuf::from("."),
+                };
+
+                let root = root.to_str().unwrap();
+
+                let currently_staged = vcs::snapshot_staged(root)?;
+                if currently_staged.len() > 0 {
+                    vcs::unstage(Some(
+                        currently_staged
+                            .iter()
+                            .filter(|s| !s.path.contains(".vizier"))
+                            .map(|s| s.path.as_str())
+                            .collect(),
+                    ))?;
+                }
+
+                let hash = vcs::add_and_commit(
+                    Some(vec![&tools::get_todo_dir()]),
                     &CommitMessageBuilder::new(conversation)
                         .set_header(CommitMessageType::Conversation)
                         .build(),
                     true,
                 )?
-                .to_string()
+                .to_string();
+
+                if currently_staged.len() > 0 {
+                    vcs::stage(Some(
+                        currently_staged
+                            .iter()
+                            .filter(|s| !s.path.contains(".vizier"))
+                            .map(|s| s.path.as_str())
+                            .collect(),
+                    ))?;
+                }
+
+                hash
             } else {
                 String::new()
             };

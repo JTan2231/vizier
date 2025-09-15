@@ -61,7 +61,7 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let project_root = match find_project_root() {
+    let project_root = match auditor::find_project_root() {
         Ok(Some(root)) => root,
         Ok(None) => {
             eprintln!("vizier cannot be used outside a git repository");
