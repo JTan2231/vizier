@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
 use vizier_core::{auditor, config, tools};
 
@@ -70,7 +72,7 @@ enum Commands {
 struct AskCmd {
     /// The user message to process in a single-shot run
     #[arg(value_name = "MESSAGE")]
-    message: String,
+    message: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -106,6 +108,39 @@ struct CleanCmd {
 
 #[derive(ClapArgs, Debug)]
 struct ChatCmd {}
+
+fn read_all_stdin() -> Result<String, std::io::Error> {
+    use std::io::{self, Read};
+    let mut buf = String::new();
+    io::stdin().read_to_string(&mut buf)?;
+    Ok(buf)
+}
+
+fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error>> {
+    match cmd.message.as_deref() {
+        Some("-") => {
+            // Explicit “read stdin”
+            let msg = read_all_stdin()?;
+            if msg.trim().is_empty() {
+                return Err("stdin is empty; provide MESSAGE or pipe content".into());
+            }
+            Ok(msg)
+        }
+        Some(positional) => Ok(positional.to_owned()),
+        None => {
+            // No positional; try stdin if it’s not a TTY (i.e., piped or redirected)
+            if !std::io::stdin().is_terminal() {
+                let msg = read_all_stdin()?;
+                if msg.trim().is_empty() {
+                    return Err("stdin is empty; provide MESSAGE or pipe content".into());
+                }
+                Ok(msg)
+            } else {
+                Err("no MESSAGE provided; pass a message, use '-', or pipe stdin".into())
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -174,6 +209,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
 
-        Commands::Ask(AskCmd { message }) => inline_command(message).await,
+        Commands::Ask(cmd) => {
+            let message = resolve_ask_message(&cmd)?;
+            inline_command(message).await
+        }
     }
 }

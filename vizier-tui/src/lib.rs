@@ -1,21 +1,16 @@
 use std::error::Error;
 use std::fs;
-use std::io::{Result, stderr, stdout};
+use std::io::{Result, stdout};
 use std::path::PathBuf;
 use std::process::Command;
 
 use crossterm::{
     ExecutableCommand,
-    cursor::MoveToColumn,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{
-        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
-        enable_raw_mode,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 
-use colored::*;
 use ratatui::{
     Frame, Terminal,
     prelude::{Color, Constraint, CrosstermBackend, Direction, Layout, Style},
@@ -23,8 +18,6 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tempfile::{Builder, TempPath};
-use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::time::Duration;
 
 mod chat;
 
