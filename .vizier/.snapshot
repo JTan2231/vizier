@@ -9,6 +9,7 @@ Active threads
 - Native Chat + Diff/Editing UX: TUI chat gains a split-view with diff and basic editor, enabling per-hunk apply/revert and live session lever controls. Streams token output and shows in-progress markers. [New thread]
 - Headless discipline: Non-interactive runs require explicit allowlists; defaults lean safe. [No change]
 - Narrative contract + drift guardrails: System prompt embeds contract; auditor/vcs enforce alignment between code and snapshot/TODOs. [No change]
+- Integration test infrastructure: Establish and grow end-to-end tests exercising CLI/TUI flows and VCS/Auditor behaviors to prevent regressions as control levers land. [New thread; anchors below]
 
 Recent decisions
 - Config will own: model, temperature, top_p, max_tokens, system_prompt_overrides, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode.
@@ -17,6 +18,7 @@ Recent decisions
 - History layer stores minimal patches and metadata; revert prefers patch apply, falls back to VCS.
 - Contract strictness is configurable (advisory→strict) and can warn/block on drift at pre-commit.
 - TUI will host a split-view Chat + Context panel (diff/editor/history) with per-hunk apply/reject and session lever controls in the chat header. Streaming visibility is in-scope (Phase 1: token stream + in-progress markers; Phase 2: event timeline via observer hooks).
+- Integration tests run against a temporary git repo scaffolded with libgit2 to verify auditor/vcs interactions and CLI behaviors.
 
 Acceptance checkpoints
 - vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit updates the prompt’s <meta><config> and enforces confirmation gates per allowlist.
@@ -24,6 +26,7 @@ Acceptance checkpoints
 - Non-interactive run fails fast on destructive ops unless explicitly allowed.
 - System prompt includes <narrative_contract> and auditor surfaces NarrativeDrift when code changes without paired snapshot/TODO updates (blockable by config).
 - From chat, model-proposed patches render as diffs; user can accept/reject per hunk; applied changes are recorded and revertible. Chat header shows current LLM session settings. Streaming tokens visible during responses.
+- Integration suite covers: (A) auditor staging isolation; (B) config flag parsing and prompt embedding; (C) history: record/revert; (D) TUI smoke (non-interactive fallback or headless hooks).
 
 Next concrete moves
 1) config.rs: Add fields + Default, map legacy provider/force_action, and implement get_system_prompt() embedding <config> and optional <narrative_contract>.
@@ -33,11 +36,15 @@ Next concrete moves
 5) observer/instrumentation (Phase 1): Expose lightweight streaming hooks for token deltas and tool-in-progress markers; TUI subscribes to render live activity.
 6) CLI README: JSON schema for headless control and --config-json merge semantics.
 7) auditor.rs + vcs.rs: Narrative drift checks and optional pre-commit hook utility aligned with contract strictness.
+8) Integration tests: Expand coverage to assert new config flags and history behaviors; ensure libgit2-backed temp repos simulate staged/unstaged changes across A/M/D/R.
 
 Status since last update
+- New: Integration tests added and stabilized; CI workflow integration-tests.yml now runs them. Tests initialize git repos via libgit2; early flakes addressed (“debugging integration tests” commits). [Anchors: .github/workflows/integration-tests.yml; tests/; commits 07ab969, fdf7a59, 5620ed1, bc719c0, 5026734, bef463e, 14ea295, 17d97be, 6a4c4ff]
 - New: Fixed a bug where pre-existing staged changes were being included in conversation commits. Auditor now snapshots staged set, temporarily unstages non-.vizier paths, commits the conversation-only changes, and restores the previous staged set. Supporting VCS utilities were added: stage/unstage, snapshot_staged, and restore_staged with tests covering A/M/D/R cases. [Anchors: vizier-core/src/auditor.rs; vizier-core/src/vcs.rs]
 - CLI refactor: find_project_root moved into auditor and CLI now calls auditor::find_project_root; provider mapping helper remains in actions.rs. Added install.sh convenience script. [Anchors: vizier-cli/src/main.rs; vizier-core/src/auditor.rs; install.sh]
 - Code state still shows config surface minimal and prompt lacks <config>/<narrative_contract> (vizier-core/src/config.rs, display.rs) — unchanged.
 - Flags/control levers not yet landed; history/revert surfaces still pending. [vizier-cli/src/main.rs]
 - TUI chat exists but lacks diff/editor panels and streaming markers; thread remains active.
-- Process/TODO docs for contract/levers remain authoritative; no change required.
+
+Anchors
+- Tests: repo: tests/Cargo.toml, tests/src/main.rs; CI: .github/workflows/integration-tests.yml; libgit2 vendor: vizier-core/vendor/lib (dependency for tests).
