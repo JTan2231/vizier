@@ -1,7 +1,2 @@
 /target
 Cargo.lock
-
-**/*db
-
-.dewey
-.vizier/audit

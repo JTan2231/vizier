@@ -56,6 +56,38 @@ pub fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
     }
 }
 
+async fn prompt_wire_with_tools(
+    tx: tokio::sync::mpsc::Sender<String>,
+    api: wire::api::API,
+    system_prompt: &str,
+    messages: Vec<wire::types::Message>,
+    tools: Vec<wire::types::Tool>,
+) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+    #[cfg(feature = "mock_llm")]
+    {
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        let mut new_messages = messages.clone();
+        new_messages.push(wire::types::Message {
+            message_type: wire::types::MessageType::Assistant,
+            content: "mock response".to_string(),
+            api: api.clone(),
+            system_prompt: system_prompt.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            input_tokens: 0,
+            output_tokens: 0,
+        });
+
+        Ok(new_messages)
+    }
+
+    #[cfg(not(feature = "mock_llm"))]
+    {
+        wire::prompt_with_tools_and_status(tx, api, &system_prompt, messages, tools).await
+    }
+}
+
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
 #[derive(Debug, Serialize, Deserialize)]
@@ -142,23 +174,23 @@ impl Auditor {
                     .content);
             }
 
+            let currently_staged = vcs::snapshot_staged(root)?;
+            if currently_staged.len() > 0 {
+                vcs::unstage(Some(
+                    currently_staged
+                        .iter()
+                        .filter(|s| !s.path.contains(".vizier"))
+                        .map(|s| s.path.as_str())
+                        .collect(),
+                ))?;
+            }
+
             // starting to think that this should always be the case
             let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
                 let conversation = Self::conversation_to_string();
 
                 // unstage staged changes -> commit conversation -> restore staged changes
                 eprintln!("Committing conversation...");
-
-                let currently_staged = vcs::snapshot_staged(root)?;
-                if currently_staged.len() > 0 {
-                    vcs::unstage(Some(
-                        currently_staged
-                            .iter()
-                            .filter(|s| !s.path.contains(".vizier"))
-                            .map(|s| s.path.as_str())
-                            .collect(),
-                    ))?;
-                }
 
                 let hash = vcs::add_and_commit(
                     None,
@@ -169,16 +201,6 @@ impl Auditor {
                 )?
                 .to_string();
                 eprintln!("Committed conversation");
-
-                if currently_staged.len() > 0 {
-                    vcs::stage(Some(
-                        currently_staged
-                            .iter()
-                            .filter(|s| !s.path.contains(".vizier"))
-                            .map(|s| s.path.as_str())
-                            .collect(),
-                    ))?;
-                }
 
                 hash
             } else {
@@ -196,6 +218,16 @@ impl Auditor {
                 )?;
 
                 eprintln!("Committed TODO changes");
+            }
+
+            if currently_staged.len() > 0 {
+                vcs::stage(Some(
+                    currently_staged
+                        .iter()
+                        .filter(|s| !s.path.contains(".vizier"))
+                        .map(|s| s.path.as_str())
+                        .collect(),
+                ))?;
             }
 
             conversation_hash
@@ -237,18 +269,14 @@ impl Auditor {
                 }
             });
 
-            let output = wire::prompt_with_tools_and_status(
-                request_tx,
+            Ok(prompt_wire_with_tools(
+                request_tx.clone(),
                 crate::config::get_config().provider,
                 &system_prompt,
-                messages,
+                messages.clone(),
                 vec![],
             )
-            .await?;
-
-            eprintln!();
-
-            Ok(output)
+            .await?)
         })
         .await
         .unwrap();
@@ -293,20 +321,28 @@ impl Auditor {
                 }
             });
 
-            // TODO: The number of clones here is outrageous
+            eprintln!();
 
-            let output = wire::prompt_with_tools_and_status(
+            // Mock some random file change for the integration tests
+            #[cfg(feature = "integration_testing")]
+            {
+                crate::file_tracking::FileTracker::write("a", "some change")?;
+                crate::file_tracking::FileTracker::write(
+                    ".vizier/.snapshot",
+                    "some snapshot change",
+                )?;
+                crate::file_tracking::FileTracker::write(".vizier/todo.md", "some todo change")?;
+            }
+
+            // TODO: The number of clones here is outrageous
+            Ok(prompt_wire_with_tools(
                 request_tx.clone(),
                 crate::config::get_config().provider,
                 &system_prompt,
                 messages.clone(),
                 tools.clone(),
             )
-            .await?;
-
-            eprintln!();
-
-            Ok(output)
+            .await?)
         })
         .await
         .unwrap();

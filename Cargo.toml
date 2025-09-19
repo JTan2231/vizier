@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = [ "tests",
     "vizier-cli",
     "vizier-core",
     "vizier-tui"
