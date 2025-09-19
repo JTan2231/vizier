@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  integtration-tests:
 
     runs-on: ubuntu-latest
 
@@ -19,4 +19,4 @@ jobs:
     - name: Build
       run: cargo build || cargo build
     - name: Test
-      run: cargo run --bin test
+      run: cargo run --bin tests
