@@ -103,6 +103,8 @@ fn clone_test_repo() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn git_init() -> Result<(), Box<dyn std::error::Error>> {
+    cmd!("git", "config", "user.name", "Vizier")?;
+    cmd!("git", "config", "user.email", "vizier@test.com")?;
     cmd!("git", "init")?;
     cmd!("git", "add", ".")?;
     cmd!("git", "commit", "-m", "init")?;
@@ -129,13 +131,6 @@ fn test_init() -> Result<(), Box<dyn std::error::Error>> {
 // expectation:
 // -> 3 commits (conversation, narrative change, code change)
 fn test_save() -> Result<(), Box<dyn std::error::Error>> {
-    std::process::Command::new("ls")
-        .arg("-R")
-        .stdout(std::process::Stdio::from(std::io::stderr()))
-        .stderr(std::process::Stdio::inherit())
-        .spawn()?
-        .wait()?;
-
     let before = cmd!("git", "rev-list", "--count", "HEAD")?;
     let before_count: usize = String::from_utf8(before.stdout)?.trim().parse()?;
 
