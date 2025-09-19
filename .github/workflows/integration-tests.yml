@@ -16,5 +16,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Setup
+      run: sudo apt-get update && sudo apt-get install -y git
     - name: Run Tests
       run: cargo run --bin tests || cargo run --bin tests
