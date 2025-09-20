@@ -1,6 +1,6 @@
-use once_cell::sync::OnceCell;
-use tokio::sync::mpsc;
+use std::sync::RwLock;
 
+use tokio::sync::mpsc;
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
 use crate::{file_tracking, observer::CaptureGuard, vcs};
@@ -40,7 +40,7 @@ pub fn get_todo_dir() -> String {
 pub fn get_tools() -> Vec<Tool> {
     vec![
         get_tool!(diff),
-        get_tool!(git_log),
+        // get_tool!(git_log),
         get_tool!(add_todo),
         get_tool!(delete_todo),
         get_tool!(update_todo),
@@ -87,11 +87,8 @@ pub fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
 // This is our hook into TUI app state
 // Initialized in the editor::App constructor
 // TODO: This is probably bad form
-pub static SENDER: OnceCell<mpsc::UnboundedSender<String>> = OnceCell::new();
 
-pub fn get_sender() -> mpsc::UnboundedSender<String> {
-    SENDER.get().expect("Channel not initialized").clone()
-}
+pub static SENDER: RwLock<Option<mpsc::UnboundedSender<String>>> = RwLock::new(None);
 
 pub fn get_editor_tools() -> Vec<Tool> {
     vec![get_tool!(edit_content)]
@@ -100,7 +97,9 @@ pub fn get_editor_tools() -> Vec<Tool> {
 #[tool(description = "Replace the content of the file shown to the user")]
 pub fn edit_content(content: String) -> String {
     let guard = CaptureGuard::start();
-    match get_sender().send(content) {
+
+    // bro lmfao
+    match SENDER.read().unwrap().clone().unwrap().send(content) {
         Ok(_) => build_llm_response(String::new(), &guard),
         Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
     }
