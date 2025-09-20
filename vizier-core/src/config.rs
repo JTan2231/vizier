@@ -10,14 +10,14 @@ lazy_static! {
 #[derive(Clone)]
 pub struct Config {
     pub provider: wire::api::API,
-    pub force_action: bool,
+    pub commit_confirmation: bool,
 }
 
 impl Config {
     pub fn default() -> Self {
         Self {
             provider: wire::api::API::OpenAI(wire::api::OpenAIModel::GPT5),
-            force_action: false,
+            commit_confirmation: false,
         }
     }
 }

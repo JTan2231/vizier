@@ -101,7 +101,14 @@ async fn save(
         message_builder.with_author_note(note);
     }
 
-    let commit_message = message_builder.build();
+    let mut commit_message = message_builder.build();
+
+    if crate::config::get_config().commit_confirmation {
+        if let Some(new_message) = vizier_core::editor::run_editor(&commit_message).await? {
+            commit_message = new_message;
+        }
+    }
+
     eprintln!("Committing remaining code changes...");
     vcs::add_and_commit(None, &commit_message, false)?;
     eprintln!("Changes committed with message: {}", commit_message);

@@ -55,7 +55,7 @@ impl FileTracker {
     /// Commits changes specific to the `.vizier` directory--primarily intended as a log for Vizier
     /// changes to existing TODOs and narrative threads
     /// Doesn't do anything if there are no changes to commit
-    pub fn commit_changes(
+    pub async fn commit_changes(
         _conversation_hash: &str,
         message: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -63,10 +63,18 @@ impl FileTracker {
             return Ok(());
         }
 
+        let mut commit_message = format!("{}", message);
+
+        if crate::config::get_config().commit_confirmation {
+            if let Some(new_message) = crate::editor::run_editor(&commit_message).await? {
+                commit_message = new_message;
+            }
+        }
+
         // TODO: Commit message builder
         vcs::add_and_commit(
             Some(vec![&crate::tools::get_todo_dir()]),
-            &format!("{}", message),
+            &commit_message,
             false,
         )?;
 
