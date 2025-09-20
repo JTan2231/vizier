@@ -80,3 +80,23 @@ Threads: CLI/TUI surface area; Operation history + reversibility; Headless disci
 
 ---
 
+[2025-09-20] Trim scope to match pared snapshot.
+
+- Keep only immediate levers and gates:
+  • Config: model, temperature, top_p, max_tokens, history_limit, confirm_destructive, auto_commit, non_interactive, system_prompt_overrides. Defer enable_snapshots and any contract/drift-specific fields.
+  • Surfaces: CLI flags for the above; TUI header shows current model + temperature; no preset-cycler requirement right now.
+- Commit gate acceptance remains (TUI Accept/Reject with editable message; CLI proposal file; headless requires --yes + message). 
+- History acceptance narrows to: record last operation and allow revert of last change; full ring buffer UI can come later.
+- Remove narrative contract/drift enforcement from this TODO; thread deferred.
+
+Acceptance (revised):
+1) Running `vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit` updates prompt/meta config and enforces gates; non-interactive refuses to commit without explicit consent.
+2) TUI shows current LLM settings in header; commit gate appears with diff + editable message; Accept applies exactly those hunks; Reject leaves no changes.
+3) CLI interactive opens $EDITOR on a proposal; empty or `# abort` cancels with no changes; non-interactive requires --yes and --message/--message-file.
+4) After Accept, history records the operation; revert of last operation restores prior state atomically.
+
+Pointers unchanged: vizier-core/src/config.rs; vizier-cli/src/main.rs; vizier-core/src/{auditor.rs,vcs.rs,tools.rs}; vizier-tui/src/chat.rs.
+
+
+---
+

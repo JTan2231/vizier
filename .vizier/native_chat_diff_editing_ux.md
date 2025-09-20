@@ -14,3 +14,19 @@ Pointers: vizier-core/src/editor.rs; vizier-core/src/tools.rs; vizier-tui/src/ch
 
 ---
 
+[2025-09-20] Keep only essentials tied to editor hardening and commit gate.
+
+- Scope: In TUI chat split-view, show proposed diff and an editable commit message with Accept/Reject. Editor panel respects ExitReason mapping (Ctrl-S save, Esc/Ctrl-Q cancel). Tool invocations are disabled when no editor session is active.
+
+- Defer: Per-hunk apply/reject UI, streaming/event timeline, and history sidebar beyond showing last op status.
+
+Acceptance:
+1) Editor panel key bindings behave as hardened (save/cancel) with no cross-session leakage.
+2) Commit gate appears with diff + editable message; Accept applies exactly shown hunks; Reject leaves workspace untouched.
+3) If edit_content is invoked without an active editor session, the UI shows a clear “editor not active” message and no side effects occur.
+
+Pointers: vizier-core/src/{editor.rs,tools.rs}; vizier-tui/src/chat.rs.
+
+
+---
+

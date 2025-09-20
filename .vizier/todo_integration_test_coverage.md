@@ -15,4 +15,20 @@ Acceptance criteria
 4) No network secrets required; tests skip network-bound calls behind a feature flag or mock when running in CI.
 
 Pointers
-- tests/src/main.rs for orchestration; vizier-cli/src/main.rs (flags), vizier-core/src/{config.rs,auditor.rs,vcs.rs,tools.rs}, vizier-tui/src/chat.rs for surfaces under test.
+- tests/src/main.rs for orchestration; vizier-cli/src/main.rs (flags), vizier-core/src/{config.rs,auditor.rs,vcs.rs,tools.rs}, vizier-tui/src/chat.rs for surfaces under test.[2025-09-20] Trim coverage to near-term surfaces.
+
+Keep:
+- Config→CLI→prompt mapping assertions for the essential levers.
+- Auditor staged-set isolation around conversation commits (A/M/D/R).
+- Commit gate flows: CLI interactive (editor proposal), CLI non-interactive (--yes + message), and a TUI/headless smoke that verifies the gate is presented or refused appropriately.
+
+Defer:
+- Full history ring buffer and complex revert scenarios; keep only revert-last success case once history lands.
+- Streaming token/event timeline hooks.
+- Narrative contract/drift enforcement.
+
+Acceptance remains: tests run in CI and locally; failures point to the specific behavior (config mapping, staged isolation, commit gate, revert-last once available).
+
+
+---
+

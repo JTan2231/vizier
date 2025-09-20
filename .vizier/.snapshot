@@ -1,63 +1,32 @@
-Project trajectory snapshot
+Project trajectory snapshot (pared)
 
-Theme: Give operators precise, explicit control over the AI’s levers and its footprint on the workspace, with reversible operations and clear gates. Expand this into a native TUI chat that pairs conversation with diffs and safe, reversible edits.
+Theme: Give operators explicit control over AI changes with clear gates and reversible edits. Grow a native chat that pairs proposals with diffs; keep headless runs safe by default.
 
-Active threads
-- Control levers in Config: Expand vizier-core/src/config.rs to express model-level params, safety gates, and history capacity, while remaining backward compatible. [Depends on current code lacking these fields; see Status]
-- CLI/TUI surface area: Flags and UI affordances must map 1:1 to config, exposing confirmation gates and visibility of current settings. [Anchors: vizier-cli main.rs; vizier-tui/src/chat.rs]
-- Operation history + reversibility: First-class Operation records with ring buffer, confirmation workflow, and revert via stored patches or git. [Anchors: vizier-core history (new), tools.rs hooks]
-- Native Chat + Diff/Editing UX: TUI chat gains a split-view with diff and basic editor, enabling per-hunk apply/revert and live session lever controls. Streams token output and shows in-progress markers. [New thread]
-- Headless discipline: Non-interactive runs require explicit allowlists; defaults lean safe. [No change]
-- Narrative contract + drift guardrails: System prompt embeds contract; auditor/vcs enforce alignment between code and snapshot/TODOs. [No change]
-- Integration test infrastructure: Establish and grow end-to-end tests exercising CLI/TUI flows and VCS/Auditor behaviors to prevent regressions as control levers land. [New thread; anchors below]
-- Commit gating & confirmation (initial run): Introduce a “Pending Commit” gate across TUI and CLI with editable message and explicit Confirm/Amend/Reject. Headless mode refuses to commit without explicit consent. [Depends on CLI/TUI surfaces and history; see Decisions/Acceptance]
+Active threads (current)
+- Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
+- Control levers surface (trimmed): Add basic config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params) and reflect them in prompt/meta. Keep advanced contract levers out for now. [Snapshot Status: config still minimal]
+- Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
+- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. Streaming markers are nice-to-have, not a blocker.
+- Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 
-Recent decisions
-- Config will own: model, temperature, top_p, max_tokens, system_prompt_overrides, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode.
-- System prompt gains a <config> section (no secrets) so the model operates within declared constraints; add <narrative_contract> with snapshot hash and active TODOs when contract levers are enabled.
-- CLI will add flags mapping to the new config surface; numeric ranges validated with safe fallbacks and warnings.
-- History layer stores minimal patches and metadata; revert prefers patch apply, falls back to VCS.
-- Contract strictness is configurable (advisory→strict) and can warn/block on drift at pre-commit.
-- TUI will host a split-view Chat + Context panel (diff/editor/history) with per-hunk apply/reject and session lever controls in the chat header. Streaming visibility is in-scope (Phase 1: token stream + in-progress markers; Phase 2: event timeline via observer hooks).
-- Integration tests run against a temporary git repo scaffolded with libgit2 to verify auditor/vcs interactions and CLI behaviors.
-- Commit gating (initial design):
-  - TUI: split-view shows proposed diff and editable commit message; Accept/Edit/Reject actions; accepted hunks apply exactly; operation recorded; revert available.
-  - CLI: interactive opens $EDITOR on a proposal file; empty save or “# abort” cancels; non-interactive requires --yes plus a message via flag or file; CI/headless never spawns an editor.
+Recent, landed (evidence-based)
+- Integration tests added/stabilized; CI runs them. [tests/, workflow]
+- Auditor fixes: staged-set isolation during conversation commits; vcs helpers for stage/unstage/snapshot/restore across A/M/D/R. [vizier-core/src/{auditor.rs,vcs.rs}]
+- Editor lifecycle hardened: run_editor uses ExitReason; editor channel scoped to a single session to prevent leakage. [vizier-core/src/{editor.rs,tools.rs}]
 
-Acceptance checkpoints
-- vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit updates the prompt’s <meta><config> and enforces confirmation gates per allowlist.
-- TUI shows history and can revert last operation.
-- Non-interactive run fails fast on destructive ops unless explicitly allowed.
-- System prompt includes <narrative_contract> and auditor surfaces NarrativeDrift when code changes without paired snapshot/TODO updates (blockable by config).
-- From chat, model-proposed patches render as diffs; user can accept/reject per hunk; applied changes are recorded and revertible. Chat header shows current LLM session settings. Streaming tokens visible during responses.
-- Integration suite covers: (A) auditor staging isolation; (B) config flag parsing and prompt embedding; (C) history: record/revert; (D) TUI smoke (non-interactive fallback or headless hooks).
-- Commit gating acceptance (initial run):
-  1) With confirm_destructive=true and auto_commit=false, TUI presents an editable commit message next to the diff and requires explicit Accept; Reject leaves workspace untouched.
-  2) After Accept, committed hunks match the displayed diff; message equals edited text; operation recorded; revert restores pre-op state without stray files.
-  3) CLI interactive launches $EDITOR on a proposal; edited message is used; empty or “# abort” exits cleanly with no changes.
-  4) CLI non-interactive requires --yes plus --message/--message-file; otherwise command refuses to write; CI/headless never spawns editor.
+What’s explicitly not in scope now (deferred or removed)
+- Narrative contract/drift enforcement and pre-commit hook: deferred until core levers + commit gate land. Remove strict contract levers from immediate plan.
+- Full streaming/event observer timeline: keep minimal streaming visibility optional; no event timeline right now.
 
-Next concrete moves
-1) config.rs: Add fields + Default, map legacy provider/force_action, and implement get_system_prompt() embedding <config> and optional <narrative_contract>.
-2) vizier-cli main.rs: Add flags, parse, validate, merge, and set_config().
-3) vizier-core history.rs (new) + tools.rs hooks: Operation struct, ring buffer, record/require_confirmation/revert APIs; expose to TUI/CLI.
-4) vizier-tui: Introduce split-view in chat.rs: chat pane + context panel (diff/editor/history). Show LLM settings in header; allow per-hunk apply/reject; wire to history APIs. Add Pending Commit panel with Accept/Edit/Reject.
-5) observer/instrumentation (Phase 1): Expose lightweight streaming hooks for token deltas and tool-in-progress markers; TUI subscribes to render live activity.
-6) CLI README: JSON schema for headless control and --config-json merge semantics; document commit gating flags and editor behavior.
-7) auditor.rs + vcs.rs: Narrative drift checks and optional pre-commit hook utility aligned with contract strictness.
-8) Integration tests: Expand coverage to assert new config flags, commit gating behavior (TUI/CLI surfaces), and history behaviors; ensure libgit2-backed temp repos simulate staged/unstaged changes across A/M/D/R.
+Acceptance checkpoints (kept)
+- With confirm_destructive=true and auto_commit=false, writes pause at a Pending Commit gate (TUI/CLI). Reject leaves workspace untouched.
+- Conversation commits touch only .vizier paths; pre-existing staged changes are preserved and restored exactly. A/M/D/R covered.
+- CLI non-interactive refuses to commit without explicit consent (e.g., --yes with message) and never opens an editor.
+- TUI shows history list and can revert the last accepted change once history lands.
 
-Status since last update
-- New: Integration tests added and stabilized; CI workflow integration-tests.yml now runs them. Tests initialize git repos via libgit2; early flakes addressed (“debugging integration tests” commits). [Anchors: .github/workflows/integration-tests.yml; tests/; commits 07ab969, fdf7a59, 5620ed1, bc719c0, 5026734, bef463e, 14ea295, 17d97be, 6a4c4ff]
-- New: Fixed a bug where pre-existing staged changes were being included in conversation commits. Auditor now snapshots staged set, temporarily unstages non-.vizier paths, commits the conversation-only changes, and restores the previous staged set. Supporting VCS utilities were added: stage/unstage, snapshot_staged, and restore_staged with tests covering A/M/D/R cases. [Anchors: vizier-core/src/auditor.rs; vizier-core/src/vcs.rs]
-- CLI refactor: find_project_root moved into auditor and CLI now calls auditor::find_project_root; provider mapping helper remains in actions.rs. Added install.sh convenience script. [Anchors: vizier-cli/src/main.rs; vizier-core/src/auditor.rs; install.sh]
-- Editor integration tightened: exit reasons are now modeled via an ExitReason enum and actually used by run_editor(); the editor message channel is no longer a global singleton for the entire program lifetime. Instead, the editor handle (SENDER) is scoped to run_editor() and cleared on exit, preventing cross-session leakage. [Anchors: vizier-core/src/editor.rs; vizier-core/src/tools.rs]
-- Code state still shows config surface minimal and prompt lacks <config>/<narrative_contract> (vizier-core/src/config.rs, display.rs) — unchanged.
-- Flags/control levers not yet landed; history/revert surfaces still pending. [vizier-cli/src/main.rs]
-- TUI chat exists but lacks diff/editor panels and streaming markers; thread remains active.
-- Initial commit gating behavior defined (this run); no code yet.
-
-Anchors
-- Tests: repo: tests/Cargo.toml, tests/src/main.rs; CI: .github/workflows/integration-tests.yml; libgit2 vendor: vizier-core/vendor/lib (dependency for tests).
-- Surfaces for commit gates: vizier-tui/src/chat.rs; vizier-cli/src/main.rs; vizier-core/src/{auditor.rs,vcs.rs,tools.rs}
-- Editor: vizier-core/src/editor.rs; vizier-core/src/tools.rs (editor handle scoping; ExitReason usage)
+Next moves (minimal, sequential)
+1) Config: add essential levers + Default; expose to prompt/meta. [vizier-core/src/config.rs, display.rs]
+2) CLI: add flags for those levers; validation + set_config. [vizier-cli/src/main.rs]
+3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [tui/chat.rs, cli/main.rs]
+4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
+5) Tests: extend to cover flags mapping and commit gate behaviors.
