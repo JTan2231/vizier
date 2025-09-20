@@ -93,6 +93,8 @@ pub async fn run_editor(content: &str) -> Result<Option<String>, Box<dyn std::er
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    *crate::tools::SENDER.write().unwrap() = None;
+
     Ok(if exit_reason == ExitReason::Cancel {
         None
     } else {
@@ -123,9 +125,8 @@ struct App {
 impl App {
     fn new(content: &str) -> Self {
         let (tool_tx, tool_rx) = tokio::sync::mpsc::unbounded_channel();
-        crate::tools::SENDER
-            .set(tool_tx)
-            .expect("Channel already initialized");
+
+        *crate::tools::SENDER.write().unwrap() = Some(tool_tx);
 
         let (response_tx, response_rx) = tokio::sync::mpsc::channel::<String>(32);
         Self {
@@ -195,8 +196,11 @@ impl App {
         key: KeyEvent,
     ) -> Result<Option<ExitReason>, Box<dyn std::error::Error>> {
         match (key.modifiers, key.code) {
-            // Quit
-            (_, KeyCode::Esc) => return Ok(Some(ExitReason::Cancel)),
+            // Cancel edits
+            (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Ok(Some(ExitReason::Cancel)),
+
+            // Save edits
+            (KeyModifiers::CONTROL, KeyCode::Char('s')) => return Ok(Some(ExitReason::Save)),
 
             // Textarea editing
             (KeyModifiers::NONE, KeyCode::Char(c)) | (KeyModifiers::SHIFT, KeyCode::Char(c)) => {
