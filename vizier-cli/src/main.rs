@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         }
 
-        Commands::Chat(_cmd) => Ok(()),
+        Commands::Chat(_cmd) => vizier_core::chat::chat_tui().await,
 
         Commands::Ask(cmd) => {
             let message = resolve_ask_message(&cmd)?;

@@ -40,7 +40,7 @@ pub fn get_todo_dir() -> String {
 pub fn get_tools() -> Vec<Tool> {
     vec![
         get_tool!(diff),
-        // get_tool!(git_log),
+        get_tool!(git_log),
         get_tool!(add_todo),
         get_tool!(delete_todo),
         get_tool!(update_todo),
@@ -131,6 +131,7 @@ Notes:
 - Commits are ordered chronologically descending (most recent first).
 - `depth` applies *after* filtering, so fewer than `depth` commits may appear if
   not enough commits match the filter.
+- There is a filter applied after retrieval that removes conversation logs
 - If no commit messages match, output will be empty.
 ")]
 pub fn git_log(depth: String, commit_message_type: String) -> String {
@@ -144,7 +145,14 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
             None
         },
     ) {
-        Ok(d) => build_llm_response(d, &guard),
+        Ok(d) => build_llm_response(
+            d.iter()
+                .filter(|m| !m.contains("VIZIER CONVERSATION"))
+                .cloned()
+                .collect::<Vec<String>>()
+                .join("\n"),
+            &guard,
+        ),
         Err(e) => return llm_error(&format!("Error getting git log: {}", e)),
     }
 }
