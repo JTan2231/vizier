@@ -51,6 +51,7 @@ Status since last update
 - New: Integration tests added and stabilized; CI workflow integration-tests.yml now runs them. Tests initialize git repos via libgit2; early flakes addressed (“debugging integration tests” commits). [Anchors: .github/workflows/integration-tests.yml; tests/; commits 07ab969, fdf7a59, 5620ed1, bc719c0, 5026734, bef463e, 14ea295, 17d97be, 6a4c4ff]
 - New: Fixed a bug where pre-existing staged changes were being included in conversation commits. Auditor now snapshots staged set, temporarily unstages non-.vizier paths, commits the conversation-only changes, and restores the previous staged set. Supporting VCS utilities were added: stage/unstage, snapshot_staged, and restore_staged with tests covering A/M/D/R cases. [Anchors: vizier-core/src/auditor.rs; vizier-core/src/vcs.rs]
 - CLI refactor: find_project_root moved into auditor and CLI now calls auditor::find_project_root; provider mapping helper remains in actions.rs. Added install.sh convenience script. [Anchors: vizier-cli/src/main.rs; vizier-core/src/auditor.rs; install.sh]
+- Editor integration tightened: exit reasons are now modeled via an ExitReason enum and actually used by run_editor(); the editor message channel is no longer a global singleton for the entire program lifetime. Instead, the editor handle (SENDER) is scoped to run_editor() and cleared on exit, preventing cross-session leakage. [Anchors: vizier-core/src/editor.rs; vizier-core/src/tools.rs]
 - Code state still shows config surface minimal and prompt lacks <config>/<narrative_contract> (vizier-core/src/config.rs, display.rs) — unchanged.
 - Flags/control levers not yet landed; history/revert surfaces still pending. [vizier-cli/src/main.rs]
 - TUI chat exists but lacks diff/editor panels and streaming markers; thread remains active.
@@ -59,3 +60,4 @@ Status since last update
 Anchors
 - Tests: repo: tests/Cargo.toml, tests/src/main.rs; CI: .github/workflows/integration-tests.yml; libgit2 vendor: vizier-core/vendor/lib (dependency for tests).
 - Surfaces for commit gates: vizier-tui/src/chat.rs; vizier-cli/src/main.rs; vizier-core/src/{auditor.rs,vcs.rs,tools.rs}
+- Editor: vizier-core/src/editor.rs; vizier-core/src/tools.rs (editor handle scoping; ExitReason usage)
