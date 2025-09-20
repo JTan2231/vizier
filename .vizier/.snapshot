@@ -6,7 +6,7 @@ Active threads (current)
 - Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
 - Control levers surface (trimmed): Add basic config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params) and reflect them in prompt/meta. Keep advanced contract levers out for now. [Snapshot Status: config still minimal]
 - Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
-- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. Streaming markers are nice-to-have, not a blocker.
+- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. Streaming markers are nice-to-have, not a blocker. Note: author signaled “including the chat back with some added styling” — treat as TUI chat being reintroduced; styling is cosmetic and doesn’t change behavior promises. [Anchor: vizier-core/src/chat.rs exists; vizier-tui crate previously removed; TUI return is planned]
 - Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 
 Recent, landed (evidence-based)
@@ -27,6 +27,6 @@ Acceptance checkpoints (kept)
 Next moves (minimal, sequential)
 1) Config: add essential levers + Default; expose to prompt/meta. [vizier-core/src/config.rs, display.rs]
 2) CLI: add flags for those levers; validation + set_config. [vizier-cli/src/main.rs]
-3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [tui/chat.rs, cli/main.rs]
+3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [tui/chat.rs (planned return), cli/main.rs]
 4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
 5) Tests: extend to cover flags mapping and commit gate behaviors.

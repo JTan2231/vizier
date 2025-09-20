@@ -30,3 +30,20 @@ Pointers: vizier-core/src/{editor.rs,tools.rs}; vizier-tui/src/chat.rs.
 
 ---
 
+Update (2025-09-20, later): Chat returns with styling
+
+- Evidence: Author note indicates “including the chat back with some added styling.” Treat as reintroducing the TUI chat surface with cosmetic improvements.
+
+Implications (scope stays the same functionally):
+- Keep Phase 1 scope to split-view with diff + editable commit message and Accept/Reject. Styling changes must not alter keybindings or gate semantics.
+- Ensure chat header can display current LLM session settings; visual polish is allowed but behavior must satisfy acceptance.
+
+Acceptance deltas:
+4) Visual: Chat pane renders with consistent theming (header, borders, focus states) without breaking keyboard shortcuts listed below.
+5) Keyboard shortcuts remain: Accept, Reject, and editor Save (Ctrl-S) / Cancel (Esc/Ctrl-Q) operate as previously specified.
+
+Pointers: vizier-tui/src/chat.rs (reintroduced); vizier-core/src/{editor.rs,tools.rs}.
+
+
+---
+
