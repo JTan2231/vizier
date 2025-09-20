@@ -101,4 +101,18 @@ Pointers:
 - vizier-tui/src/chat.rs (status line, confirmation prompts, History sidebar)
 
 Implementation Notes (safety/correctness) (snapshot: Next concrete moves 3):
-- Reverts must be atomic; prefer patch apply with VCS fallback. Enforce bounded history and exclude secrets from <config>.
+- Reverts must be atomic; prefer patch apply with VCS fallback. Enforce bounded history and exclude secrets from <config>.[2025-09-20] Narrowed to essentials per pared snapshot.
+
+- Remove: enable_snapshots lever, JSON allowlist schema, advanced TUI history sidebar and preset cycler, and any narrative contract/drift levers.
+- Keep: essential config levers (model, temperature, top_p, max_tokens, history_limit, confirm_destructive, auto_commit, non_interactive, system_prompt_overrides), CLI flags, prompt/meta reflection, minimal history (record last op + revert last), and commit gates (TUI/CLI/headless behaviors).
+
+Revised Acceptance:
+- Configurable levers are settable via CLI and reflected in prompt/meta.
+- Commit gates behave as specified; headless requires explicit consent.
+- History supports revert of the last operation and does so atomically.
+
+Implementation notes kept minimal; architecture remains open.
+
+
+---
+

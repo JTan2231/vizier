@@ -52,3 +52,16 @@ Pointers: vizier-core/src/auditor.rs (commit isolation), vizier-core/src/vcs.rs 
 
 ---
 
+[2025-09-20] Defer narrative contract/drift mechanics.
+
+- Remove (for now): <narrative_contract> in prompt, check_contract_alignment(), pre-commit hook, contract CLI.
+- Keep: Only the <config> block addition to the system prompt/meta when config levers land.
+
+Revised Acceptance:
+- get_system_prompt()/display includes a <config> section with effective, non-secret settings; legacy meta (fileTree, todos, cwd) remains.
+
+Pointers: vizier-core/src/{config.rs,display.rs}.
+
+
+---
+
