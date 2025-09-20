@@ -246,7 +246,7 @@ pub fn add_and_commit(
 /// contain ANY of the provided `filters` (case-insensitive).
 /// The returned String contains each commit's entire message (subject + body),
 /// with original newlines preserved. Between commits, a simple header demarcates entries.
-pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<String, Error> {
+pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<Vec<String>, Error> {
     let repo = Repository::discover(".")?;
 
     let mut walk = repo.revwalk()?;
@@ -261,7 +261,7 @@ pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<String, Err
         .collect();
     let use_filters = !needles.is_empty();
 
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut kept = 0usize;
 
     for oid_res in walk {
@@ -288,13 +288,17 @@ pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<String, Err
         let short_sha = &sha[..7.min(sha.len())];
         let author = commit.author().name().unwrap_or("<unknown>").to_string();
 
-        out.push_str(&format!("commit {short_sha} — {author}\n"));
-        out.push_str(&msg);
+        let mut out_msg = String::new();
+
+        out_msg.push_str(&format!("commit {short_sha} — {author}\n"));
+        out_msg.push_str(&msg);
         if !msg.ends_with('\n') {
-            out.push('\n');
+            out_msg.push('\n');
         }
 
-        out.push('\n');
+        out_msg.push('\n');
+
+        out.push(out_msg);
 
         kept += 1;
         if kept >= depth {

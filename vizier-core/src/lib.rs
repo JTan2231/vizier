@@ -1,4 +1,5 @@
 pub mod auditor;
+pub mod chat;
 pub mod config;
 pub mod display;
 pub mod editor;
