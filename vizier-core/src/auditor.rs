@@ -192,14 +192,17 @@ impl Auditor {
                 // unstage staged changes -> commit conversation -> restore staged changes
                 eprintln!("Committing conversation...");
 
-                let hash = vcs::add_and_commit(
-                    None,
-                    &CommitMessageBuilder::new(conversation)
-                        .set_header(CommitMessageType::Conversation)
-                        .build(),
-                    true,
-                )?
-                .to_string();
+                let mut commit_message = CommitMessageBuilder::new(conversation)
+                    .set_header(CommitMessageType::Conversation)
+                    .build();
+
+                if crate::config::get_config().commit_confirmation {
+                    if let Some(new_message) = crate::editor::run_editor(&commit_message).await? {
+                        commit_message = new_message;
+                    }
+                }
+
+                let hash = vcs::add_and_commit(None, &commit_message, true)?.to_string();
                 eprintln!("Committed conversation");
 
                 hash
@@ -215,7 +218,8 @@ impl Auditor {
                         .set_header(CommitMessageType::NarrativeChange)
                         .with_conversation_hash(conversation_hash.clone())
                         .build(),
-                )?;
+                )
+                .await?;
 
                 eprintln!("Committed TODO changes");
             }

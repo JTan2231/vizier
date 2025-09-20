@@ -1,3 +1,6 @@
+use once_cell::sync::OnceCell;
+use tokio::sync::mpsc;
+
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
 use crate::{file_tracking, observer::CaptureGuard, vcs};
@@ -62,11 +65,11 @@ pub fn is_action(name: &str) -> bool {
 
 // TODO: The wire needs updated to accept more kinds of types for the function arguments
 
-fn llm_error(message: &str) -> String {
+pub fn llm_error(message: &str) -> String {
     format!("<error>{}</error>", message)
 }
 
-fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
+pub fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
     let mut response = format!("<tool_output>{}</tool_output>", tool_output);
 
     let (out, err) = guard.take_both();
@@ -79,6 +82,28 @@ fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
     }
 
     response
+}
+
+// This is our hook into TUI app state
+// Initialized in the editor::App constructor
+// TODO: This is probably bad form
+pub static SENDER: OnceCell<mpsc::UnboundedSender<String>> = OnceCell::new();
+
+pub fn get_sender() -> mpsc::UnboundedSender<String> {
+    SENDER.get().expect("Channel not initialized").clone()
+}
+
+pub fn get_editor_tools() -> Vec<Tool> {
+    vec![get_tool!(edit_content)]
+}
+
+#[tool(description = "Replace the content of the file shown to the user")]
+pub fn edit_content(content: String) -> String {
+    let guard = CaptureGuard::start();
+    match get_sender().send(content) {
+        Ok(_) => build_llm_response(String::new(), &guard),
+        Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
+    }
 }
 
 #[tool(description = "Get the `git diff` of the project")]

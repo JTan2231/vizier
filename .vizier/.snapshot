@@ -10,6 +10,7 @@ Active threads
 - Headless discipline: Non-interactive runs require explicit allowlists; defaults lean safe. [No change]
 - Narrative contract + drift guardrails: System prompt embeds contract; auditor/vcs enforce alignment between code and snapshot/TODOs. [No change]
 - Integration test infrastructure: Establish and grow end-to-end tests exercising CLI/TUI flows and VCS/Auditor behaviors to prevent regressions as control levers land. [New thread; anchors below]
+- Commit gating & confirmation (initial run): Introduce a “Pending Commit” gate across TUI and CLI with editable message and explicit Confirm/Amend/Reject. Headless mode refuses to commit without explicit consent. [Depends on CLI/TUI surfaces and history; see Decisions/Acceptance]
 
 Recent decisions
 - Config will own: model, temperature, top_p, max_tokens, system_prompt_overrides, history_limit, confirm_destructive, auto_commit, enable_snapshots, non_interactive_mode.
@@ -19,6 +20,9 @@ Recent decisions
 - Contract strictness is configurable (advisory→strict) and can warn/block on drift at pre-commit.
 - TUI will host a split-view Chat + Context panel (diff/editor/history) with per-hunk apply/reject and session lever controls in the chat header. Streaming visibility is in-scope (Phase 1: token stream + in-progress markers; Phase 2: event timeline via observer hooks).
 - Integration tests run against a temporary git repo scaffolded with libgit2 to verify auditor/vcs interactions and CLI behaviors.
+- Commit gating (initial design):
+  - TUI: split-view shows proposed diff and editable commit message; Accept/Edit/Reject actions; accepted hunks apply exactly; operation recorded; revert available.
+  - CLI: interactive opens $EDITOR on a proposal file; empty save or “# abort” cancels; non-interactive requires --yes plus a message via flag or file; CI/headless never spawns an editor.
 
 Acceptance checkpoints
 - vizier --temperature 0.7 --history-limit 10 --non-interactive --no-auto-commit updates the prompt’s <meta><config> and enforces confirmation gates per allowlist.
@@ -27,16 +31,21 @@ Acceptance checkpoints
 - System prompt includes <narrative_contract> and auditor surfaces NarrativeDrift when code changes without paired snapshot/TODO updates (blockable by config).
 - From chat, model-proposed patches render as diffs; user can accept/reject per hunk; applied changes are recorded and revertible. Chat header shows current LLM session settings. Streaming tokens visible during responses.
 - Integration suite covers: (A) auditor staging isolation; (B) config flag parsing and prompt embedding; (C) history: record/revert; (D) TUI smoke (non-interactive fallback or headless hooks).
+- Commit gating acceptance (initial run):
+  1) With confirm_destructive=true and auto_commit=false, TUI presents an editable commit message next to the diff and requires explicit Accept; Reject leaves workspace untouched.
+  2) After Accept, committed hunks match the displayed diff; message equals edited text; operation recorded; revert restores pre-op state without stray files.
+  3) CLI interactive launches $EDITOR on a proposal; edited message is used; empty or “# abort” exits cleanly with no changes.
+  4) CLI non-interactive requires --yes plus --message/--message-file; otherwise command refuses to write; CI/headless never spawns editor.
 
 Next concrete moves
 1) config.rs: Add fields + Default, map legacy provider/force_action, and implement get_system_prompt() embedding <config> and optional <narrative_contract>.
 2) vizier-cli main.rs: Add flags, parse, validate, merge, and set_config().
 3) vizier-core history.rs (new) + tools.rs hooks: Operation struct, ring buffer, record/require_confirmation/revert APIs; expose to TUI/CLI.
-4) vizier-tui: Introduce split-view in chat.rs: chat pane + context panel (diff/editor/history). Show LLM settings in header; allow per-hunk apply/reject; wire to history APIs.
+4) vizier-tui: Introduce split-view in chat.rs: chat pane + context panel (diff/editor/history). Show LLM settings in header; allow per-hunk apply/reject; wire to history APIs. Add Pending Commit panel with Accept/Edit/Reject.
 5) observer/instrumentation (Phase 1): Expose lightweight streaming hooks for token deltas and tool-in-progress markers; TUI subscribes to render live activity.
-6) CLI README: JSON schema for headless control and --config-json merge semantics.
+6) CLI README: JSON schema for headless control and --config-json merge semantics; document commit gating flags and editor behavior.
 7) auditor.rs + vcs.rs: Narrative drift checks and optional pre-commit hook utility aligned with contract strictness.
-8) Integration tests: Expand coverage to assert new config flags and history behaviors; ensure libgit2-backed temp repos simulate staged/unstaged changes across A/M/D/R.
+8) Integration tests: Expand coverage to assert new config flags, commit gating behavior (TUI/CLI surfaces), and history behaviors; ensure libgit2-backed temp repos simulate staged/unstaged changes across A/M/D/R.
 
 Status since last update
 - New: Integration tests added and stabilized; CI workflow integration-tests.yml now runs them. Tests initialize git repos via libgit2; early flakes addressed (“debugging integration tests” commits). [Anchors: .github/workflows/integration-tests.yml; tests/; commits 07ab969, fdf7a59, 5620ed1, bc719c0, 5026734, bef463e, 14ea295, 17d97be, 6a4c4ff]
@@ -45,6 +54,8 @@ Status since last update
 - Code state still shows config surface minimal and prompt lacks <config>/<narrative_contract> (vizier-core/src/config.rs, display.rs) — unchanged.
 - Flags/control levers not yet landed; history/revert surfaces still pending. [vizier-cli/src/main.rs]
 - TUI chat exists but lacks diff/editor panels and streaming markers; thread remains active.
+- Initial commit gating behavior defined (this run); no code yet.
 
 Anchors
 - Tests: repo: tests/Cargo.toml, tests/src/main.rs; CI: .github/workflows/integration-tests.yml; libgit2 vendor: vizier-core/vendor/lib (dependency for tests).
+- Surfaces for commit gates: vizier-tui/src/chat.rs; vizier-cli/src/main.rs; vizier-core/src/{auditor.rs,vcs.rs,tools.rs}

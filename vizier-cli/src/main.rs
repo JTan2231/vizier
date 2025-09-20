@@ -35,13 +35,13 @@ struct GlobalOpts {
     #[arg(short = 'p', long, global = true)]
     provider: Option<String>,
 
-    /// Force the agent to perform an action
-    #[arg(short = 'f', long, global = true)]
-    force_action: bool,
-
-    /// Emit the audit as JSON to stdout (lifecycle/RAII-driven)
+    /// Emit the audit as JSON to stdout
     #[arg(short = 'j', long, global = true)]
     json: bool,
+
+    /// Require user confirmation for commit messages
+    #[arg(short = 'c', long = "require-confirmation", global = true)]
+    require_confirmation: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -150,16 +150,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(Some(root)) => root,
         Ok(None) => {
             eprintln!("vizier cannot be used outside a git repository");
+
             return Err("not a git repository".into());
         }
         Err(e) => {
             eprintln!("Error finding project root: {e}");
+
             return Err(Box::<dyn std::error::Error>::from(e));
         }
     };
 
     if let Err(e) = std::fs::create_dir_all(project_root.join(".vizier")) {
         eprintln!("Error creating .vizier directory: {e}");
+
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
@@ -173,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Error creating TODO directory {:?}: {e}",
             tools::get_todo_dir()
         );
+
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
@@ -181,7 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.provider = provider_arg_to_enum(p.clone());
     }
 
-    cfg.force_action = cli.global.force_action;
+    cfg.commit_confirmation = cli.global.require_confirmation;
+
     config::set_config(cfg);
 
     match cli.command {
@@ -201,13 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         }
 
-        Commands::Chat(_cmd) => match vizier_tui::chat_tui().await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                eprintln!("Error running chat TUI: {e}");
-                Err(Box::<dyn std::error::Error>::from(e))
-            }
-        },
+        Commands::Chat(_cmd) => Ok(()),
 
         Commands::Ask(cmd) => {
             let message = resolve_ask_message(&cmd)?;

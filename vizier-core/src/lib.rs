@@ -1,6 +1,7 @@
 pub mod auditor;
 pub mod config;
 pub mod display;
+pub mod editor;
 pub mod file_tracking;
 pub mod observer;
 pub mod tools;
