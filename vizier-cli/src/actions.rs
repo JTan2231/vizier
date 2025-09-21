@@ -76,7 +76,7 @@ async fn save(
     }
 
     let response = Auditor::llm_request_with_tools(
-        crate::config::get_system_prompt()?,
+        crate::config::get_system_prompt_with_meta()?,
         save_instruction,
         tools::get_tools(),
     )
@@ -88,7 +88,7 @@ async fn save(
     print_token_usage();
 
     let mut message_builder = CommitMessageBuilder::new(
-        Auditor::llm_request(vizier_core::COMMIT_PROMPT.to_string(), diff)
+        Auditor::llm_request(vizier_core::config::get_commit_prompt(), diff)
             .await?
             .content,
     );
@@ -296,7 +296,7 @@ pub async fn clean(todo_list: String) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 pub async fn inline_command(user_message: String) -> Result<(), Box<dyn std::error::Error>> {
-    let system_prompt = match crate::config::get_system_prompt() {
+    let system_prompt = match crate::config::get_system_prompt_with_meta() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error loading system prompt: {e}");
