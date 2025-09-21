@@ -16,27 +16,6 @@ use ratatui::{
 };
 use wire::types::*;
 
-// TODO: This needs separated into its own crate
-
-const EDITOR_PROMPT: &str = r#"
-<mainInstruction>
-Your job here is narrower: take the user’s draft text and their remarks/comments, then rewrite the text so it aligns with their intent **while staying consistent with the rules and philosophy in <basePrompt>**.
-
-REWRITE PRINCIPLES:
-- Treat user remarks as binding: they are authorization to change the text.
-- Always preserve the spirit of <basePrompt>: narrative coherence, diff-like edits, no duplication, avoid over-specifying implementation unless justified.
-- Default stance: minimal, faithful edits — integrate the remark into the existing draft, don’t rewrite wholesale unless the user demands.
-- Voice: match the user’s tone and style; avoid embellishment.
-- Context awareness: before rewriting, check the surrounding narrative/thread to ensure your changes don’t fork or contradict.
-
-WHEN REWRITING:
-- If the remark points out a gap → close it with a concrete, behavior-first resolution.
-- If the remark requests tone/style change → adjust diction and rhythm but keep meaning intact.
-- If the remark contradicts prior snapshot/TODO rules → escalate only as much as needed; otherwise reconcile.
-- If multiple remarks overlap → merge into a single coherent revision, no duplicates.
-</mainInstruction>
-"#;
-
 // TODO: Duplicate function
 fn get_spinner_char(index: usize) -> String {
     const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -183,9 +162,8 @@ impl App {
     fn build_system_prompt(&self) -> String {
         format!(
             "{}{}<fileContents>{}</fileContents>",
-            EDITOR_PROMPT,
+            crate::EDITOR_PROMPT,
             String::new(),
-            // vizier_core::SYSTEM_PROMPT_BASE.replace("mainInstruction", "basePrompt"),
             self.content,
         )
     }

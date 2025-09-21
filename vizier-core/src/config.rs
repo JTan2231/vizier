@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use std::sync::RwLock;
 
-use crate::{SYSTEM_PROMPT_BASE, tools, tree};
+use crate::{COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
 
 lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::default());
@@ -30,8 +30,37 @@ pub fn get_config() -> Config {
     CONFIG.read().unwrap().clone()
 }
 
-pub fn get_system_prompt() -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = SYSTEM_PROMPT_BASE.to_string();
+// TODO: There's probably a much better way of organizing this
+
+pub fn get_base_system_prompt() -> String {
+    let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
+
+    match std::fs::read_to_string(prompt_directory.join("BASE_SYSTEM_PROMPT.md")) {
+        Ok(s) => s,
+        Err(_) => SYSTEM_PROMPT_BASE.to_string(),
+    }
+}
+
+pub fn get_editor_prompt() -> String {
+    let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
+
+    match std::fs::read_to_string(prompt_directory.join("EDITOR_PROMPT.md")) {
+        Ok(s) => s,
+        Err(_) => EDITOR_PROMPT.to_string(),
+    }
+}
+
+pub fn get_commit_prompt() -> String {
+    let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
+
+    match std::fs::read_to_string(prompt_directory.join("COMMIT_PROMPT.md")) {
+        Ok(s) => s,
+        Err(_) => COMMIT_PROMPT.to_string(),
+    }
+}
+
+pub fn get_system_prompt_with_meta() -> Result<String, Box<dyn std::error::Error>> {
+    let mut prompt = get_base_system_prompt();
 
     prompt.push_str("<meta>");
 
