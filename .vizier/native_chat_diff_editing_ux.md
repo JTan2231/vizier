@@ -47,3 +47,19 @@ Pointers: vizier-tui/src/chat.rs (reintroduced); vizier-core/src/{editor.rs,tool
 
 ---
 
+Update (2025-09-21): Long-message rendering fix + basic scrolling landed
+
+- Evidence: Author note indicates a rendering bug with long, multiline messages was fixed and basic scrolling was added in the TUI chat surface (vizier-core/src/chat.rs).
+
+Implications for UX & tests:
+- Chat must correctly wrap and render multiline content without overlapping UI elements or truncation.
+- Scrolling affordance should allow navigating older chat content without disrupting focus or editor/diff panels when present.
+
+Acceptance additions:
+3.a) Given a conversation containing messages exceeding the visible pane height, the chat view allows scrolling back to reveal earlier content; the scroll position is bounded (no blank space past first/last message) and the layout remains stable while scrolling.
+3.b) Long lines wrap within the chat pane width; no text spills into borders or adjacent panels, and no content is lost when resizing the terminal smaller then larger.
+
+Pointers: vizier-core/src/chat.rs (rendering and input handling).
+
+---
+
