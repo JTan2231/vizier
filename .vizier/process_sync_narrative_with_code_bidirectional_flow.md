@@ -65,3 +65,22 @@ Pointers: vizier-core/src/{config.rs,display.rs}.
 
 ---
 
+
+---
+Update (prompt ethos alignment)
+
+Tension: Narratives/Snapshots risk being treated as canonical, causing drift when they summarize beyond the code’s truth.
+
+Change: Reframe prompts and UI copy to position Narratives/Snapshots as interpretive summaries of the current moment, with Git history + code as sources of truth.
+
+Acceptance criteria:
+- Snapshot header explicitly states the interpretive role and points to Git history/code for authoritative truth.
+- Prompts include a line: “Narratives and snapshots summarize observed behavior; for exact truth, consult repository and Git history.”
+- TUI/CLI headers display which system prompt file was used (path), reinforcing provenance.
+- Tests: presence of ethos line in generated prompt/meta; snapshot includes the clarified section.
+
+Pointers: vizier-core/src/display.rs (prompt/meta assembly), vizier-core/src/config.rs (system prompt selection), vizier-cli README (usage notes).
+
+
+---
+
