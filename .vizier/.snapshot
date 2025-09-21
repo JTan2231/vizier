@@ -1,6 +1,6 @@
 Project trajectory snapshot (pared)
 
-Theme: Give operators explicit control over AI changes with clear gates and reversible edits. Grow a native chat that pairs proposals with diffs; keep headless runs safe by default.
+Theme: Give operators explicit control over AI changes with clear gates and reversible edits. Narratives and snapshots are representations of the current moment (what the words mean now), not the source of truth; Git history and code are the sources of truth for precise follow-ups.
 
 Active threads (current)
 - Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
@@ -8,7 +8,7 @@ Active threads (current)
 - Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
 - Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. TUI chat reintroduced with styling; behaviorally still scoped to commit gate/editor basics. [Anchors: vizier-core/src/chat.rs; editor hardening in vizier-core/src/{editor.rs,tools.rs}]
 - Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
-- Issue tracking bridge (new): Use GitHub Issues for task-specific items; reserve TUI for Vizier-native narratives and gates. [Author note landed]
+- Issue tracking bridge (active): Use GitHub Issues for task-specific items; reserve Vizier-native narratives and gates for meaning-making. [Author note landed]
 
 Recent, landed (evidence-based)
 - TUI chat reintroduced with styling tweaks and refresh affordance; CLI can launch chat_tui(). Behavior scope remains as above. [Commits: c88a30b, 06fffb0, 79deb9e; Anchor: vizier-core/src/chat.rs]
@@ -16,7 +16,7 @@ Recent, landed (evidence-based)
 - Auditor fixes: staged-set isolation during conversation commits; vcs helpers for stage/unstage/snapshot/restore across A/M/D/R. [vizier-core/src/{auditor.rs,vcs.rs}]
 - Integration tests added/stabilized; CI runs them. [tests/, workflow]
 
-What’s explicitly not in scope now (deferred or removed)
+Out-of-scope (deferred)
 - Narrative contract/drift enforcement and pre-commit hook: deferred until core levers + commit gate land.
 - Full streaming/event observer timeline: keep minimal streaming visibility optional; no event timeline right now.
 
@@ -34,5 +34,7 @@ Next moves (minimal, sequential)
 5) Tests: extend to cover flags mapping and commit gate behaviors.
 6) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
 
-Configuration prompt overrides (clarified)
-- Support multiple system prompt variants via drop-in files in the TODOs directory, with CLI override. Selection order: explicit --system-prompt-override path wins; else profile-specific system_prompt_<profile>.md; else system_prompt.md; else system_prompt_default.md; else built-in default. Expose effective path in prompt/meta and TUI header. [Depends on: config.system_prompt_overrides; Surfaces: TODOs dir; CLI flags]
+Prompt ethos (clarified)
+- Narratives/Snapshots: summarize meaning and intent at the current moment; they are interpretive layers for the operator, not canonical data. They should cite observed behavior (tests, code, commits) and explicitly defer to Git history/code for precise truth.
+- Prompts should state: “Narratives and snapshots are descriptive summaries built from observed code and tests. For exact truth, consult the repository and Git history; tools for navigating history provide the authoritative record.”
+- Expose the effective prompt provenance (which system_prompt file/path was used) in headers/meta.
