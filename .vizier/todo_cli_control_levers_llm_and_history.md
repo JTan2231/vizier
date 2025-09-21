@@ -134,3 +134,21 @@ Pointers: vizier-core/src/config.rs (system_prompt_overrides handling), vizier-c
 
 ---
 
+[2025-09-21] Issues bridge note
+
+Tension: We need a place to file granular implementation tasks without polluting Vizier’s native narrative/TUI. Author added a GitHub Issues tool.
+
+Behavior:
+- Treat GitHub Issues as the system of record for task-specific implementation details. Vizier’s TUI remains focused on narratives, gates, and operator-facing flows.
+- Optional: Provide a CLI affordance to open an issue for the current action/context (e.g., `vizier --open-issue "title" --body-from-last-error`). This is a bridge, not a dependency for core flows.
+
+Acceptance:
+- README/CLI help clarifies that bugfix/feature tasks should be filed as GitHub Issues; TUI remains narrative-focused.
+- If the optional flag is implemented, invoking it creates an issue with contextual metadata (command, config excerpt sans secrets, git sha).
+
+Pointers: vizier-cli/README.md (docs), vizier-cli/src/main.rs (optional flag wiring), functions.create_git_issue tool availability.
+
+Thread link: Control levers surface (CLI/TUI surface area) + Issue tracking bridge (snapshot current).
+
+---
+
