@@ -116,3 +116,21 @@ Implementation notes kept minimal; architecture remains open.
 
 ---
 
+[2025-09-21] Add system prompt override via drop-in files in TODOs directory.
+
+Tension: Operators want to swap system prompts without code changes. Author note indicates: "configuration options for editing different system prompts--just place the appropriately named files in the todo directory."
+
+Behavior:
+- When a recognized system prompt override file is present in the TODOs directory, its contents are used as the system prompt for the active session. CLI may also pass --system-prompt-override <path> to point elsewhere; TODOs directory files take precedence unless a CLI flag explicitly sets a different file.
+- Recognized names (initial set): system_prompt.md, system_prompt_default.md, system_prompt_<profile>.md (e.g., system_prompt_safe.md). Selection logic: if --profile <name> is supplied, prefer system_prompt_<profile>.md; else prefer system_prompt.md; fallback to system_prompt_default.md.
+- The effective prompt path is surfaced in the prompt <config> block and in TUI chat header.
+
+Acceptance:
+1) Placing TODOs/system_prompt.md updates the system prompt used by chat/CLI without recompilation; removing it reverts to the built-in default.
+2) Placing TODOs/system_prompt_safe.md and running `vizier --profile safe` uses that file; with no profile, system_prompt.md is used when present.
+3) Passing `--system-prompt-override ./custom.md` uses that file for the session, overriding any TODOs dir files; the prompt <config> reflects the path.
+
+Pointers: vizier-core/src/config.rs (system_prompt_overrides handling), vizier-cli/src/main.rs (flags: --system-prompt-override, --profile), prompt assembly code (display.rs/get_system_prompt). Thread: Control levers surface; Snapshot: Configuration prompt overrides (new).
+
+---
+

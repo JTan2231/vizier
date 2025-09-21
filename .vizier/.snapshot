@@ -4,15 +4,16 @@ Theme: Give operators explicit control over AI changes with clear gates and reve
 
 Active threads (current)
 - Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
-- Control levers surface (trimmed): Add basic config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params) and reflect them in prompt/meta. Keep advanced contract levers out for now. [Snapshot Status: config still minimal]
+- Control levers surface (trimmed): Add basic config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_overrides) and reflect them in prompt/meta. Keep advanced contract levers out for now. [Snapshot Status: config still minimal]
 - Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
-- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. Streaming markers are nice-to-have, not a blocker. Note: author signaled “including the chat back with some added styling” — treat as TUI chat being reintroduced; styling is cosmetic and doesn’t change behavior promises. [Anchor: vizier-core/src/chat.rs exists; vizier-tui crate previously removed; TUI return is planned]
+- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. TUI chat has been reintroduced with styling; behaviorally still scoped to commit gate/editor basics. [Anchors: vizier-core/src/chat.rs; editor hardening in vizier-core/src/{editor.rs,tools.rs}]
 - Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 
 Recent, landed (evidence-based)
-- Integration tests added/stabilized; CI runs them. [tests/, workflow]
+- TUI chat reintroduced with styling tweaks and refresh affordance; CLI can launch chat_tui(). Behavior scope remains as above. [Commits: c88a30b, 06fffb0, 79deb9e; Anchor: vizier-core/src/chat.rs]
+- Editor lifecycle hardened: run_editor uses ExitReason; editor channel scoped to a single session to prevent leakage. [vizier-core/src/{editor.rs,tools.rs}; commit ac2c95f]
 - Auditor fixes: staged-set isolation during conversation commits; vcs helpers for stage/unstage/snapshot/restore across A/M/D/R. [vizier-core/src/{auditor.rs,vcs.rs}]
-- Editor lifecycle hardened: run_editor uses ExitReason; editor channel scoped to a single session to prevent leakage. [vizier-core/src/{editor.rs,tools.rs}]
+- Integration tests added/stabilized; CI runs them. [tests/, workflow]
 
 What’s explicitly not in scope now (deferred or removed)
 - Narrative contract/drift enforcement and pre-commit hook: deferred until core levers + commit gate land. Remove strict contract levers from immediate plan.
@@ -27,6 +28,9 @@ Acceptance checkpoints (kept)
 Next moves (minimal, sequential)
 1) Config: add essential levers + Default; expose to prompt/meta. [vizier-core/src/config.rs, display.rs]
 2) CLI: add flags for those levers; validation + set_config. [vizier-cli/src/main.rs]
-3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [tui/chat.rs (planned return), cli/main.rs]
+3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs (active); vizier-tui crate previously removed]
 4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
 5) Tests: extend to cover flags mapping and commit gate behaviors.
+
+Configuration prompt overrides (new, author note):
+- Support multiple system prompt variants via drop-in files. Mechanism: detect appropriately named files in the TODOs directory and use them as system prompt overrides when present. This is a configuration surface, not a behavior change to gates/history. [Depends on: config.system_prompt_overrides; Surfaces: TODOs dir; CLI flag may point to a file path]
