@@ -1,14 +1,15 @@
 Project trajectory snapshot (pared)
 
-Theme: Give operators explicit control over AI changes with clear gates and reversible edits. Narratives and snapshots are representations of the current moment (what the words mean now), not the source of truth; Git history and code are the sources of truth for precise follow-ups.
+Theme: Give operators explicit control over AI changes with clear gates and reversible edits. Narratives and snapshots summarize current behavior; Git history and code remain the authority.
 
 Active threads (current)
 - Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
-- Control levers surface (active): Add essential config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_overrides) and reflect them in prompt/meta. Keep advanced contract levers out for now. [Snapshot Status: config still minimal]
+- Control levers surface (active): Add essential config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_overrides) and reflect them in prompt/meta. [Snapshot Status: config still minimal]
 - Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
 - Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. TUI chat reintroduced with styling; behaviorally still scoped to commit gate/editor basics. Now handles long, multiline messages without rendering bugs and supports basic scrolling. [Anchors: vizier-core/src/chat.rs; editor hardening in vizier-core/src/{editor.rs,tools.rs}]
 - Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 - Issue tracking bridge (active): Use GitHub Issues for task-specific items; reserve Vizier-native narratives and gates for meaning-making. [Author note landed]
+- Chat navigation modes (new, active): Introduce modal navigation (view vs edit) for the chat/diff pane to improve cursor movement and scrolling without unintended edits; vim-esque keybindings are acceptable but must be discoverable and remappable. [Depends on: vizier-core/src/chat.rs input handling]
 
 Recent, landed (evidence-based)
 - TUI chat: fixed a rendering bug with long, multiline messages and added basic scrolling; chat previously reintroduced with styling. [Anchor: vizier-core/src/chat.rs; Author note]
@@ -26,6 +27,7 @@ Acceptance checkpoints (kept)
 - CLI non-interactive refuses to commit without explicit consent (e.g., --yes with message) and never opens an editor.
 - TUI shows history list and can revert the last accepted change once history lands.
 - TUI chat can render long, multiline messages without layout corruption and supports scrolling to view prior content.
+- Chat navigation modes: Default opens in View mode (no edits) with cursor/scroll movement; explicit switch to Edit mode to modify text. Mode is visible in the status line; accidental edits are prevented in View mode.
 
 Next moves (minimal, sequential)
 1) Config: add essential levers + Default; expose to prompt/meta. [vizier-core/src/config.rs, display.rs]
@@ -33,9 +35,9 @@ Next moves (minimal, sequential)
 3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs (active); vizier-tui crate previously removed]
 4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
 5) Tests: extend to cover flags mapping and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds.
-6) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
+6) Chat modes: add modal input handling with discoverable key help and remapping hooks; acceptance tests for mode switching and edit-guard. [vizier-core/src/chat.rs]
+7) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
 
 Prompt ethos (clarified)
-- Narratives/Snapshots: summarize meaning and intent at the current moment; they are interpretive layers for the operator, not canonical data. They should cite observed behavior (tests, code, commits) and explicitly defer to Git history/code for precise truth.
-- Prompts should state: “Narratives and snapshots are descriptive summaries built from observed code and tests. For exact truth, consult the repository and Git history; tools for navigating history provide the authoritative record.”
+- Narratives/Snapshots: descriptive summaries built from observed code and tests. For exact truth, consult the repository and Git history; tools for navigating history provide the authoritative record.
 - Expose the effective prompt provenance (which system_prompt file/path was used) in headers/meta.
