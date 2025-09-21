@@ -12,7 +12,7 @@ use ratatui::{
     prelude::CrosstermBackend,
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, List, ListItem, Paragraph},
+    widgets::{Block, Paragraph},
 };
 
 const CHAT_PROMPT: &str = r#"
@@ -61,7 +61,7 @@ fn get_spinner_char(index: usize) -> String {
 
 // TODO: Not sure I like having this duplicate enum with `editor.rs`
 pub enum ExitReason {
-    Quit,
+    Quit(Vec<wire::types::Message>),
     Restart(Vec<wire::types::Message>),
 }
 
@@ -72,8 +72,11 @@ pub struct Chat {
     api: wire::api::API,
     messages: Vec<wire::types::Message>,
     input: String,
-    scroll: u16,
     spinner_increment: usize,
+
+    scroll: u16,
+    chat_height: u16,
+    line_count: u16,
 
     // These two are both cumulative
     input_tokens: usize,
@@ -101,8 +104,11 @@ impl Chat {
             api: wire::api::API::OpenAI(wire::api::OpenAIModel::GPT5),
             messages,
             input: String::new(),
-            scroll: 0,
             spinner_increment: 0,
+
+            scroll: 0,
+            chat_height: 0,
+            line_count: 0,
 
             input_tokens,
             output_tokens,
@@ -178,6 +184,34 @@ pub async fn chat_tui() -> std::result::Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// TODO: Duplicate function from `editor.rs`
+fn wrap_text_to_width(text: &str, max_width: u16) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for raw_line in text.split('\n') {
+        let mut current = String::new();
+
+        for word in raw_line.split_whitespace() {
+            if current.len() + word.len() + 1 > max_width as usize {
+                lines.push(current);
+                current = String::new();
+            }
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+
+        if !current.is_empty() {
+            lines.push(current);
+        } else {
+            lines.push(String::new());
+        }
+    }
+
+    lines
+}
+
 pub async fn run_chat<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     mut app: Chat,
@@ -189,21 +223,23 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                 .constraints([Constraint::Min(1), Constraint::Length(10)].as_ref())
                 .split(f.area());
 
-            let mut messages: Vec<ListItem> =
+            app.chat_height = chunks[0].height;
+
+            let mut messages: Vec<Line> =
                 app.messages
                     .iter()
                     .filter(|m| {
                         m.message_type != wire::types::MessageType::FunctionCallOutput
                             && m.message_type != wire::types::MessageType::System
                     })
-                    .map(|m| {
+                    .flat_map(|m| {
                         let prefix = format!(
                             "{}: ",
                             match m.message_type {
                                 wire::types::MessageType::User => "You",
                                 wire::types::MessageType::Assistant => "Assistant",
                                 wire::types::MessageType::FunctionCall => "Assistant Tool Call",
-                                _ => "",
+                                _ => "???",
                             }
                         );
 
@@ -217,8 +253,10 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                             _ => "???".to_string(),
                         };
 
-                        let lines: Vec<Line> = text
-                            .lines()
+                        let wrapped = wrap_text_to_width(&text, chunks[0].width.saturating_sub(4));
+
+                        let lines: Vec<Line> = wrapped
+                            .into_iter()
                             .enumerate()
                             .map(|(i, line)| {
                                 if i == 0 {
@@ -241,22 +279,30 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                             })
                             .collect();
 
-                        ListItem::new(lines)
+                        lines
                     })
                     .collect();
 
+            app.line_count = messages.len() as u16;
+
             // display a little spinner if we're waiting on the model to complete
             if let Some(_) = app.receiving_handle {
-                messages.extend(vec![ListItem::new(vec![
+                messages.extend(vec![
                     Line::from(get_spinner_char(app.spinner_increment))
                         .style(Style::default().fg(Color::Cyan)),
-                ])]);
+                ]);
 
                 app.spinner_increment += 1;
             }
 
-            let messages_list = List::new(messages)
-                .block(Block::default().title(vec![
+            let messages_list = Paragraph::new(
+                messages[app.scroll as usize
+                    ..std::cmp::min((app.scroll + app.chat_height) as usize, messages.len())]
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<Line>>(),
+            )
+            .block(Block::default().title(vec![
                         Span::from(format!(
                             "Chat ",
                         ))
@@ -271,7 +317,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                         .style(Style::default().fg(Color::Blue)
                         ),
                         ]))
-                .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(Color::White));
 
             f.render_widget(messages_list, chunks[0]);
 
@@ -285,7 +331,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             .style(Style::default().fg(Color::White).bg(Color::Rgb(28, 32, 28)))
             .block(Block::default().title(vec![
                     Span::from("Input "),
-                    Span::from("(ctrl + (q: quit, j: line break, r: refresh), enter: submit)")
+                    Span::from("(ctrl + (q: quit, j: line break), enter: submit)")
                         .style(Style::default().fg(Color::Yellow)),
                 ]));
             f.render_widget(input, chunks[1]);
@@ -324,16 +370,31 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        return Ok(ExitReason::Quit);
-                    }
-                    KeyCode::Char('r') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        return Ok(ExitReason::Restart(app.messages.clone()));
+                        return Ok(ExitReason::Quit(app.messages.clone()));
                     }
                     KeyCode::Char('j') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         app.input.push('\n');
                     }
                     KeyCode::Char(c) => {
                         app.input.push(c);
+                    }
+                    KeyCode::Up => {
+                        app.scroll = app.scroll.saturating_sub(1);
+                    }
+                    KeyCode::PageUp => {
+                        app.scroll = app.scroll.saturating_sub(app.chat_height);
+                    }
+                    KeyCode::Down => {
+                        app.scroll = std::cmp::min(
+                            app.scroll + 1,
+                            app.line_count.saturating_sub(app.chat_height) + 1,
+                        );
+                    }
+                    KeyCode::PageDown => {
+                        app.scroll = std::cmp::min(
+                            app.scroll + app.chat_height,
+                            app.line_count.saturating_sub(app.chat_height) + 1,
+                        );
                     }
                     KeyCode::Backspace => {
                         app.input.pop();
