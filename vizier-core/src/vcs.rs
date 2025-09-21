@@ -3,8 +3,6 @@ use git2::{
     StatusOptions,
 };
 
-// TODO: Please god write a testing harness for this, or at least the flows using this
-
 fn normalize_pathspec(path: &str) -> String {
     let mut s = path
         .trim()
@@ -481,6 +479,57 @@ pub fn restore_staged(repo_path: &str, staged: &[StagedItem]) -> Result<(), Erro
 
     index.write()?;
     Ok(())
+}
+
+/// Extract (owner, repo) from `origin`
+pub fn origin_owner_repo(repo_path: &str) -> Result<(String, String), Error> {
+    let repo = Repository::discover(repo_path)?;
+    let remote = repo.find_remote("origin").or_else(|_| {
+        // Some repos only have fetch remotes in the list; fall back to first if needed.
+        let remotes = repo.remotes()?;
+        let name = remotes
+            .iter()
+            .flatten()
+            .next()
+            .ok_or_else(|| Error::from_str("No remotes found"))?;
+        repo.find_remote(name)
+    })?;
+
+    let url = remote
+        .url()
+        .ok_or_else(|| Error::from_str("origin remote has no URL"))?;
+    // Accept common GitHub patterns:
+    // 1) https://github.com/OWNER/REPO(.git)
+    // 2) git@github.com:OWNER/REPO(.git)
+    // 3) ssh://git@github.com/OWNER/REPO(.git)
+    // Normalize to just "OWNER/REPO"
+    let owner_repo = if let Some(rest) = url.strip_prefix("https://github.com/") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("http://github.com/") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else {
+        return Err(Error::from_str("Unsupported GitHub remote URL format"));
+    };
+
+    let trimmed = owner_repo.trim_end_matches(".git").trim_end_matches('/');
+    let mut parts = trimmed.split('/');
+
+    let owner = parts
+        .next()
+        .ok_or_else(|| Error::from_str("Missing owner in remote URL"))?;
+    let repo = parts
+        .next()
+        .ok_or_else(|| Error::from_str("Missing repo in remote URL"))?;
+
+    if parts.next().is_some() {
+        return Err(Error::from_str("Remote URL contains extra path segments"));
+    }
+
+    Ok((owner.to_string(), repo.to_string()))
 }
 
 #[cfg(test)]
