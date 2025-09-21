@@ -196,9 +196,12 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
 
                         let text = match m.message_type {
                             wire::types::MessageType::User
-                            | wire::types::MessageType::Assistant => &m.content,
-                            wire::types::MessageType::FunctionCall => m.name.as_ref().unwrap(),
-                            _ => "???",
+                            | wire::types::MessageType::Assistant => m.content.clone(),
+                            wire::types::MessageType::FunctionCall => m
+                                .name
+                                .clone()
+                                .unwrap_or("[unnamed function call]".to_string()),
+                            _ => "???".to_string(),
                         };
 
                         let lines: Vec<Line> = text
@@ -215,10 +218,12 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                                                 Color::Green
                                             }),
                                         ),
-                                        Span::raw(line).style(Style::default().fg(Color::Gray)),
+                                        Span::raw(line.to_string())
+                                            .style(Style::default().fg(Color::Gray)),
                                     ])
                                 } else {
-                                    Line::from(Span::raw(line))
+                                    Line::from(Span::raw(line.to_string()))
+                                        .style(Style::default().fg(Color::Gray))
                                 }
                             })
                             .collect();
@@ -226,7 +231,6 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                         ListItem::new(lines)
                     })
                     .collect();
-
             // display a little spinner if we're waiting on the model to complete
             if let Some(_) = app.receiving_handle {
                 messages.extend(vec![ListItem::new(vec![
