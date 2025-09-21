@@ -6,12 +6,12 @@ Active threads (current)
 - Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
 - Control levers surface (active): Add essential config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_overrides) and reflect them in prompt/meta. Keep advanced contract levers out for now. [Snapshot Status: config still minimal]
 - Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
-- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. TUI chat reintroduced with styling; behaviorally still scoped to commit gate/editor basics. [Anchors: vizier-core/src/chat.rs; editor hardening in vizier-core/src/{editor.rs,tools.rs}]
+- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. TUI chat reintroduced with styling; behaviorally still scoped to commit gate/editor basics. Now handles long, multiline messages without rendering bugs and supports basic scrolling. [Anchors: vizier-core/src/chat.rs; editor hardening in vizier-core/src/{editor.rs,tools.rs}]
 - Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 - Issue tracking bridge (active): Use GitHub Issues for task-specific items; reserve Vizier-native narratives and gates for meaning-making. [Author note landed]
 
 Recent, landed (evidence-based)
-- TUI chat reintroduced with styling tweaks and refresh affordance; CLI can launch chat_tui(). Behavior scope remains as above. [Commits: c88a30b, 06fffb0, 79deb9e; Anchor: vizier-core/src/chat.rs]
+- TUI chat: fixed a rendering bug with long, multiline messages and added basic scrolling; chat previously reintroduced with styling. [Anchor: vizier-core/src/chat.rs; Author note]
 - Editor lifecycle hardened: run_editor uses ExitReason; editor channel scoped to a single session to prevent leakage. [vizier-core/src/{editor.rs,tools.rs}; commit ac2c95f]
 - Auditor fixes: staged-set isolation during conversation commits; vcs helpers for stage/unstage/snapshot/restore across A/M/D/R. [vizier-core/src/{auditor.rs,vcs.rs}]
 - Integration tests added/stabilized; CI runs them. [tests/, workflow]
@@ -25,13 +25,14 @@ Acceptance checkpoints (kept)
 - Conversation commits touch only .vizier paths; pre-existing staged changes are preserved and restored exactly. A/M/D/R covered.
 - CLI non-interactive refuses to commit without explicit consent (e.g., --yes with message) and never opens an editor.
 - TUI shows history list and can revert the last accepted change once history lands.
+- TUI chat can render long, multiline messages without layout corruption and supports scrolling to view prior content.
 
 Next moves (minimal, sequential)
 1) Config: add essential levers + Default; expose to prompt/meta. [vizier-core/src/config.rs, display.rs]
 2) CLI: add flags for those levers; validation + set_config. [vizier-cli/src/main.rs]
 3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs (active); vizier-tui crate previously removed]
 4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
-5) Tests: extend to cover flags mapping and commit gate behaviors.
+5) Tests: extend to cover flags mapping and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds.
 6) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
 
 Prompt ethos (clarified)
