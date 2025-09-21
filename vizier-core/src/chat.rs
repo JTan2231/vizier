@@ -59,6 +59,12 @@ fn get_spinner_char(index: usize) -> String {
     SPINNER_CHARS[index % SPINNER_CHARS.len()].to_string()
 }
 
+// TODO: Not sure I like having this duplicate enum with `editor.rs`
+pub enum ExitReason {
+    Quit,
+    Restart(Vec<wire::types::Message>),
+}
+
 // TODO: This interacts directly over the wire and doesn't go through the auditor
 //       Though coming to this later, the TUI parts probably need their own auditor
 //       Initially separate, but merged later
@@ -83,18 +89,24 @@ pub struct Chat {
 }
 
 impl Chat {
-    pub fn new() -> Chat {
+    pub fn new(messages: Vec<wire::types::Message>) -> Chat {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+
+        let (input_tokens, output_tokens) =
+            messages.iter().fold((0, 0), |(input_acc, output_acc), m| {
+                (input_acc + m.input_tokens, output_acc + m.output_tokens)
+            });
 
         Chat {
             api: wire::api::API::OpenAI(wire::api::OpenAIModel::GPT5),
-            messages: vec![],
+            messages,
             input: String::new(),
             scroll: 0,
             spinner_increment: 0,
 
-            input_tokens: 0,
-            output_tokens: 0,
+            input_tokens,
+            output_tokens,
+
             tx,
             rx,
             receiving_handle: None,
@@ -141,25 +153,26 @@ impl Chat {
 }
 
 pub async fn chat_tui() -> std::result::Result<(), Box<dyn Error>> {
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut exit_reason = ExitReason::Restart(Vec::new());
 
-    let app = Chat::new();
-    let res = run_chat(&mut terminal, app).await;
+    while let ExitReason::Restart(conversation) = &exit_reason {
+        enable_raw_mode()?;
+        let mut stdout = std::io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+        let app = Chat::new(conversation.clone());
+        exit_reason = run_chat(&mut terminal, app).await?;
 
-    if let Err(err) = &res {
-        eprintln!("{:?}", err)
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+
+        terminal.show_cursor()?;
     }
 
     Ok(())
@@ -168,7 +181,7 @@ pub async fn chat_tui() -> std::result::Result<(), Box<dyn Error>> {
 pub async fn run_chat<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     mut app: Chat,
-) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+) -> Result<ExitReason, Box<dyn std::error::Error>> {
     loop {
         terminal.draw(|f| {
             let chunks = Layout::default()
@@ -231,6 +244,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                         ListItem::new(lines)
                     })
                     .collect();
+
             // display a little spinner if we're waiting on the model to complete
             if let Some(_) = app.receiving_handle {
                 messages.extend(vec![ListItem::new(vec![
@@ -271,7 +285,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             .style(Style::default().fg(Color::White).bg(Color::Rgb(28, 32, 28)))
             .block(Block::default().title(vec![
                     Span::from("Input "),
-                    Span::from("(ctrl + (q: quit, j: line break), enter: submit)")
+                    Span::from("(ctrl + (q: quit, j: line break, r: refresh), enter: submit)")
                         .style(Style::default().fg(Color::Yellow)),
                 ]));
             f.render_widget(input, chunks[1]);
@@ -310,7 +324,10 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        return Ok(app.messages.clone());
+                        return Ok(ExitReason::Quit);
+                    }
+                    KeyCode::Char('r') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        return Ok(ExitReason::Restart(app.messages.clone()));
                     }
                     KeyCode::Char('j') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         app.input.push('\n');
