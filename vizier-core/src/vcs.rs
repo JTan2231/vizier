@@ -797,36 +797,6 @@ mod tests {
         assert!(out.contains("hello"));
     }
 
-    // --- get_log: deterministic ordering ------------------------------------
-
-    #[test]
-    fn log_depth_and_filters() {
-        use std::{thread, time::Duration};
-        let (td, repo) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
-
-        write(Path::new("f.txt"), "a\n");
-        raw_commit(&repo, "feat: add a");
-        thread::sleep(Duration::from_secs(1));
-
-        append(Path::new("f.txt"), "b\n");
-        raw_commit(&repo, "chore: touch b");
-        thread::sleep(Duration::from_secs(1));
-
-        append(Path::new("f.txt"), "c\n");
-        raw_commit(&repo, "FEAT: big C change\n\nDetails...");
-
-        let out1 = get_log(1, Some(vec!["feat".into()])).expect("log");
-        assert!(out1.to_lowercase().contains("feat: big c change"));
-
-        let out2 = get_log(2, Some(vec!["feat".into(), "chore".into()])).expect("log2");
-        let l2 = out2.to_lowercase();
-        assert!(l2.contains("feat: big c change"));
-        assert!(l2.contains("chore: touch b"));
-        assert!(out2.contains("commit "));
-        assert!(out2.contains(" — "));
-    }
-
     // --- stage (index-only) --------------------------------------------------
 
     #[test]

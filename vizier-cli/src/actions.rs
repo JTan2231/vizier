@@ -8,7 +8,7 @@ use tempfile::{Builder, TempPath};
 use vizier_core::{
     auditor,
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
-    file_tracking, tools, vcs,
+    config, file_tracking, tools, vcs,
 };
 
 pub fn provider_arg_to_enum(provider: String) -> wire::api::API {
@@ -88,9 +88,12 @@ async fn save(
     print_token_usage();
 
     let mut message_builder = CommitMessageBuilder::new(
-        Auditor::llm_request(vizier_core::config::get_commit_prompt(), diff)
-            .await?
-            .content,
+        Auditor::llm_request(
+            config::get_config().get_prompt(config::SystemPrompt::Commit),
+            diff,
+        )
+        .await?
+        .content,
     );
 
     message_builder
