@@ -32,3 +32,30 @@ Acceptance remains: tests run in CI and locally; failures point to the specific 
 
 ---
 
+Add integration tests for config mapping, commit isolation, and commit gates (defer full history; cover revert-last when available).
+Description:
+- Verify CLI flags map to Config and appear in the prompt <config> block; enforce non-interactive safety (destructive ops require explicit consent). (snapshot: Next moves 1–3,5)
+- Guard auditor’s staged-set isolation: conversation commits touch only .vizier paths; pre-existing staged A/M/D/R changes remain staged and are excluded, then restored. (thread: Commit isolation + gates)
+- Exercise commit gate flows:
+  • CLI interactive: opens proposal in $EDITOR; empty or “# abort” cancels with no changes.
+  • CLI non-interactive: requires --yes and a commit message; otherwise refuses.
+  • TUI/headless smoke: minimal path that ensures the gate is presented/refused without panics.
+- Defer full history ring buffer; once revert(n=1) lands, add a happy-path revert-last test.
+
+Acceptance Criteria:
+- `cargo test -p tests` and CI workflow (integration-tests.yml) run and pass.
+- Failing assertions clearly indicate which behavior regressed: config→CLI→prompt mapping; staged-set isolation (A/M/D/R); commit gate flows; revert-last (when implemented).
+- Temp repos simulate adds, modifies, deletes, and renames; assertions verify staged vs unstaged boundaries before/after conversation commits.
+- Tests require no network secrets; network-bound calls are mocked or skipped via feature flags in CI.
+
+Pointers:
+- tests/src/main.rs (orchestration)
+- vizier-cli/src/main.rs (flag parsing, editor launch)
+- vizier-core/src/{config.rs,auditor.rs,vcs.rs} (mapping, isolation)
+- vizier-core/src/history.rs (revert-last once available)
+- vizier-core/src/tools.rs
+- vizier-tui/src/chat.rs (gate presentation; headless smoke)
+
+Implementation Notes (safety/correctness):
+- Use deterministic temp repos; ensure editor invocation is stubbed in tests to avoid real editors.
+- For rename coverage, assert A/M/D/R handling matches snapshot expectations exactly. (thread: Integration tests; snapshot: Integration tests — active)
