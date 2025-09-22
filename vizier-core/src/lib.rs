@@ -112,6 +112,8 @@ GOOD (product-level with pointers + acceptance):
 </mainInstruction>
 "#;
 
+// TODO: This has instructions to maintain input requirements with the tools--how do we deal with
+//       this + configuration?
 pub const REVISE_TODO_PROMPT: &str = r#"
 <mainInstruction>
 You are the TODO reviser. Apply the project's SNAPSHOT + narrative-thread discipline already defined in SYSTEM_PROMPT_BASE. Your job: evaluate ONE provided TODO and output EXACTLY ONE of three options with NO extra text, headers, or commentary.
