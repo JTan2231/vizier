@@ -259,7 +259,9 @@ pub async fn clean(todo_list: String) -> Result<(), Box<dyn std::error::Error>> 
             format!(
                 "{}{}<snapshot>{}</snapshot>",
                 vizier_core::REVISE_TODO_PROMPT,
-                vizier_core::SYSTEM_PROMPT_BASE.replace("mainInstruction", "SYSTEM_PROMPT_BASE"),
+                config::get_config()
+                    .get_prompt(config::SystemPrompt::Base)
+                    .replace("mainInstruction", "SYSTEM_PROMPT_BASE"),
                 tools::read_snapshot()
             ),
             content.clone(),

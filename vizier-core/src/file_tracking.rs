@@ -38,7 +38,6 @@ impl FileTracker {
 
         file.write_all(content.as_bytes())?;
 
-        // TODO: Is this really necessary?
         FILE_TRACKER
             .lock()
             .unwrap()
@@ -88,6 +87,8 @@ impl FileTracker {
 
         tracker.updated_files.insert(path.to_string());
         tracker.all_files.retain(|f| f != path);
+
+        std::fs::remove_file(path)?;
 
         Ok(())
     }
