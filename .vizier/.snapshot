@@ -11,6 +11,7 @@ Active threads (current)
 - Issue tracking bridge (active): Use GitHub Issues for task-specific items; reserve Vizier-native narratives and gates for meaning-making. [Author note landed]
 - Chat navigation modes (active): Introduce modal navigation (view vs edit) for the chat/diff pane to improve cursor movement and scrolling without unintended edits; vim-esque keybindings are acceptable but must be discoverable and remappable. [Depends on: vizier-core/src/chat.rs input handling]
 - Config-driven prompt customization (new, active): Operators can swap system prompts via drop-in files and/or CLI flag. The effective prompt path is reflected in meta and visible in chat header. [Depends on: vizier-core/src/config.rs, display.rs; vizier-cli flags]
+- Snapshot bootstrap for existing repos (new, active): Add a command to analyze an established repository and generate an initial .vizier/.snapshot plus seed TODO threads, with cross-links. Expensive but read-only and idempotent. [Depends on: vizier-cli subcommand; vizier-core analyzers {vcs,walker,observer,display,tools}]
 
 Recent, landed (evidence-based)
 - TUI chat: fixed a rendering bug with long, multiline messages and added basic scrolling; chat previously reintroduced with styling. [Anchor: vizier-core/src/chat.rs; Author note]
@@ -30,6 +31,7 @@ Acceptance checkpoints (kept)
 - TUI chat can render long, multiline messages without layout corruption and supports scrolling to view prior content.
 - Chat navigation modes: Default opens in View mode (no edits) with cursor/scroll movement; explicit switch to Edit mode to modify text. Mode is visible in the status line; accidental edits are prevented in View mode.
 - Config-driven prompt customization: TODOs/system_prompt*.md files or --system-prompt-override select the active system prompt; the effective path appears in <meta><config> and in the chat header.
+- Snapshot bootstrap: Running `vizier snapshot init` produces .vizier/.snapshot with CODE and NARRATIVE state plus cross-linked TODOs; safe by default, idempotent, and warns about cost.
 
 Next moves (minimal, sequential)
 1) Config: add essential levers + Default; expose to prompt/meta, including system_prompt override path. [vizier-core/src/config.rs, display.rs]
@@ -38,7 +40,8 @@ Next moves (minimal, sequential)
 4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
 5) Tests: extend to cover flags mapping, prompt override selection precedence, and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds.
 6) Chat modes: add modal input handling with discoverable key help and remapping hooks; acceptance tests for mode switching and edit-guard. [vizier-core/src/chat.rs]
-7) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
+7) Snapshot bootstrap: wire CLI subcommand and core analyzers; acceptance per checkpoints above. [vizier-cli/src/main.rs; vizier-core/src/{vcs.rs,walker.rs,observer.rs,display.rs,tools.rs}]
+8) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
 
 Prompt ethos (clarified)
 - Narratives/Snapshots: descriptive summaries built from observed code and tests. For exact truth, consult the repository and Git history; tools for navigating history provide the authoritative record.
