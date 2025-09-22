@@ -42,6 +42,10 @@ struct GlobalOpts {
     /// Require user confirmation for commit messages
     #[arg(short = 'c', long = "require-confirmation", global = true)]
     require_confirmation: bool,
+
+    /// JSON file for setting the config
+    #[arg(short = 'C', long = "config-file", global = true)]
+    config_file: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -180,7 +184,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
-    let mut cfg = config::get_config();
+    let mut cfg = if let Some(config_file) = cli.global.config_file {
+        config::Config::from_json(std::path::PathBuf::from(config_file))?
+    } else {
+        config::get_config()
+    };
+
     if let Some(p) = &cli.global.provider {
         cfg.provider = provider_arg_to_enum(p.clone());
     }

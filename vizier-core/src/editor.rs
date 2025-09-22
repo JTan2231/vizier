@@ -16,6 +16,8 @@ use ratatui::{
 };
 use wire::types::*;
 
+use crate::config;
+
 // TODO: Duplicate function
 fn get_spinner_char(index: usize) -> String {
     const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -41,7 +43,7 @@ pub async fn run_editor(content: &str) -> Result<Option<String>, Box<dyn std::er
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
-    let mut exit_reason = ExitReason::Cancel;
+    let exit_reason;
 
     // main loop
     loop {
@@ -162,7 +164,7 @@ impl App {
     fn build_system_prompt(&self) -> String {
         format!(
             "{}{}<fileContents>{}</fileContents>",
-            crate::EDITOR_PROMPT,
+            config::get_config().get_prompt(config::SystemPrompt::Editor),
             String::new(),
             self.content,
         )
