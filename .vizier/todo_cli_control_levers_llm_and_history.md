@@ -152,3 +152,30 @@ Thread link: Control levers surface (CLI/TUI surface area) + Issue tracking brid
 
 ---
 
+
+---
+[2025-09-22] Config-driven prompt customization (thread: Control levers surface; snapshot: Config-driven prompt customization — active)
+
+Tension: Operators want to change the system prompt per workflow without rebuilding or editing code. Author note: "config-driven prompt customization".
+
+Behavior (product-level):
+- Recognize prompt override files in the TODOs directory with precedence: (1) explicit --system-prompt-override path if provided; (2) TODOs/system_prompt_<profile>.md when --profile <name> is set; (3) TODOs/system_prompt.md; (4) TODOs/system_prompt_default.md; (5) built-in default.
+- Reflect the effective prompt path and profile in the prompt <meta><config> block and in the TUI chat header/status.
+- Changing/adding/removing these files affects the next session without recompilation.
+
+Acceptance:
+1) With TODOs/system_prompt.md present, sessions use it; removing the file reverts to built-in default (absent other overrides).
+2) With TODOs/system_prompt_safe.md and `--profile safe`, that file is used; with no profile, system_prompt.md wins when present.
+3) `--system-prompt-override ./custom.md` forces that file for the session regardless of TODOs directory contents; <meta><config> shows the absolute path and profile (if any).
+4) Prompt provenance is visible in TUI chat header and in CLI verbose output when starting a session.
+
+Pointers:
+- vizier-core/src/config.rs (system_prompt_overrides, profile selection, defaulting)
+- vizier-core/src/display.rs (embed provenance in <meta><config>)
+- vizier-cli/src/main.rs (flags: --system-prompt-override, --profile)
+
+Notes:
+- Do not include secrets; only file paths/names. If the override path is unreadable, fail with a clear error in non-interactive mode and warn + fallback in interactive mode.
+
+---
+
