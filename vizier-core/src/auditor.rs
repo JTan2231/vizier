@@ -57,8 +57,8 @@ pub fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
 }
 
 async fn prompt_wire_with_tools(
+    client: &dyn wire::api::Prompt,
     tx: tokio::sync::mpsc::Sender<String>,
-    api: wire::api::API,
     system_prompt: &str,
     messages: Vec<wire::types::Message>,
     tools: Vec<wire::types::Tool>,
@@ -84,7 +84,9 @@ async fn prompt_wire_with_tools(
 
     #[cfg(not(feature = "mock_llm"))]
     {
-        wire::prompt_with_tools_and_status(tx, api, &system_prompt, messages, tools).await
+        client
+            .prompt_with_tools_with_status(tx, &system_prompt, messages, tools)
+            .await
     }
 }
 
@@ -245,19 +247,13 @@ impl Auditor {
         system_prompt: String,
         user_message: String,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        let api = crate::config::get_config().provider;
-
-        Self::add_message(wire::types::Message {
-            message_type: wire::types::MessageType::User,
-            content: user_message,
-            api: api.clone(),
-            system_prompt: system_prompt.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-            input_tokens: 0,
-            output_tokens: 0,
-        });
+        Self::add_message(
+            crate::config::get_config()
+                .provider
+                .new_message(user_message)
+                .as_user()
+                .build(),
+        );
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
@@ -274,8 +270,8 @@ impl Auditor {
             });
 
             Ok(prompt_wire_with_tools(
+                &*crate::config::get_config().provider,
                 request_tx.clone(),
-                crate::config::get_config().provider,
                 &system_prompt,
                 messages.clone(),
                 vec![],
@@ -297,19 +293,13 @@ impl Auditor {
         user_message: String,
         tools: Vec<wire::types::Tool>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        let api = crate::config::get_config().provider;
-
-        Self::add_message(wire::types::Message {
-            message_type: wire::types::MessageType::User,
-            content: user_message,
-            api: api.clone(),
-            system_prompt: system_prompt.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-            input_tokens: 0,
-            output_tokens: 0,
-        });
+        Self::add_message(
+            crate::config::get_config()
+                .provider
+                .new_message(user_message)
+                .as_user()
+                .build(),
+        );
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
@@ -340,8 +330,8 @@ impl Auditor {
 
             // TODO: The number of clones here is outrageous
             Ok(prompt_wire_with_tools(
+                &*crate::config::get_config().provider,
                 request_tx.clone(),
-                crate::config::get_config().provider,
                 &system_prompt,
                 messages.clone(),
                 tools.clone(),

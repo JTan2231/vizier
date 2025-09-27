@@ -1,5 +1,7 @@
+use std::sync::{Arc, RwLock};
+
 use lazy_static::lazy_static;
-use std::sync::RwLock;
+use wire::{api::Prompt, openai};
 
 use crate::{COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
 
@@ -16,7 +18,7 @@ pub enum SystemPrompt {
 
 #[derive(Clone)]
 pub struct Config {
-    pub provider: wire::api::API,
+    pub provider: Arc<dyn Prompt>,
     pub commit_confirmation: bool,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
 }
@@ -26,7 +28,7 @@ impl Config {
         let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
 
         Self {
-            provider: wire::api::API::OpenAI(wire::api::OpenAIModel::GPT5),
+            provider: Arc::new(openai::OpenAIClient::new("gpt-5")),
             commit_confirmation: false,
             prompt_store: std::collections::HashMap::from([
                 (
