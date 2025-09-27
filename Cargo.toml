@@ -3,3 +3,5 @@ members = [ "tests",
     "vizier-cli",
     "vizier-core",
 ]
+
+resolver = "3"
