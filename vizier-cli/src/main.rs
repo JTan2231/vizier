@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::sync::Arc;
 
 use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
 use vizier_core::{auditor, config, tools};
@@ -31,9 +32,9 @@ struct GlobalOpts {
     #[arg(short = 'd', long, global = true)]
     debug: bool,
 
-    /// Set LLM provider to use for main prompting + tool usage
+    /// Set LLM model to use for main prompting + tool usage
     #[arg(short = 'p', long, global = true)]
-    provider: Option<String>,
+    model: Option<String>,
 
     /// Emit the audit as JSON to stdout
     #[arg(short = 'j', long, global = true)]
@@ -190,8 +191,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::get_config()
     };
 
-    if let Some(p) = &cli.global.provider {
-        cfg.provider = provider_arg_to_enum(p.clone());
+    if let Some(m) = &cli.global.model {
+        cfg.provider = Arc::from(wire::new_client(m)?);
     }
 
     cfg.commit_confirmation = cli.global.require_confirmation;
