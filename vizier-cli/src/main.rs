@@ -54,6 +54,13 @@ enum Commands {
     /// Inline one-shot interaction: send a single message and exit
     Ask(AskCmd),
 
+    /// Snapshot-related operations (e.g., bootstrap from history)
+    Snapshot(SnapshotCmd),
+
+    /// Alias for `snapshot init`
+    #[command(name = "init-snapshot")]
+    InitSnapshot(SnapshotInitCmd),
+
     /// Commit tracked changes with an LLM-generated message and update TODOs/snapshot
     ///
     /// Examples:
@@ -78,6 +85,53 @@ struct AskCmd {
     /// The user message to process in a single-shot run
     #[arg(value_name = "MESSAGE")]
     message: Option<String>,
+}
+
+#[derive(ClapArgs, Debug, Clone)]
+struct SnapshotInitCmd {
+    /// Overwrite existing snapshot/TODOs without confirmation
+    #[arg(long)]
+    force: bool,
+
+    /// Limit Git history scan depth
+    #[arg(long, value_name = "N")]
+    depth: Option<usize>,
+
+    /// Restrict analysis to matching paths (comma-separated or repeated)
+    #[arg(long, value_name = "GLOB", value_delimiter = ',')]
+    paths: Vec<String>,
+
+    /// Exclude matching paths (comma-separated or repeated)
+    #[arg(long, value_name = "GLOB", value_delimiter = ',')]
+    exclude: Vec<String>,
+
+    /// Enrich snapshot with external issues (e.g., github)
+    #[arg(long, value_name = "PROVIDER")]
+    issues: Option<String>,
+}
+
+impl From<SnapshotInitCmd> for crate::actions::SnapshotInitOptions {
+    fn from(cmd: SnapshotInitCmd) -> Self {
+        crate::actions::SnapshotInitOptions {
+            force: cmd.force,
+            depth: cmd.depth,
+            paths: cmd.paths,
+            exclude: cmd.exclude,
+            issues: cmd.issues,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum SnapshotCommands {
+    /// Analyze repository history and bootstrap `.vizier/.snapshot` plus TODO threads
+    Init(SnapshotInitCmd),
+}
+
+#[derive(ClapArgs, Debug)]
+struct SnapshotCmd {
+    #[command(subcommand)]
+    command: SnapshotCommands,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -201,6 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Clean(CleanCmd { todo_list }) => clean(todo_list).await,
+
+        Commands::Snapshot(SnapshotCmd { command }) => match command {
+            SnapshotCommands::Init(cmd) => run_snapshot_init(cmd.into()).await,
+        },
+
+        Commands::InitSnapshot(cmd) => run_snapshot_init(cmd.into()).await,
 
         Commands::Save(SaveCmd {
             rev_or_range,
