@@ -59,3 +59,11 @@ Pointers:
 Implementation Notes (safety/correctness):
 - Use deterministic temp repos; ensure editor invocation is stubbed in tests to avoid real editors.
 - For rename coverage, assert A/M/D/R handling matches snapshot expectations exactly. (thread: Integration tests; snapshot: Integration tests — active)
+---
+Update [2025-09-28]: Add coverage for model-thinking config/persistence once implemented.
+- Add a test that `vizier --thinking-level deep` (and equivalents) maps to Config and appears in the prompt <config> block; verify persistence when saved to profile/config file and precedence order (CLI > profile > default).
+- Ensure toggling thinking level in TUI updates the effective session config and persists when requested.
+Pointers: vizier-core/src/config.rs, vizier-cli/src/main.rs, vizier-core/src/display.rs (prompt meta), vizier-core/src/chat.rs (header reflects current session settings).
+
+---
+
