@@ -1,0 +1,4 @@
+[2025-09-28] Add Narrative timelines integration: The generated snapshot must include a Threads section with stable IDs for each inferred thread and list any spawned TODOs by ID. TODOs created by init must reference these IDs in their headers. Acceptance: Re-running `vizier snapshot init` in idempotent mode preserves thread IDs and only appends a delta when content meaningfully changes.
+
+---
+
