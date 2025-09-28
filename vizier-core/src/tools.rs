@@ -53,6 +53,15 @@ pub fn get_tools() -> Vec<Tool> {
     ]
 }
 
+pub fn get_snapshot_tools() -> Vec<Tool> {
+    vec![
+        get_tool!(git_log),
+        get_tool!(list_todos),
+        get_tool!(read_file),
+        get_tool!(update_snapshot),
+    ]
+}
+
 pub fn is_action(name: &str) -> bool {
     name == "add_todo"
         || name == "update_todo"
