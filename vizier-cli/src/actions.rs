@@ -8,6 +8,8 @@ use tempfile::{Builder, TempPath};
 use vizier_core::{
     auditor,
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
+    bootstrap,
+    bootstrap::{BootstrapOptions, IssuesProvider},
     config, file_tracking, tools, vcs,
 };
 
@@ -24,6 +26,103 @@ pub fn print_token_usage() {
     eprintln!("{}", "Token Usage:".yellow());
     eprintln!("- {} {}", "Prompt Tokens:".green(), usage.input_tokens);
     eprintln!("- {} {}", "Completion Tokens:".green(), usage.output_tokens);
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotInitOptions {
+    pub force: bool,
+    pub depth: Option<usize>,
+    pub paths: Vec<String>,
+    pub exclude: Vec<String>,
+    pub issues: Option<String>,
+}
+
+pub async fn run_snapshot_init(
+    opts: SnapshotInitOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let depth_preview = bootstrap::preview_history_depth(opts.depth)?;
+
+    eprintln!(
+        "Bootstrapping snapshot (history depth target: {}). This may take a few minutes...",
+        depth_preview
+    );
+    if !opts.paths.is_empty() {
+        eprintln!("Scope includes: {}", opts.paths.join(", "));
+    }
+    if !opts.exclude.is_empty() {
+        eprintln!("Scope excludes: {}", opts.exclude.join(", "));
+    }
+
+    let issues_provider = if let Some(provider) = opts.issues {
+        Some(provider.parse::<IssuesProvider>()?)
+    } else {
+        None
+    };
+
+    let report = bootstrap::bootstrap_snapshot(BootstrapOptions {
+        force: opts.force,
+        depth: opts.depth,
+        paths: opts.paths.clone(),
+        exclude: opts.exclude.clone(),
+        issues_provider,
+    })
+    .await?;
+
+    if !report.warnings.is_empty() {
+        for note in &report.warnings {
+            eprintln!("Warning: {}", note);
+        }
+    }
+
+    println!("Bootstrap metadata:");
+    println!("- analyzed_at: {}", report.analysis_timestamp);
+    println!(
+        "- head_commit: {}",
+        report.head_commit.as_deref().unwrap_or("<no HEAD commit>")
+    );
+    println!(
+        "- branch: {}",
+        report.branch.as_deref().unwrap_or("<detached HEAD>")
+    );
+    println!(
+        "- working_tree: {}",
+        if report.dirty { "dirty" } else { "clean" }
+    );
+    println!("- history_depth_used: {}", report.depth_used);
+    if !report.scope_includes.is_empty() {
+        println!("- scope_includes: {}", report.scope_includes.join(", "));
+    } else {
+        println!("- scope_includes: entire repository");
+    }
+    if !report.scope_excludes.is_empty() {
+        println!("- scope_excludes: {}", report.scope_excludes.join(", "));
+    } else {
+        println!("- scope_excludes: (none)");
+    }
+    if let Some(provider) = report.issues_provider.as_ref() {
+        println!("- issues_provider: {}", provider);
+        if !report.issues.is_empty() {
+            println!("  issues considered:");
+            for issue in &report.issues {
+                println!("    - {}", issue);
+            }
+        }
+    }
+
+    println!("\nFiles updated:");
+    if report.files_touched.is_empty() {
+        println!("- (no .vizier changes detected)");
+    } else {
+        for path in &report.files_touched {
+            println!("- {}", path);
+        }
+    }
+
+    println!("\n{}", report.summary.trim());
+
+    print_token_usage();
+
+    Ok(())
 }
 
 pub async fn run_save(

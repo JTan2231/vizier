@@ -1,0 +1,4 @@
+[2025-09-28] Cross-link to Narrative timelines thread (snapshot Threads). Acceptance: integration tests should assert that new TODOs created during runs include a thread reference (ID) and that the snapshot Threads section lists them under the correct thread. Pointers: tests/src/main.rs (parsing .vizier/.snapshot and TODO bodies).
+
+---
+
