@@ -1,7 +1,8 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use lazy_static::lazy_static;
-use wire::{api::Prompt, openai};
+use wire::{api::Prompt, new_client, openai};
 
 use crate::{COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
 
@@ -56,51 +57,69 @@ impl Config {
         }
     }
 
-    /// NOTE: Only supports prompts for now
-    pub fn from_json(filepath: std::path::PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        let file_config: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(filepath)?)?;
+    pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_reader(filepath.as_path(), FileFormat::Json)
+    }
 
-        let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
+    pub fn from_toml(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_reader(filepath.as_path(), FileFormat::Toml)
+    }
 
+    pub fn from_path<P: AsRef<Path>>(filepath: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = filepath.as_ref();
+
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+
+        match ext.as_deref() {
+            Some("json") => Self::from_reader(path, FileFormat::Json),
+            Some("toml") => Self::from_reader(path, FileFormat::Toml),
+            _ => Self::from_reader(path, FileFormat::Toml)
+                .or_else(|_| Self::from_reader(path, FileFormat::Json)),
+        }
+    }
+
+    fn from_reader(path: &Path, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = std::fs::read_to_string(path)?;
+        Self::from_str(&contents, format)
+    }
+
+    fn from_str(contents: &str, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
+        let file_config: serde_json::Value = match format {
+            FileFormat::Json => serde_json::from_str(contents)?,
+            FileFormat::Toml => toml::from_str(contents)?,
+        };
+
+        Self::from_value(file_config)
+    }
+
+    fn from_value(file_config: serde_json::Value) -> Result<Self, Box<dyn std::error::Error>> {
         let mut config = Self::default();
-        config.prompt_store = std::collections::HashMap::from([
-            (
-                SystemPrompt::Base,
-                if let Some(serde_json::Value::String(prompt)) =
-                    file_config.get("BASE_SYSTEM_PROMPT")
-                {
-                    prompt.clone()
-                } else {
-                    match std::fs::read_to_string(prompt_directory.join("BASE_SYSTEM_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => SYSTEM_PROMPT_BASE.to_string(),
-                    }
-                },
-            ),
-            (
-                SystemPrompt::Editor,
-                if let Some(serde_json::Value::String(prompt)) = file_config.get("EDITOR_PROMPT") {
-                    prompt.clone()
-                } else {
-                    match std::fs::read_to_string(prompt_directory.join("EDITOR_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => EDITOR_PROMPT.to_string(),
-                    }
-                },
-            ),
-            (
-                SystemPrompt::Commit,
-                if let Some(serde_json::Value::String(prompt)) = file_config.get("COMMIT_PROMPT") {
-                    prompt.clone()
-                } else {
-                    match std::fs::read_to_string(prompt_directory.join("COMMIT_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => COMMIT_PROMPT.to_string(),
-                    }
-                },
-            ),
-        ]);
+
+        if let Some(model) = find_string(&file_config, MODEL_KEY_PATHS) {
+            let model = model.trim();
+            if !model.is_empty() {
+                config.provider = Arc::from(new_client(model)?);
+            }
+        }
+
+        if let Some(commit_confirmation) = find_bool(&file_config, COMMIT_CONFIRMATION_KEY_PATHS) {
+            config.commit_confirmation = commit_confirmation;
+        }
+
+        if let Some(prompt) = find_string(&file_config, BASE_PROMPT_KEY_PATHS) {
+            config.prompt_store.insert(SystemPrompt::Base, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, EDITOR_PROMPT_KEY_PATHS) {
+            config.prompt_store.insert(SystemPrompt::Editor, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
+            config.prompt_store.insert(SystemPrompt::Commit, prompt);
+        }
 
         Ok(config)
     }
@@ -108,6 +127,134 @@ impl Config {
     pub fn get_prompt(&self, prompt: SystemPrompt) -> String {
         self.prompt_store.get(&prompt).unwrap().to_string()
     }
+}
+
+#[derive(Copy, Clone)]
+enum FileFormat {
+    Json,
+    Toml,
+}
+
+const MODEL_KEY_PATHS: &[&[&str]] = &[
+    &["model"],
+    &["provider"],
+    &["provider", "model"],
+    &["provider", "name"],
+];
+const COMMIT_CONFIRMATION_KEY_PATHS: &[&[&str]] = &[
+    &["commit_confirmation"],
+    &["require_confirmation"],
+    &["prompts", "commit_confirmation"],
+    &["flags", "require_confirmation"],
+];
+const BASE_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["BASE_SYSTEM_PROMPT"],
+    &["base_system_prompt"],
+    &["prompts", "BASE_SYSTEM_PROMPT"],
+    &["prompts", "base"],
+    &["prompts", "base_system_prompt"],
+];
+const EDITOR_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["EDITOR_PROMPT"],
+    &["editor_prompt"],
+    &["prompts", "EDITOR_PROMPT"],
+    &["prompts", "editor"],
+    &["prompts", "editor_prompt"],
+];
+const COMMIT_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["COMMIT_PROMPT"],
+    &["commit_prompt"],
+    &["prompts", "COMMIT_PROMPT"],
+    &["prompts", "commit"],
+    &["prompts", "commit_prompt"],
+];
+
+fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+
+    for segment in path {
+        match current {
+            serde_json::Value::Object(map) => {
+                current = map.get(*segment)?;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(current)
+}
+
+fn find_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
+    for path in paths {
+        if let Some(serde_json::Value::String(s)) = value_at_path(value, path) {
+            if !s.is_empty() {
+                return Some(s.clone());
+            }
+        }
+    }
+
+    None
+}
+
+fn find_bool(value: &serde_json::Value, paths: &[&[&str]]) -> Option<bool> {
+    for path in paths {
+        if let Some(serde_json::Value::Bool(b)) = value_at_path(value, path) {
+            return Some(*b);
+        }
+    }
+
+    None
+}
+
+pub fn default_config_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("VIZIER_CONFIG_FILE") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    let base_dir = base_config_dir()?;
+    Some(base_dir.join("vizier").join("config.toml"))
+}
+
+fn base_config_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("VIZIER_CONFIG_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    if let Ok(dir) = std::env::var("APPDATA") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let trimmed = home.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join(".config"));
+        }
+    }
+
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let trimmed = profile.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join("AppData").join("Roaming"));
+        }
+    }
+
+    None
 }
 
 pub fn set_config(new_config: Config) {
@@ -191,6 +338,28 @@ mod tests {
             cfg.get_prompt(SystemPrompt::Commit),
             default_cfg.get_prompt(SystemPrompt::Commit)
         );
+    }
+
+    #[test]
+    fn test_from_toml_prompts_table() {
+        let toml = r#"
+model = "gpt-5"
+
+[prompts]
+base = "toml base override"
+editor = "toml editor override"
+commit = "toml commit override"
+"#;
+
+        let mut file = NamedTempFile::new().expect("failed to create temp toml file");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
+
+        assert_eq!(cfg.get_prompt(SystemPrompt::Base), "toml base override");
+        assert_eq!(cfg.get_prompt(SystemPrompt::Editor), "toml editor override");
+        assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "toml commit override");
     }
 
     #[test]
