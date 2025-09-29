@@ -2,3 +2,13 @@
 
 ---
 
+Update (author note: persistent config)
+- Extend tests to cover profile persistence and precedence, including:
+  • Running with --thinking-level without save does not mutate profiles.
+  • --save-profile writes to .vizier/profile.toml (or profiles/<name>.toml) and is picked up on next run.
+  • Precedence resolution when both a named profile and project default exist.
+  • Non-interactive mode honors CLI override and does not prompt to save.
+- Pointers: tests/src/main.rs; vizier-core/src/config.rs; vizier-cli/src/main.rs
+
+---
+

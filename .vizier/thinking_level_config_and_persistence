@@ -1,0 +1,8 @@
+Update (author note: persistent config)
+- Clarify persistence scope: Profiles are stored under .vizier/profiles/<name>.toml; a project-local default profile is .vizier/profile.toml when no name is provided. This reflects current direction for durable, human-editable config.
+- Add acceptance: If no explicit profile is provided, `--save-profile` writes to .vizier/profile.toml and subsequent runs without flags pick up the saved thinking_level.
+- Add acceptance: Loading order is (highest to lowest) CLI > session override > named profile > project default profile > baked-in defaults. The effective source tag reflects which tier won.
+- Non-destructive guarantee: When persisting, unrelated config keys in the existing profile are preserved; only updated keys change. Atomic write remains required.
+
+---
+
