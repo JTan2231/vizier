@@ -12,7 +12,8 @@ Active threads (current)
 - Chat navigation modes (active): Modal navigation (view vs edit) for the chat/diff pane to improve cursor movement and scrolling without unintended edits; discoverable and remappable. [Depends on: vizier-core/src/chat.rs input handling]
 - Config-driven prompt customization (active): Operators can swap system prompts via drop-in files and/or CLI flag. The effective prompt path is reflected in meta and visible in chat header. [Depends on: vizier-core/src/config.rs, display.rs; vizier-cli flags]
 - Snapshot bootstrap for existing repos (active): Analyze an established repository and generate an initial .vizier/.snapshot plus seed TODO threads, with cross-links. Expensive, read-only, idempotent. [Depends on: vizier-cli subcommand; vizier-core analyzers {vcs,walker,observer,display,tools}]
-- Narrative timelines (new, active): Elevate from one-off snapshot deltas to longer-lived arcs. Introduce explicit “threads” sections in the snapshot that persist across sessions and link to TODO evolution, so changes can be followed as a storyline rather than isolated updates. [Depends on: .snapshot structure and TODO cross-link discipline]
+- Narrative timelines (active): Elevate from one-off snapshot deltas to longer-lived arcs. Introduce explicit “threads” sections in the snapshot that persist across sessions and link to TODO evolution, so changes can be followed as a storyline rather than isolated updates. [Depends on: .snapshot structure and TODO cross-link discipline]
+- Interactive Config TUI (new, active): Provide an in-app TUI to view and edit effective configuration, with safe defaults, previews, and persistence options (session vs profile). This reduces friction vs hand-editing config files. [Depends on: vizier-core/src/config.rs, vizier-core/src/display.rs, vizier-core/src/chat.rs (header/status integration), vizier-cli entry]
 
 Recent, landed (evidence-based)
 - TUI chat: fixed a rendering bug with long, multiline messages and added basic scrolling; chat previously reintroduced with styling. [Anchor: vizier-core/src/chat.rs; Author note]
@@ -35,19 +36,17 @@ Acceptance checkpoints (kept)
 - Snapshot bootstrap: Running `vizier snapshot init` produces .vizier/.snapshot with CODE and NARRATIVE state plus cross-linked TODOs; safe by default, idempotent, and warns about cost.
 - Thinking level config + persistence: Operator can switch between thinking modes (e.g., fast, balanced, deep) via CLI/TUI; selection is visible in chat header/meta and persists to a profile when requested. Precedence: CLI > session > profile > default.
 - Narrative timelines: Snapshot contains a Threads section with stable thread IDs; each TODO references a thread ID; snapshot diffs retain thread continuity across sessions.
+- Interactive Config TUI: From the TUI, users can open a Config panel to view current effective config (with source: CLI/session/profile/default), modify values with validation, preview impacts (e.g., prompt path), and choose to apply for this session or persist to a selected profile. Changes respect precedence (CLI overrides cannot be modified in-session).
 
 Next moves (minimal, sequential)
-1) Config: add essential levers + Default; expose to prompt/meta, including system_prompt override path and thinking_level with profile persistence. [vizier-core/src/config.rs, display.rs]
-2) CLI: add flags for those levers; validation + set_config; support --system-prompt-override, --thinking-level, and optional --profile selection and save. [vizier-cli/src/main.rs]
-3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs (active)]
-5) Tests: extend to cover flags mapping, prompt override selection precedence, thinking-level persistence, and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds.
-2) Config: add essential levers + Default; expose to prompt/meta, including system_prompt override path. [vizier-core/src/config.rs, display.rs]
-3) CLI: add flags for those levers; validation + set_config; support --system-prompt-override and optional --profile selection. [vizier-cli/src/main.rs]
-4) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs]
-5) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
-6) Tests: extend to cover flags mapping, prompt override selection precedence, and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds. [tests/]
-7) Chat modes: add modal input handling with discoverable key help and remapping hooks; acceptance tests for mode switching and edit-guard. [vizier-core/src/chat.rs]
-8) Narrative timelines: Amend .snapshot format to introduce a stable Threads section, assign IDs to current threads, and cross-link existing TODOs by ID. Update TODO bodies minimally to reference the ID. Add acceptance checks that new TODOs include a thread reference and that the snapshot lists all active TODOs per thread. [snapshot/.vizier; tools discipline]
+1) Config levers: finalize schema for essential levers; expose to prompt/meta, including system_prompt override path and thinking_level with profile persistence. [vizier-core/src/config.rs, display.rs]
+2) CLI flags: add flags for those levers; validation + set_config; support --system-prompt-override, --thinking-level, and optional --profile selection and save. [vizier-cli/src/main.rs]
+3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs]
+4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
+5) Tests: extend to cover flags mapping, prompt override selection precedence, thinking-level persistence, and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds. [tests/]
+6) Chat modes: add modal input handling with discoverable key help and remapping hooks; acceptance tests for mode switching and edit-guard. [vizier-core/src/chat.rs]
+7) Config TUI: introduce an interactive Config panel with view/edit/persist flows; wire into chat header to reflect current values and sources. Add tests for precedence and persistence. [vizier-core/src/{display.rs,config.rs,chat.rs}; tests]
+8) Narrative timelines: Amend .snapshot format to introduce a stable Threads section, assign IDs to current threads, and cross-link existing TODOs by ID. Update TODO bodies minimally to reference the ID. [snapshot/.vizier; tools discipline]
 9) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
 
 Prompt ethos (clarified)
