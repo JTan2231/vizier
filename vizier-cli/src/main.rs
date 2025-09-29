@@ -44,7 +44,7 @@ struct GlobalOpts {
     #[arg(short = 'c', long = "require-confirmation", global = true)]
     require_confirmation: bool,
 
-    /// JSON file for setting the config
+    /// Config file to load (supports JSON or TOML)
     #[arg(short = 'C', long = "config-file", global = true)]
     config_file: Option<String>,
 }
@@ -240,7 +240,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut cfg = if let Some(config_file) = cli.global.config_file {
-        config::Config::from_json(std::path::PathBuf::from(config_file))?
+        config::Config::from_path(std::path::PathBuf::from(config_file))?
+    } else if let Some(default_path) = config::default_config_path() {
+        if default_path.exists() {
+            config::Config::from_path(default_path)?
+        } else {
+            config::get_config()
+        }
     } else {
         config::get_config()
     };

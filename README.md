@@ -97,6 +97,8 @@ vizier save HEAD~3..HEAD # commits specific range
 
 Configure via CLI flags or config file:
 
+If no path is provided, Vizier will look for `~/.config/vizier/config.toml` (TOML or JSON) and fall back to its built-in defaults when that file is missing.
+
 ```bash
 # Use specific model
 vizier ask "..." -p anthropic

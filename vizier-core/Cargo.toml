@@ -22,6 +22,7 @@ inventory = "0.3"
 wire = { git = "https://github.com/JTan2231/wire.git" }
 tokio = { version = "1", features = ["full"] }
 lazy_static = "1.4"
+toml = "0.8"
 fuzzy-matcher = "*"
 colored = "2"
 chrono = { version = "0.4", features = ["serde"] }
