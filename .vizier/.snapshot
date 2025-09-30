@@ -1,56 +1,51 @@
-Project trajectory snapshot (pared)
+Running Snapshot — updated
 
-Theme: Give operators explicit control over AI changes with clear gates, reversible edits, and durable narrative arcs. The snapshot is the single-frame truth; Git history and code remain the authority.
+Narrative theme
+- Operators get explicit control over AI changes with gates, reversibility, and durable narrative context. Snapshot is the single-frame truth; Git is code-audit; sessions JSON becomes conversation/runtime audit.
 
-Active threads (current)
-- Commit isolation + gates (active): Conversation/narrative commits must exclude unrelated staged changes and pause at a Pending Commit gate (TUI/CLI). [Depends on: auditor/vcs utilities; TUI/CLI UX not fully landed]
-- Control levers surface (active): Add essential config levers that matter now (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_overrides, thinking level/persistence). [Snapshot Status: config still minimal; thinking level newly requested]
-- Operation history + revert (active): Record applied changes and allow revert; prefer patch, fall back to VCS. [No code yet]
-- Native Chat + Diff/editor basics (active): Split-view with diff and editable commit message; per-hunk accept/reject planned; show current LLM session settings. TUI chat reintroduced with styling; behaviorally still scoped to commit gate/editor basics. Now handles long, multiline messages without rendering bugs and supports basic scrolling. [Anchors: vizier-core/src/chat.rs; editor hardening in vizier-core/src/{editor.rs,tools.rs}]
-- Integration tests (active): Guard commit isolation, config→CLI mapping, and (as they land) history/revert. [Anchors: tests/; vizier-core/src/{config.rs,auditor.rs,vcs.rs}]
-- Issue tracking bridge (active): Use GitHub Issues for task-specific items; reserve Vizier-native narratives and gates for meaning-making. [Author note landed]
-- Chat navigation modes (active): Modal navigation (view vs edit) for the chat/diff pane to improve cursor movement and scrolling without unintended edits; discoverable and remappable. [Depends on: vizier-core/src/chat.rs input handling]
-- Config-driven prompt customization (active): Operators can swap system prompts via drop-in files and/or CLI flag. The effective prompt path is reflected in meta and visible in chat header. [Depends on: vizier-core/src/config.rs, display.rs; vizier-cli flags]
-- Snapshot bootstrap for existing repos (active): Analyze an established repository and generate an initial .vizier/.snapshot plus seed TODO threads, with cross-links. Expensive, read-only, idempotent. [Depends on: vizier-cli subcommand; vizier-core analyzers {vcs,walker,observer,display,tools}]
-- Narrative timelines (active): Elevate from one-off snapshot deltas to longer-lived arcs. Introduce explicit “threads” sections in the snapshot that persist across sessions and link to TODO evolution, so changes can be followed as a storyline rather than isolated updates. [Depends on: .snapshot structure and TODO cross-link discipline]
-- Interactive Config TUI (new, active): Provide an in-app TUI to view and edit effective configuration, with safe defaults, previews, and persistence options (session vs profile). This reduces friction vs hand-editing config files. [Depends on: vizier-core/src/config.rs, vizier-core/src/display.rs, vizier-core/src/chat.rs (header/status integration), vizier-cli entry]
+Active threads
+- Commit isolation + gates: Conversation commits isolated and pause at a Pending Commit gate. TUI/CLI UX partly landed; per-hunk accept/reject planned.
+- Control levers surface: Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking level). Thinking level requested; schema in progress.
+- Operation history + revert: Not built yet; planned.
+- Native Chat + Diff/editor basics: Split-view with diff and editable commit message; long multiline messages + scrolling stable.
+- Integration tests: Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
+- Issue tracking bridge: Use GitHub Issues for task-specific items; keep narratives/gates inside Vizier.
+- Chat navigation modes: View vs Edit modes to prevent accidental edits; input handling work pending.
+- Config-driven prompt customization: Swap system prompts via files/CLI; reflect active path in meta/header.
+- Snapshot bootstrap for existing repos: Generate initial .vizier/.snapshot + seed TODOs; safe/idempotent.
+- Narrative timelines: Persistent “threads” with IDs; TODOs cross-link to threads.
+- Interactive Config TUI: In-app panel to view/edit effective config; precedence-aware; persist to profile.
+- NEW — Session logging to filesystem: Persist each assistant session as structured JSON in .vizier/sessions/<id>/session.json for reloadability. Forms the basis for a TUI picker and CLI --session <id> resume.
 
-Recent, landed (evidence-based)
-- TUI chat: fixed a rendering bug with long, multiline messages and added basic scrolling; chat previously reintroduced with styling. [Anchor: vizier-core/src/chat.rs; Author note]
-- Editor lifecycle hardened: run_editor uses ExitReason; editor channel scoped to a single session to prevent leakage. [vizier-core/src/{editor.rs,tools.rs}; commit ac2c95f]
-- Auditor fixes: staged-set isolation during conversation commits; vcs helpers for stage/unstage/snapshot/restore across A/M/D/R. [vizier-core/src/{auditor.rs,vcs.rs}]
-- Integration tests added/stabilized; CI runs them. [tests/, workflow]
+Recent, landed
+- TUI chat rendering fixed for long multiline messages + basic scrolling.
+- Editor lifecycle hardened (ExitReason; scoped editor channel).
+- Auditor fixes: staged-set isolation; VCS helpers across A/M/D/R.
+- Integration tests added and run in CI.
 
-Out-of-scope (deferred)
-- Narrative contract/drift enforcement and pre-commit hook: deferred until core levers + commit gate land.
-- Full streaming/event observer timeline: keep minimal streaming visibility optional; no event timeline right now.
+Deferred
+- Narrative contract/drift enforcement and pre-commit hook.
+- Full streaming timeline; minimal streaming visibility optional.
 
-Acceptance checkpoints (kept)
-- With confirm_destructive=true and auto_commit=false, writes pause at a Pending Commit gate (TUI/CLI). Reject leaves workspace untouched.
-- Conversation commits touch only .vizier paths; pre-existing staged changes are preserved and restored exactly. A/M/D/R covered.
-- CLI non-interactive refuses to commit without explicit consent (e.g., --yes with message) and never opens an editor.
-- TUI shows history list and can revert the last accepted change once history lands.
-- TUI chat can render long, multiline messages without layout corruption and supports scrolling to view prior content.
-- Chat navigation modes: Default opens in View mode (no edits) with cursor/scroll movement; explicit switch to Edit mode to modify text. Mode is visible in the status line; accidental edits are prevented in View mode.
-- Config-driven prompt customization: TODOs/system_prompt*.md files or --system-prompt-override select the active system prompt; the effective path appears in <meta><config> and in the chat header.
-- Snapshot bootstrap: Running `vizier snapshot init` produces .vizier/.snapshot with CODE and NARRATIVE state plus cross-linked TODOs; safe by default, idempotent, and warns about cost.
-- Thinking level config + persistence: Operator can switch between thinking modes (e.g., fast, balanced, deep) via CLI/TUI; selection is visible in chat header/meta and persists to a profile when requested. Precedence: CLI > session > profile > default.
-- Narrative timelines: Snapshot contains a Threads section with stable thread IDs; each TODO references a thread ID; snapshot diffs retain thread continuity across sessions.
-- Interactive Config TUI: From the TUI, users can open a Config panel to view current effective config (with source: CLI/session/profile/default), modify values with validation, preview impacts (e.g., prompt path), and choose to apply for this session or persist to a selected profile. Changes respect precedence (CLI overrides cannot be modified in-session).
+Acceptance checkpoints (selected)
+- Pending Commit gate with confirm_destructive=true and auto_commit=false.
+- Conversation commits only touch .vizier; preserve pre-existing staged changes exactly (A/M/D/R).
+- Non-interactive CLI requires explicit consent; never opens editor.
+- TUI chat renders long messages and supports scrolling.
+- Chat modes show visible state; View mode blocks edits.
+- Config-driven prompt selection visible in meta and header.
+- Snapshot bootstrap command is safe/idempotent.
+- Thinking level selection precedence: CLI > session > profile > default.
+- NEW — Session JSON: On session end, session.json is written and validates MVP schema; write-once with atomic rename.
 
-Next moves (minimal, sequential)
-1) Config levers: finalize schema for essential levers; expose to prompt/meta, including system_prompt override path and thinking_level with profile persistence. [vizier-core/src/config.rs, display.rs]
-2) CLI flags: add flags for those levers; validation + set_config; support --system-prompt-override, --thinking-level, and optional --profile selection and save. [vizier-cli/src/main.rs]
-3) Commit gate UX: TUI split-view shows diff + editable message with Accept/Reject; CLI launches $EDITOR proposal file in interactive; headless requires --yes + message. [vizier-core/src/chat.rs]
-4) History skeleton: record applied operations and expose revert(n=1). [vizier-core history + tools]
-5) Tests: extend to cover flags mapping, prompt override selection precedence, thinking-level persistence, and commit gate behaviors; add TUI chat regression tests for long-message wrapping and scrolling bounds. [tests/]
-6) Chat modes: add modal input handling with discoverable key help and remapping hooks; acceptance tests for mode switching and edit-guard. [vizier-core/src/chat.rs]
-7) Config TUI: introduce an interactive Config panel with view/edit/persist flows; wire into chat header to reflect current values and sources. Add tests for precedence and persistence. [vizier-core/src/{display.rs,config.rs,chat.rs}; tests]
-8) Narrative timelines: Amend .snapshot format to introduce a stable Threads section, assign IDs to current threads, and cross-link existing TODOs by ID. Update TODO bodies minimally to reference the ID. [snapshot/.vizier; tools discipline]
-9) Issues bridge: document that task-specific tracking should open GitHub Issues via CLI flag or link; keep TUI focused on narratives/gates. [vizier-cli README; optional helper]
-
-Prompt ethos (clarified)
-- Narratives/Snapshots: descriptive summaries built from observed code and tests. For exact truth, consult the repository and Git history; tools for navigating history provide the authoritative record.
-- Expose the effective prompt provenance (which system_prompt file/path was used) in headers/meta.
-- Expose current thinking level and source (CLI/session/profile) alongside other config in headers/meta.
-- Elevate continuity: use thread IDs and cross-links to maintain longer-lived storylines over multiple sessions; prefer evolving threads to spawning new ones.
+Next moves (minimal sequence)
+1) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level).
+2) Add CLI flags (--system-prompt-override, --thinking-level, --profile).
+3) Commit gate UX across TUI/CLI/headless.
+4) History skeleton with revert(n=1).
+5) Session logging JSON MVP: write/validate session.json and add `vizier sessions list`; load via `--session <id>`.
+6) Extend tests for flags, persistence, commit gate, TUI regressions, session write/read.
+7) Chat modes with key help and remapping; tests.
+8) Config TUI panel; precedence/persistence tests.
+9) Narrative timelines: Threads section + TODO cross-links.
+10) Issues bridge docs and/or helper.
