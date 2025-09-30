@@ -4,39 +4,37 @@ Narrative theme
 - Operators get explicit control over AI changes with gates, reversibility, and durable narrative context. Snapshot is the single-frame truth; Git is code-audit; sessions JSON becomes conversation/runtime audit.
 
 Active threads
-- Commit isolation + gates: Conversation commits isolated and pause at a Pending Commit gate. TUI/CLI UX partly landed; per-hunk accept/reject planned.
+- Commit isolation + gates: Conversation commits isolated and pause at a Pending Commit gate. TUI/CLI UX partly landed; per-hunk accept/reject planned. [Depends on: Code State below]
 - Control levers surface: Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking level). Thinking level requested; schema in progress.
 - Operation history + revert: Not built yet; planned.
-- Native Chat + Diff/editor basics: Split-view with diff and editable commit message; long multiline messages + scrolling stable.
+- Native Chat + Diff/editor basics: Split-view with diff and editable commit message; long multiline messages + scrolling stable. [New TODO extends this]
 - Integration tests: Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 - Issue tracking bridge: Use GitHub Issues for task-specific items; keep narratives/gates inside Vizier.
-- Chat navigation modes: View vs Edit modes to prevent accidental edits; input handling work pending.
+- Chat navigation modes: View vs Edit modes to prevent accidental edits; input handling work pending. [Reinforced by new TODO]
 - Config-driven prompt customization: Swap system prompts via files/CLI; reflect active path in meta/header.
 - Snapshot bootstrap for existing repos: Generate initial .vizier/.snapshot + seed TODOs; safe/idempotent.
 - Narrative timelines: Persistent “threads” with IDs; TODOs cross-link to threads.
-- Interactive Config TUI: In-app panel to view/edit effective config; precedence-aware; persist to profile.
-- NEW — Session logging to filesystem: Persist each assistant session as structured JSON in .vizier/sessions/<id>/session.json for reloadability. Forms the basis for a TUI picker and CLI --session <id> resume.
+- Session logging to filesystem: Persist each assistant session as structured JSON in .vizier/sessions/<id>/session.json for reloadability. Forms the basis for a TUI picker and CLI --session <id> resume.
 
-Recent, landed
-- TUI chat rendering fixed for long multiline messages + basic scrolling.
-- Editor lifecycle hardened (ExitReason; scoped editor channel).
-- Auditor fixes: staged-set isolation; VCS helpers across A/M/D/R.
-- Integration tests added and run in CI.
+NEW threads
+- Chat TUI → Auditor + commit gate cohesion: Ensure all Chat-initiated changes are audited and respect commit gates like `ask`. [See TODO: chat_tui_auditor_integration_and_commit_gate]
+- Chat TUI polish: input navigation, loaders, tool-call visuals, and auto-scroll. [See TODO: chat_tui_polish_navigation_loading_and_tool_visuals]
 
-Deferred
-- Narrative contract/drift enforcement and pre-commit hook.
-- Full streaming timeline; minimal streaming visibility optional.
+Code state (behaviors that matter)
+- Chat TUI renders long messages and supports scrolling but lacks robust input navigation, explicit modes, and consistent auto-scroll.
+- Auditor exists and supports staged-set isolation with VCS helpers (A/M/D/R), but Chat TUI actions do not consistently route through Auditor, and resulting changes may bypass the Pending Commit gate.
+- CLI `ask` path creates auditable changes and participates in commit gate when auto_commit=false.
+- Session JSON logging MVP is planned; not yet wired to Chat.
 
 Acceptance checkpoints (selected)
 - Pending Commit gate with confirm_destructive=true and auto_commit=false.
 - Conversation commits only touch .vizier; preserve pre-existing staged changes exactly (A/M/D/R).
 - Non-interactive CLI requires explicit consent; never opens editor.
 - TUI chat renders long messages and supports scrolling.
-- Chat modes show visible state; View mode blocks edits.
+- Chat modes show visible state; View mode blocks edits. [Pending]
 - Config-driven prompt selection visible in meta and header.
 - Snapshot bootstrap command is safe/idempotent.
-- Thinking level selection precedence: CLI > session > profile > default.
-- NEW — Session JSON: On session end, session.json is written and validates MVP schema; write-once with atomic rename.
+- Session JSON: On session end, session.json is written and validates MVP schema; write-once with atomic rename. [Pending wiring in Chat]
 
 Next moves (minimal sequence)
 1) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level).
@@ -45,7 +43,10 @@ Next moves (minimal sequence)
 4) History skeleton with revert(n=1).
 5) Session logging JSON MVP: write/validate session.json and add `vizier sessions list`; load via `--session <id>`.
 6) Extend tests for flags, persistence, commit gate, TUI regressions, session write/read.
-7) Chat modes with key help and remapping; tests.
+7) Chat modes with key help and remapping; tests. [Now coupled with Chat polish TODO]
 8) Config TUI panel; precedence/persistence tests.
 9) Narrative timelines: Threads section + TODO cross-links.
 10) Issues bridge docs and/or helper.
+
+Cross-links
+- New TODOs advance: Commit isolation + gates; Native Chat + Diff/editor basics; Chat navigation modes.
