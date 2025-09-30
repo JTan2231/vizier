@@ -1,7 +1,7 @@
 Running Snapshot — updated
 
 Narrative theme
-- Operators get explicit control over AI changes with gates, reversibility, and durable narrative context. Snapshot is the single-frame truth; Git is code-audit; sessions JSON becomes conversation/runtime audit.
+- Operators need crisp, trustworthy summaries of what actually happened after actions. Current TUI/CLI output under-reports effects; assistant final message is verbose/soft. We will tighten post-action summaries across interfaces and refine assistant final-turn prompting without conflating UX rendering with model guidance.
 
 Active threads
 - Commit isolation + gates: Conversation commits isolated and pause at a Pending Commit gate. TUI/CLI UX partly landed; per-hunk accept/reject planned. [Depends on: Code State below]
@@ -16,15 +16,15 @@ Active threads
 - Narrative timelines: Persistent “threads” with IDs; TODOs cross-link to threads.
 - Session logging to filesystem: Persist each assistant session as structured JSON in .vizier/sessions/<id>/session.json for reloadability. Forms the basis for a TUI picker and CLI --session <id> resume.
 
-NEW threads
-- Chat TUI → Auditor + commit gate cohesion: Ensure all Chat-initiated changes are audited and respect commit gates like `ask`. [See TODO: chat_tui_auditor_integration_and_commit_gate]
-- Chat TUI polish: input navigation, loaders, tool-call visuals, and auto-scroll. [See TODO: chat_tui_polish_navigation_loading_and_tool_visuals]
+NEW thread
+- Outcome summaries across interfaces: Standardize "What happened" summaries after any operation (TUI pane + CLI epilogue). Assistant final turn must be concise, action-labeled, and aligned with actual changes. [Depends on: Code State; interacts with Auditor for facts]
 
 Code state (behaviors that matter)
 - Chat TUI renders long messages and supports scrolling but lacks robust input navigation, explicit modes, and consistent auto-scroll.
 - Auditor exists and supports staged-set isolation with VCS helpers (A/M/D/R), but Chat TUI actions do not consistently route through Auditor, and resulting changes may bypass the Pending Commit gate.
 - CLI `ask` path creates auditable changes and participates in commit gate when auto_commit=false.
 - Session JSON logging MVP is planned; not yet wired to Chat.
+- Post-action UX: No consistent, factual "Outcome" section showing counts (files touched, hunks, commits, gates hit), timing, and next actions. Assistant final message can be verbose and not tightly mapped to changes.
 
 Acceptance checkpoints (selected)
 - Pending Commit gate with confirm_destructive=true and auto_commit=false.
@@ -33,8 +33,8 @@ Acceptance checkpoints (selected)
 - TUI chat renders long messages and supports scrolling.
 - Chat modes show visible state; View mode blocks edits. [Pending]
 - Config-driven prompt selection visible in meta and header.
-- Snapshot bootstrap command is safe/idempotent.
 - Session JSON: On session end, session.json is written and validates MVP schema; write-once with atomic rename. [Pending wiring in Chat]
+- Outcome summaries: After each operation, users see a compact factual summary (counts, gates, next steps) that matches Auditor/VCS facts. Assistant final message mirrors the same structure.
 
 Next moves (minimal sequence)
 1) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level).
@@ -43,10 +43,10 @@ Next moves (minimal sequence)
 4) History skeleton with revert(n=1).
 5) Session logging JSON MVP: write/validate session.json and add `vizier sessions list`; load via `--session <id>`.
 6) Extend tests for flags, persistence, commit gate, TUI regressions, session write/read.
-7) Chat modes with key help and remapping; tests. [Now coupled with Chat polish TODO]
-8) Config TUI panel; precedence/persistence tests.
-9) Narrative timelines: Threads section + TODO cross-links.
-10) Issues bridge docs and/or helper.
+7) Chat modes with key help and remapping; tests. [Coupled with Chat polish TODO]
+8) Outcome summaries: Implement standardized summary component and assistant prompt nudge; tests.
+9) Config TUI panel; precedence/persistence tests.
+10) Narrative timelines: Threads section + TODO cross-links.
 
 Cross-links
-- New TODOs advance: Commit isolation + gates; Native Chat + Diff/editor basics; Chat navigation modes.
+- New TODO advances: Commit isolation + gates (facts sourcing), Native Chat basics (rendering), Integration tests (assert summaries), Session logging (durable audit backing summaries).
