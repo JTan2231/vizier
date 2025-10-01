@@ -1,30 +1,32 @@
 Running Snapshot — updated
 
 Narrative theme
-- Operators need crisp, trustworthy summaries of what actually happened after actions. Current TUI/CLI output under-reports effects; assistant final message is verbose/soft. We will tighten post-action summaries across interfaces and refine assistant final-turn prompting without conflating UX rendering with model guidance.
+- Operators should not have to micromanage the assistant to take actions. Prompts imply authorization to evolve the project narrative: convert conversational intent into concrete TODOs and keep the SNAPSHOT current by default. Opt-out should be explicit; opt-in should not be required.
 
 Active threads
-- Commit isolation + gates: Conversation commits isolated and pause at a Pending Commit gate. TUI/CLI UX partly landed; per-hunk accept/reject planned. [Depends on: Code State below]
+- Commit isolation + gates: Conversation commits isolated and pause at a Pending Commit gate. TUI/CLI UX partly landed; per-hunk accept/reject planned. [Depends on: Code State]
 - Control levers surface: Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking level). Thinking level requested; schema in progress.
 - Operation history + revert: Not built yet; planned.
-- Native Chat + Diff/editor basics: Split-view with diff and editable commit message; long multiline messages + scrolling stable. [New TODO extends this]
+- Native Chat + Diff/editor basics: Split-view with diff and editable commit message; long multiline messages + scrolling stable. [Related to modes thread]
 - Integration tests: Guard commit isolation, config→CLI mapping, and (as they land) history/revert.
 - Issue tracking bridge: Use GitHub Issues for task-specific items; keep narratives/gates inside Vizier.
-- Chat navigation modes: View vs Edit modes to prevent accidental edits; input handling work pending. [Reinforced by new TODO]
+- Chat navigation modes: View vs Edit to prevent accidental edits; input handling pending.
 - Config-driven prompt customization: Swap system prompts via files/CLI; reflect active path in meta/header.
 - Snapshot bootstrap for existing repos: Generate initial .vizier/.snapshot + seed TODOs; safe/idempotent.
 - Narrative timelines: Persistent “threads” with IDs; TODOs cross-link to threads.
-- Session logging to filesystem: Persist each assistant session as structured JSON in .vizier/sessions/<id>/session.json for reloadability. Forms the basis for a TUI picker and CLI --session <id> resume.
+- Session logging to filesystem: Persist each assistant session as structured JSON; basis for resume.
+- Outcome summaries across interfaces: Standardize "What happened" summaries after any operation (TUI pane + CLI epilogue). Assistant final turn must be concise, action-labeled, and aligned with actual changes. [Depends on: Auditor]
 
 NEW thread
-- Outcome summaries across interfaces: Standardize "What happened" summaries after any operation (TUI pane + CLI epilogue). Assistant final turn must be concise, action-labeled, and aligned with actual changes. [Depends on: Code State; interacts with Auditor for facts]
+- Default-Action Posture (DAP): By default, the assistant converts conversational intent into TODOs and updates the SNAPSHOT without being told to “take an action.” Users can prepend “no-op” or “discuss-only” to temporarily disable. This reduces friction and aligns with Vizier’s story-editor ethos.
 
 Code state (behaviors that matter)
 - Chat TUI renders long messages and supports scrolling but lacks robust input navigation, explicit modes, and consistent auto-scroll.
 - Auditor exists and supports staged-set isolation with VCS helpers (A/M/D/R), but Chat TUI actions do not consistently route through Auditor, and resulting changes may bypass the Pending Commit gate.
 - CLI `ask` path creates auditable changes and participates in commit gate when auto_commit=false.
 - Session JSON logging MVP is planned; not yet wired to Chat.
-- Post-action UX: No consistent, factual "Outcome" section showing counts (files touched, hunks, commits, gates hit), timing, and next actions. Assistant final message can be verbose and not tightly mapped to changes.
+- Post-action UX: No consistent, factual "Outcome" section shared across interfaces; assistant final message can be verbose and not tightly mapped to changes.
+- Assistant execution policy: De facto requires explicit user language to perform snapshot/TODO updates; this is causing friction. Policy must flip to default action with explicit opt-out.
 
 Acceptance checkpoints (selected)
 - Pending Commit gate with confirm_destructive=true and auto_commit=false.
@@ -33,20 +35,22 @@ Acceptance checkpoints (selected)
 - TUI chat renders long messages and supports scrolling.
 - Chat modes show visible state; View mode blocks edits. [Pending]
 - Config-driven prompt selection visible in meta and header.
-- Session JSON: On session end, session.json is written and validates MVP schema; write-once with atomic rename. [Pending wiring in Chat]
-- Outcome summaries: After each operation, users see a compact factual summary (counts, gates, next steps) that matches Auditor/VCS facts. Assistant final message mirrors the same structure.
+- Session JSON: On session end, session.json is written and validates MVP schema; write-once with atomic rename. [Pending]
+- Outcome summaries: After each operation, users see a compact factual summary matching Auditor/VCS facts. Assistant final mirrors it.
+- DAP: By default, assistant updates .snapshot and TODOs when user gives any directive that implies change; only suppressed when user message clearly opts out. CLI/TUI affordances show when DAP is active, with a one-line Outcome noting created/updated items.
 
 Next moves (minimal sequence)
-1) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level).
-2) Add CLI flags (--system-prompt-override, --thinking-level, --profile).
-3) Commit gate UX across TUI/CLI/headless.
-4) History skeleton with revert(n=1).
-5) Session logging JSON MVP: write/validate session.json and add `vizier sessions list`; load via `--session <id>`.
-6) Extend tests for flags, persistence, commit gate, TUI regressions, session write/read.
-7) Chat modes with key help and remapping; tests. [Coupled with Chat polish TODO]
-8) Outcome summaries: Implement standardized summary component and assistant prompt nudge; tests.
-9) Config TUI panel; precedence/persistence tests.
-10) Narrative timelines: Threads section + TODO cross-links.
+1) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
+2) Add CLI flags (--system-prompt-override, --thinking-level, --profile). [Ongoing]
+3) Commit gate UX across TUI/CLI/headless. [Ongoing]
+4) History skeleton with revert(n=1). [Planned]
+5) Session logging JSON MVP. [Planned]
+6) Extend tests for flags, persistence, commit gate, TUI regressions, session write/read. [Planned]
+7) Chat modes with key help and remapping. [Planned]
+8) Outcome summaries component + assistant epilogue. [Planned]
+9) Config TUI panel. [Planned]
+10) Narrative timelines with thread IDs. [Planned]
+11) DAP: Update assistant policy + guardrails; surface in UI; tests. [New]
 
 Cross-links
-- New TODO advances: Commit isolation + gates (facts sourcing), Native Chat basics (rendering), Integration tests (assert summaries), Session logging (durable audit backing summaries).
+- DAP ties to Outcome summaries (needs visible confirmation), Integration tests (behavioral guarantees), and Narrative timelines (threads must be auto-linked without explicit user commands).
