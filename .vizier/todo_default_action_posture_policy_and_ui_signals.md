@@ -24,3 +24,10 @@ Pointers
 
 Trade space / notes
 - Provide gentle guardrails to avoid changes on ambiguous chit-chat (e.g., questions without directives). Favor minimal changes with strong cross-links to existing threads. Implement ambiguity detection with a fallback “ask to confirm” only when confidence is low.
+
+---
+Update (2025-10-02): Clarified DAP as ACTIVE by default across CLI; users can opt out per-turn with phrases like "discuss-only"/"no-op". Acceptance: CLI epilogue prints a one-line Outcome listing created/updated items when DAP acts. Cross-links: Outcome summaries TODO; Integration tests coverage TODO.
+
+
+---
+
