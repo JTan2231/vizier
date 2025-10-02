@@ -12,3 +12,10 @@ Update (author note: persistent config)
 
 ---
 
+
+---
+Update (2025-10-02): Add cases for DAP-active flows: (1) Any directive updates .snapshot and/or TODOs unless "discuss-only" present. (2) Epilogue Outcome line present and reflects created/updated items. (3) Conversation commits only touch .vizier; staged A/M/D/R from user are preserved byte-for-byte.
+
+
+---
+
