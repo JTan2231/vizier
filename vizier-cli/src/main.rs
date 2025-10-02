@@ -35,6 +35,10 @@ struct GlobalOpts {
     #[arg(short = 'l', long = "load-session", global = true)]
     load_session: Option<String>,
 
+    /// Load session as existing context
+    #[arg(short = 'n', long = "no-session", global = true)]
+    no_session: bool,
+
     /// Set LLM model to use for main prompting + tool usage
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
@@ -271,6 +275,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    cfg.no_session = cli.global.no_session;
 
     let mut provider_needs_rebuild =
         cfg.provider_model != config::DEFAULT_MODEL || cfg.reasoning_effort.is_some();
