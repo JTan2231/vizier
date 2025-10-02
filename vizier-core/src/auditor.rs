@@ -23,7 +23,8 @@ pub struct AuditorCleanup {
 impl Drop for AuditorCleanup {
     fn drop(&mut self) {
         if let Ok(auditor) = AUDITOR.lock() {
-            if auditor.messages.len() > 0 {
+            // double negative, I know
+            if auditor.messages.len() > 0 && !config::get_config().no_session {
                 let output = serde_json::to_string_pretty(&auditor.messages).unwrap();
                 if let Some(config_dir) = config::base_config_dir() {
                     match std::fs::write(

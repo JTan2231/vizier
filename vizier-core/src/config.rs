@@ -29,6 +29,7 @@ pub struct Config {
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub commit_confirmation: bool,
+    pub no_session: bool,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
 }
 
@@ -41,6 +42,7 @@ impl Config {
             provider_model: DEFAULT_MODEL.to_owned(),
             reasoning_effort: None,
             commit_confirmation: false,
+            no_session: false,
             prompt_store: std::collections::HashMap::from([
                 (
                     SystemPrompt::Base,
