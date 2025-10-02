@@ -20,3 +20,12 @@ Acceptance Criteria
 
 Pointers
 - Surfaces: vizier-core/src/chat.rs (render + input handling), vizier-core/src/display.rs, vizier-tui chat panel.
+Update [2025-10-02]: Scope limited pending a concrete TUI surface in this repo.
+- Defer interactive UI polish (loaders, tool cards, auto-scroll) until a vizier-tui surface exists. Keep product spec as target.
+- Near-term: expose headless hooks from vizier-core to emit loader lifecycle events and compact tool-call summaries that the CLI can render. Add a minimal CLI rendering of a single-line spinner and collapse-to-summary on completion.
+- Tests: add headless tests for loader lifecycle events and ensure they do not panic; mark rich UI behaviors as blocked.
+- Cross-link: Outcome summaries (CLI-first) will subsume some of the post-action summary needs until TUI is available.
+
+
+---
+

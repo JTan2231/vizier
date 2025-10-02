@@ -24,4 +24,12 @@ Pointers:
 
 Implementation Notes (justified: safety/correctness):
 - Outcome must reflect actual repo state post-action. Derive from VCS/Auditor, not model text. Ensure atomicity: compute after any writes and before process exit; in TUI, recompute on each state transition.
-- For JSON output, use a stable schema to support scripts; version it as { schema: "outcome.v1", ... }.
+- For JSON output, use a stable schema to support scripts; version it as { schema: "outcome.v1", ... }.Update [2025-10-02]: Scope Outcome delivery CLI-first; defer TUI panel until a UI surface exists.
+- Prioritize: CLI epilogue + Assistant final message alignment using Auditor/VCS facts. Provide `--json` machine format (schema: outcome.v1) and human epilogue by default; hide with `--quiet`.
+- Defer: Dedicated TUI Outcome panel and live auto-refresh until a TUI surface/crate is present. Keep product requirements, but mark as blocked by UI surface availability.
+- Tests: Add coverage for CLI epilogue presence/format under cases (a) no changes, (b) pending commit open, (c) auto-commit on, (d) rejected changes, (e) error path. JSON schema validation included.
+- Cross-link: DAP thread must emit a one-line Outcome even when only .vizier changes occur. Integration tests should assert the line appears.
+
+
+---
+
