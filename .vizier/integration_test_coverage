@@ -32,3 +32,19 @@ Terminal-minimal + renderer-neutral coverage (2025-10-02)
 
 ---
 
+
+---
+Agent Basic Command (Workflow B) coverage
+- Cases:
+  • `vizier agent run <todo>` creates agent/<id>-<slug> from base; main untouched. Assert Auditor facts and that staged A/M/D/R are preserved byte-for-byte.
+  • Outcome line includes TODO id/title, branch, commit count, and PR URL if opened, else local review commands. Exact format validated.
+  • No-remote and `--no-pr`: command succeeds; Outcome prints deterministic local review commands; exit code 0.
+  • Non-interactive without <todo> fails with helpful message; with <todo> succeeds; TTY shows interactive picker.
+  • `vizier save` after merge updates TODO body (Resolution appended; Done status optional) and Snapshot threads; session.json includes workflow metadata (branch, pr number/url, decision, timestamps).
+  • Abort path cleans up branch/worktree idempotently; working tree identical to pre-run; session logs decision=abort.
+  • JSON stream events present and valid (message/tool/status/outcome) during run and save.
+- Pointers: vizier-cli/src/actions.rs; vizier-core/src/vcs.rs, auditor.rs, display.rs, chat.rs; tests/src/main.rs.
+
+
+---
+
