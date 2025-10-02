@@ -31,3 +31,13 @@ Pointers
 
 ---
 
+
+---
+Rendering constraints (2025-10-02)
+- Modes must layer atop the renderer-neutral event stream and honor terminal-minimal behavior: avoid fullscreen redraws; interactivity is opt-in and only when TTY.
+- Until a TUI surface exists, expose headless mode flags and transitions; defer interactive keymaps; keep CLI output strictly line-oriented.
+- Cross-link: Thread “Terminal-first minimal TUI + renderer-neutral events” and TODO “minimal_invasive_tui_and_renderer_neutral_surface”.
+
+
+---
+

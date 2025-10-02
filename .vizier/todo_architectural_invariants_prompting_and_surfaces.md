@@ -40,3 +40,16 @@ Pointers
 Implementation Notes (allowed: safety/correctness)
 - Precedence: session-level overrides/augments module-level, which overrides/augments repo-level; on conflicts, most specific wins. Merging by stable IDs (markdown headings with [ID] tags) to avoid duplication.
 - Must be no-op safe: absence of files yields N/A, not errors. Atomic reads; tolerate large files by truncating prompt injection to top N bullets with a link cue in UI.
+
+---
+Rendering invariants (2025-10-02)
+- Declare repository-level rendering invariants to reduce UI regressions:
+  1) Terminal-first minimalism: no alternate screen/fullscreen by default; preserve scrollback.
+  2) Environment-aware: gate control sequences on TTY; piping/CI emits plain lines.
+  3) Stable outcomes: every action ends with a concise Outcome line sourced from Auditor/VCS facts.
+  4) Renderer-neutral: core emits a versioned event stream that all surfaces consume.
+- Cross-link: Thread “Terminal-first minimal TUI + renderer-neutral events”; see TODO minimal_invasive_tui_and_renderer_neutral_surface for acceptance criteria.
+
+
+---
+

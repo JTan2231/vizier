@@ -19,3 +19,16 @@ Update (2025-10-02): Add cases for DAP-active flows: (1) Any directive updates .
 
 ---
 
+
+---
+Terminal-minimal + renderer-neutral coverage (2025-10-02)
+- Add tests for:
+  • TTY vs non-TTY gating: no ANSI/control sequences when stdout is not a TTY; status spinner only on TTY.
+  • Outcome line presence/format after actions (including DAP-only .vizier updates); exact match with Auditor facts.
+  • `--json-stream` emits versioned NDJSON events (message/tool/status/outcome); schema validated and stable.
+  • Piping/redirect: output remains readable and line-oriented; no cursor hijacking.
+- Pointers: tests/src/main.rs (harness to fake TTY), vizier-cli/src/actions.rs (epilogue), vizier-core/src/display.rs (event emission/render).
+
+
+---
+
