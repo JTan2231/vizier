@@ -1,5 +1,4 @@
 use std::io::IsTerminal;
-use std::sync::Arc;
 
 use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
 use vizier_core::{auditor, config, tools};
@@ -47,6 +46,10 @@ struct GlobalOpts {
     /// Config file to load (supports JSON or TOML)
     #[arg(short = 'C', long = "config-file", global = true)]
     config_file: Option<String>,
+
+    /// Override model reasoning effort (minimal, low, medium, high)
+    #[arg(short = 'r', long = "reasoning-effort", global = true)]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -251,8 +254,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config::get_config()
     };
 
-    if let Some(m) = &cli.global.model {
-        cfg.provider = Arc::from(wire::new_client(m)?);
+    let mut provider_needs_rebuild =
+        cfg.provider_model != config::DEFAULT_MODEL || cfg.reasoning_effort.is_some();
+
+    if let Some(model) = &cli.global.model {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return Err("model name cannot be empty".into());
+        }
+        cfg.provider_model = trimmed.to_owned();
+        provider_needs_rebuild = true;
+    }
+
+    if let Some(reasoning_effort) = &cli.global.reasoning_effort {
+        let trimmed = reasoning_effort.trim();
+        if trimmed.is_empty() {
+            return Err("reasoning effort cannot be empty".into());
+        }
+
+        cfg.reasoning_effort = Some(wire::config::ThinkingLevel::from_string(trimmed)?);
+        provider_needs_rebuild = true;
+    }
+
+    if provider_needs_rebuild {
+        cfg.provider =
+            config::Config::provider_from_settings(&cfg.provider_model, cfg.reasoning_effort)?;
     }
 
     cfg.commit_confirmation = cli.global.require_confirmation;
