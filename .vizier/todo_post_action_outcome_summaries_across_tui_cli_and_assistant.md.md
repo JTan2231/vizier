@@ -40,3 +40,14 @@ Update (2025-10-02): Outcome summaries are now the canonical epilogue for action
 
 ---
 
+
+---
+Renderer-neutral + terminal-minimal constraints (2025-10-02)
+- Outcome delivery must work within the minimal-invasive terminal philosophy: no alt-screen/full redraws; line-oriented; status line collapses to a single Outcome line.
+- Source outcomes from the renderer-neutral event stream once available (status/outcome events). CLI consumes and renders; `--json`/`--json-stream` expose machine-readable forms.
+- Respect TTY gating: no ANSI control sequences in non-TTY contexts; human epilogue hidden with `--quiet`.
+- Cross-link: See TODO “minimal_invasive_tui_and_renderer_neutral_surface” for the event contract and constraints.
+
+
+---
+

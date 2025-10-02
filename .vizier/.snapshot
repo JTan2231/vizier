@@ -4,25 +4,26 @@ Narrative theme
 - Reduce operator friction: conversational intent is authorization to evolve the project. The assistant maintains a living snapshot and task list by default; users can explicitly opt out per turn.
 
 Active threads
+- Terminal-first minimal TUI + renderer-neutral events: NEW. Product stance: avoid fullscreen/alt-screen redraws; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumed by CLI now and future surfaces (TUI/Web) later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
 - Commit isolation + gates: Conversation-sourced changes are staged behind a Pending Commit gate. CLI affordance partially exists; per-hunk accept/reject remains open. [Depends on: Code State]
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless user opts out (e.g., “discuss-only”). CLI will surface a one-line Outcome when DAP acts. [Cross: Outcome summaries, Integration tests]
-- Outcome summaries: Standardize compact, factual post-action summaries aligned with Auditor/VCS facts. Assistant final message mirrors the Outcome. CLI-first; TUI later. [Depends on: Auditor]
+- Outcome summaries: Standardize compact, factual post-action summaries aligned with Auditor/VCS facts. Assistant final message mirrors the Outcome. Scope is CLI-first; TUI later via the same event stream. [Depends on: Auditor]
 - Control levers surface: Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking_level). Thinking level requested; schema in progress. [Cross: CLI flags]
 - Operation history + revert: Persistent history with revert(n). Not built; planned after session logging.
 - Session logging to filesystem: Persist each assistant session as structured JSON; basis for resume and history. [Planned]
-- Native chat + navigation: Core render paths support long messages/scrolling; explicit View/Edit modes and key help pending. No separate vizier-tui crate in this repo. [Deferred until UI surface exists]
+- Native chat + navigation: Define View/Edit modes and key help, but defer rich interaction until a UI surface exists. Any future TUI must honor terminal-minimal constraints and consume the renderer-neutral event stream. [Deferred until UI surface exists]
 - Config-driven prompt customization: Swap system prompts via files/CLI; reflect active path in meta/header. [Ongoing]
 - Snapshot bootstrap for existing repos: Generate initial .vizier/.snapshot and seed TODOs safely/idempotently. [Planned]
 - Narrative timelines: Persistent threads with IDs; TODOs cross-link to threads and snapshot moments. [Planned]
-- Integration tests: Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert and outcome summaries. [Ongoing]
+- Integration tests: Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert, outcome summaries, and terminal-minimal/output contracts. [Ongoing]
 
 Code state (behaviors that matter)
 - No vizier-tui crate present; CLI + vizier-core surfaces (display/chat) are the user-facing paths in this repo.
 - Auditor exists with VCS helpers (A/M/D/R). CLI `ask` participates in the Pending Commit gate when auto_commit=false.
 - Chat rendering works for long content; explicit input modes not implemented.
 - Session JSON logging not wired yet.
-- Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned with audited facts.
-- DAP policy recognized and applied in this maintenance flow; UI signaling pending in CLI.
+- Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned with audited facts. Outcome component targeted CLI-first.
+- Renderer stance: Today output is standard stdout; no fullscreen TUI in-tree. Terminal-minimal mode and renderer-neutral event stream are planned additions.
 
 Acceptance checkpoints (selected)
 - Pending Commit gate guards conversation changes with confirm_destructive=true and auto_commit=false.
@@ -30,19 +31,23 @@ Acceptance checkpoints (selected)
 - Non-interactive CLI requires explicit consent; never opens editor.
 - Config-driven prompt path visible in meta/header.
 - Session JSON MVP: session.json written atomically at session end, validating schema. [Pending]
-- Outcome summaries: After each operation, users see a compact summary matching Auditor/VCS facts; assistant final mirrors it. [Ongoing]
-- DAP: Assistant updates .snapshot and TODOs by default; suppressed on explicit opt-out. CLI epilogue shows created/updated items. [Active]
+- Outcome summaries: After each operation, users see a compact summary matching Auditor/VCS facts; assistant final mirrors it. [CLI-first]
+- Terminal-minimal output: default avoids alt-screen/full redraws; in non-TTY contexts there are no ANSI control sequences. [Planned]
+- Renderer-neutral event stream: versioned lifecycle events (message/tool/status/outcome) consumable by CLI and future renderers; `--json-stream` exposed. [Planned]
 
 Next moves
-1) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
-2) Add CLI flags (--system-prompt-override, --thinking-level, --profile). [Ongoing]
-3) Commit gate UX polish and tests across CLI/headless. [Ongoing]
-4) Session logging JSON MVP, then history skeleton with revert(n=1). [Planned]
-5) Outcome summaries component + assistant epilogue (CLI-first). [Ongoing]
-6) Extend integration tests for flags, persistence, commit gate, headless smoke, session write/read, and DAP outcomes. [Ongoing]
-7) Chat modes (View/Edit) with key help; scoped to existing display paths until a TUI exists. [Deferred]
-8) Narrative timelines with thread IDs and cross-links from TODOs. [Planned]
+1) Define event contract v1 for renderer-neutral lifecycle (message/tool/status/outcome) and document it in vizier-core. [New]
+2) Add CLI `--json-stream` to emit NDJSON events; keep human rendering line-oriented and TTY-gated. [New]
+3) Implement minimal status spinner for TTY only; collapse to one-line Outcome on completion aligned with Auditor facts. [New]
+4) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
+5) Commit gate UX polish and tests across CLI/headless. [Ongoing]
+6) Session logging JSON MVP, then history skeleton with revert(n=1). [Planned]
+7) Outcome summaries component + assistant epilogue (CLI-first). [Ongoing]
+8) Extend integration tests for flags, persistence, commit gate, headless smoke, session write/read, DAP outcomes, TTY vs non-TTY output, and JSON stream schema. [Ongoing]
+9) Chat modes (View/Edit) with key help; scoped to core hooks until a TUI exists. [Deferred]
+10) Narrative timelines with thread IDs and cross-links from TODOs. [Planned]
 
 Cross-links
-- DAP ↔ Outcome summaries ↔ Integration tests: the trio ensures visible, testable behavior.
-- Lack of vizier-tui narrows scope to CLI/core; UI TODOs are phrased to fit current surfaces.
+- Terminal-minimal ↔ Outcome summaries ↔ Integration tests: ensure visible, testable behavior without fullscreen UI.
+- Lack of vizier-tui narrows scope to CLI/core; UI TODOs are phrased to fit current surfaces and future TUI/Web via event stream.
+- DAP ↔ Outcome summaries: the duo ensures users always see a factual epilogue; renderer-neutral events will carry the same facts across surfaces.

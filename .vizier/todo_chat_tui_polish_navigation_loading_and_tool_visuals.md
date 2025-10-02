@@ -29,3 +29,12 @@ Update [2025-10-02]: Scope limited pending a concrete TUI surface in this repo.
 
 ---
 
+
+---
+Rendering constraints update (2025-10-02)
+- Adopt the terminal-first, minimal-invasive philosophy: no alt-screen/fullscreen redraws; prefer line-oriented updates. Loaders are single-line and collapse to Outcome. Any future chat panel must layer on top of the renderer-neutral event stream and honor non-TTY fallbacks. Rich cards/auto-scroll are deferred until a UI surface exists; CLI-first rendering should remain readable without control sequences when piped.
+- Cross-link: See TODO “minimal_invasive_tui_and_renderer_neutral_surface” for the product contract and acceptance criteria that this polish must respect.
+
+
+---
+
