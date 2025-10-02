@@ -22,4 +22,12 @@ Acceptance criteria
 Pointers
 - vizier-core/src/chat.rs (input handling for chat/diff panes)
 - vizier-core/src/display.rs (status/header)
-- vizier-core/src/config.rs (future: keymap remapping hook)
+- vizier-core/src/config.rs (future: keymap remapping hook)Update [2025-10-02]: Defer UI implementation until a concrete TUI surface/crate exists in this repo.
+- Keep the product/acceptance spec intact as the target behavior.
+- Current scope: ensure core display/input hooks in vizier-core can expose a mode flag and accept mode switch events if/when a TUI consumer wires them. Do not mandate keymaps yet; document intent in config schema comments.
+- Testing: limit to headless hooks (e.g., simulated mode flag transitions) to avoid coupling to a missing TUI. Mark full interactive tests as blocked by UI availability.
+- Cross-link: Snapshot notes absence of vizier-tui crate; related work is deferred. Tie to Outcome/DAP threads only for discoverability text in CLI headers (optional).
+
+
+---
+
