@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::sync::mpsc::channel;
 
-use crate::{display, file_tracking, tools, vcs};
+use crate::{config, display, file_tracking, tools, vcs};
 
 lazy_static! {
     static ref AUDITOR: Mutex<Auditor> = Mutex::new(Auditor::new());
@@ -22,18 +22,25 @@ pub struct AuditorCleanup {
 
 impl Drop for AuditorCleanup {
     fn drop(&mut self) {
-        if self.debug {
-            if let Ok(auditor) = AUDITOR.lock() {
-                if auditor.messages.len() > 0 {
-                    let output = serde_json::to_string_pretty(&auditor.messages).unwrap();
-                    match std::fs::write("./debug.json", output.clone()) {
+        if let Ok(auditor) = AUDITOR.lock() {
+            if auditor.messages.len() > 0 {
+                let output = serde_json::to_string_pretty(&auditor.messages).unwrap();
+                if let Some(config_dir) = config::base_config_dir() {
+                    match std::fs::write(
+                        config_dir
+                            .join("vizier")
+                            .join(format!("./{}.json", auditor.session_id)),
+                        output.clone(),
+                    ) {
                         Ok(_) => eprintln!("Session saved to {}", auditor.session_start),
-                        Err(e) => eprintln!("Error writing session file {}: {}", "./debug.json", e),
+                        Err(e) => {
+                            eprintln!("Error writing session file {}: {}", "./debug.json", e)
+                        }
                     };
+                }
 
-                    if self.print_json {
-                        println!("{}", output);
-                    }
+                if self.print_json {
+                    println!("{}", output);
                 }
             }
         }
@@ -114,7 +121,7 @@ impl Auditor {
         AUDITOR.lock().unwrap().messages.push(message);
     }
 
-    fn replace_messages(messages: &Vec<wire::types::Message>) {
+    pub fn replace_messages(messages: &Vec<wire::types::Message>) {
         AUDITOR.lock().unwrap().messages = messages.clone();
     }
 

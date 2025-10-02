@@ -31,6 +31,10 @@ struct GlobalOpts {
     #[arg(short = 'd', long, global = true)]
     debug: bool,
 
+    /// Load session as existing context
+    #[arg(short = 'l', long = "load-session", global = true)]
+    load_session: Option<String>,
+
     /// Set LLM model to use for main prompting + tool usage
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
@@ -253,6 +257,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         config::get_config()
     };
+
+    if let Some(session_id) = &cli.global.load_session {
+        if let Some(config_dir) = config::base_config_dir() {
+            let path = config_dir
+                .join("vizier")
+                .join(format!("{}.json", session_id));
+            if path.exists() {
+                let messages = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+                auditor::Auditor::replace_messages(&messages);
+            } else {
+                return Err("could not find session file".into());
+            }
+        }
+    }
 
     let mut provider_needs_rebuild =
         cfg.provider_model != config::DEFAULT_MODEL || cfg.reasoning_effort.is_some();
