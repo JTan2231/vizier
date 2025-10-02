@@ -2,9 +2,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use lazy_static::lazy_static;
-use wire::{api::Prompt, new_client, openai};
+use wire::{
+    api::Prompt,
+    config::{ClientOptions, ThinkingLevel},
+    new_client_with_options, openai,
+};
 
 use crate::{COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
+
+pub const DEFAULT_MODEL: &str = "gpt-5";
 
 lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::default());
@@ -20,6 +26,8 @@ pub enum SystemPrompt {
 #[derive(Clone)]
 pub struct Config {
     pub provider: Arc<dyn Prompt>,
+    pub provider_model: String,
+    pub reasoning_effort: Option<ThinkingLevel>,
     pub commit_confirmation: bool,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
 }
@@ -29,7 +37,9 @@ impl Config {
         let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
 
         Self {
-            provider: Arc::new(openai::OpenAIClient::new("gpt-5")),
+            provider: Arc::new(openai::OpenAIClient::new(DEFAULT_MODEL)),
+            provider_model: DEFAULT_MODEL.to_owned(),
+            reasoning_effort: None,
             commit_confirmation: false,
             prompt_store: std::collections::HashMap::from([
                 (
@@ -55,6 +65,18 @@ impl Config {
                 ),
             ]),
         }
+    }
+
+    pub fn provider_from_settings(
+        model: &str,
+        reasoning_effort: Option<ThinkingLevel>,
+    ) -> Result<Arc<dyn Prompt>, Box<dyn std::error::Error>> {
+        let mut options = ClientOptions::default();
+        if let Some(level) = reasoning_effort {
+            options = options.with_thinking_level(level);
+        }
+
+        Ok(Arc::from(new_client_with_options(model, options)?))
     }
 
     pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
@@ -101,7 +123,14 @@ impl Config {
         if let Some(model) = find_string(&file_config, MODEL_KEY_PATHS) {
             let model = model.trim();
             if !model.is_empty() {
-                config.provider = Arc::from(new_client(model)?);
+                config.provider_model = model.to_owned();
+            }
+        }
+
+        if let Some(level) = find_string(&file_config, REASONING_EFFORT_KEY_PATHS) {
+            let level = level.trim();
+            if !level.is_empty() {
+                config.reasoning_effort = Some(ThinkingLevel::from_string(level)?);
             }
         }
 
@@ -146,6 +175,20 @@ const COMMIT_CONFIRMATION_KEY_PATHS: &[&[&str]] = &[
     &["require_confirmation"],
     &["prompts", "commit_confirmation"],
     &["flags", "require_confirmation"],
+];
+const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
+    &["reasoning_effort"],
+    &["reasoning-effort"],
+    &["thinking_level"],
+    &["thinking-level"],
+    &["provider", "reasoning_effort"],
+    &["provider", "reasoning-effort"],
+    &["provider", "thinking_level"],
+    &["provider", "thinking-level"],
+    &["flags", "reasoning_effort"],
+    &["flags", "reasoning-effort"],
+    &["flags", "thinking_level"],
+    &["flags", "thinking-level"],
 ];
 const BASE_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["BASE_SYSTEM_PROMPT"],
@@ -294,6 +337,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    use wire::config::ThinkingLevel;
 
     fn write_json_file(contents: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().expect("failed to create temp file");
@@ -374,5 +418,29 @@ commit = "toml commit override"
         let path = std::path::PathBuf::from("does_not_exist.json");
         let result = Config::from_json(path);
         assert!(result.is_err(), "expected error for missing file");
+    }
+
+    #[test]
+    fn test_reasoning_effort_in_config_file() {
+        let json = r#"{ "model": "gpt-5", "reasoning_effort": "medium" }"#;
+        let file = write_json_file(json);
+
+        let cfg =
+            Config::from_json(file.path().to_path_buf()).expect("should parse reasoning effort");
+
+        assert_eq!(cfg.provider_model, "gpt-5");
+        assert_eq!(cfg.reasoning_effort, Some(ThinkingLevel::Medium));
+    }
+
+    #[test]
+    fn test_reasoning_effort_without_model_uses_default() {
+        let json = r#"{ "reasoning_effort": "high" }"#;
+        let file = write_json_file(json);
+
+        let cfg = Config::from_json(file.path().to_path_buf())
+            .expect("should parse reasoning effort only");
+
+        assert_eq!(cfg.provider_model, DEFAULT_MODEL);
+        assert_eq!(cfg.reasoning_effort, Some(ThinkingLevel::High));
     }
 }
