@@ -19,7 +19,7 @@ Active threads
 - Snapshot bootstrap for existing repos: PLANNED. `vizier snapshot init` generates initial .vizier/.snapshot and seed TODOs safely/idempotently; include Threads section with stable IDs and cross-links. [Idempotent; diff-like updates]
 - Narrative timelines: PLANNED. Persistent threads with IDs; TODOs cross-link to threads and snapshot moments.
 - Integration tests: ONGOING. Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert, outcome summaries, and terminal-minimal/output contracts.
-- SSH push reliability: NEW, ACTIVE. Ensure `vizier save --push` works with common SSH setups (agent or default key files) and fails with clear, non-interactive guidance. [Depends on: VCS push_current_branch, CLI error surface]
+- SSH push reliability: ACTIVE, UPDATED. Shift away from ssh-agent dependency. Ensure `vizier save --push` works with default file-based SSH keys and provides clear, non-interactive guidance on failures; HTTPS path unchanged. [Depends on: VCS push_current_branch, CLI error surface]
 
 Code state (behaviors that matter)
 - CLI emits transient spinner/status to stderr via vizier-core::display with ANSI cursor controls unconditionally, causing leaked sequences like "[1G\u001b[2K⠋ Thinking..." in logs and non-TTY contexts.
@@ -33,7 +33,7 @@ Code state (behaviors that matter)
 - Renderer stance: Terminal-minimal mode and renderer-neutral event stream are planned additions.
 - Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save) with defined Outcome fields.
 - AGENTS.md contract/log: Not present yet; v1 scaffold defined at product level.
-- VCS push uses libgit2 with credentials callback: supports credential helper and ssh-agent; does not attempt file-based SSH keys; error messages are generic. [Newly noted]
+- VCS push uses libgit2 with credentials callback; previously tried ssh-agent; policy now is to not depend on ssh-agent and to attempt default file-based key paths for SSH. Error messages are currently generic.
 
 Acceptance checkpoints (selected)
 - Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; TTY-gated progress. JSON modes obey schema outcome.v1. [Active]
@@ -47,7 +47,7 @@ Acceptance checkpoints (selected)
 - Renderer-neutral event stream: versioned lifecycle events (message/tool/status/outcome) consumable by CLI and future renderers; `--json-stream` exposed. [Planned]
 - Agent Basic Command (Workflow B): `vizier agent run <todo>` creates an isolated branch from baseline, applies agent-authored commits, and leaves main unchanged; Outcome reports TODO, branch name, commit count, PR URL if any; `vizier save` after merge updates TODO and Snapshot, links PR/merge; honors gates and preserves staged changes; session log captures workflow metadata. [Planned]
 - AGENTS.md v1: Repo includes AGENTS.md with Contract, Interop Guide, and Decision Log sections. After each agent-driven operation, a single Decision Log entry is appended, referencing TODO/thread IDs and Outcome facts. CLI exposes `vizier agents show|append`. Outcome epilogue notes if AGENTS.md updated. [Planned]
-- SSH push reliability: `vizier save --push` succeeds with ssh-agent or default key files; on failure, error surfaces scheme and attempted strategies with guidance; never prompts interactively. [New]
+- SSH push reliability: `vizier save --push` succeeds with default SSH keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa) when usable non-interactively; on failure, error surfaces scheme, strategies attempted, and guidance; never prompts interactively. [Active]
 
 Next moves
 1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [Active]
@@ -62,7 +62,7 @@ Next moves
 10) Extend integration tests: headless/TTY output, quiet/verbose, JSON stream, and outcome lines across commands; add Agent Basic Command smoke tests. [Active]
 11) AGENTS.md v1 scaffold: add product-level schema and update hooks in CLI so agent-driven operations append a concise Decision Log entry; document handoff prompt in Interop Guide. [Active]
 12) Snapshot bootstrap: implement `vizier snapshot init` behavior with Threads IDs and cross-linked seed TODOs; ensure idempotence with diff-like deltas. [Planned]
-13) SSH push reliability: expand credentials paths (agent + default key files), enrich error reporting to be actionable; add unit-level smoke for strategy ordering; document manual verification steps. [New]
+13) SSH push reliability: drop ssh-agent dependency; expand credentials strategies to include default file-based keys; enrich error reporting to be actionable; add unit-level smoke for strategy ordering; document manual verification steps. [Active]
 
 Cross-links
 - Terminal-minimal ↔ Outcome summaries ↔ Integration tests: ensure visible, testable behavior without fullscreen UI.
@@ -70,4 +70,4 @@ Cross-links
 - Agent Basic Command ↔ Auditor/Outcome summaries: safety + factual epilogue across CLI.
 - AGENTS.md interop ↔ Invariants/Session logging: persist decisions and point to active invariants; session logs record AGENTS.md updates.
 - Snapshot bootstrap ↔ Narrative timelines: generated Threads with stable IDs; TODOs and snapshot cross-reference.
-- SSH push reliability ↔ VCS + CLI: core handles auth strategies; CLI surfaces actionable guidance non-interactively.
+- SSH push reliability ↔ VCS + CLI: core handles auth strategies; CLI surfaces actionable guidance non-interactively; policy clarified: no ssh-agent dependency.
