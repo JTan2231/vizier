@@ -12,3 +12,7 @@ Cross-links: Auditor facts, VCS orchestration, Outcome summaries, AGENTS.md sche
 
 ---
 
+Update (2025-10-04): Lock MVP on Workflow B (apply-to-branch) and Outcome facts. Acceptance now requires Outcome fields { todo, branch, commit_count, pr_url?/review_instructions, gate_state } and save path that updates TODO + Snapshot and appends AGENTS.md Decision Log entries. Non-interactive requires explicit TODO. Outputs must respect terminal-minimal and stdout/stderr contract; JSON stream emits structured events.
+
+---
+
