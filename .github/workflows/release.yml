@@ -18,11 +18,6 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Set up your build environment
-      run: |
-        # Install dependencies, set up toolchain, etc.
-        # This depends on your project
-    
     - name: Build
       run: cargo build --release || cargo build --release
     
@@ -32,8 +27,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
+        tag_name: vizier
+        release_name: vizier
         draft: false
         prerelease: false
     
