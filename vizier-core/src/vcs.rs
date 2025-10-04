@@ -75,7 +75,6 @@ pub enum SshKeyKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialStrategy {
     CredentialHelper(HelperScope),
-    SshAgent,
     SshKey(SshKeyKind),
     Username,
     Default,
@@ -85,7 +84,6 @@ impl CredentialStrategy {
     pub fn label(&self) -> &'static str {
         match self {
             CredentialStrategy::CredentialHelper(_) => "helper",
-            CredentialStrategy::SshAgent => "ssh-agent",
             CredentialStrategy::SshKey(SshKeyKind::IdEd25519) => "file-id_ed25519",
             CredentialStrategy::SshKey(SshKeyKind::IdRsa) => "file-id_rsa",
             CredentialStrategy::Username => "username",
@@ -267,7 +265,6 @@ fn build_credential_plan(
     }
 
     if allowed_types.contains(CredentialType::SSH_KEY) {
-        plan.push(CredentialStrategy::SshAgent);
         plan.push(CredentialStrategy::SshKey(SshKeyKind::IdEd25519));
         plan.push(CredentialStrategy::SshKey(SshKeyKind::IdRsa));
     }
@@ -413,10 +410,6 @@ impl CredentialExecutor for RealCredentialExecutor {
                     )
                 }
             }
-            CredentialStrategy::SshAgent => match Cred::ssh_key_from_agent(username) {
-                Ok(cred) => StrategyResult::Success(cred),
-                Err(err) => StrategyResult::Failure(Self::ssh_agent_failure_message(&err)),
-            },
             CredentialStrategy::SshKey(kind) => {
                 let default_path = match kind {
                     SshKeyKind::IdEd25519 => "~/.ssh/id_ed25519",
@@ -1332,7 +1325,6 @@ mod tests {
 
         let invoked = executor.invoked.borrow();
         let expected = vec![
-            CredentialStrategy::SshAgent,
             CredentialStrategy::SshKey(SshKeyKind::IdEd25519),
             CredentialStrategy::SshKey(SshKeyKind::IdRsa),
         ];
