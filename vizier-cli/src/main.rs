@@ -58,6 +58,10 @@ struct GlobalOpts {
     /// Override model reasoning effort (minimal, low, medium, high)
     #[arg(short = 'r', long = "reasoning-effort", global = true)]
     reasoning_effort: Option<String>,
+
+    /// Push the current branch to origin after mutating git history
+    #[arg(long = "push", global = true)]
+    push: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -309,8 +313,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     config::set_config(cfg);
 
+    let push_after = cli.global.push;
+
     match cli.command {
-        Commands::Clean(CleanCmd { todo_list }) => clean(todo_list).await,
+        Commands::Clean(CleanCmd { todo_list }) => clean(todo_list, push_after).await,
 
         Commands::Snapshot(SnapshotCmd { command }) => match command {
             SnapshotCommands::Init(cmd) => run_snapshot_init(cmd.into()).await,
@@ -328,6 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &[".vizier/"],
                 commit_message,
                 commit_message_editor,
+                push_after,
             )
             .await
         }
@@ -336,7 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Ask(cmd) => {
             let message = resolve_ask_message(&cmd)?;
-            inline_command(message).await
+            inline_command(message, push_after).await
         }
     }
 }

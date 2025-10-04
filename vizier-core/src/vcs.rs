@@ -1,7 +1,10 @@
 use git2::{
-    DiffFormat, DiffOptions, Error, IndexAddOption, Oid, Repository, Signature, Sort, Status,
+    BranchType, Cred, CredentialType, DiffFormat, DiffOptions, Error, IndexAddOption, Oid,
+    PushOptions, RemoteCallbacks, Repository, RepositoryState, Signature, Sort, Status,
     StatusOptions,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn normalize_pathspec(path: &str) -> String {
     let mut s = path
@@ -237,6 +240,148 @@ pub fn add_and_commit(
         &tree,
         &parents,
     )
+}
+
+/// Push the current HEAD branch to the specified remote without invoking the git binary.
+///
+/// Safety rails:
+/// - Rejects pushes while merge/rebase/bisect operations are in progress.
+/// - Requires `HEAD` to be a named local branch.
+/// - Performs a fast-forward check when an upstream tracking ref is configured.
+/// - Updates the matching `refs/remotes/<remote>/<branch>` reference on success.
+pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+
+    let state = repo.state();
+    if state != RepositoryState::Clean {
+        let msg = match state {
+            RepositoryState::Merge => "cannot push while a merge is in progress",
+            RepositoryState::Revert | RepositoryState::RevertSequence => {
+                "cannot push while a revert is in progress"
+            }
+            RepositoryState::CherryPick | RepositoryState::CherryPickSequence => {
+                "cannot push while a cherry-pick is in progress"
+            }
+            RepositoryState::Bisect => "cannot push while a bisect is in progress",
+            RepositoryState::Rebase
+            | RepositoryState::RebaseInteractive
+            | RepositoryState::RebaseMerge
+            | RepositoryState::ApplyMailbox
+            | RepositoryState::ApplyMailboxOrRebase => {
+                "cannot push while a rebase or mailbox apply is in progress"
+            }
+            _ => "cannot push while the repository has pending operations",
+        };
+
+        return Err(Error::from_str(msg));
+    }
+
+    let head = repo.head()?;
+    if !head.is_branch() {
+        return Err(Error::from_str(
+            "cannot push because HEAD is not pointing to a branch",
+        ));
+    }
+
+    let branch_ref = head
+        .name()
+        .ok_or_else(|| Error::from_str("current branch name is not valid UTF-8"))?;
+    let branch_name = head
+        .shorthand()
+        .ok_or_else(|| Error::from_str("unable to determine branch name"))?;
+    let head_oid = head
+        .target()
+        .ok_or_else(|| Error::from_str("HEAD does not reference a commit"))?;
+
+    if let Ok(branch) = repo.find_branch(branch_name, BranchType::Local) {
+        if let Ok(upstream) = branch.upstream() {
+            if let Some(upstream_oid) = upstream.get().target() {
+                if !repo.graph_descendant_of(head_oid, upstream_oid)? {
+                    return Err(Error::from_str(
+                        "push would not be a fast-forward; fetch and merge first",
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut remote = repo.find_remote(remote_name)?;
+    let _url = remote
+        .pushurl()
+        .or_else(|| remote.url())
+        .ok_or_else(|| Error::from_str("remote has no configured URL"))?;
+
+    let config_for_cb = repo.config().ok();
+    let push_statuses: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
+        if let Some(ref cfg) = config_for_cb {
+            if let Ok(cred) = Cred::credential_helper(cfg, url, username_from_url) {
+                return Ok(cred);
+            }
+        }
+
+        if allowed_types.contains(CredentialType::SSH_KEY) {
+            let username = username_from_url.unwrap_or("git");
+            if let Ok(cred) = Cred::ssh_key_from_agent(username) {
+                return Ok(cred);
+            }
+        }
+
+        if allowed_types.contains(CredentialType::USERNAME) {
+            if let Some(username) = username_from_url {
+                return Cred::username(username);
+            }
+        }
+
+        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(ref cfg) = config_for_cb {
+                if let Ok(cred) = Cred::credential_helper(cfg, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+        }
+
+        Cred::default()
+    });
+
+    let statuses_for_cb = Rc::clone(&push_statuses);
+    callbacks.push_update_reference(move |refname, status| {
+        if let Some(status) = status {
+            if let Ok(mut entries) = statuses_for_cb.try_borrow_mut() {
+                entries.push((refname.to_string(), status.to_string()));
+            }
+        }
+        Ok(())
+    });
+
+    let mut push_opts = PushOptions::new();
+    push_opts.remote_callbacks(callbacks);
+
+    let refspec = format!("{branch_ref}:{branch_ref}");
+    let refspecs = [refspec.as_str()];
+    remote.push(&refspecs, Some(&mut push_opts))?;
+    remote.disconnect()?;
+
+    let statuses = push_statuses.borrow();
+    if !statuses.is_empty() {
+        let mut msg = String::from("remote rejected updates for:");
+        for (name, status) in statuses.iter() {
+            msg.push_str(&format!(" {name} ({status})"));
+        }
+        return Err(Error::from_str(&msg));
+    }
+
+    let tracking_ref = format!("refs/remotes/{remote_name}/{branch_name}");
+    repo.reference(
+        &tracking_ref,
+        head_oid,
+        true,
+        "vizier: update remote tracking ref after push",
+    )?;
+
+    Ok(())
 }
 
 /// Return up to `depth` commits whose messages match any of the `filters` (OR),
@@ -610,6 +755,69 @@ mod tests {
         let mut idx = repo.index().unwrap();
         idx.add_path(Path::new(rel)).unwrap();
         idx.write().unwrap();
+    }
+
+    #[test]
+    fn push_current_branch_updates_remote_tracking() {
+        let (td, repo) = init_temp_repo();
+        let remote_dir = tempfile::TempDir::new().expect("remote tempdir");
+        Repository::init_bare(remote_dir.path()).expect("init bare remote");
+        let remote_path = remote_dir
+            .path()
+            .to_str()
+            .expect("remote path utf8")
+            .to_owned();
+
+        repo.remote("origin", &remote_path)
+            .expect("configure remote");
+
+        {
+            let _cwd = CwdGuard::enter(td.path()).unwrap();
+            write(Path::new("file.txt"), "hello\n");
+            raw_commit(&repo, "initial");
+
+            let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+
+            push_current_branch("origin").expect("push succeeds");
+
+            let remote_repo = Repository::open(remote_dir.path()).expect("open remote repo");
+            let remote_ref = remote_repo
+                .find_reference(&format!("refs/heads/{branch}"))
+                .expect("remote branch exists");
+            let local_oid = repo.head().unwrap().target().unwrap();
+            assert_eq!(remote_ref.target(), Some(local_oid));
+
+            let tracking_ref = repo
+                .find_reference(&format!("refs/remotes/origin/{branch}"))
+                .expect("tracking ref updated");
+            assert_eq!(tracking_ref.target(), Some(local_oid));
+        }
+    }
+
+    #[test]
+    fn push_current_branch_rejects_detached_head() {
+        let (td, repo) = init_temp_repo();
+        let remote_dir = tempfile::TempDir::new().expect("remote tempdir");
+        Repository::init_bare(remote_dir.path()).expect("init bare remote");
+        let remote_path = remote_dir
+            .path()
+            .to_str()
+            .expect("remote path utf8")
+            .to_owned();
+
+        repo.remote("origin", &remote_path)
+            .expect("configure remote");
+
+        {
+            let _cwd = CwdGuard::enter(td.path()).unwrap();
+            write(Path::new("note.txt"), "one\n");
+            let oid = raw_commit(&repo, "detached");
+
+            repo.set_head_detached(oid).expect("detach head");
+
+            let err = push_current_branch("origin").expect_err("push should fail");
+            assert!(err.message().contains("not pointing to a branch"));
+        }
     }
 
     // --- normalize_pathspec --------------------------------------------------
