@@ -4,18 +4,18 @@ Narrative theme
 - Reduce operator friction: conversational intent is authorization to evolve the project. The assistant maintains a living snapshot and task list by default; users can explicitly opt out per turn.
 
 Active threads
-- Agent Basic Command (Workflow B MVP): ACTIVE. Product stance: pick a TODO → apply agent changes on an isolated branch with a templated prompt (references the TODO + current Snapshot) → optionally open a PR → await human review → finalize via `vizier save` on merge. Safety: main remains untouched until merge; abort is clean. [Depends on: VCS/Auditor/Chat/Config]
-- Terminal-first minimal TUI + renderer-neutral events: ACTIVE. Avoid fullscreen/alt-screen; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumed by CLI now and future surfaces later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
+- Agent Basic Command (Workflow B MVP): ACTIVE. Product stance locked: pick a TODO → apply agent changes on an isolated branch with a templated prompt (references the TODO + current Snapshot) → optionally open a PR → await human review → finalize via `vizier save` on merge. Safety: main remains untouched until merge; abort is clean. Outcome must report {todo, branch, commit_count, pr_url?/review_instructions, gate_state}. [Depends on: VCS/Auditor/Chat/Config]
+- Terminal-first minimal TUI + renderer-neutral events: ACTIVE. Avoid fullscreen/alt-screen; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumable by CLI now and future surfaces later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
 - Commit isolation + gates: ACTIVE. Conversation- and agent-sourced changes are staged behind a Pending Commit gate. Per-hunk accept/reject remains open. [Depends on: Code State]
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless user opts out (e.g., “discuss-only”). CLI will surface a one-line Outcome when DAP acts. [Cross: Outcome summaries, Integration tests]
-- Outcome summaries: ACTIVE. Standardize compact, factual post-action summaries aligned with Auditor/VCS facts. Assistant final message mirrors the Outcome. Scope is CLI-first; TUI later via the same event stream. [Depends on: Auditor]
-- Control levers surface: ACTIVE. Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking_level). Thinking level requested; schema in progress. [Cross: CLI flags]
-- Agent Decision Log + AGENTS.md interop: ACTIVE. Establish AGENTS.md as a stable, repositoried contract and decision log for agent operations. Goals: make implicit product/architectural decisions explicit; enable handoff so other agents can “do X from the vizier” using written context instead of rehash. Includes CLI affordances and post-action hooks to append concise decision entries. [Depends on: Outcome summaries, Session logging, Invariants, Agent Basic Command]
+- Outcome summaries: ACTIVE. Canonical epilogue for actions is a compact, factual Outcome block sourced from Auditor/VCS facts. CLI-first delivery with a stable JSON schema outcome.v1 and human-readable epilogue printed to stdout. Assistant final message mirrors the Outcome. [Depends on: Auditor]
+- Control levers surface: ACTIVE. Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking_level). Thinking level requested; schema in progress; echoed in meta/header. [Cross: CLI flags]
+- Agent Decision Log + AGENTS.md interop: ACTIVE. Establish AGENTS.md v1 scaffold with Contract, Interop Guide, and Decision Log. After agent-driven operations, append a concise Decision entry referencing TODO/thread IDs and Outcome facts. CLI affords `vizier agents show|append`. [Depends on: Outcome summaries, Session logging, Invariants, Agent Basic Command]
 - Operation history + revert: PLANNED. Persistent history with revert(n). Planned after session logging.
-- Session logging to filesystem: PLANNED. Persist each assistant session as structured JSON; basis for resume and history.
+- Session logging to filesystem: PLANNED. Persist each assistant session as structured JSON; basis for resume and history; capture workflow_type, thinking_level, outcome facts.
 - Native chat + navigation: DEFERRED. Define View/Edit modes and key help; any future TUI must honor terminal-minimal constraints and consume the renderer-neutral event stream.
 - Config-driven prompt customization: ONGOING. Swap system prompts via files/CLI; reflect active path in meta/header.
-- Snapshot bootstrap for existing repos: PLANNED. Generate initial .vizier/.snapshot and seed TODOs safely/idempotently.
+- Snapshot bootstrap for existing repos: PLANNED. `vizier snapshot init` generates initial .vizier/.snapshot and seed TODOs safely/idempotently; include Threads section with stable IDs and cross-links. [Idempotent; diff-like updates]
 - Narrative timelines: PLANNED. Persistent threads with IDs; TODOs cross-link to threads and snapshot moments.
 - Integration tests: ONGOING. Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert, outcome summaries, and terminal-minimal/output contracts.
 
@@ -27,27 +27,27 @@ Code state (behaviors that matter)
 - Auditor exists with VCS helpers (A/M/D/R). CLI `ask` participates in the Pending Commit gate when auto_commit=false.
 - Chat rendering works for long content; explicit input modes not implemented.
 - Session JSON logging not wired yet.
-- Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned with audited facts. Outcome component targeted CLI-first.
+- Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned with audited facts. Outcome component targeted CLI-first with outcome.v1 JSON and stdout epilogue.
 - Renderer stance: Terminal-minimal mode and renderer-neutral event stream are planned additions.
-- Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save).
-- AGENTS.md contract/log: Not present yet; schema and lifecycle defined at product level.
+- Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save) with defined Outcome fields.
+- AGENTS.md contract/log: Not present yet; v1 scaffold defined at product level.
 
 Acceptance checkpoints (selected)
-- Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. [New]
+- Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; TTY-gated progress. JSON modes obey schema outcome.v1. [New]
 - Pending Commit gate guards conversation changes with confirm_destructive=true and auto_commit=false.
 - Conversation commits only touch .vizier; preserve pre-existing staged changes exactly (A/M/D/R).
 - Non-interactive CLI requires explicit consent; never opens editor.
-- Config-driven prompt path visible in meta/header.
-- Session JSON MVP: session.json written atomically at session end, validating schema. [Pending]
+- Config-driven prompt path visible in meta/header; thinking_level echoed.
+- Session JSON MVP: session.json written atomically at session end, validating schema; includes workflow_type and thinking_level. [Pending]
 - Outcome summaries: After each operation, users see a compact summary matching Auditor/VCS facts; assistant final mirrors it. [CLI-first]
 - Terminal-minimal output: default avoids alt-screen/full redraws; in non-TTY contexts there are no ANSI control sequences. [Planned]
 - Renderer-neutral event stream: versioned lifecycle events (message/tool/status/outcome) consumable by CLI and future renderers; `--json-stream` exposed. [Planned]
-- Agent Basic Command (Workflow B): Running `vizier agent run <todo>` creates an isolated branch from baseline, applies agent-authored commits, and leaves main unchanged; Outcome reports TODO, branch, commit count, PR URL if any; `vizier save` after merge updates TODO and Snapshot, links PR/merge; honors gates and preserves staged changes; session log captures workflow metadata. [Planned]
+- Agent Basic Command (Workflow B): `vizier agent run <todo>` creates an isolated branch from baseline, applies agent-authored commits, and leaves main unchanged; Outcome reports TODO, branch, commit count, PR URL if any; `vizier save` after merge updates TODO and Snapshot, links PR/merge; honors gates and preserves staged changes; session log captures workflow metadata. [Planned]
 - AGENTS.md v1: Repo includes AGENTS.md with Contract, Interop Guide, and Decision Log sections. After each agent-driven operation, a single Decision Log entry is appended, referencing TODO/thread IDs and Outcome facts. CLI exposes `vizier agents show|append`. Outcome epilogue notes if AGENTS.md updated. [Planned]
 
 Next moves
-1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [New]
-2) Outcome component: include selected TODO, branch name, commit count, PR URL/"awaiting review"; print to stdout on success. [Ongoing]
+1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [Active]
+2) Outcome component: implement outcome.v1 schema; include selected TODO, branch name, commit count, PR URL/"awaiting review"; print to stdout on success; `--json` and `--json-stream` variants. [Active]
 3) Agent Basic Command wiring: Add CLI `vizier agent run [<todo-name>]` and route to core. Compose templated prompt from selected TODO + current Snapshot. [Active]
 4) VCS orchestration for isolated branch and optional PR open; tolerate no-remote by emitting clear local review steps in Outcome. [Planned]
 5) Define event contract v1 for renderer-neutral lifecycle (message/tool/status/outcome) and document it in vizier-core. [Ongoing]
@@ -55,11 +55,13 @@ Next moves
 7) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
 8) Commit gate UX polish and tests across CLI/headless. [Ongoing]
 9) Session logging JSON MVP, then history skeleton with revert(n=1). [Planned]
-10) Extend integration tests: headless/TTY output, quiet/verbose, JSON stream, and outcome lines across commands. [New]
-11) AGENTS.md v1 scaffold: add product-level schema and update hooks in CLI so agent-driven operations append a concise Decision Log entry; document handoff prompt in Interop Guide. [New]
+10) Extend integration tests: headless/TTY output, quiet/verbose, JSON stream, and outcome lines across commands; add Agent Basic Command smoke tests. [Active]
+11) AGENTS.md v1 scaffold: add product-level schema and update hooks in CLI so agent-driven operations append a concise Decision Log entry; document handoff prompt in Interop Guide. [Active]
+12) Snapshot bootstrap: implement `vizier snapshot init` behavior with Threads IDs and cross-linked seed TODOs; ensure idempotence with diff-like deltas. [Planned]
 
 Cross-links
 - Terminal-minimal ↔ Outcome summaries ↔ Integration tests: ensure visible, testable behavior without fullscreen UI.
 - Output contract/verbosity ↔ Control levers: flags map cleanly to config and display behavior.
 - Agent Basic Command ↔ Auditor/Outcome summaries: safety + factual epilogue across CLI.
 - AGENTS.md interop ↔ Invariants/Session logging: persist decisions and point to active invariants; session logs record AGENTS.md updates.
+- Snapshot bootstrap ↔ Narrative timelines: generated Threads with stable IDs; TODOs and snapshot cross-reference.

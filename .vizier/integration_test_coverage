@@ -48,3 +48,15 @@ Agent Basic Command (Workflow B) coverage
 
 ---
 
+Update (2025-10-04): Elevate coverage for output contract and outcome delivery.
+
+Add suites:
+- Output contract matrix: TTY vs non-TTY x quiet/default/v/vv x human/json/json-stream; assert stdout/stderr behavior and no ANSI leakage in non-TTY.
+- Outcome correctness: no changes; pending gate; auto-commit; rejected; error paths. Validate outcome.v1 JSON and human epilogue text alignment.
+- Agent Basic Command smoke: isolated branch created; commit count >0; PR optional; Outcome fields populated; main untouched.
+- Config→CLI mapping: flags override config; thinking_level surfaced in prompt/meta.
+
+Cross-links: stdout/stderr contract, Outcome summaries, Agent Basic Command, Control levers.
+
+---
+

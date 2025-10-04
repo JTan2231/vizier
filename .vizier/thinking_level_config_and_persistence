@@ -6,3 +6,18 @@ Update (author note: persistent config)
 
 ---
 
+Update (2025-10-04): Clarify scope and persistence model.
+
+Behavior:
+- Expose thinking_level as a config key (vizier.toml) and CLI override flag (e.g., --thinking-level=<brief|standard|verbose>). Applies to assistant/tool prompts and governs verbosity of intermediate status events.
+- Persistence: Stored in repo-local config by default; can be overridden per-invocation; assistant should echo active value in header/meta.
+
+Acceptance:
+- Running with different levels yields observable differences in status verbosity and, where applicable, prompt scaffolding (not output contracts).
+- Config precedence: CLI flag > repo config > default.
+- Session log records active thinking_level.
+
+Cross-links: Control levers thread; stdout/stderr contract (only affects status density, not Outcome).
+
+---
+
