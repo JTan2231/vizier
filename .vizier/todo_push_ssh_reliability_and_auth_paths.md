@@ -27,3 +27,24 @@ Notes
 - Keep implementation open: support both agent and default key paths; avoid prescribing specific env var names beyond standard SSH_AUTH_SOCK behavior; do not introduce interactive passphrase prompts.
 - Security: do not weaken host key verification policies beyond libgit2 defaults; if host key verification fails, surface that explicitly in the error.
 - Tests: add a unit-level smoke test to verify that the credentials callback attempts file-based keys if agent is unavailable (can be a dependency-injected strategy list). End-to-end SSH push will remain out-of-scope for unit tests; document manual verification steps in the PR.
+Update — ssh-agent path removed per recent change
+- Constraint update: project is removing reliance on ssh-agent due to issues observed in the field. Credentials strategy must not require ssh-agent being available.
+
+Revised acceptance criteria
+- SSH auth coverage:
+  - Push succeeds when a default file-based SSH key exists at ~/.ssh/id_ed25519 or ~/.ssh/id_rsa with matching public key and no interactive passphrase needed.
+  - If only a passphrase-protected key is present and no non-interactive unlock path is configured, push fails fast with explicit guidance (use HTTPS remote or load key into an external agent before invoking vizier; vizier will not invoke or depend on ssh-agent).
+  - Explicitly do not depend on ssh-agent; remove agent attempt from credentials strategy order.
+- Outcome/CLI messaging:
+  - On failure, show remote, URL scheme, and attempted strategies (file-id_ed25519, file-id_rsa, helper) and why they failed.
+
+Pointer anchors
+- vizier-core/src/vcs.rs: drop ssh-agent credential path; add file-based key attempts and keep https helper path.
+- vizier-cli/src/actions.rs: ensure error clearly states that ssh-agent is not used by vizier.
+
+Notes
+- Keep host key verification strict; document manual verification with file-based keys.
+- Add unit-level test to assert ssh-agent path is not called and strategy order is [helper (https only)] → [file id_ed25519] → [file id_rsa] → [fail].
+
+---
+
