@@ -4,7 +4,7 @@ Narrative theme
 - Reduce operator friction: conversational intent is authorization to evolve the project. The assistant maintains a living snapshot and task list by default; users can explicitly opt out per turn.
 
 Active threads
-- Agent Basic Command (Workflow B MVP): NEW. Product stance: pick a TODO → apply agent changes on an isolated branch with a templated prompt (references the TODO + current Snapshot) → optionally open a PR → await human review → finalize via `vizier save` on merge. Safety: main remains untouched until merge; abort is clean. [Depends on: VCS/Auditor/Chat/Config]
+- Agent Basic Command (Workflow B MVP): ACTIVE. Product stance: pick a TODO → apply agent changes on an isolated branch with a templated prompt (references the TODO + current Snapshot) → optionally open a PR → await human review → finalize via `vizier save` on merge. Safety: main remains untouched until merge; abort is clean. [Depends on: VCS/Auditor/Chat/Config]
 - Terminal-first minimal TUI + renderer-neutral events: ACTIVE. Avoid fullscreen/alt-screen; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumed by CLI now and future surfaces later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
 - Commit isolation + gates: ACTIVE. Conversation- and agent-sourced changes are staged behind a Pending Commit gate. Per-hunk accept/reject remains open. [Depends on: Code State]
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless user opts out (e.g., “discuss-only”). CLI will surface a one-line Outcome when DAP acts. [Cross: Outcome summaries, Integration tests]
@@ -19,15 +19,19 @@ Active threads
 - Integration tests: ONGOING. Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert, outcome summaries, and terminal-minimal/output contracts.
 
 Code state (behaviors that matter)
+- CLI emits transient spinner/status to stderr via vizier-core::display with ANSI cursor controls unconditionally, causing leaked sequences like "[1G\u001b[2K⠋ Thinking..." in logs and non-TTY contexts.
+- stdout is inconsistently used; many operations primarily talk via stderr (status) and have no stable stdout outcome line.
+- No verbosity controls beyond a debug flag; no quiet mode; no progress/ANSI gating by TTY.
 - No vizier-tui crate present; CLI + vizier-core surfaces (display/chat) are the user-facing paths in this repo.
 - Auditor exists with VCS helpers (A/M/D/R). CLI `ask` participates in the Pending Commit gate when auto_commit=false.
 - Chat rendering works for long content; explicit input modes not implemented.
 - Session JSON logging not wired yet.
 - Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned with audited facts. Outcome component targeted CLI-first.
-- Renderer stance: Today output is standard stdout; no fullscreen TUI in-tree. Terminal-minimal mode and renderer-neutral event stream are planned additions.
+- Renderer stance: Terminal-minimal mode and renderer-neutral event stream are planned additions.
 - Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save).
 
 Acceptance checkpoints (selected)
+- Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. [New]
 - Pending Commit gate guards conversation changes with confirm_destructive=true and auto_commit=false.
 - Conversation commits only touch .vizier; preserve pre-existing staged changes exactly (A/M/D/R).
 - Non-interactive CLI requires explicit consent; never opens editor.
@@ -39,20 +43,18 @@ Acceptance checkpoints (selected)
 - Agent Basic Command (Workflow B): Running `vizier agent run <todo>` creates an isolated branch from baseline, applies agent-authored commits, and leaves main unchanged; Outcome reports TODO, branch, commit count, PR URL if any; `vizier save` after merge updates TODO and Snapshot, links PR/merge; honors gates and preserves staged changes; session log captures workflow metadata. [Planned]
 
 Next moves
-1) Agent Basic Command wiring: Add CLI `vizier agent run [<todo-name>]` and route to core. Compose templated prompt from selected TODO + current Snapshot. [New]
-2) VCS orchestration for isolated branch and optional PR open; tolerate no-remote by emitting clear local review steps in Outcome. [New]
-3) Outcome component: include selected TODO, branch name, commit count, PR URL/"awaiting review". [New]
-4) Extend `vizier save` to recognize merged agent branches/PRs, update TODOs/Snapshot, and write session log entries. [New]
+1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [New]
+2) Outcome component: include selected TODO, branch name, commit count, PR URL/"awaiting review"; print to stdout on success. [Ongoing]
+3) Agent Basic Command wiring: Add CLI `vizier agent run [<todo-name>]` and route to core. Compose templated prompt from selected TODO + current Snapshot. [Active]
+4) VCS orchestration for isolated branch and optional PR open; tolerate no-remote by emitting clear local review steps in Outcome. [Planned]
 5) Define event contract v1 for renderer-neutral lifecycle (message/tool/status/outcome) and document it in vizier-core. [Ongoing]
-6) Add CLI `--json-stream` to emit NDJSON events; keep human rendering line-oriented and TTY-gated. [Ongoing]
-7) Implement minimal status spinner for TTY only; collapse to one-line Outcome on completion aligned with Auditor facts. [Ongoing]
-8) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
-9) Commit gate UX polish and tests across CLI/headless. [Ongoing]
-10) Session logging JSON MVP, then history skeleton with revert(n=1). [Planned]
-11) Extend integration tests for agent workflow, flags, persistence, commit gate, headless smoke, session write/read, DAP outcomes, TTY vs non-TTY output, and JSON stream schema. [Ongoing]
+6) Add CLI `--json-stream` to emit NDJSON events; keep human rendering line-oriented and TTY-gated. [Planned]
+7) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
+8) Commit gate UX polish and tests across CLI/headless. [Ongoing]
+9) Session logging JSON MVP, then history skeleton with revert(n=1). [Planned]
+10) Extend integration tests: headless/TTY output, quiet/verbose, JSON stream, and outcome lines across commands. [New]
 
 Cross-links
-- Agent Basic Command ↔ Commit isolation/Auditor/Outcome summaries: safety + factual epilogue across CLI.
 - Terminal-minimal ↔ Outcome summaries ↔ Integration tests: ensure visible, testable behavior without fullscreen UI.
-- Lack of vizier-tui narrows scope to CLI/core; UI TODOs phrased to fit current surfaces and future TUI/Web via event stream.
-- DAP ↔ Outcome summaries: ensures users always see a factual epilogue; renderer-neutral events carry the same facts across surfaces.
+- Output contract/verbosity ↔ Control levers: flags map cleanly to config and display behavior.
+- Agent Basic Command ↔ Auditor/Outcome summaries: safety + factual epilogue across CLI.
