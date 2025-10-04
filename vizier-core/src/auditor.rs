@@ -33,10 +33,13 @@ impl Drop for AuditorCleanup {
                             .join(format!("./{}.json", auditor.session_id)),
                         output.clone(),
                     ) {
-                        Ok(_) => eprintln!("Session saved to {}", auditor.session_start),
-                        Err(e) => {
-                            eprintln!("Error writing session file {}: {}", "./debug.json", e)
+                        Ok(_) => {
+                            display::info(format!("Session saved to {}", auditor.session_start))
                         }
+                        Err(e) => display::emit(
+                            display::LogLevel::Error,
+                            format!("Error writing session file {}: {}", "./debug.json", e),
+                        ),
                     };
                 }
 
@@ -174,7 +177,7 @@ impl Auditor {
 
             let mut diff_message = None;
             if let Ok(diff) = vcs::get_diff(root, Some(&tools::get_todo_dir()), None) {
-                eprintln!("Writing commit message for TODO changes...");
+                display::info("Writing commit message for TODO changes...");
                 diff_message = Some(Self::llm_request(
                         "Given a diff on a directory of TODO items, return a commit message for these changes."
                             .to_string(),
@@ -200,7 +203,7 @@ impl Auditor {
                 let conversation = Self::conversation_to_string();
 
                 // unstage staged changes -> commit conversation -> restore staged changes
-                eprintln!("Committing conversation...");
+                display::info("Committing conversation...");
 
                 let mut commit_message = CommitMessageBuilder::new(conversation)
                     .set_header(CommitMessageType::Conversation)
@@ -213,7 +216,7 @@ impl Auditor {
                 }
 
                 let hash = vcs::add_and_commit(None, &commit_message, true)?.to_string();
-                eprintln!("Committed conversation");
+                display::info("Committed conversation");
 
                 hash
             } else {
@@ -221,7 +224,7 @@ impl Auditor {
             };
 
             if let Some(commit_message) = diff_message {
-                eprintln!("Committing TODO changes...");
+                display::info("Committing TODO changes...");
                 file_tracking::FileTracker::commit_changes(
                     &conversation_hash,
                     &CommitMessageBuilder::new(commit_message)
@@ -231,7 +234,7 @@ impl Auditor {
                 )
                 .await?;
 
-                eprintln!("Committed TODO changes");
+                display::info("Committed TODO changes");
             }
 
             if currently_staged.len() > 0 {
@@ -322,8 +325,6 @@ impl Auditor {
                     tx.send(display::Status::Working(msg)).await.unwrap();
                 }
             });
-
-            eprintln!();
 
             // Mock some random file change for the integration tests
             #[cfg(feature = "integration_testing")]
