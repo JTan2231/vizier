@@ -1,0 +1,49 @@
+# AGENTS.md schema and interop contract
+
+Thread: Agent Decision Log + Interop via AGENTS.md (NEW). Cross-links: Architectural/Thematic Invariants; Session logging; Outcome summaries; Agent Basic Command.
+
+Tension
+- Product and architectural decisions made during agent operations are implicit and ephemeral, forcing users to rehash context to other agents/tools. We need a durable, machine- and human-readable artifact (AGENTS.md) that captures the agent-facing contract and recent decisions so other agents (e.g., Codex/Claude) can act "from the vizier" with minimal prompting.
+
+Proposed behavior
+- Introduce a repository-root AGENTS.md that serves two roles:
+  1) Contract: Stable, concise prompts + constraints the Vizier agent expects peers to honor (invariants, output contracts, safety gates, autonomy posture).
+  2) Changelog: Append-only, summarized decisions/outcomes from recent agent-driven actions, focused on product/architectural intent and user-visible contracts.
+- Provide a minimal, schema-like structure in markdown that other agents can reliably parse or skim.
+
+Acceptance criteria
+1) Presence and discovery
+   - If AGENTS.md exists at repo root or .vizier/AGENTS.md, CLI surfaces its path in meta/header.
+   - `vizier init` offers to scaffold AGENTS.md with sections and examples.
+
+2) Structure (stable headings)
+   - Title and Version (AGENTS.md v1)
+   - Contract
+     - Operating Posture (Default-Action, commit isolation, gates)
+     - Output Contracts (stdout/stderr, Outcome line, JSON stream availability)
+     - Invariants Pointers (paths to invariants files)
+     - Control Levers (config keys like thinking_level, auto_commit)
+   - Interop Guide
+     - How to ask another agent to "do X from the vizier" (inputs to provide; outputs expected)
+     - Minimal prompt template with placeholders
+   - Decision Log (most recent N=20)
+     - Each entry: date, operation, affected surface, decision summary, rationale, links (PR/TODO/snapshot moment)
+
+3) Lifecycle and updates
+   - After each agent-driven operation, append a single Decision Log entry with the above fields.
+   - Entries are concise (<=10 lines each) and reference TODO/thread IDs.
+   - Outcome summary includes the count of updated Decision Log entries when applicable.
+
+4) Interoperability
+   - Provide a machine-readable fence for Decision Log entries (e.g., Markdown list items under a stable heading with a simple key: value block) that other agents can parse without brittle heuristics.
+   - Document a minimal handoff prompt in the Interop Guide that instructs external agents how to consume Snapshot + AGENTS.md and where to write results.
+
+5) UX touchpoints
+   - CLI: `vizier agents show` opens AGENTS.md; `vizier agents append` can add a structured decision entry interactively or from flags (non-interactive mode for CI).
+   - Session logs record whether AGENTS.md was updated and the entry ID.
+
+Pointers (orientation only)
+- Surfaces: root AGENTS.md or .vizier/AGENTS.md; vizier-cli (new subcommand group); vizier-core/chat.rs (post-action hook); vizier-core/auditor.rs (links/IDs); session logging.
+
+Notes
+- Keep schema stable and small; favor predictable headings over bespoke front matter. Avoid prescribing YAML unless we later add a separate machine-only index.
