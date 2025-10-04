@@ -13,6 +13,24 @@ use vizier_core::{
     config, file_tracking, tools, vcs,
 };
 
+fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if !should_push {
+        return Ok(());
+    }
+
+    eprintln!("Pushing current branch to origin...");
+    match vcs::push_current_branch("origin") {
+        Ok(_) => {
+            eprintln!("Push to origin completed.");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Error pushing to origin: {e}");
+            Err(Box::<dyn std::error::Error>::from(e))
+        }
+    }
+}
+
 pub fn provider_arg_to_enum(provider: String) -> wire::api::API {
     match provider.as_str() {
         "anthropic" => wire::api::API::Anthropic(wire::api::AnthropicModel::Claude35SonnetNew),
@@ -130,9 +148,10 @@ pub async fn run_save(
     exclude: &[&str],
     commit_message: Option<String>,
     use_editor: bool,
+    push_after_commit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match vcs::get_diff(".", Some(commit_ref), Some(exclude)) {
-        Ok(diff) => match save(diff, commit_message, use_editor).await {
+        Ok(diff) => match save(diff, commit_message, use_editor, push_after_commit).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 eprintln!("Error running --save: {e}");
@@ -151,6 +170,7 @@ async fn save(
     // NOTE: These two should never be Some(...) && true
     user_message: Option<String>,
     use_message_editor: bool,
+    push_after_commit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let provided_note = if let Some(message) = user_message {
         Some(message)
@@ -214,6 +234,8 @@ async fn save(
     eprintln!("Committing remaining code changes...");
     vcs::add_and_commit(None, &commit_message, false)?;
     eprintln!("Changes committed with message: {}", commit_message);
+
+    push_origin_if_requested(push_after_commit)?;
 
     Ok(())
 }
@@ -319,7 +341,10 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// NOTE: Filters items in the .vizier directory by whether they're markdown files
-pub async fn clean(todo_list: String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn clean(
+    todo_list: String,
+    push_after_commit: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let todo_dir = tools::get_todo_dir();
     let targets = match todo_list.as_str() {
         "*" => std::fs::read_dir(&todo_dir)?
@@ -396,10 +421,15 @@ pub async fn clean(todo_list: String) -> Result<(), Box<dyn std::error::Error>> 
 
     let _ = Auditor::commit_audit().await?;
 
+    push_origin_if_requested(push_after_commit)?;
+
     Ok(())
 }
 
-pub async fn inline_command(user_message: String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn inline_command(
+    user_message: String,
+    push_after_commit: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let system_prompt = match crate::config::get_system_prompt_with_meta() {
         Ok(s) => s,
         Err(e) => {
@@ -426,6 +456,8 @@ pub async fn inline_command(user_message: String) -> Result<(), Box<dyn std::err
         eprintln!("Error committing audit: {e}");
         return Err(Box::<dyn std::error::Error>::from(e));
     }
+
+    push_origin_if_requested(push_after_commit)?;
 
     eprintln!("{} {}", "Assistant:".blue(), response.content);
     print_token_usage();
