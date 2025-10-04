@@ -10,6 +10,7 @@ Active threads
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless user opts out (e.g., “discuss-only”). CLI will surface a one-line Outcome when DAP acts. [Cross: Outcome summaries, Integration tests]
 - Outcome summaries: ACTIVE. Standardize compact, factual post-action summaries aligned with Auditor/VCS facts. Assistant final message mirrors the Outcome. Scope is CLI-first; TUI later via the same event stream. [Depends on: Auditor]
 - Control levers surface: ACTIVE. Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking_level). Thinking level requested; schema in progress. [Cross: CLI flags]
+- Agent Decision Log + AGENTS.md interop: ACTIVE. Establish AGENTS.md as a stable, repositoried contract and decision log for agent operations. Goals: make implicit product/architectural decisions explicit; enable handoff so other agents can “do X from the vizier” using written context instead of rehash. Includes CLI affordances and post-action hooks to append concise decision entries. [Depends on: Outcome summaries, Session logging, Invariants, Agent Basic Command]
 - Operation history + revert: PLANNED. Persistent history with revert(n). Planned after session logging.
 - Session logging to filesystem: PLANNED. Persist each assistant session as structured JSON; basis for resume and history.
 - Native chat + navigation: DEFERRED. Define View/Edit modes and key help; any future TUI must honor terminal-minimal constraints and consume the renderer-neutral event stream.
@@ -29,6 +30,7 @@ Code state (behaviors that matter)
 - Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned with audited facts. Outcome component targeted CLI-first.
 - Renderer stance: Terminal-minimal mode and renderer-neutral event stream are planned additions.
 - Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save).
+- AGENTS.md contract/log: Not present yet; schema and lifecycle defined at product level.
 
 Acceptance checkpoints (selected)
 - Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. [New]
@@ -41,6 +43,7 @@ Acceptance checkpoints (selected)
 - Terminal-minimal output: default avoids alt-screen/full redraws; in non-TTY contexts there are no ANSI control sequences. [Planned]
 - Renderer-neutral event stream: versioned lifecycle events (message/tool/status/outcome) consumable by CLI and future renderers; `--json-stream` exposed. [Planned]
 - Agent Basic Command (Workflow B): Running `vizier agent run <todo>` creates an isolated branch from baseline, applies agent-authored commits, and leaves main unchanged; Outcome reports TODO, branch, commit count, PR URL if any; `vizier save` after merge updates TODO and Snapshot, links PR/merge; honors gates and preserves staged changes; session log captures workflow metadata. [Planned]
+- AGENTS.md v1: Repo includes AGENTS.md with Contract, Interop Guide, and Decision Log sections. After each agent-driven operation, a single Decision Log entry is appended, referencing TODO/thread IDs and Outcome facts. CLI exposes `vizier agents show|append`. Outcome epilogue notes if AGENTS.md updated. [Planned]
 
 Next moves
 1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [New]
@@ -53,8 +56,10 @@ Next moves
 8) Commit gate UX polish and tests across CLI/headless. [Ongoing]
 9) Session logging JSON MVP, then history skeleton with revert(n=1). [Planned]
 10) Extend integration tests: headless/TTY output, quiet/verbose, JSON stream, and outcome lines across commands. [New]
+11) AGENTS.md v1 scaffold: add product-level schema and update hooks in CLI so agent-driven operations append a concise Decision Log entry; document handoff prompt in Interop Guide. [New]
 
 Cross-links
 - Terminal-minimal ↔ Outcome summaries ↔ Integration tests: ensure visible, testable behavior without fullscreen UI.
 - Output contract/verbosity ↔ Control levers: flags map cleanly to config and display behavior.
 - Agent Basic Command ↔ Auditor/Outcome summaries: safety + factual epilogue across CLI.
+- AGENTS.md interop ↔ Invariants/Session logging: persist decisions and point to active invariants; session logs record AGENTS.md updates.
