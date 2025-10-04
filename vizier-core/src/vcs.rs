@@ -1,9 +1,12 @@
 use git2::{
-    BranchType, Cred, CredentialType, DiffFormat, DiffOptions, Error, IndexAddOption, Oid,
-    PushOptions, RemoteCallbacks, Repository, RepositoryState, Signature, Sort, Status,
-    StatusOptions,
+    BranchType, Cred, CredentialType, DiffFormat, DiffOptions, Error, ErrorClass, ErrorCode,
+    IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository, RepositoryState, Signature,
+    Sort, Status, StatusOptions,
 };
 use std::cell::RefCell;
+use std::env;
+use std::fmt;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 fn normalize_pathspec(path: &str) -> String {
@@ -38,6 +41,407 @@ fn normalize_pathspec(path: &str) -> String {
     }
 
     s
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteScheme {
+    Ssh,
+    Https,
+    Other(String),
+}
+
+impl RemoteScheme {
+    pub fn label(&self) -> &str {
+        match self {
+            RemoteScheme::Ssh => "ssh",
+            RemoteScheme::Https => "https",
+            RemoteScheme::Other(value) => value.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HelperScope {
+    Initial,
+    UserPass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshKeyKind {
+    IdEd25519,
+    IdRsa,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialStrategy {
+    CredentialHelper(HelperScope),
+    SshAgent,
+    SshKey(SshKeyKind),
+    Username,
+    Default,
+}
+
+impl CredentialStrategy {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CredentialStrategy::CredentialHelper(_) => "helper",
+            CredentialStrategy::SshAgent => "ssh-agent",
+            CredentialStrategy::SshKey(SshKeyKind::IdEd25519) => "file-id_ed25519",
+            CredentialStrategy::SshKey(SshKeyKind::IdRsa) => "file-id_rsa",
+            CredentialStrategy::Username => "username",
+            CredentialStrategy::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptOutcome {
+    Success,
+    Failure(String),
+    Skipped(String),
+}
+
+impl AttemptOutcome {
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            AttemptOutcome::Success => None,
+            AttemptOutcome::Failure(msg) | AttemptOutcome::Skipped(msg) => Some(msg.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialAttempt {
+    pub strategy: CredentialStrategy,
+    pub outcome: AttemptOutcome,
+}
+
+#[derive(Debug, Clone)]
+struct SshKeyPaths {
+    private: PathBuf,
+    public: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub enum PushErrorKind {
+    General(String),
+    Auth {
+        remote: String,
+        url: String,
+        scheme: RemoteScheme,
+        attempts: Vec<CredentialAttempt>,
+    },
+}
+
+#[derive(Debug)]
+pub struct PushError {
+    kind: PushErrorKind,
+    source: Option<Box<Error>>,
+}
+
+impl PushError {
+    fn general<S: Into<String>>(message: S) -> Self {
+        Self {
+            kind: PushErrorKind::General(message.into()),
+            source: None,
+        }
+    }
+
+    fn from_git(context: &str, err: Error) -> Self {
+        let message = format!("{context}: {}", sanitize_error_message(&err));
+        Self {
+            kind: PushErrorKind::General(message),
+            source: Some(Box::new(err)),
+        }
+    }
+
+    fn auth(
+        remote: String,
+        url: String,
+        scheme: RemoteScheme,
+        attempts: Vec<CredentialAttempt>,
+    ) -> Self {
+        Self {
+            kind: PushErrorKind::Auth {
+                remote,
+                url,
+                scheme,
+                attempts,
+            },
+            source: None,
+        }
+    }
+
+    pub fn kind(&self) -> &PushErrorKind {
+        &self.kind
+    }
+}
+
+impl fmt::Display for PushError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            PushErrorKind::General(message) => write!(f, "{message}"),
+            PushErrorKind::Auth { remote, .. } => {
+                write!(f, "authentication failed when pushing to {remote}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PushError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|err| err as &(dyn std::error::Error + 'static))
+    }
+}
+
+fn sanitize_text(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn sanitize_error_message(err: &Error) -> String {
+    sanitize_text(err.message())
+}
+
+fn classify_remote_scheme(url: &str) -> RemoteScheme {
+    if url.starts_with("ssh://") {
+        RemoteScheme::Ssh
+    } else if url.starts_with("https://") {
+        RemoteScheme::Https
+    } else if url.contains('@') && url.contains(':') && !url.contains("://") {
+        RemoteScheme::Ssh
+    } else if let Some((scheme, _)) = url.split_once("://") {
+        RemoteScheme::Other(scheme.to_lowercase())
+    } else {
+        RemoteScheme::Other("unknown".to_string())
+    }
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    if let Some(home) = env::var_os("HOME") {
+        if !home.is_empty() {
+            return Some(PathBuf::from(home));
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(profile) = env::var_os("USERPROFILE") {
+            if !profile.is_empty() {
+                return Some(PathBuf::from(profile));
+            }
+        }
+    }
+
+    None
+}
+
+fn locate_default_key(kind: &SshKeyKind) -> Option<SshKeyPaths> {
+    let home = user_home_dir()?;
+    let key_name = match kind {
+        SshKeyKind::IdEd25519 => "id_ed25519",
+        SshKeyKind::IdRsa => "id_rsa",
+    };
+
+    let private = home.join(".ssh").join(key_name);
+    if !private.exists() {
+        return None;
+    }
+
+    let mut public = private.clone();
+    public.set_extension("pub");
+    let public = if public.exists() { Some(public) } else { None };
+
+    Some(SshKeyPaths { private, public })
+}
+
+fn build_credential_plan(
+    allowed_types: CredentialType,
+    has_helper: bool,
+) -> Vec<CredentialStrategy> {
+    let mut plan = Vec::new();
+
+    if has_helper {
+        plan.push(CredentialStrategy::CredentialHelper(HelperScope::Initial));
+    }
+
+    if allowed_types.contains(CredentialType::SSH_KEY) {
+        plan.push(CredentialStrategy::SshAgent);
+        plan.push(CredentialStrategy::SshKey(SshKeyKind::IdEd25519));
+        plan.push(CredentialStrategy::SshKey(SshKeyKind::IdRsa));
+    }
+
+    if allowed_types.contains(CredentialType::USERNAME) {
+        plan.push(CredentialStrategy::Username);
+    }
+
+    if has_helper && allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        plan.push(CredentialStrategy::CredentialHelper(HelperScope::UserPass));
+    }
+
+    plan.push(CredentialStrategy::Default);
+
+    plan
+}
+
+struct CredentialRequestContext<'a> {
+    url: &'a str,
+    username_from_url: Option<&'a str>,
+    default_username: &'a str,
+}
+
+enum StrategyResult {
+    Success(Cred),
+    Failure(String),
+    Skipped(String),
+}
+
+enum CredentialResult {
+    Success {
+        cred: Cred,
+        attempts: Vec<CredentialAttempt>,
+    },
+    Failure {
+        attempts: Vec<CredentialAttempt>,
+        final_message: Option<String>,
+    },
+}
+
+trait CredentialExecutor {
+    fn apply(
+        &self,
+        strategy: &CredentialStrategy,
+        ctx: &CredentialRequestContext<'_>,
+    ) -> StrategyResult;
+}
+
+fn execute_credential_plan<E: CredentialExecutor>(
+    plan: &[CredentialStrategy],
+    executor: &E,
+    ctx: &CredentialRequestContext<'_>,
+) -> CredentialResult {
+    let mut attempts = Vec::new();
+    let mut last_failure_message = None;
+
+    for strategy in plan {
+        match executor.apply(strategy, ctx) {
+            StrategyResult::Success(cred) => {
+                attempts.push(CredentialAttempt {
+                    strategy: strategy.clone(),
+                    outcome: AttemptOutcome::Success,
+                });
+                return CredentialResult::Success { cred, attempts };
+            }
+            StrategyResult::Failure(message) => {
+                attempts.push(CredentialAttempt {
+                    strategy: strategy.clone(),
+                    outcome: AttemptOutcome::Failure(message.clone()),
+                });
+                last_failure_message = Some(message);
+            }
+            StrategyResult::Skipped(reason) => {
+                attempts.push(CredentialAttempt {
+                    strategy: strategy.clone(),
+                    outcome: AttemptOutcome::Skipped(reason),
+                });
+            }
+        }
+    }
+
+    CredentialResult::Failure {
+        attempts,
+        final_message: last_failure_message,
+    }
+}
+
+struct RealCredentialExecutor {
+    config: Option<Rc<git2::Config>>,
+}
+
+impl RealCredentialExecutor {
+    fn new(config: Option<Rc<git2::Config>>) -> Self {
+        Self { config }
+    }
+
+    fn helper_message(scope: &HelperScope) -> &'static str {
+        match scope {
+            HelperScope::Initial => "credential helper returned no data",
+            HelperScope::UserPass => "credential helper did not yield user/password",
+        }
+    }
+
+    fn ssh_agent_failure_message(err: &Error) -> String {
+        if err.class() == ErrorClass::Ssh && err.code() == ErrorCode::Auth {
+            "ssh-agent had no matching keys or rejected the request".to_string()
+        } else {
+            sanitize_error_message(err)
+        }
+    }
+
+    fn ssh_file_failure_message(err: &Error) -> String {
+        if err.class() == ErrorClass::Ssh && err.code() == ErrorCode::Auth {
+            "key requires a passphrase or ssh-agent session".to_string()
+        } else {
+            sanitize_error_message(err)
+        }
+    }
+}
+
+impl CredentialExecutor for RealCredentialExecutor {
+    fn apply(
+        &self,
+        strategy: &CredentialStrategy,
+        ctx: &CredentialRequestContext<'_>,
+    ) -> StrategyResult {
+        let username = ctx.username_from_url.unwrap_or(ctx.default_username);
+
+        match strategy {
+            CredentialStrategy::CredentialHelper(scope) => {
+                if let Some(cfg) = self.config.as_ref() {
+                    match Cred::credential_helper(cfg, ctx.url, ctx.username_from_url) {
+                        Ok(cred) => StrategyResult::Success(cred),
+                        Err(err) => StrategyResult::Failure(format!(
+                            "{}: {}",
+                            Self::helper_message(scope),
+                            sanitize_error_message(&err)
+                        )),
+                    }
+                } else {
+                    StrategyResult::Skipped(
+                        "no git config available for credential helper".to_string(),
+                    )
+                }
+            }
+            CredentialStrategy::SshAgent => match Cred::ssh_key_from_agent(username) {
+                Ok(cred) => StrategyResult::Success(cred),
+                Err(err) => StrategyResult::Failure(Self::ssh_agent_failure_message(&err)),
+            },
+            CredentialStrategy::SshKey(kind) => {
+                let default_path = match kind {
+                    SshKeyKind::IdEd25519 => "~/.ssh/id_ed25519",
+                    SshKeyKind::IdRsa => "~/.ssh/id_rsa",
+                };
+
+                if let Some(paths) = locate_default_key(kind) {
+                    match Cred::ssh_key(username, paths.public.as_deref(), &paths.private, None) {
+                        Ok(cred) => StrategyResult::Success(cred),
+                        Err(err) => StrategyResult::Failure(Self::ssh_file_failure_message(&err)),
+                    }
+                } else {
+                    StrategyResult::Skipped(format!("no key at {default_path}"))
+                }
+            }
+            CredentialStrategy::Username => match Cred::username(username) {
+                Ok(cred) => StrategyResult::Success(cred),
+                Err(err) => StrategyResult::Failure(sanitize_error_message(&err)),
+            },
+            CredentialStrategy::Default => match Cred::default() {
+                Ok(cred) => StrategyResult::Success(cred),
+                Err(err) => StrategyResult::Failure(sanitize_error_message(&err)),
+            },
+        }
+    }
 }
 
 /// Return a unified diff (`git diff`-style patch) for the repository at `repo_path`,
@@ -249,8 +653,9 @@ pub fn add_and_commit(
 /// - Requires `HEAD` to be a named local branch.
 /// - Performs a fast-forward check when an upstream tracking ref is configured.
 /// - Updates the matching `refs/remotes/<remote>/<branch>` reference on success.
-pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
-    let repo = Repository::discover(".")?;
+pub fn push_current_branch(remote_name: &str) -> Result<(), PushError> {
+    let repo = Repository::discover(".")
+        .map_err(|err| PushError::from_git("failed to discover git repository", err))?;
 
     let state = repo.state();
     if state != RepositoryState::Clean {
@@ -273,31 +678,38 @@ pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
             _ => "cannot push while the repository has pending operations",
         };
 
-        return Err(Error::from_str(msg));
+        return Err(PushError::general(msg));
     }
 
-    let head = repo.head()?;
+    let head = repo
+        .head()
+        .map_err(|err| PushError::from_git("failed to resolve HEAD", err))?;
     if !head.is_branch() {
-        return Err(Error::from_str(
+        return Err(PushError::general(
             "cannot push because HEAD is not pointing to a branch",
         ));
     }
 
     let branch_ref = head
         .name()
-        .ok_or_else(|| Error::from_str("current branch name is not valid UTF-8"))?;
+        .ok_or_else(|| PushError::general("current branch name is not valid UTF-8"))?;
     let branch_name = head
         .shorthand()
-        .ok_or_else(|| Error::from_str("unable to determine branch name"))?;
+        .ok_or_else(|| PushError::general("unable to determine branch name"))?;
     let head_oid = head
         .target()
-        .ok_or_else(|| Error::from_str("HEAD does not reference a commit"))?;
+        .ok_or_else(|| PushError::general("HEAD does not reference a commit"))?;
 
     if let Ok(branch) = repo.find_branch(branch_name, BranchType::Local) {
         if let Ok(upstream) = branch.upstream() {
             if let Some(upstream_oid) = upstream.get().target() {
-                if !repo.graph_descendant_of(head_oid, upstream_oid)? {
-                    return Err(Error::from_str(
+                let is_descendant =
+                    repo.graph_descendant_of(head_oid, upstream_oid)
+                        .map_err(|err| {
+                            PushError::from_git("unable to compute fast-forward relationship", err)
+                        })?;
+                if !is_descendant {
+                    return Err(PushError::general(
                         "push would not be a fast-forward; fetch and merge first",
                     ));
                 }
@@ -305,47 +717,63 @@ pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
         }
     }
 
-    let mut remote = repo.find_remote(remote_name)?;
-    let _url = remote
+    let mut remote = repo
+        .find_remote(remote_name)
+        .map_err(|err| PushError::from_git("unable to locate remote", err))?;
+    let remote_url = remote
         .pushurl()
         .or_else(|| remote.url())
-        .ok_or_else(|| Error::from_str("remote has no configured URL"))?;
+        .ok_or_else(|| PushError::general("remote has no configured URL"))?
+        .to_string();
+    let remote_scheme = classify_remote_scheme(&remote_url);
 
-    let config_for_cb = repo.config().ok();
-    let push_statuses: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let config_for_cb = repo.config().ok().map(Rc::new);
+    let credential_attempts: Rc<RefCell<Vec<CredentialAttempt>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let plan_config = config_for_cb.clone();
 
     let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed_types| {
-        if let Some(ref cfg) = config_for_cb {
-            if let Ok(cred) = Cred::credential_helper(cfg, url, username_from_url) {
-                return Ok(cred);
-            }
-        }
+    callbacks.credentials({
+        let attempts = Rc::clone(&credential_attempts);
+        move |url, username_from_url, allowed_types| {
+            let helper_config = plan_config.clone();
+            let has_helper = helper_config.is_some();
+            let plan = build_credential_plan(allowed_types, has_helper);
+            let executor = RealCredentialExecutor::new(helper_config);
+            let ctx = CredentialRequestContext {
+                url,
+                username_from_url,
+                default_username: username_from_url.unwrap_or("git"),
+            };
 
-        if allowed_types.contains(CredentialType::SSH_KEY) {
-            let username = username_from_url.unwrap_or("git");
-            if let Ok(cred) = Cred::ssh_key_from_agent(username) {
-                return Ok(cred);
-            }
-        }
+            let result = execute_credential_plan(&plan, &executor, &ctx);
+            match result {
+                CredentialResult::Success {
+                    cred,
+                    attempts: log,
+                } => {
+                    if let Ok(mut store) = attempts.try_borrow_mut() {
+                        store.extend(log);
+                    }
+                    Ok(cred)
+                }
+                CredentialResult::Failure {
+                    attempts: log,
+                    final_message,
+                } => {
+                    if let Ok(mut store) = attempts.try_borrow_mut() {
+                        store.extend(log);
+                    }
 
-        if allowed_types.contains(CredentialType::USERNAME) {
-            if let Some(username) = username_from_url {
-                return Cred::username(username);
-            }
-        }
-
-        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(ref cfg) = config_for_cb {
-                if let Ok(cred) = Cred::credential_helper(cfg, url, username_from_url) {
-                    return Ok(cred);
+                    let msg = final_message
+                        .unwrap_or_else(|| "no credential strategy succeeded".to_string());
+                    Err(Error::from_str(&msg))
                 }
             }
         }
-
-        Cred::default()
     });
 
+    let push_statuses: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
     let statuses_for_cb = Rc::clone(&push_statuses);
     callbacks.push_update_reference(move |refname, status| {
         if let Some(status) = status {
@@ -361,8 +789,27 @@ pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
 
     let refspec = format!("{branch_ref}:{branch_ref}");
     let refspecs = [refspec.as_str()];
-    remote.push(&refspecs, Some(&mut push_opts))?;
-    remote.disconnect()?;
+    if let Err(err) = remote.push(&refspecs, Some(&mut push_opts)) {
+        let attempts = credential_attempts.borrow().clone();
+        let all_attempts_failed = !attempts.is_empty()
+            && attempts
+                .iter()
+                .all(|attempt| !matches!(attempt.outcome, AttemptOutcome::Success));
+
+        if all_attempts_failed {
+            return Err(PushError::auth(
+                remote_name.to_string(),
+                remote_url,
+                remote_scheme,
+                attempts,
+            ));
+        } else {
+            return Err(PushError::from_git("failed to push to remote", err));
+        }
+    }
+    remote
+        .disconnect()
+        .map_err(|err| PushError::from_git("failed to disconnect remote", err))?;
 
     let statuses = push_statuses.borrow();
     if !statuses.is_empty() {
@@ -370,7 +817,7 @@ pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
         for (name, status) in statuses.iter() {
             msg.push_str(&format!(" {name} ({status})"));
         }
-        return Err(Error::from_str(&msg));
+        return Err(PushError::general(msg));
     }
 
     let tracking_ref = format!("refs/remotes/{remote_name}/{branch_name}");
@@ -379,7 +826,8 @@ pub fn push_current_branch(remote_name: &str) -> Result<(), Error> {
         head_oid,
         true,
         "vizier: update remote tracking ref after push",
-    )?;
+    )
+    .map_err(|err| PushError::from_git("failed to update remote tracking ref", err))?;
 
     Ok(())
 }
@@ -681,6 +1129,8 @@ pub fn origin_owner_repo(repo_path: &str) -> Result<(String, String), Error> {
 mod tests {
     use super::*;
     use git2::{IndexAddOption, Repository, Signature};
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -816,8 +1266,77 @@ mod tests {
             repo.set_head_detached(oid).expect("detach head");
 
             let err = push_current_branch("origin").expect_err("push should fail");
-            assert!(err.message().contains("not pointing to a branch"));
+            match err.kind() {
+                PushErrorKind::General(message) => {
+                    assert!(message.contains("not pointing to a branch"));
+                }
+                other => panic!("unexpected error variant: {:?}", other),
+            }
         }
+    }
+
+    struct RecordingExecutor {
+        responses: RefCell<VecDeque<StrategyResult>>,
+        invoked: RefCell<Vec<CredentialStrategy>>,
+    }
+
+    impl RecordingExecutor {
+        fn new(responses: Vec<StrategyResult>) -> Self {
+            Self {
+                responses: RefCell::new(VecDeque::from(responses)),
+                invoked: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl CredentialExecutor for RecordingExecutor {
+        fn apply(
+            &self,
+            strategy: &CredentialStrategy,
+            ctx: &CredentialRequestContext<'_>,
+        ) -> StrategyResult {
+            // record username resolution to ensure we pass the default correctly
+            assert_eq!(ctx.username_from_url, Some("git"));
+            self.invoked.borrow_mut().push(strategy.clone());
+            self.responses
+                .borrow_mut()
+                .pop_front()
+                .expect("strategy response available")
+        }
+    }
+
+    #[test]
+    fn credential_plan_attempts_file_keys_when_agent_fails() {
+        let plan = build_credential_plan(CredentialType::SSH_KEY, false);
+        assert!(plan.contains(&CredentialStrategy::SshKey(SshKeyKind::IdEd25519)));
+        assert!(plan.contains(&CredentialStrategy::SshKey(SshKeyKind::IdRsa)));
+
+        let responses = vec![
+            StrategyResult::Failure("agent missing".to_string()),
+            StrategyResult::Failure("no ed25519".to_string()),
+            StrategyResult::Success(Cred::username("git").expect("cred")),
+        ];
+        let executor = RecordingExecutor::new(responses);
+
+        let ctx = CredentialRequestContext {
+            url: "ssh://example.com/repo.git",
+            username_from_url: Some("git"),
+            default_username: "git",
+        };
+
+        let result = execute_credential_plan(&plan, &executor, &ctx);
+        match result {
+            CredentialResult::Success { .. } => {}
+            _ => panic!("expected success after key attempts"),
+        }
+
+        let invoked = executor.invoked.borrow();
+        let expected = vec![
+            CredentialStrategy::SshAgent,
+            CredentialStrategy::SshKey(SshKeyKind::IdEd25519),
+            CredentialStrategy::SshKey(SshKeyKind::IdRsa),
+        ];
+        assert_eq!(&expected, invoked.as_slice());
     }
 
     // --- normalize_pathspec --------------------------------------------------

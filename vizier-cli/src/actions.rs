@@ -4,6 +4,7 @@ use std::process::Command;
 
 use tempfile::{Builder, TempPath};
 
+use vizier_core::vcs::{AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme};
 use vizier_core::{
     auditor,
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
@@ -13,6 +14,61 @@ use vizier_core::{
     display::{self, LogLevel},
     file_tracking, tools, vcs,
 };
+
+fn clip_message(msg: &str) -> String {
+    const LIMIT: usize = 90;
+    let mut clipped = String::new();
+    for (idx, ch) in msg.chars().enumerate() {
+        if idx >= LIMIT {
+            clipped.push('…');
+            break;
+        }
+        clipped.push(ch);
+    }
+    clipped
+}
+
+fn format_credential_attempt(attempt: &CredentialAttempt) -> String {
+    let label = attempt.strategy.label();
+    match &attempt.outcome {
+        AttemptOutcome::Success => format!("{label}=ok"),
+        AttemptOutcome::Failure(message) => {
+            format!("{label}=failed({})", clip_message(message))
+        }
+        AttemptOutcome::Skipped(message) => {
+            format!("{label}=skipped({})", clip_message(message))
+        }
+    }
+}
+
+fn render_push_auth_failure(
+    remote: &str,
+    url: &str,
+    scheme: &RemoteScheme,
+    attempts: &[CredentialAttempt],
+) {
+    let scheme_label = scheme.label();
+    display::emit(
+        LogLevel::Error,
+        format!("Push to {remote} failed ({scheme_label} {url})"),
+    );
+
+    if !attempts.is_empty() {
+        let summary = attempts
+            .iter()
+            .map(format_credential_attempt)
+            .collect::<Vec<_>>()
+            .join("; ");
+        display::emit(LogLevel::Error, format!("Credential strategies: {summary}"));
+    }
+
+    if matches!(scheme, RemoteScheme::Ssh) {
+        display::emit(
+            LogLevel::Error,
+            "Hint: start ssh-agent and `ssh-add ~/.ssh/id_ed25519`, or switch the remote to HTTPS.",
+        );
+    }
+}
 
 fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error::Error>> {
     if !should_push {
@@ -25,9 +81,25 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
             display::info("Push to origin completed.");
             Ok(())
         }
-        Err(e) => {
-            display::emit(LogLevel::Error, format!("Error pushing to origin: {e}"));
-            Err(Box::<dyn std::error::Error>::from(e))
+        Err(err) => {
+            match err.kind() {
+                PushErrorKind::Auth {
+                    remote,
+                    url,
+                    scheme,
+                    attempts,
+                } => {
+                    render_push_auth_failure(remote, url, scheme, attempts);
+                }
+                PushErrorKind::General(message) => {
+                    display::emit(
+                        LogLevel::Error,
+                        format!("Error pushing to origin: {message}"),
+                    );
+                }
+            }
+
+            Err(Box::<dyn std::error::Error>::from(err))
         }
     }
 }
