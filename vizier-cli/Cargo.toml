@@ -19,7 +19,6 @@ wire = { git = "https://github.com/JTan2231/wire.git" }
 tokio = { version = "1", features = ["full"] }
 lazy_static = "1.4"
 fuzzy-matcher = "*"
-colored = "2"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 uuid = { version = "1.4", features = ["v4"] }

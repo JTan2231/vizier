@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::process::Command;
 
-use colored::*;
 use tempfile::{Builder, TempPath};
 
 use vizier_core::{
@@ -10,7 +9,9 @@ use vizier_core::{
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
-    config, file_tracking, tools, vcs,
+    config,
+    display::{self, LogLevel},
+    file_tracking, tools, vcs,
 };
 
 fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -18,32 +19,25 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
         return Ok(());
     }
 
-    eprintln!("Pushing current branch to origin...");
+    display::info("Pushing current branch to origin...");
     match vcs::push_current_branch("origin") {
         Ok(_) => {
-            eprintln!("Push to origin completed.");
+            display::info("Push to origin completed.");
             Ok(())
         }
         Err(e) => {
-            eprintln!("Error pushing to origin: {e}");
+            display::emit(LogLevel::Error, format!("Error pushing to origin: {e}"));
             Err(Box::<dyn std::error::Error>::from(e))
         }
     }
 }
 
-pub fn provider_arg_to_enum(provider: String) -> wire::api::API {
-    match provider.as_str() {
-        "anthropic" => wire::api::API::Anthropic(wire::api::AnthropicModel::Claude35SonnetNew),
-        "openai" => wire::api::API::OpenAI(wire::api::OpenAIModel::GPT4o),
-        _ => panic!("Unrecognized LLM provider: {}", provider),
-    }
-}
-
 pub fn print_token_usage() {
     let usage = Auditor::get_total_usage();
-    eprintln!("{}", "Token Usage:".yellow());
-    eprintln!("- {} {}", "Prompt Tokens:".green(), usage.input_tokens);
-    eprintln!("- {} {}", "Completion Tokens:".green(), usage.output_tokens);
+    display::info(format!(
+        "Token usage: prompt={} completion={}",
+        usage.input_tokens, usage.output_tokens
+    ));
 }
 
 #[derive(Debug, Clone)]
@@ -60,15 +54,15 @@ pub async fn run_snapshot_init(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let depth_preview = bootstrap::preview_history_depth(opts.depth)?;
 
-    eprintln!(
-        "Bootstrapping snapshot (history depth target: {}). This may take a few minutes...",
+    display::info(format!(
+        "Bootstrapping snapshot (history depth target: {})",
         depth_preview
-    );
+    ));
     if !opts.paths.is_empty() {
-        eprintln!("Scope includes: {}", opts.paths.join(", "));
+        display::info(format!("Scope includes: {}", opts.paths.join(", ")));
     }
     if !opts.exclude.is_empty() {
-        eprintln!("Scope excludes: {}", opts.exclude.join(", "));
+        display::info(format!("Scope excludes: {}", opts.exclude.join(", ")));
     }
 
     let issues_provider = if let Some(provider) = opts.issues {
@@ -88,55 +82,72 @@ pub async fn run_snapshot_init(
 
     if !report.warnings.is_empty() {
         for note in &report.warnings {
-            eprintln!("Warning: {}", note);
+            display::warn(format!("Warning: {}", note));
         }
     }
 
-    println!("Bootstrap metadata:");
-    println!("- analyzed_at: {}", report.analysis_timestamp);
-    println!(
-        "- head_commit: {}",
-        report.head_commit.as_deref().unwrap_or("<no HEAD commit>")
-    );
-    println!(
-        "- branch: {}",
+    let mut detail_parts = Vec::new();
+    detail_parts.push(format!("analyzed_at={}", report.analysis_timestamp));
+    detail_parts.push(format!(
+        "branch={}",
         report.branch.as_deref().unwrap_or("<detached HEAD>")
-    );
-    println!(
-        "- working_tree: {}",
+    ));
+    detail_parts.push(format!(
+        "head_commit={}",
+        report.head_commit.as_deref().unwrap_or("<no HEAD commit>")
+    ));
+    detail_parts.push(format!(
+        "working_tree={}",
         if report.dirty { "dirty" } else { "clean" }
-    );
-    println!("- history_depth_used: {}", report.depth_used);
+    ));
+    detail_parts.push(format!("history_depth_used={}", report.depth_used));
+
     if !report.scope_includes.is_empty() {
-        println!("- scope_includes: {}", report.scope_includes.join(", "));
-    } else {
-        println!("- scope_includes: entire repository");
+        detail_parts.push(format!(
+            "scope_includes={}",
+            report.scope_includes.join(", ")
+        ));
     }
     if !report.scope_excludes.is_empty() {
-        println!("- scope_excludes: {}", report.scope_excludes.join(", "));
-    } else {
-        println!("- scope_excludes: (none)");
+        detail_parts.push(format!(
+            "scope_excludes={}",
+            report.scope_excludes.join(", ")
+        ));
     }
     if let Some(provider) = report.issues_provider.as_ref() {
-        println!("- issues_provider: {}", provider);
-        if !report.issues.is_empty() {
-            println!("  issues considered:");
-            for issue in &report.issues {
-                println!("    - {}", issue);
-            }
-        }
+        detail_parts.push(format!("issues_provider={}", provider));
+    }
+    if !report.issues.is_empty() {
+        detail_parts.push(format!("issues={}", report.issues.join(", ")));
+    }
+    if !report.files_touched.is_empty() {
+        detail_parts.push(format!("files_updated={}", report.files_touched.join(", ")));
     }
 
-    println!("\nFiles updated:");
-    if report.files_touched.is_empty() {
-        println!("- (no .vizier changes detected)");
+    if !detail_parts.is_empty() {
+        display::info(format!("Snapshot details: {}", detail_parts.join("; ")));
+    }
+
+    if !report.summary.trim().is_empty() {
+        display::info(format!("Snapshot summary: {}", report.summary.trim()));
+    }
+
+    let files_updated = report.files_touched.len();
+    let outcome = if files_updated == 0 {
+        format!(
+            "Snapshot bootstrap complete; depth_used={}; no .vizier changes",
+            report.depth_used
+        )
     } else {
-        for path in &report.files_touched {
-            println!("- {}", path);
-        }
-    }
+        format!(
+            "Snapshot bootstrap complete; updated {} file{}; depth_used={}",
+            files_updated,
+            if files_updated == 1 { "" } else { "s" },
+            report.depth_used
+        )
+    };
 
-    println!("\n{}", report.summary.trim());
+    println!("{}", outcome);
 
     print_token_usage();
 
@@ -152,16 +163,58 @@ pub async fn run_save(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match vcs::get_diff(".", Some(commit_ref), Some(exclude)) {
         Ok(diff) => match save(diff, commit_message, use_editor, push_after_commit).await {
-            Ok(_) => Ok(()),
+            Ok(outcome) => {
+                println!("{}", format_save_outcome(&outcome));
+                Ok(())
+            }
             Err(e) => {
-                eprintln!("Error running --save: {e}");
+                display::emit(LogLevel::Error, format!("Error running --save: {e}"));
                 Err(Box::<dyn std::error::Error>::from(e))
             }
         },
         Err(e) => {
-            eprintln!("Error generating diff for {commit_ref}: {e}");
+            display::emit(
+                LogLevel::Error,
+                format!("Error generating diff for {commit_ref}: {e}"),
+            );
             Err(Box::<dyn std::error::Error>::from(e))
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct SaveOutcome {
+    pub conversation_hash: Option<String>,
+    pub code_commit: Option<String>,
+    pub pushed: bool,
+}
+
+fn format_save_outcome(outcome: &SaveOutcome) -> String {
+    let mut parts = vec!["Save complete".to_string()];
+
+    match &outcome.conversation_hash {
+        Some(hash) if !hash.is_empty() => parts.push(format!("conversation={}", short_hash(hash))),
+        _ => parts.push("conversation=none".to_string()),
+    }
+
+    match &outcome.code_commit {
+        Some(hash) if !hash.is_empty() => parts.push(format!("code_commit={}", short_hash(hash))),
+        _ => parts.push("code_commit=none".to_string()),
+    }
+
+    if outcome.pushed {
+        parts.push("pushed=true".to_string());
+    }
+
+    parts.join("; ")
+}
+
+fn short_hash(hash: &str) -> String {
+    const MAX: usize = 8;
+    if hash.len() <= MAX {
+        hash.to_string()
+    } else {
+        hash.chars().take(MAX).collect()
     }
 }
 
@@ -171,7 +224,7 @@ async fn save(
     user_message: Option<String>,
     use_message_editor: bool,
     push_after_commit: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<SaveOutcome, Box<dyn std::error::Error>> {
     let provided_note = if let Some(message) = user_message {
         Some(message)
     } else if use_message_editor {
@@ -203,7 +256,7 @@ async fn save(
 
     let conversation_hash = auditor::Auditor::commit_audit().await?;
 
-    eprintln!("{} {}", "Assistant:".blue(), response.content);
+    display::info(format!("Assistant summary: {}", response.content.trim()));
     print_token_usage();
 
     let mut message_builder = CommitMessageBuilder::new(
@@ -231,20 +284,31 @@ async fn save(
         }
     }
 
-    eprintln!("Committing remaining code changes...");
-    vcs::add_and_commit(None, &commit_message, false)?;
-    eprintln!("Changes committed with message: {}", commit_message);
+    display::info("Committing remaining code changes...");
+    let code_commit = vcs::add_and_commit(None, &commit_message, false)?;
+    display::info(format!(
+        "Changes committed with message: {}",
+        commit_message
+    ));
 
     push_origin_if_requested(push_after_commit)?;
 
-    Ok(())
+    Ok(SaveOutcome {
+        conversation_hash: if conversation_hash.is_empty() {
+            None
+        } else {
+            Some(conversation_hash)
+        },
+        code_commit: Some(code_commit.to_string()),
+        pushed: push_after_commit,
+    })
 }
 
 enum Shell {
     Bash,
     Zsh,
     Fish,
-    Other(String),
+    Other,
 }
 
 impl Shell {
@@ -259,7 +323,7 @@ impl Shell {
             "bash" => Shell::Bash,
             "zsh" => Shell::Zsh,
             "fish" => Shell::Fish,
-            other => Shell::Other(other.to_string()),
+            _ => Shell::Other,
         }
     }
 
@@ -268,7 +332,7 @@ impl Shell {
             Shell::Bash => ". ~/.bashrc".to_string(),
             Shell::Zsh => ". ~/.zshrc".to_string(),
             Shell::Fish => "source ~/.config/fish/config.fish".to_string(),
-            Shell::Other(_) => "".to_string(),
+            Shell::Other => "".to_string(),
         }
     }
 
@@ -291,7 +355,7 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
     match std::fs::write(temp_path.to_path_buf(), "") {
         Ok(_) => {}
         Err(e) => {
-            println!("Error writing to temp file");
+            display::emit(LogLevel::Error, "Error writing to temp file");
             return Err(Box::new(e));
         }
     };
@@ -377,7 +441,7 @@ pub async fn clean(
     let mut removed = 0;
 
     for target in targets.iter() {
-        eprintln!("Cleaning {}...", target.blue());
+        display::info(format!("Cleaning {}...", target));
         let content = std::fs::read_to_string(target)?;
         let response = Auditor::llm_request(
             format!(
@@ -402,26 +466,38 @@ pub async fn clean(
         match revised_content {
             Some(rc) => {
                 if response != "null" {
-                    eprintln!("{} {}...", "Revising".yellow(), target.blue());
-
+                    display::info(format!("Revising {}...", target));
                     file_tracking::FileTracker::write(target, &rc)?;
                     revised += 1;
                 }
             }
             None => {
-                eprintln!("{} {}...", "Removing".red(), target.blue());
+                display::info(format!("Removing {}...", target));
                 file_tracking::FileTracker::delete(target)?;
                 removed += 1
             }
         };
     }
 
-    eprintln!("{} {} TODO items", "Revised".yellow(), revised);
-    eprintln!("{} {} TODO items", "Removed".red(), removed);
+    display::info(format!("Revised {} TODO items", revised));
+    display::info(format!("Removed {} TODO items", removed));
 
-    let _ = Auditor::commit_audit().await?;
+    let conversation_hash = Auditor::commit_audit().await?;
 
     push_origin_if_requested(push_after_commit)?;
+
+    let conversation_summary = if conversation_hash.is_empty() {
+        "none".to_string()
+    } else {
+        short_hash(&conversation_hash)
+    };
+
+    println!(
+        "Clean complete; revised={}; removed={}; conversation={}",
+        revised, removed, conversation_summary
+    );
+
+    print_token_usage();
 
     Ok(())
 }
@@ -433,7 +509,7 @@ pub async fn inline_command(
     let system_prompt = match crate::config::get_system_prompt_with_meta() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error loading system prompt: {e}");
+            display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));
             return Err(Box::<dyn std::error::Error>::from(e));
         }
     };
@@ -447,19 +523,19 @@ pub async fn inline_command(
     {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Error during LLM request: {e}");
+            display::emit(LogLevel::Error, format!("Error during LLM request: {e}"));
             return Err(Box::<dyn std::error::Error>::from(e));
         }
     };
 
     if let Err(e) = auditor::Auditor::commit_audit().await {
-        eprintln!("Error committing audit: {e}");
+        display::emit(LogLevel::Error, format!("Error committing audit: {e}"));
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
     push_origin_if_requested(push_after_commit)?;
 
-    eprintln!("{} {}", "Assistant:".blue(), response.content);
+    println!("{}", response.content.trim_end());
     print_token_usage();
 
     Ok(())

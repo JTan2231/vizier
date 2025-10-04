@@ -1,7 +1,11 @@
 use std::io::IsTerminal;
 
-use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
-use vizier_core::{auditor, config, tools};
+use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
+use vizier_core::{
+    auditor, config,
+    display::{self, LogLevel},
+    tools,
+};
 
 mod actions;
 use crate::actions::*;
@@ -25,11 +29,27 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(ClapArgs, Debug, Default)]
+#[derive(ClapArgs, Debug)]
 struct GlobalOpts {
-    /// Enable debug logging
+    /// Increase verbosity (`-v` = info, `-vv` = debug)
+    #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Silence all non-error output
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
+
+    /// Enable debug logging (alias for -vv)
     #[arg(short = 'd', long, global = true)]
     debug: bool,
+
+    /// Disable ANSI control sequences even on TTYs
+    #[arg(long = "no-ansi", global = true)]
+    no_ansi: bool,
+
+    /// Progress display mode for long-running operations
+    #[arg(long = "progress", value_enum, default_value_t = ProgressArg::Auto, global = true)]
+    progress: ProgressArg,
 
     /// Load session as existing context
     #[arg(short = 'l', long = "load-session", global = true)]
@@ -60,8 +80,45 @@ struct GlobalOpts {
     reasoning_effort: Option<String>,
 
     /// Push the current branch to origin after mutating git history
-    #[arg(long = "push", global = true)]
+    #[arg(short = 'P', long, global = true)]
     push: bool,
+}
+
+impl Default for GlobalOpts {
+    fn default() -> Self {
+        Self {
+            verbose: 0,
+            quiet: false,
+            debug: false,
+            no_ansi: false,
+            progress: ProgressArg::Auto,
+            load_session: None,
+            no_session: false,
+            model: None,
+            json: false,
+            require_confirmation: false,
+            config_file: None,
+            reasoning_effort: None,
+            push: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ProgressArg {
+    Auto,
+    Never,
+    Always,
+}
+
+impl From<ProgressArg> for display::ProgressMode {
+    fn from(value: ProgressArg) -> Self {
+        match value {
+            ProgressArg::Auto => display::ProgressMode::Auto,
+            ProgressArg::Never => display::ProgressMode::Never,
+            ProgressArg::Always => display::ProgressMode::Always,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -220,23 +277,53 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    let stderr_is_tty = std::io::stderr().is_terminal();
+
+    let mut verbosity = if cli.global.quiet {
+        display::Verbosity::Quiet
+    } else {
+        match cli.global.verbose {
+            0 => display::Verbosity::Normal,
+            1 => display::Verbosity::Info,
+            _ => display::Verbosity::Debug,
+        }
+    };
+
+    if !cli.global.quiet && cli.global.debug {
+        verbosity = display::Verbosity::Debug;
+    }
+
+    let ansi_enabled = !cli.global.no_ansi && stdout_is_tty && stderr_is_tty;
+
+    display::set_display_config(display::DisplayConfig {
+        verbosity,
+        progress: cli.global.progress.into(),
+        ansi_enabled,
+        stdout_is_tty,
+        stderr_is_tty,
+    });
+
     let project_root = match auditor::find_project_root() {
         Ok(Some(root)) => root,
         Ok(None) => {
-            eprintln!("vizier cannot be used outside a git repository");
-
+            display::emit(
+                LogLevel::Error,
+                "vizier cannot be used outside a git repository",
+            );
             return Err("not a git repository".into());
         }
         Err(e) => {
-            eprintln!("Error finding project root: {e}");
-
+            display::emit(LogLevel::Error, format!("Error finding project root: {e}"));
             return Err(Box::<dyn std::error::Error>::from(e));
         }
     };
 
     if let Err(e) = std::fs::create_dir_all(project_root.join(".vizier")) {
-        eprintln!("Error creating .vizier directory: {e}");
-
+        display::emit(
+            LogLevel::Error,
+            format!("Error creating .vizier directory: {e}"),
+        );
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
@@ -246,9 +333,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Err(e) = std::fs::create_dir_all(tools::get_todo_dir()) {
-        eprintln!(
-            "Error creating TODO directory {:?}: {e}",
-            tools::get_todo_dir()
+        display::emit(
+            LogLevel::Error,
+            format!(
+                "Error creating TODO directory {:?}: {e}",
+                tools::get_todo_dir()
+            ),
         );
 
         return Err(Box::<dyn std::error::Error>::from(e));
