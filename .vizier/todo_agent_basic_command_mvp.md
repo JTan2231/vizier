@@ -35,3 +35,13 @@ Notes
 - Library/tool choices for PR creation are open; tolerate no-remote and private forks gracefully.
 - Security: redact secrets in prompts; cap snapshot length to budget.
 - Performance: stream partial progress via status events; avoid long silent waits.
+Update (2025-10-04): Product acceptance clarified and cross-linked:
+- Command: `vizier agent run [<todo-name>]` with interactive picker only on TTY.
+- Isolation: separate branch; main/staged changes untouched.
+- Outcome: includes TODO id/title, branch name, commit count, PR URL if opened or exact local review steps; gate_state captured.
+- Save: `vizier save` updates TODO and Snapshot; AGENTS.md Decision Log append.
+- Session logging: capture workflow_type=agent_basic and branch/PR metadata.
+- Respect stdout/stderr contract and terminal-minimal constraints. Anchors: vizier-cli/src/actions.rs, vizier-core/src/vcs.rs, auditor.rs, chat.rs, display.rs; tests in tests/src/main.rs.
+
+---
+

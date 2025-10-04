@@ -35,3 +35,7 @@ Anchors
 Notes
 - Keep implementation open: adapter in `display` should accept a config describing TTY, progress mode, verbosity, and ANSI enabled; CLI populates it from flags + IsTerminal detection.
 - Preserve current behavior for Chat TUI (alt screen) unaffected; this task concerns CLI line-oriented surfaces.
+Update (2025-10-04): Same as stdout_stderr_contract_and_verbosity.md — tightened product acceptance, added JSON/NDJSON behaviors, and test matrix requirements. Cross-linked to Outcome summaries and Agent Basic Command tasks to ensure consistent Outcome rendering.
+
+---
+

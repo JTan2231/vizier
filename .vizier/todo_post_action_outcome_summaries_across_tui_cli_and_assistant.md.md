@@ -51,3 +51,7 @@ Renderer-neutral + terminal-minimal constraints (2025-10-02)
 
 ---
 
+Update (2025-10-04): Outcome CLI-first aligned with stdout/stderr contract and verbosity levers. The canonical epilogue is sourced from Auditor/VCS facts and emitted to stdout as outcome.v1 (when --json) or a compact human block otherwise. Assistant final mirrors the same facts. Add integration tests covering: (TTY x non-TTY) x (quiet, default, -v/-vv) ensuring no ANSI in non-TTY and stable Outcome presence. Cross-link tightened with stdout/stderr contract TODO and Agent Basic Command Outcome fields.
+
+---
+

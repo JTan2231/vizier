@@ -6,6 +6,7 @@ Narrative theme
 Active threads
 - Agent Basic Command (Workflow B MVP): ACTIVE. Product stance locked: pick a TODO → apply agent changes on an isolated branch with a templated prompt (references the TODO + current Snapshot) → optionally open a PR → await human review → finalize via `vizier save` on merge. Safety: main remains untouched until merge; abort is clean. Outcome must report {todo, branch, commit_count, pr_url?/review_instructions, gate_state}. [Depends on: VCS/Auditor/Chat/Config]
 - Terminal-first minimal TUI + renderer-neutral events: ACTIVE. Avoid fullscreen/alt-screen; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumable by CLI now and future surfaces later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
+- Stdout/stderr contract + verbosity: ACTIVE. Establish TTY-gated progress, -q/-v/-vv levers, and a stable stdout Outcome line or JSON (outcome.v1). Stderr reserved for progress/errors per verbosity; no ANSI in non-TTY. [Cross: Outcome summaries, Integration tests]
 - Commit isolation + gates: ACTIVE. Conversation- and agent-sourced changes are staged behind a Pending Commit gate. Per-hunk accept/reject remains open. [Depends on: Code State]
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless user opts out (e.g., “discuss-only”). CLI will surface a one-line Outcome when DAP acts. [Cross: Outcome summaries, Integration tests]
 - Outcome summaries: ACTIVE. Canonical epilogue for actions is a compact, factual Outcome block sourced from Auditor/VCS facts. CLI-first delivery with a stable JSON schema outcome.v1 and human-readable epilogue printed to stdout. Assistant final message mirrors the Outcome. [Depends on: Auditor]
@@ -35,7 +36,7 @@ Code state (behaviors that matter)
 - VCS push uses libgit2 with credentials callback: supports credential helper and ssh-agent; does not attempt file-based SSH keys; error messages are generic. [Newly noted]
 
 Acceptance checkpoints (selected)
-- Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; TTY-gated progress. JSON modes obey schema outcome.v1. [New]
+- Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; TTY-gated progress. JSON modes obey schema outcome.v1. [Active]
 - Pending Commit gate guards conversation changes with confirm_destructive=true and auto_commit=false.
 - Conversation commits only touch .vizier; preserve pre-existing staged changes exactly (A/M/D/R).
 - Non-interactive CLI requires explicit consent; never opens editor.
