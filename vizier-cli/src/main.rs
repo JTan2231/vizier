@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::{io::IsTerminal, path::PathBuf};
 
 use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use vizier_core::{
@@ -157,6 +157,10 @@ struct AskCmd {
     /// The user message to process in a single-shot run
     #[arg(value_name = "MESSAGE")]
     message: Option<String>,
+
+    /// Read the user message from the specified file instead of an inline argument
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    file: Option<PathBuf>,
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -248,6 +252,38 @@ fn read_all_stdin() -> Result<String, std::io::Error> {
 }
 
 fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{Error, ErrorKind};
+
+    if cmd.message.is_some() && cmd.file.is_some() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "cannot provide both MESSAGE and --file; choose one input source",
+        )
+        .into());
+    }
+
+    if let Some(path) = &cmd.file {
+        let msg = std::fs::read_to_string(path).map_err(|err| {
+            Error::new(
+                err.kind(),
+                format!("failed to read {}: {err}", path.display()),
+            )
+        })?;
+
+        if msg.trim().is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "file {} is empty; provide non-empty content",
+                    path.display()
+                ),
+            )
+            .into());
+        }
+
+        return Ok(msg);
+    }
+
     match cmd.message.as_deref() {
         Some("-") => {
             // Explicit “read stdin”
@@ -270,6 +306,57 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
                 Err("no MESSAGE provided; pass a message, use '-', or pipe stdin".into())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn resolve_ask_message_reads_file_contents() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tmp = tempfile::NamedTempFile::new()?;
+        write!(tmp, "File-backed prompt")?;
+
+        let cmd = AskCmd {
+            message: None,
+            file: Some(tmp.path().to_path_buf()),
+        };
+
+        let resolved = resolve_ask_message(&cmd)?;
+        assert_eq!(resolved, "File-backed prompt");
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_ask_message_rejects_both_sources() {
+        let cmd = AskCmd {
+            message: Some("inline".to_string()),
+            file: Some(PathBuf::from("ignored")),
+        };
+
+        let err = resolve_ask_message(&cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot provide both MESSAGE and --file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_ask_message_rejects_empty_file() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::NamedTempFile::new()?;
+
+        let cmd = AskCmd {
+            message: None,
+            file: Some(tmp.path().to_path_buf()),
+        };
+
+        let err = resolve_ask_message(&cmd)
+            .expect_err("empty file should produce an error for ask input");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        Ok(())
     }
 }
 
