@@ -3,10 +3,14 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g., v1.0.0)'
+      version_type:
+        description: 'Version bump type'
         required: true
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -17,6 +21,43 @@ jobs:
     
     steps:
     - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Need full history for tags
+    
+    - name: Get current version
+      id: get_version
+      run: |
+        # Get the latest tag, default to v0.0.0 if none exists
+        CURRENT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Calculate new version
+      id: new_version
+      run: |
+        CURRENT="${{ steps.get_version.outputs.current_version }}"
+        # Strip the 'v' prefix
+        VERSION=${CURRENT#v}
+        
+        # Split into major.minor.patch
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+        
+        case "${{ inputs.version_type }}" in
+          major)
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            ;;
+          minor)
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            ;;
+          patch)
+            PATCH=$((PATCH + 1))
+            ;;
+        esac
+        
+        NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+        echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
     
     - name: Build
       run: cargo build --release || cargo build --release
@@ -27,8 +68,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: vizier
-        release_name: vizier
+        tag_name: ${{ steps.new_version.outputs.version }}
+        release_name: ${{ steps.new_version.outputs.version }}
         draft: false
         prerelease: false
     
@@ -39,5 +80,5 @@ jobs:
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./target/release/vizier
-        asset_name: vizier
+        asset_name: vizier-${{ steps.new_version.outputs.version }}
         asset_content_type: application/octet-stream
