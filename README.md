@@ -54,6 +54,8 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 ```bash
 # One-shot: Convert a request into TODOs and snapshot updates
 vizier ask "add retry logic to the API client"
+# or pull the prompt from a file
+vizier ask --file specs/retry.md
 
 # Interactive: Launch the chat TUI for ongoing conversation
 vizier chat
@@ -66,7 +68,7 @@ vizier save HEAD~3..HEAD # commits specific range
 ### Core Commands
 
 #### Conversation & Editing
-- `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits
+- `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits (use `--file PATH` to read the prompt from disk)
 - `vizier chat` — Interactive TUI with split diff view and narrative maintenance
 
 #### Snapshot Management
