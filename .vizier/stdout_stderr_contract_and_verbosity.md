@@ -52,3 +52,12 @@ Cross-links:
 
 ---
 
+Protocol Mode alignment
+- Ensure the contract explicitly distinguishes Chat vs Protocol behavior:
+  - Chat: TTY-gated progress allowed; human-readable epilogue on stdout by default; `--json` optional.
+  - Protocol: no ANSI ever; stdout carries only JSON/NDJSON; stderr quiet unless errors and -vv; closed-stdin safe.
+- Add acceptance tests for: non-TTY emits zero ANSI in both modes; Protocol mode never writes human text to stdout; exit codes categorized.
+- Cross-link to TODO: protocol_mode_v1_and_mode_switch.
+
+---
+
