@@ -15,44 +15,10 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 
-const CHAT_PROMPT: &str = r#"
-<mainInstruction>
-Your Role: Be a conversational editor who keeps the project’s story straight. As the user talks, you turn their words into:
-1. **Live TODOs** — actionable steps that move the project forward.
-2. **A Running Snapshot** — a clear picture of where the project stands right now.
-
-### SNAPSHOT IN CHAT
-- Think of it as a shared whiteboard, updated as we talk.
-- Keep it minimal: just enough CODE STATE (what the software *does*) and NARRATIVE STATE (why it matters, where it’s going) so we never lose the thread.
-- Update incrementally — small corrections, not wholesale rewrites.
-
-### HOW TO INTERACT
-- Stay responsive: listen, reflect, and edit as the conversation unfolds.
-- Don’t wait until the end to deliver; weave TODOs and snapshot deltas into the dialogue.
-- Use natural language — explain changes as if you’re narrating aloud, not writing a report.
-
-### TODO STYLE
-- Default to **Product Level**: user-visible behavior, UX affordances, acceptance criteria.
-- You may anchor with pointers (files, commands) for orientation.
-- Drop to implementation detail *only if* (a) user requests, (b) correctness/safety demands it, or (c) the snapshot already fixes the constraint.
-- Keep TODOs tied to real tensions in behavior — no vague “investigate X.”
-
-### CONVERSATIONAL PRINCIPLES
-- Don’t just echo — interpret. Surface the underlying theme or problem.
-- Every TODO should feel like a natural next beat in the story.
-- Duplicate threads = noise; merge rather than fork.
-- When the user sounds lost (“what’s the state again?”), pull context from the snapshot and remind them.
-
-### VOICE
-- Match the user’s tone. Be crisp, direct, and collaborative.
-- Think like a pair-programmer: suggest, clarify, and refine without ceremony.
-- The response itself should *be* the work (snapshot note + TODOs), not a plan to do it later.
-
-### GOLDEN RULES
-- A good TODO in chat feels like a prompt card everyone agrees on: clear enough to act, light enough to adapt.
-- A good snapshot is a quick “state of play” that lets anyone rejoin the conversation without rereading the log.
-</mainInstruction>
-"#;
+use crate::{
+    auditor,
+    config::{self, SystemPrompt},
+};
 
 fn get_spinner_char(index: usize) -> String {
     const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -60,6 +26,9 @@ fn get_spinner_char(index: usize) -> String {
 }
 
 // TODO: Not sure I like having this duplicate enum with `editor.rs`
+//
+// TODO: with the auditor refactor in the chat, these both need to be rethough
+//       really they should just be removed
 pub enum ExitReason {
     Quit(Vec<wire::types::Message>),
     Restart(Vec<wire::types::Message>),
@@ -69,8 +38,6 @@ pub enum ExitReason {
 //       Though coming to this later, the TUI parts probably need their own auditor
 //       Initially separate, but merged later
 pub struct Chat {
-    api: wire::api::API,
-    messages: Vec<wire::types::Message>,
     input: String,
     spinner_increment: usize,
 
@@ -88,7 +55,7 @@ pub struct Chat {
 
     // NOTE: This should _always_ be None when we are not waiting on the model, and should have a
     //       value otherwise
-    receiving_handle: Option<tokio::task::JoinHandle<Vec<wire::types::Message>>>,
+    receiving_handle: Option<tokio::task::JoinHandle<wire::types::Message>>,
 }
 
 impl Chat {
@@ -101,8 +68,6 @@ impl Chat {
             });
 
         Chat {
-            api: wire::api::API::OpenAI(wire::api::OpenAIModel::GPT5),
-            messages,
             input: String::new(),
             spinner_increment: 0,
 
@@ -121,30 +86,16 @@ impl Chat {
 
     async fn send_message(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.input.is_empty() {
-            self.messages.extend(vec![wire::types::Message {
-                system_prompt: String::new(),
-                api: self.api.clone(),
-                message_type: wire::types::MessageType::User,
-                content: self.input.clone(),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-                input_tokens: 0,
-                output_tokens: 0,
-            }]);
-
             let tx_clone = self.tx.clone();
-            let api_clone = self.api.clone();
-            let message_history = self.messages.clone();
-            let system_prompt = CHAT_PROMPT.to_string();
+            let system_prompt = config::get_system_prompt_with_meta(Some(SystemPrompt::Chat))?;
             let tools = crate::tools::get_tools();
+            let input = self.input.clone();
             self.receiving_handle = Some(tokio::spawn(async move {
-                wire::prompt_with_tools_and_status(
-                    tx_clone,
-                    api_clone,
-                    &system_prompt,
-                    message_history,
+                auditor::Auditor::llm_request_with_tools_no_display(
+                    system_prompt,
+                    input,
                     tools,
+                    tx_clone,
                 )
                 .await
                 .unwrap()
@@ -225,63 +176,63 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
 
             app.chat_height = chunks[0].height;
 
-            let mut messages: Vec<Line> =
-                app.messages
-                    .iter()
-                    .filter(|m| {
-                        m.message_type != wire::types::MessageType::FunctionCallOutput
-                            && m.message_type != wire::types::MessageType::System
-                    })
-                    .flat_map(|m| {
-                        let prefix = format!(
-                            "{}: ",
-                            match m.message_type {
-                                wire::types::MessageType::User => "You",
-                                wire::types::MessageType::Assistant => "Assistant",
-                                wire::types::MessageType::FunctionCall => "Assistant Tool Call",
-                                _ => "???",
+            let mut messages: Vec<Line> = auditor::Auditor::get_messages()
+                .iter()
+                .filter(|m| {
+                    m.message_type != wire::types::MessageType::FunctionCallOutput
+                        && m.message_type != wire::types::MessageType::System
+                })
+                .flat_map(|m| {
+                    let prefix = format!(
+                        "{}: ",
+                        match m.message_type {
+                            wire::types::MessageType::User => "You",
+                            wire::types::MessageType::Assistant => "Assistant",
+                            wire::types::MessageType::FunctionCall => "Assistant Tool Call",
+                            _ => "???",
+                        }
+                    );
+
+                    let text = match m.message_type {
+                        wire::types::MessageType::User | wire::types::MessageType::Assistant => {
+                            m.content.clone()
+                        }
+                        wire::types::MessageType::FunctionCall => m
+                            .name
+                            .clone()
+                            .unwrap_or("[unnamed function call]".to_string()),
+                        _ => "???".to_string(),
+                    };
+
+                    let wrapped = wrap_text_to_width(&text, chunks[0].width.saturating_sub(4));
+
+                    let lines: Vec<Line> = wrapped
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, line)| {
+                            if i == 0 {
+                                Line::from(vec![
+                                    Span::styled(
+                                        prefix.clone(),
+                                        Style::default().fg(if prefix.contains("Assistant") {
+                                            Color::Cyan
+                                        } else {
+                                            Color::Green
+                                        }),
+                                    ),
+                                    Span::raw(line.to_string())
+                                        .style(Style::default().fg(Color::Gray)),
+                                ])
+                            } else {
+                                Line::from(Span::raw(line.to_string()))
+                                    .style(Style::default().fg(Color::Gray))
                             }
-                        );
+                        })
+                        .collect();
 
-                        let text = match m.message_type {
-                            wire::types::MessageType::User
-                            | wire::types::MessageType::Assistant => m.content.clone(),
-                            wire::types::MessageType::FunctionCall => m
-                                .name
-                                .clone()
-                                .unwrap_or("[unnamed function call]".to_string()),
-                            _ => "???".to_string(),
-                        };
-
-                        let wrapped = wrap_text_to_width(&text, chunks[0].width.saturating_sub(4));
-
-                        let lines: Vec<Line> = wrapped
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, line)| {
-                                if i == 0 {
-                                    Line::from(vec![
-                                        Span::styled(
-                                            prefix.clone(),
-                                            Style::default().fg(if prefix.contains("Assistant") {
-                                                Color::Cyan
-                                            } else {
-                                                Color::Green
-                                            }),
-                                        ),
-                                        Span::raw(line.to_string())
-                                            .style(Style::default().fg(Color::Gray)),
-                                    ])
-                                } else {
-                                    Line::from(Span::raw(line.to_string()))
-                                        .style(Style::default().fg(Color::Gray))
-                                }
-                            })
-                            .collect();
-
-                        lines
-                    })
-                    .collect();
+                    lines
+                })
+                .collect();
 
             app.line_count = messages.len() as u16;
 
@@ -340,28 +291,22 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
         // TODO: This should probably be used for streaming later on, but for now it's just for
         //       tool updates
         if let Ok(status) = app.rx.try_recv() {
-            app.messages.extend(vec![wire::types::Message {
-                system_prompt: String::new(),
-                api: app.messages.iter().last().unwrap().api.clone(),
-                message_type: wire::types::MessageType::Assistant,
-                content: status,
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-                input_tokens: 0,
-                output_tokens: 0,
-            }]);
+            auditor::Auditor::add_message(
+                config::get_config()
+                    .provider
+                    .new_message(status)
+                    .as_assistant()
+                    .build(),
+            );
         }
 
         if let Some(handle) = &mut app.receiving_handle {
             if handle.is_finished() {
-                let new_messages = handle.await?;
-                let last_message = new_messages.last().unwrap().clone();
+                let last_message = handle.await?;
 
                 app.input_tokens += last_message.input_tokens;
                 app.output_tokens += last_message.output_tokens;
 
-                app.messages.extend(vec![last_message]);
                 app.receiving_handle = None;
             }
         }
@@ -370,7 +315,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        return Ok(ExitReason::Quit(app.messages.clone()));
+                        return Ok(ExitReason::Quit(vec![]));
                     }
                     KeyCode::Char('j') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         app.input.push('\n');

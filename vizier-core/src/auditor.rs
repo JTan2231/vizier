@@ -74,21 +74,17 @@ async fn prompt_wire_with_tools(
     messages: Vec<wire::types::Message>,
     tools: Vec<wire::types::Tool>,
 ) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+    // TODO: Mock server??? why did we even implement it if not to use it
     #[cfg(feature = "mock_llm")]
     {
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
         let mut new_messages = messages.clone();
-        new_messages.push(wire::types::Message {
-            message_type: wire::types::MessageType::Assistant,
-            content: "mock response".to_string(),
-            api: api.clone(),
-            system_prompt: system_prompt.to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-            input_tokens: 0,
-            output_tokens: 0,
-        });
+        new_messages.push(
+            client
+                .new_message("mock response".to_string())
+                .as_assistant()
+                .build(),
+        );
 
         Ok(new_messages)
     }
@@ -121,7 +117,12 @@ impl Auditor {
         }
     }
 
-    fn add_message(message: wire::types::Message) {
+    /// Clones the message history in the auditor
+    pub fn get_messages() -> Vec<wire::types::Message> {
+        AUDITOR.lock().unwrap().messages.clone()
+    }
+
+    pub fn add_message(message: wire::types::Message) {
         AUDITOR.lock().unwrap().messages.push(message);
     }
 
@@ -353,6 +354,39 @@ impl Auditor {
         Self::replace_messages(&response);
 
         Ok(response.last().unwrap().clone())
+    }
+
+    // TODO: Rectify this with the function above
+    pub async fn llm_request_with_tools_no_display(
+        system_prompt: String,
+        user_message: String,
+        tools: Vec<wire::types::Tool>,
+        request_tx: tokio::sync::mpsc::Sender<String>,
+    ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
+        Self::add_message(
+            crate::config::get_config()
+                .provider
+                .new_message(user_message)
+                .as_user()
+                .build(),
+        );
+
+        let messages = AUDITOR.lock().unwrap().messages.clone();
+
+        let response = prompt_wire_with_tools(
+            &*crate::config::get_config().provider,
+            request_tx.clone(),
+            &system_prompt,
+            messages.clone(),
+            tools.clone(),
+        )
+        .await?;
+
+        let last = response.last().unwrap().clone();
+
+        Self::add_message(last.clone());
+
+        Ok(last)
     }
 }
 

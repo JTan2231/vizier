@@ -320,7 +320,7 @@ async fn save(
     }
 
     let response = Auditor::llm_request_with_tools(
-        crate::config::get_system_prompt_with_meta()?,
+        crate::config::get_system_prompt_with_meta(None)?,
         save_instruction,
         tools::get_tools(),
     )
@@ -578,7 +578,7 @@ pub async fn inline_command(
     user_message: String,
     push_after_commit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let system_prompt = match crate::config::get_system_prompt_with_meta() {
+    let system_prompt = match crate::config::get_system_prompt_with_meta(None) {
         Ok(s) => s,
         Err(e) => {
             display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));

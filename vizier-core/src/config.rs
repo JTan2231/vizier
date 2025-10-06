@@ -8,7 +8,7 @@ use wire::{
     new_client_with_options, openai,
 };
 
-use crate::{COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
+use crate::{CHAT_PROMPT, COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
 
 pub const DEFAULT_MODEL: &str = "gpt-5";
 
@@ -21,6 +21,7 @@ pub enum SystemPrompt {
     Base,
     Editor,
     Commit,
+    Chat,
 }
 
 #[derive(Clone)]
@@ -63,6 +64,13 @@ impl Config {
                     match std::fs::read_to_string(prompt_directory.join("COMMIT_PROMPT.md")) {
                         Ok(s) => s,
                         Err(_) => COMMIT_PROMPT.to_string(),
+                    },
+                ),
+                (
+                    SystemPrompt::Chat,
+                    match std::fs::read_to_string(prompt_directory.join("CHAT_PROMPT.md")) {
+                        Ok(s) => s,
+                        Err(_) => CHAT_PROMPT.to_string(),
                     },
                 ),
             ]),
@@ -152,6 +160,10 @@ impl Config {
             config.prompt_store.insert(SystemPrompt::Commit, prompt);
         }
 
+        if let Some(prompt) = find_string(&file_config, CHAT_PROMPT_KEY_PATHS) {
+            config.prompt_store.insert(SystemPrompt::Chat, prompt);
+        }
+
         Ok(config)
     }
 
@@ -212,6 +224,13 @@ const COMMIT_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["prompts", "COMMIT_PROMPT"],
     &["prompts", "commit"],
     &["prompts", "commit_prompt"],
+];
+const CHAT_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["CHAT_PROMPT"],
+    &["chat_prompt"],
+    &["prompts", "CHAT_PROMPT"],
+    &["prompts", "chat"],
+    &["prompts", "chat_prompt"],
 ];
 
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -310,8 +329,14 @@ pub fn get_config() -> Config {
     CONFIG.read().unwrap().clone()
 }
 
-pub fn get_system_prompt_with_meta() -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = get_config().get_prompt(SystemPrompt::Base);
+pub fn get_system_prompt_with_meta(
+    base_prompt: Option<SystemPrompt>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut prompt = if let Some(prompt) = base_prompt {
+        get_config().get_prompt(prompt)
+    } else {
+        get_config().get_prompt(SystemPrompt::Base)
+    };
 
     prompt.push_str("<meta>");
 
