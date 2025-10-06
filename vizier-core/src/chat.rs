@@ -2,7 +2,7 @@ use std::error::Error;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -247,7 +247,7 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
             }
 
             let messages_list = Paragraph::new(
-                messages[app.scroll as usize
+                messages[std::cmp::min(app.scroll as usize, messages.len())
                     ..std::cmp::min((app.scroll + app.chat_height) as usize, messages.len())]
                     .iter()
                     .cloned()
@@ -312,8 +312,8 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
         }
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
+            match event::read()? {
+                Event::Key(key) => match key.code {
                     KeyCode::Char('q') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         return Ok(ExitReason::Quit(vec![]));
                     }
@@ -348,7 +348,20 @@ pub async fn run_chat<B: ratatui::backend::Backend>(
                         app.send_message().await?;
                     }
                     _ => {}
-                }
+                },
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        app.scroll = std::cmp::min(
+                            app.scroll + (app.chat_height / 2),
+                            app.line_count.saturating_sub(app.chat_height) + 1,
+                        );
+                    }
+                    MouseEventKind::ScrollUp => {
+                        app.scroll = app.scroll.saturating_sub(app.chat_height / 2);
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }
