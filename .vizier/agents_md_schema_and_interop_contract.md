@@ -17,3 +17,7 @@ Cross-links: Outcome summaries, Session logging, Agent Basic Command.
 
 ---
 
+Deprecation (2025-10-06): Superseded by todo_agents_md_schema_and_interop_contract.md. This file is now a redirect stub for backlinks; the canonical, actively maintained content lives in the todo_* file.
+
+---
+
