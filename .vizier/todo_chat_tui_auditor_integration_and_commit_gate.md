@@ -18,3 +18,21 @@ Acceptance Criteria
 
 Pointers
 - Surfaces: vizier-core::{auditor.rs, vcs.rs, chat.rs}; vizier-cli/src/actions.rs; TUI chat panel rendering.
+
+---
+Progress update (current):
+- Chat path now routes through the Auditor. Auditor can observe/chat events and produce facts for post-action summaries.
+
+Remaining scope to close this thread:
+- Ensure Pending Commit gate engages consistently for chat-initiated changes (respect confirm_destructive and auto_commit settings). 
+- Emit a unified Outcome epilogue (human + outcome.v1 JSON) sourced from Auditor facts at the end of each chat operation.
+- Wire session persistence hooks so each chat session writes a session.json record with the audited facts and workflow metadata.
+
+Acceptance criteria additions:
+- When chat applies changes, the Auditor shows A/M/D/R counts and the CLI prints a one-line Outcome and JSON (when --json) that matches these facts.
+- With auto_commit=false, chat changes remain pending until explicitly saved; with confirm_destructive=true, destructive diffs require confirmation.
+- After a chat completes, a session JSON artifact exists on disk and validates against the session schema (see session logging TODO).
+
+
+---
+

@@ -48,3 +48,22 @@ Persist each assistant session to the filesystem as structured JSON so it can be
 # Notes
 - Favor append-only with atomic writes (write tmp, fsync, rename). Keep files <10MB for quick load.
 - Add integration tests for write/read + idempotency + provenance locking behavior.
+
+---
+Status update:
+- Chat path now routes through the Auditor, providing authoritative A/M/D/R facts per chat operation.
+- Session persistence is NOT wired yet; sessions are not being saved.
+
+Next steps to close gap:
+- Hook session writer at chat operation boundaries to persist audited facts + workflow metadata (workflow_type=chat, thinking_level, mode, timestamps, repo state, outcome summary).
+- Ensure atomic write to session.json (temp file + rename) and schema validation.
+- Expose session path/location in the Outcome epilogue for discoverability.
+
+Acceptance criteria additions:
+- After any chat operation, a session JSON artifact exists at the configured log location and validates against the schema.
+- The artifact includes Auditor facts (A/M/D/R, changed paths), gate state, and Outcome identifiers.
+- With --mode protocol, emit the session record path as part of the final JSON Outcome.
+
+
+---
+
