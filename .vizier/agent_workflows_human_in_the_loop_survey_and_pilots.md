@@ -29,3 +29,7 @@ Pointers
 
 ---
 
+Deprecation (2025-10-06): Superseded by todo_agent_workflows_human_in_the_loop_survey_and_pilots.md. This file now serves as a redirect stub for backlinks.
+
+---
+

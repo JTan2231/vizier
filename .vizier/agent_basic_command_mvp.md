@@ -16,3 +16,7 @@ Update (2025-10-04): Lock MVP on Workflow B (apply-to-branch) and Outcome facts.
 
 ---
 
+Deprecation (2025-10-06): Superseded by todo_agent_basic_command_mvp.md. Use the canonical file for all updates; this remains as a redirect stub.
+
+---
+

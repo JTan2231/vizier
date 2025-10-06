@@ -8,3 +8,7 @@ Update (2025-10-04): CLI-first delivery; JSON schema named outcome.v1; explicit 
 
 ---
 
+Deprecation (2025-10-06): Superseded by todo_post_action_outcome_summaries_across_tui_cli_and_assistant.md.md. Future updates land there; this is a shim for backlinks.
+
+---
+

@@ -71,3 +71,7 @@ Acceptance criteria additions:
 
 ---
 
+Canonicalization note (2025-10-06): This is the canonical TODO for Outcome summaries across surfaces. Duplicate consolidated: post_action_outcome_summaries_across_tui_cli_and_assistant.md.md (now a redirect stub).
+
+---
+

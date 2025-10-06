@@ -1,0 +1,4 @@
+Canonicalization note (2025-10-06): This is the canonical TODO for the stdout/stderr contract and verbosity work. Duplicates consolidated: stdout_stderr_contract_and_verbosity.md. Legacy file now carries a redirect stub to this artifact. Cross-links and acceptance remain here.
+
+---
+
