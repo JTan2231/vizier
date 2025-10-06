@@ -98,7 +98,7 @@ pub async fn bootstrap_snapshot(
         options.issues_provider.clone(),
     );
 
-    let system_prompt = config::get_system_prompt_with_meta()?;
+    let system_prompt = config::get_system_prompt_with_meta(None)?;
 
     let response =
         Auditor::llm_request_with_tools(system_prompt, instruction, tools::get_snapshot_tools())
