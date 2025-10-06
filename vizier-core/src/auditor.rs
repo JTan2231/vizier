@@ -27,10 +27,16 @@ impl Drop for AuditorCleanup {
             if auditor.messages.len() > 0 && !config::get_config().no_session {
                 let output = serde_json::to_string_pretty(&auditor.messages).unwrap();
                 if let Some(config_dir) = config::base_config_dir() {
+                    let sessions_dir = config_dir.join("vizier").join("sessions");
+                    if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+                        display::warn(format!("Failed to create sessions directory: {}", e));
+                        display::warn("Session left unsaved");
+
+                        return;
+                    }
+
                     match std::fs::write(
-                        config_dir
-                            .join("vizier")
-                            .join(format!("./{}.json", auditor.session_id)),
+                        sessions_dir.join(format!("./{}.json", auditor.session_id)),
                         output.clone(),
                     ) {
                         Ok(_) => {
