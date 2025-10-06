@@ -55,3 +55,19 @@ Update (2025-10-04): Outcome CLI-first aligned with stdout/stderr contract and v
 
 ---
 
+
+---
+Status update:
+- Auditor now backs the chat path, so Outcome summaries can source A/M/D/R facts reliably after chat operations.
+
+Clarifications:
+- Ensure the Outcome epilogue appears after every chat action and matches Auditor facts exactly.
+- In protocol mode, the outcome.v1 JSON must include audited counts, file lists (optional, bounded), and gate state.
+
+Acceptance criteria additions:
+- For a chat that produces no changes, Outcome explicitly reports zero-diff state with a clear message and JSON {diff:false}.
+- For destructive diffs with confirm_destructive=true, Outcome reflects "blocked: confirmation required" and no changes applied.
+
+
+---
+
