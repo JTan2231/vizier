@@ -67,3 +67,20 @@ Acceptance criteria additions:
 
 ---
 
+Persist sessions as JSON artifacts and surface path in Outcome.
+Describe behavior:
+- After each chat/operation, write a structured session record to .vizier/sessions/<session_id>/session.json, updating checkpoints at key transitions (e.g., gate open/accept/reject) and finalizing at session end. The Outcome epilogue (human and outcome.v1 JSON) includes the session file path for discoverability. Honors session_logging on/off and redaction settings; no interactive prompts are introduced. (thread: session-logging; snapshot: Running Snapshot — updated)
+
+Acceptance Criteria:
+- File creation: A session.json exists under .vizier/sessions/<id>/ after any chat operation and at session end; includes workflow_type (chat), mode, thinking_level, repo state, and Auditor/VCS facts (A/M/D/R counts and changed paths), gate state, and a concise outcome summary/identifiers.
+- Checkpoints + immutability: In-flight writes use a temporary file and atomic rename; once a session is closed, subsequent runs never overwrite it. Checkpoint updates are reflected in updated_at.
+- Outcome linkage: CLI epilogue prints the session file path; outcome.v1 JSON includes session.path. In protocol mode, stdout carries only JSON/NDJSON and includes the same path; no ANSI ever.
+- Config levers: session_logging default on; can be disabled via config/flag. Redaction list (e.g., secrets, env) applied before writes. CLI flags override config.
+- Safety bounds: Closed-stdin never blocks session persistence. Non-TTY contexts behave identically (no ANSI). Files remain reasonably small for quick load.
+- Tests: Integration tests validate (a) file creation and schema validity, (b) atomic write behavior and idempotency, (c) redaction applied, (d) disable path respected, (e) Outcome/JSON includes session.path across chat and protocol modes.
+
+Pointers:
+- vizier-core/src/chat.rs (chat boundaries/hooks), vizier-core/src/auditor.rs (facts), vizier-core/src/display.rs and vizier-cli/src/actions.rs (Outcome epilogue), config schema for session_logging/redact.
+
+Implementation Notes (safety/correctness):
+- Use write-to-temp + fsync + atomic rename for each checkpoint/finalization; never partially written JSON. Validate against a minimal MVP schema before rename.

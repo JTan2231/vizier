@@ -29,4 +29,22 @@ Pointers
 - Surfaces: vizier-core/src/display.rs (status/header), vizier-core/src/config.rs (schema, precedence, profile IO), vizier-core/src/chat.rs (keybindings/help, panel routing), vizier-cli (flags for profile selection).
 
 Notes
-- Keep implementation open. Ensure atomic profile writes and clear error reporting in-panel if write fails.
+- Keep implementation open. Ensure atomic profile writes and clear error reporting in-panel if write fails.Expose Config inspector/editor with source badges (CLI-first); TUI panel deferred.
+Describe behavior:
+- Provide a CLI-first way to view and adjust effective config with clear precedence (CLI > session > profile > default). Show current values with source labels; allow edits scoped to Session or persisted to a Profile with validation and confirmation. Changes reflect immediately in chat/meta headers; TUI panel is deferred until a UI surface exists. (thread: Control levers surface; snapshot: Running Snapshot — updated)
+
+Acceptance Criteria:
+- Inspect: A CLI command shows effective config values for key levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking_level, profile) with per-key source {cli|session|profile|default}. Output is human-readable by default; `--json` returns a stable machine shape.
+- Edit (session scope): A CLI command updates allowed keys for the current session; changes take effect immediately (meta/header reflects new thinking_level and prompt path). CLI-sourced keys remain read-only and are not changed.
+- Edit (persisted profile): A CLI command persists validated changes to the selected profile (or creates a new one if specified). On next launch (or reload), those values are effective per precedence. CLI-sourced keys are unchanged.
+- Validation + confirmation: Invalid inputs are rejected with helpful messages; persisting changes requires a confirmation step that previews a diff-like summary of keys affected and their scopes.
+- Precedence guardrails: Attempting to modify a CLI-sourced field is blocked with an explanation of precedence; session changes cannot override CLI-provided values.
+- Output/IO contract: Human output is line-oriented and respects -q/-v/-vv; no ANSI in non-TTY. `--json`/protocol mode emit only structured JSON on stdout; stderr carries diagnostics gated by verbosity.
+- Outcome: After apply/persist, an Outcome line summarizes changed keys and scope (e.g., “Config updated: 3 keys (session)”); hidden with --quiet; included in outcome.v1 JSON when requested.
+- Tests: Cover inspect vs set (session/profile), validation failures, precedence blocking of CLI-sourced keys, atomic persistence, and output contracts across TTY vs non-TTY and human vs JSON modes.
+
+Pointers:
+- vizier-core/src/config.rs (schema, precedence, profile IO), vizier-cli (new config subcommands; flags), vizier-core/src/display.rs (meta/header refresh), vizier-core/src/chat.rs (expose effective config to headers).
+
+Implementation Notes (safety/correctness):
+- Persist with atomic writes (temp file + fsync + rename). Record provenance per key. Never modify CLI-sourced values.

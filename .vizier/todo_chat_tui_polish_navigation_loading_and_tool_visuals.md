@@ -56,3 +56,30 @@ Update (2025-10-06): Add ergonomics thread for scrolling in chat UI.
 
 ---
 
+Standardize loader lifecycle and tool-call summaries; CLI single-line status that collapses to Outcome (CLI-first).
+Define minimal, terminal-first feedback during chat/tool activity and expose renderer-neutral events so future UIs can render richer views. While work is in progress, TTY shows a single status line with a spinner; on completion it collapses into a concise Outcome line sourced from Auditor/VCS facts. Tool calls emit compact summary events; rich “cards” and auto-scroll are deferred until a TUI surface exists. (thread: Terminal-minimal TUI + renderer-neutral events; cross: Outcome summaries, Native chat + navigation)
+
+Acceptance Criteria:
+- Events (renderer-neutral):
+  - status: emitted on start/progress/finish with {phase, message, started_at, finished_at?, elapsed_ms?}.
+  - tool_begin/tool_end: include {tool, status, started_at, finished_at, elapsed_ms, summary} with bounded payload refs (e.g., path or truncated text); deterministic ordering across message/tool/status/outcome.
+  - outcome: final event carries audited A/M/D/R counts and gate state; aligns with outcome.v1.
+- CLI rendering (TTY-gated):
+  - During activity, stderr shows a single-line spinner/status only when TTY and not --quiet; in non-TTY there is no ANSI or cursor control output.
+  - On completion, the status collapses to a 1-line human Outcome on stdout; the assistant final mirrors the same facts. With --json/--json-stream, stdout emits only JSON/NDJSON; no human prose.
+- Tool-call summaries:
+  - For each tool, print a compact one-line header (name, duration, status) to stderr at -v/-vv on TTY; default level remains quiet except the single status line. No multi-line “cards” yet.
+  - NDJSON (--json-stream) includes tool lifecycle events with summary fields; payloads are truncated/bounded.
+- Safety/portability:
+  - No alt-screen/fullscreen redraws; behavior is stable under tmux/SSH and when piped. Non-TTY never emits ANSI/control sequences.
+  - Outcome appears exactly once on stdout for human mode; zero human lines in protocol/--json/--json-stream modes.
+- Tests:
+  - TTY vs non-TTY matrix: verify no ANSI in non-TTY; presence/format of the Outcome line; spinner/status only on TTY and suppressed with --quiet.
+  - NDJSON snapshot tests for event ordering and schema fields (status, tool_begin/tool_end, outcome).
+  - Error path: status reflects failure; Outcome summarizes error; exit code set appropriately.
+
+Pointers:
+- vizier-core/src/display.rs (status rendering gates), vizier-core/src/chat.rs (event emission), vizier-core/src/auditor.rs (facts → outcome), vizier-cli/src/actions.rs and main.rs (flags, stdout/stderr wiring), tests/ (TTY harness; NDJSON schema checks).
+
+Implementation Notes (constraints):
+- Honor stdout/stderr contract and verbosity (-q/-v/-vv). Compute Outcome after writes and before process exit. Defer rich tool “cards” and auto-scroll to a future TUI; this task only standardizes events and minimal CLI rendering.

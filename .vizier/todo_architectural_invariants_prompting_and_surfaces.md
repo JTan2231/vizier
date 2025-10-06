@@ -53,3 +53,30 @@ Rendering invariants (2025-10-02)
 
 ---
 
+Introduce an “Invariants” channel with repo/module/session scopes and surface it in prompts and outcomes (CLI-first).
+Describe behavior:
+- Provide first-class Architectural/Thematic Invariants that guide assistant actions. Discover invariants at repo level (.vizier/invariants.md), module level (.vizier/invariants.d/<path>.md, nearest ancestor applies), and session level via a CLI flag. Merge the active set and show paths in CLI meta/header; include invariants status in Outcome. Always include the merged set in the system prompt so plans/edits prefer honoring them. TUI affordances are deferred until a UI surface exists. (thread: Control levers surface; cross: Outcome summaries) (snapshot: Running Snapshot — updated)
+
+Acceptance Criteria:
+- Discovery/visibility:
+  - If .vizier/invariants.md exists, it is recognized; module-level files under .vizier/invariants.d/ map to subtrees; a --invariants <file> flag adds session-level notes.
+  - Active invariants paths are listed in the CLI header/meta for ask/chat and referenced in the Outcome epilogue; absence yields “Invariants: N/A”.
+- Prompt integration:
+  - For assistant actions that may change repo state, the system prompt contains an “Invariants” section with the merged active set. thinking_level influences depth of checking but invariants are always included.
+- Outcome checks:
+  - Outcome summaries report invariants status as Upheld (default), Flagged (list of short IDs), or N/A. If Flagged, the assistant includes a 1–2 line note referencing which invariant(s) were challenged.
+  - outcome.v1 JSON includes invariants: {status: "upheld"|"flagged"|"na", flagged_ids?: []}.
+- Auditor hook:
+  - Provide a lightweight interface for tools/steps to emit invariant flags (textual with stable IDs). Flags are reflected in Outcome and recorded for session persistence.
+- Persistence:
+  - Session logs (session.json) record the active invariants paths, merged IDs, and any flags raised.
+- UX scope:
+  - TUI chips/panes are deferred until a vizier-tui surface exists; product spec remains as target. CLI remains line-oriented and honors stdout/stderr/verbosity rules.
+- Tests:
+  - Cover precedence/merging across repo/module/session scopes, prompt inclusion, Outcome status rendering (human and JSON), N/A behavior when absent, and session log contents.
+
+Pointers:
+- vizier-core/config.rs (load + precedence), vizier-core/chat.rs (system prompt assembly), vizier-core/auditor.rs (flag interface), vizier-cli/src/main.rs and actions.rs (flags + epilogue), session logging hooks.
+
+Implementation Notes (safety/correctness):
+- Precedence: session augments/overrides module, which augments/overrides repo; conflicts resolved by stable IDs on headings (e.g., “[ID]” tags). Absence is no-op (N/A). Limit prompt injection to a bounded subset (top N bullets) with an indicator when truncated. Atomic reads; tolerate large files gracefully.
