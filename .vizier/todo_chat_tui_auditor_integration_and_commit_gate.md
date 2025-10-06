@@ -36,3 +36,31 @@ Acceptance criteria additions:
 
 ---
 
+Route chat-initiated changes through Auditor and the Pending Commit gate; emit unified Outcome; persist session (CLI-first).
+Description:
+- All chat-initiated code changes are funneled through the Auditor and participate in the Pending Commit gate, mirroring `ask`. No direct commits unless policy allows (auto_commit) and destructive confirmations are honored (confirm_destructive). Pre-existing staged A/M/D/R remain untouched. On accept, create a conventional commit authored as “vizier-assistant” with brief chat/tool context in the message; on reject, restore the pre-op tree. Assistant final and CLI epilogue present a single, factual Outcome sourced from Auditor/VCS facts. TUI affordances are deferred until a UI surface exists; expose gate state and facts via CLI and events. (thread: Commit isolation + gates; cross: Outcome summaries, session-logging; snapshot: Running Snapshot — updated)
+
+Acceptance Criteria:
+- Auditor path:
+  - After a chat operation that produces code changes, Auditor facts include A/M/D/R counts and changed paths; a pending gate state is created if auto_commit=false or confirm_destructive=true.
+  - If no changes were produced, Outcome explicitly states “No code changes were created” and JSON includes {diff:false}.
+- Gate behavior and isolation:
+  - With auto_commit=false, chat changes remain pending until explicitly accepted; acceptance creates a commit; rejection discards the pending changes. Pre-existing staged changes are preserved exactly.
+  - With confirm_destructive=true and a destructive diff, Outcome reports “blocked: confirmation required” and no commit is created.
+- Outcome delivery:
+  - CLI prints a concise epilogue on stdout after each chat operation; hidden with --quiet. With --json, stdout emits a single outcome.v1 object; assistant final mirrors the same facts. Fields include {action, elapsed_ms, changes, commits, gates:{state,reason}, branch?, pr_url?, next_steps?}.
+  - Non-TTY never emits ANSI; stderr only carries diagnostics per -v/-vv.
+- Commit body:
+  - When accepted, the commit message includes: the initiating assistant message excerpt, a one-line tool summary, and references to session_id/message_id.
+- Session logging:
+  - After each chat operation, a session JSON artifact exists under .vizier/sessions/<id>/ and validates against the MVP schema; it records Auditor facts, gate state transitions, and outcome identifiers. Outcome (human and JSON) includes the session file path.
+- Failure surfacing:
+  - If an Auditor/VCS step fails, no partial commits occur; Outcome summarizes the error with a non-zero exit code in protocol/JSON paths.
+- Tests:
+  - Cover: (a) no changes, (b) pending gate open, (c) auto-commit true, (d) destructive confirmation required, (e) accept → commit created with correct author/message, (f) reject → workspace restored, (g) failure path with no partial writes, (h) preservation of pre-existing staged A/M/D/R, (i) non-TTY emits no ANSI and stdout carries Outcome, (j) outcome.v1 JSON shape and facts alignment.
+
+Pointers:
+- vizier-core/{auditor.rs, vcs.rs, chat.rs} (audit + gate + chat flow), vizier-cli/src/actions.rs (epilogue and flags), session logging hooks (writer/validation).
+
+Implementation Notes (safety/correctness):
+- Gate transitions must be atomic: accept/write/record or restore/no-op; never mix pending changes with pre-existing staged content. Compute and emit Outcome after all writes and before process exit.

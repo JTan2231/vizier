@@ -41,3 +41,20 @@ Rendering constraints (2025-10-02)
 
 ---
 
+Introduce View vs Edit interaction modes for chat/diff surfaces (core hooks first).
+Description:
+- Define a user-facing interaction model with two modes: View (default) and Edit. View prevents accidental edits while allowing navigation across chat/diff content; Edit enables text entry in focused fields (e.g., reply input, commit message). Until a TUI exists, expose mode state and transitions via core hooks and renderer-neutral events so a future TUI can render indicators and bind keys. Honor terminal-minimal constraints; CLI remains line-oriented with no interactive editing. (thread: Native chat + navigation; snapshot: Running Snapshot — updated)
+
+Acceptance Criteria:
+- Core state: A mode flag {view|edit} exists in chat/diff context with default=View. Public hooks allow transition requests (enter_edit, enter_view) and report current mode to observers.
+- Events: Renderer-neutral event stream includes a deterministic mode_changed event carrying the new mode and timestamp. Non-TTY contexts never emit ANSI; events are consumable by future renderers.
+- Safety: In View mode, core rejects/ignores edit-intent operations (no text mutations occur). Attempted edits in View mode surface a non-intrusive hint event advising a mode switch; no state is lost.
+- Future-ready affordances: A help metadata payload enumerates current modes and high-level intents (navigate vs edit) so a TUI can render a help overlay; no concrete keybindings are mandated.
+- CLI behavior: No fullscreen UI; output stays line-oriented. For visibility, verbose (-v) runs include a single “Mode: VIEW|EDIT” line in the status/meta area when mode changes; hidden with --quiet; never emitted in protocol/JSON-only paths.
+- Tests (headless): Cover default mode (View), transitions to/from Edit, rejection of edits in View, emission/order of mode_changed events, and non-ANSI behavior in non-TTY. Interactive keymaps and on-screen overlays are marked blocked pending a TUI surface.
+
+Pointers:
+- vizier-core/src/chat.rs (chat/diff context + mode state and transitions)
+- vizier-core/src/display.rs (status/meta line emission under -v)
+- vizier-core/src/config.rs (placeholder comments for future keymap remapping)
+- Event contract draft (message/tool/status/outcome + mode_changed)

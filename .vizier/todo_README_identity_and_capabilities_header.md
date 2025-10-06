@@ -32,3 +32,25 @@ Track progress: see AGENTS.md.
 - Header appears at top of README and renders within first screenful on GitHub.
 - Language matches snippet (allowing minor tweaks for URL/commands).
 - No conflicting description elsewhere in README.
+Add a concise “Who am I / What can I do?” header to README aligned with current capabilities.
+Description:
+- Introduce a top-of-file header that, within the first screenful, answers: Who is Vizier, What it can do today (CLI-first), How to use it now, and How agents integrate (today vs coming soon). Content must reflect the current Snapshot: no TUI promises, no unshipped commands/flags, and no speculative install script. Include examples using existing flows (e.g., ask, save); list agent workflow as “coming soon” unless shipped. (snapshot: Running Snapshot — updated; thread: Default-Action Posture (DAP))
+
+Acceptance Criteria:
+- Placement: Header block appears at the very top of README.md and renders within the first screenful on GitHub (≈ first 25–30 lines).
+- Sections present:
+  - “Who I am”: Repo-native assistant that plans/edits/audits with human-in-the-loop and commit isolation.
+  - “What I can do (today)”: High-level capabilities consistent with Snapshot (plan/edit within repo context, gate changes, explain decisions); no TUI claims.
+  - “How to use me (quickstart)”: Uses existing commands only (e.g., vizier help; vizier ask "..."; vizier save). No “plan/apply/run” examples and no install curl script; link to the project’s install/Getting Started doc if available.
+  - “How agents can talk to me”: Today: drive via CLI/stdio; prefer structured outputs where available. Coming soon: protocol/JSON stream and AGENTS.md contract (without naming unavailable flags); link to AGENTS.md if present, otherwise state “coming soon”.
+- Consistency guardrails:
+  - No references to non-existent commands/flags (e.g., no “vizier plan/apply/run”, no “--mode protocol” until implemented).
+  - No promises of a TUI or alt-screen UX.
+  - Any “coming soon” items align with active threads (Agent Basic Command, Outcome summaries, protocol/event stream) without prescribing dates.
+- No conflicting descriptions remain elsewhere in README; obsolete claims are updated or removed.
+- Links/anchors resolve where applicable (e.g., AGENTS.md if present; otherwise the text clearly indicates it will appear).
+- Copy is concise and neutral; fits within the first screenful without excessive prose.
+
+Pointers:
+- README.md (repo root); link to docs/ or INSTALL/Getting Started if present.
+- Cross-links in text: AGENTS.md (when available).

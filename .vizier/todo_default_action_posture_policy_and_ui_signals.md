@@ -31,3 +31,24 @@ Update (2025-10-02): Clarified DAP as ACTIVE by default across CLI; users can op
 
 ---
 
+Enable Default-Action Posture (DAP) by default with per-turn opt-out and aligned Outcome epilogue.
+Description:
+- When a user message implies change (feature, bug, prioritization, acceptance), the assistant updates the Snapshot and/or creates TODOs in the same turn without extra prompting. Users can suppress action with opt-out phrases (e.g., “no-op”, “discuss-only”) scoped to that turn.
+- All changes respect commit gates and isolation; only .vizier artifacts (snapshot, todos) are modified. A concise Outcome line summarizes what changed and mirrors Auditor/VCS facts. (thread: DAP)
+
+Acceptance Criteria:
+- Default action: Given a directive like “search feels slow; prioritize fixes”, the assistant:
+  - Updates the Snapshot narrative and creates at least one TODO that cross-links to relevant thread(s); no duplicate threads are created.
+  - Assistant final includes a one-line Outcome that lists created/updated items and counts; CLI prints the same epilogue; both facts match Auditor/VCS.
+- Opt-out: If the user prefixes “no-op:” or “discuss-only:”, the assistant returns analysis only; no writes occur to .vizier. Outcome states “No changes (no-op requested).”
+- Ambiguity guardrail: For clearly non-directive/ambiguous chit-chat (e.g., “how are you?”), no changes are made. Outcome states “No changes (no directive detected).”
+- Gates/isolation: If a conversation/pending-commit gate is active, Outcome reflects gate state (open/accepted/rejected/skipped) and why; no code changes are made by DAP beyond .vizier unless an existing gate policy permits.
+- CLI surface: A one-line Outcome epilogue appears after DAP actions; hidden with --quiet; when --json or protocol mode, outcome.v1 JSON is emitted on stdout with audited counts and gate state.
+- Consistency: Assistant final message, CLI epilogue, and JSON (when requested) agree exactly on A/M/D/R counts and item lists (bounded).
+- Tests: Cover (a) default action with new TODO + snapshot update, (b) opt-out no-op, (c) ambiguity no-op, (d) gate-open pending state, (e) rejection path, (f) protocol/--json JSON shape validation, and (g) duplicate-thread prevention.
+
+Pointers:
+- Policy/dispatch around user message classification; CLI ask epilogue (vizier-cli/src/actions.rs); .vizier/.snapshot storage; Auditor/VCS facts as Outcome source.
+
+Implementation Notes (scope/safety):
+- CLI-first: TUI indicators are deferred until a UI surface exists; ensure no ANSI in non-TTY and adhere to stdout/stderr contract. Compute Outcome from Auditor/VCS after writes and before exit; never infer from model text.
