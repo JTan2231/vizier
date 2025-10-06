@@ -5,22 +5,22 @@ Narrative theme
 
 Active threads
 - Agent Basic Command (Workflow B MVP): ACTIVE. Product stance locked: pick a TODO → apply agent changes on an isolated branch with a templated prompt (references the TODO + current Snapshot) → optionally open a PR → await human review → finalize via `vizier save` on merge. Safety: main remains untouched until merge; abort is clean. Outcome must report {todo, branch, commit_count, pr_url?/review_instructions, gate_state}. [Depends on: VCS/Auditor/Chat/Config]
-- Terminal-first minimal TUI + renderer-neutral events: ACTIVE. Avoid fullscreen/alt-screen; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumable by CLI now and future surfaces later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
+- Terminal-first minimal TUI + renderer-neutral events: ACTIVE, UPDATED. Avoid fullscreen/alt-screen; default to line-oriented output that plays well with shells/tmux/SSH and piping. Core will expose a renderer-neutral event stream (message/tool/status/outcome) consumable by CLI now and future surfaces later. Outcome delivery remains CLI-first until a UI surface exists. [Depends on: Code State]
 - Stdout/stderr contract + verbosity: ACTIVE. Establish TTY-gated progress, -q/-v/-vv levers, and a stable stdout Outcome line or JSON (outcome.v1). Stderr reserved for progress/errors per verbosity; no ANSI in non-TTY. [Cross: Outcome summaries, Integration tests]
-- Mode split: Chat (default) vs Protocol Mode v1: ACTIVE, NEW. Chat remains human-first with TTY-gated progress and readable epilogues; Protocol mode is machine-first with structured JSON/NDJSON only on stdout, no ANSI ever, deterministic event ordering, non-interactive by default, and categorized exit codes. `--mode protocol` toggles behavior; JSON stream aligns with renderer-neutral events. [Cross: Stdout/stderr contract, Terminal-minimal, Outcome summaries]
+- Mode split: Chat (default) vs Protocol Mode v1: ACTIVE. Chat remains human-first with TTY-gated progress and readable epilogues; Protocol mode is machine-first with structured JSON/NDJSON only on stdout, no ANSI ever, deterministic event ordering, non-interactive by default, and categorized exit codes. `--mode protocol` toggles behavior; JSON stream aligns with renderer-neutral events. [Cross: Stdout/stderr contract, Terminal-minimal, Outcome summaries]
 - Commit isolation + gates: ACTIVE. Conversation- and agent-sourced changes are staged behind a Pending Commit gate. Per-hunk accept/reject remains open. [Depends on: Code State]
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless user opts out (e.g., “discuss-only”). CLI will surface a one-line Outcome when DAP acts. [Cross: Outcome summaries, Integration tests]
-- Outcome summaries: ACTIVE, UPDATED. Chat now routes through the Auditor, so Outcome epilogues can source authoritative A/M/D/R facts after chat operations. Wire a unified human epilogue and outcome.v1 JSON across modes. [Depends on: Auditor]
+- Outcome summaries: ACTIVE. Chat now routes through the Auditor, so Outcome epilogues can source authoritative A/M/D/R facts after chat operations. Wire a unified human epilogue and outcome.v1 JSON across modes. [Depends on: Auditor]
 - Control levers surface: ACTIVE. Config levers (history_limit, confirm_destructive, auto_commit, non_interactive, model params, system_prompt_override, thinking_level). Thinking level requested; schema in progress; echoed in meta/header. [Cross: CLI flags]
 - Agent Decision Log + AGENTS.md interop: ACTIVE. Establish AGENTS.md v1 scaffold with Contract, Interop Guide, and Decision Log. After agent-driven operations, append a concise Decision entry referencing TODO/thread IDs and Outcome facts. CLI affords `vizier agents show|append`. [Depends on: Outcome summaries, Session logging, Invariants, Agent Basic Command]
 - Operation history + revert: PLANNED. Persistent history with revert(n). Planned after session logging.
 - Session logging to filesystem: PLANNED, BLOCKED BY WIRING. Chat sessions are not yet persisted; add a session writer at chat boundaries to save audited facts + workflow metadata. [Depends on: Auditor facts, Outcome]
-- Native chat + navigation: DEFERRED. Define View/Edit modes and key help; any future TUI must honor terminal-minimal constraints and consume the renderer-neutral event stream.
+- Native chat + navigation: ACTIVE, NARROWED. Define minimal navigation affordances for chat history, focusing on scrolling/paging for long conversations and large tool outputs, respecting terminal-minimal constraints.
 - Config-driven prompt customization: ONGOING. Swap system prompts via files/CLI; reflect active path in meta/header.
 - Snapshot bootstrap for existing repos: PLANNED. `vizier snapshot init` generates initial .vizier/.snapshot and seed TODOs safely/idempotently; include Threads section with stable IDs and cross-links. [Idempotent; diff-like updates]
 - Narrative timelines: PLANNED. Persistent threads with IDs; TODOs cross-link to threads and snapshot moments.
 - Integration tests: ONGOING. Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert, outcome summaries, mode split, and terminal-minimal/output contracts.
-- SSH push reliability: ACTIVE, UPDATED. Shift away from ssh-agent dependency. Ensure `vizier save --push` works with default file-based SSH keys and provides clear, non-interactive guidance on failures; HTTPS path unchanged. [Depends on: VCS push_current_branch, CLI error surface]
+- SSH push reliability: ACTIVE. Shift away from ssh-agent dependency. Ensure `vizier save --push` works with default file-based SSH keys and provides clear, non-interactive guidance on failures; HTTPS path unchanged. [Depends on: VCS push_current_branch, CLI error surface]
 
 Code state (behaviors that matter)
 - CLI emits transient spinner/status to stderr via vizier-core::display with ANSI cursor controls unconditionally, causing leaked sequences like "[1G\u001b[2K⠋ Thinking..." in logs and non-TTY contexts.
@@ -34,6 +34,7 @@ Code state (behaviors that matter)
 - Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save) with defined Outcome fields.
 - AGENTS.md contract/log: Not present yet; v1 scaffold defined at product level.
 - VCS push uses libgit2 with credentials callback; previously tried ssh-agent; policy now is to not depend on ssh-agent and to attempt default file-based key paths for SSH. Error messages are currently generic.
+- Chat navigation and scrolling: Not implemented; long outputs overflow terminal buffer with no native paging. Users rely on terminal scrollback only; no in-app paging indicators or key handling.
 
 Acceptance checkpoints (selected)
 - Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; TTY-gated progress. JSON modes obey schema outcome.v1. [Active]
@@ -46,6 +47,7 @@ Acceptance checkpoints (selected)
 - Outcome summaries: After each operation, users see a compact summary matching Auditor/VCS facts; assistant final mirrors it. For chat, the Auditor-backed A/M/D/R must be reflected in both human epilogue and outcome.v1 JSON. [CLI-first]
 - Terminal-minimal output: default avoids alt-screen/full redraws; in non-TTY contexts there are no ANSI control sequences. [Planned]
 - Renderer-neutral event stream: versioned lifecycle events (message/tool/status/outcome) consumable by CLI and future renderers; `--json-stream` exposed. [Planned]
+- Chat scrolling/paging: In TTY, support PageUp/PageDown, Home/End, and line-wise Up/Down; show a status line with position (e.g., 42/120) and a visible selection. Large tool outputs are collapsible with one-line summaries. Non-TTY never emits ANSI; pagination degrades to plain prompts or line-limited output. Works under tmux and resizes. [Active]
 - Agent Basic Command (Workflow B): `vizier agent run <todo>` creates an isolated branch from baseline, applies agent-authored commits, and leaves main unchanged; Outcome reports TODO, branch name, commit count, PR URL if any; `vizier save` after merge updates TODO and Snapshot, links PR/merge; honors gates and preserves staged changes; session log captures workflow metadata. [Planned]
 - AGENTS.md v1: Repo includes AGENTS.md with Contract, Interop Guide, and Decision Log sections. After each agent-driven operation, a single Decision Log entry is appended, referencing TODO/thread IDs and Outcome facts. CLI exposes `vizier agents show|append`. Outcome epilogue notes if AGENTS.md updated. [Planned]
 - SSH push reliability: `vizier save --push` succeeds with default SSH keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa) when usable non-interactively; on failure, error surfaces scheme, strategies attempted, and guidance; never prompts interactively. [Active]
@@ -54,20 +56,20 @@ Next moves
 1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [Active]
 2) Outcome component: implement outcome.v1 schema; include audited A/M/D/R, gate state, and (when applicable) {todo, branch, commit_count, pr_url}. Print to stdout on success; `--json` and `--json-stream` variants. Ensure it fires after every chat operation. [Active]
 3) Mode split wiring: Add `--mode protocol` to CLI, thread through to core display/observer; enforce protocol-mode IO rules, exit codes, and metadata {mode:"protocol"}. Ensure closed-stdin safe behavior. [Active]
-4) Agent Basic Command wiring: Add CLI `vizier agent run [<todo-name>]` and route to core. Compose templated prompt from selected TODO + current Snapshot. [Active]
-5) Session logging JSON MVP: hook writer at chat boundaries to persist audited facts + workflow metadata; atomic write + schema validation; include path in Outcome epilogue and JSON. [Active]
-6) VCS orchestration for isolated branch and optional PR open; tolerate no-remote by emitting clear local review steps in Outcome. [Planned]
-7) Define event contract v1 for renderer-neutral lifecycle (message/tool/status/outcome) and document it in vizier-core; include `mode` field. [Ongoing]
-8) Add CLI `--json-stream` to emit NDJSON events; keep human rendering line-oriented and TTY-gated. [Planned]
-9) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
-10) Commit gate UX polish and tests across CLI/headless. [Ongoing]
-11) Extend integration tests: headless/TTY output, quiet/verbose, JSON stream, mode split behavior, and outcome lines across commands; add Agent Basic Command smoke tests. [Active]
+4) Chat navigation MVP: add product-level paging/scrolling behavior in chat surfaces while honoring terminal-minimal constraints; collapse large tool outputs with summaries; show scroll position. [Active]
+5) Agent Basic Command wiring: Add CLI `vizier agent run [<todo-name>]` and route to core. Compose templated prompt from selected TODO + current Snapshot. [Active]
+6) Session logging JSON MVP: hook writer at chat boundaries to persist audited facts + workflow metadata; atomic write + schema validation; include path in Outcome epilogue and JSON. [Active]
+7) VCS orchestration for isolated branch and optional PR open; tolerate no-remote by emitting clear local review steps in Outcome. [Planned]
+8) Define event contract v1 for renderer-neutral lifecycle (message/tool/status/outcome) and document it in vizier-core; include `mode` field. [Ongoing]
+9) Add CLI `--json-stream` to emit NDJSON events; keep human rendering line-oriented and TTY-gated. [Planned]
+10) Finalize config schema; expose to prompt/meta (system_prompt path, thinking_level). [Ongoing]
+11) Commit gate UX polish and tests across CLI/headless. [Ongoing]
 12) AGENTS.md v1 scaffold: add product-level schema and update hooks in CLI so agent-driven operations append a concise Decision Log entry; document handoff prompt in Interop Guide. [Active]
 13) Snapshot bootstrap: implement `vizier snapshot init` behavior with Threads IDs and cross-linked seed TODOs; ensure idempotence with diff-like deltas. [Planned]
 14) SSH push reliability: drop ssh-agent dependency; expand credentials strategies to include default file-based keys; enrich error reporting to be actionable; add unit-level smoke for strategy ordering; document manual verification steps. [Active]
 
 Cross-links
-- Terminal-minimal ↔ Outcome summaries ↔ Integration tests: ensure visible, testable behavior without fullscreen UI.
+- Terminal-minimal ↔ Chat navigation: scrolling must not violate minimal rendering; event stream can drive future TUI without alt-screen.
 - Output contract/verbosity ↔ Control levers: flags map cleanly to config and display behavior.
 - Mode split ↔ Stdout/stderr contract ↔ Event stream: protocol guarantees flow from the same invariants; CLI flags and JSON stream remain coherent.
 - Agent Basic Command ↔ Auditor/Outcome summaries: safety + factual epilogue across CLI.

@@ -38,3 +38,21 @@ Rendering constraints update (2025-10-02)
 
 ---
 
+
+---
+Update (2025-10-06): Add ergonomics thread for scrolling in chat UI.
+
+- Tension: Users report difficulty with scrolling in the chat UI; long conversations and tool outputs overflow the viewport without clear navigation affordances.
+- Product requirement: Ensure smooth, predictable scrolling in chat surfaces (CLI-rendered chat log and any future TUI). Support keyboard-based paging (PageUp/PageDown, Home/End), incremental line scroll (Up/Down), and search-jump anchors for tool result blocks. Maintain renderer-neutral contract: no fullscreen control codes in non-TTY; in TTY, use minimal cursor movement compatible with tmux/SSH.
+- Acceptance criteria:
+  - When chat history exceeds viewport, users can page through without losing focus context; current selection is visibly indicated.
+  - Scroll actions never emit ANSI in non-TTY contexts and degrade to plain pagination prompts if needed.
+  - Large tool outputs are collapsible/expandable; collapsed blocks maintain a one-line summary with length and status.
+  - A status line shows scroll position (e.g., "42/120 lines").
+  - Works under tmux and when terminal height changes mid-session.
+- Anchors: vizier-core::display, vizier-core::chat; potential future vizier-tui (deferred), CLI renderer in vizier-cli/src/actions.rs.
+- Cross-links: Terminal-minimal TUI thread; Renderer-neutral event stream; Outcome summaries for tool blocks.
+
+
+---
+
