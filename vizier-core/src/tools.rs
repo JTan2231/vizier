@@ -216,7 +216,7 @@ Parameters:
 Notes: Content is appended with separator lines for readability
 ")]
 fn update_todo(todo_name: String, update: String) -> String {
-    let filename = format!("{}{}", get_todo_dir(), todo_name.clone());
+    let filename = format!("{}todo_{}.md", get_todo_dir(), todo_name.clone());
 
     if let Err(e) = file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
     {
