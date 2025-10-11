@@ -291,7 +291,7 @@ fn short_hash(hash: &str) -> String {
 }
 
 async fn save(
-    diff: String,
+    _initial_diff: String,
     // NOTE: These two should never be Some(...) && true
     user_message: Option<String>,
     use_message_editor: bool,
@@ -331,37 +331,52 @@ async fn save(
     display::info(format!("Assistant summary: {}", response.content.trim()));
     print_token_usage();
 
-    let mut message_builder = CommitMessageBuilder::new(
-        Auditor::llm_request(
+    let post_tool_diff = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"]))?;
+    let has_code_changes = !post_tool_diff.trim().is_empty();
+    let mut code_commit = None;
+
+    if has_code_changes {
+        let commit_body = Auditor::llm_request(
             config::get_config().get_prompt(config::SystemPrompt::Commit),
-            diff,
+            post_tool_diff.clone(),
         )
         .await?
-        .content,
-    );
+        .content;
 
-    message_builder
-        .set_header(CommitMessageType::CodeChange)
-        .with_conversation_hash(conversation_hash.clone());
+        let mut message_builder = CommitMessageBuilder::new(commit_body);
+        message_builder
+            .set_header(CommitMessageType::CodeChange)
+            .with_conversation_hash(conversation_hash.clone());
 
-    if let Some(note) = provided_note {
-        message_builder.with_author_note(note);
-    }
+        if let Some(note) = provided_note.as_ref() {
+            message_builder.with_author_note(note.clone());
+        }
 
-    let mut commit_message = message_builder.build();
+        let mut commit_message = message_builder.build();
 
-    if crate::config::get_config().commit_confirmation {
-        if let Some(new_message) = vizier_core::editor::run_editor(&commit_message).await? {
-            commit_message = new_message;
+        if crate::config::get_config().commit_confirmation {
+            if let Some(new_message) = vizier_core::editor::run_editor(&commit_message).await? {
+                commit_message = new_message;
+            }
+        }
+
+        display::info("Committing remaining code changes...");
+        let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+        display::info(format!(
+            "Changes committed with message: {}",
+            commit_message
+        ));
+
+        code_commit = Some(commit_oid.to_string());
+    } else {
+        if provided_note.is_some() {
+            display::info(
+                "Author note provided but no code changes detected; skipping code commit.",
+            );
+        } else {
+            display::info("No code changes detected; skipping code commit.");
         }
     }
-
-    display::info("Committing remaining code changes...");
-    let code_commit = vcs::add_and_commit(None, &commit_message, false)?;
-    display::info(format!(
-        "Changes committed with message: {}",
-        commit_message
-    ));
 
     push_origin_if_requested(push_after_commit)?;
 
@@ -371,7 +386,7 @@ async fn save(
         } else {
             Some(conversation_hash)
         },
-        code_commit: Some(code_commit.to_string()),
+        code_commit,
         pushed: push_after_commit,
     })
 }

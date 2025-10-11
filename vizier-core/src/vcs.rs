@@ -1327,6 +1327,7 @@ mod tests {
         let expected = vec![
             CredentialStrategy::SshKey(SshKeyKind::IdEd25519),
             CredentialStrategy::SshKey(SshKeyKind::IdRsa),
+            CredentialStrategy::Default,
         ];
         assert_eq!(&expected, invoked.as_slice());
     }

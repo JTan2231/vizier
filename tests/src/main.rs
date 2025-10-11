@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     test!(test_save);
     test!(test_save_with_staged_files);
+    test!(test_save_without_code_changes);
 
     Ok(())
 }
@@ -230,6 +231,48 @@ fn test_save_with_staged_files() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(count_files_in_commit(&repo, "HEAD~1")?, 2);
     // conversation (HEAD~2)
     assert_eq!(count_files_in_commit(&repo, "HEAD~2")?, 0);
+
+    Ok(())
+}
+
+// TEST: save with clean tree (no tracked code changes)
+//   action: run vizier save with code-change stub disabled
+//   expect: only conversation and narrative commits; CLI reports no code commit
+fn test_save_without_code_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let repo = open_repo()?;
+    let before_count = count_commits_from_head(&repo)?;
+
+    let output = std::process::Command::new("../target/release/vizier")
+        .arg("save")
+        .current_dir("test-repo-active")
+        .env("VIZIER_IT_SKIP_CODE_CHANGE", "1")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "vizier save failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("code_commit=none"),
+        "expected save output to skip code commit but saw: {}",
+        stdout
+    );
+
+    let repo = open_repo()?;
+    let after_count = count_commits_from_head(&repo)?;
+    assert_eq!(
+        after_count - before_count,
+        2,
+        "expected only conversation + narrative commits"
+    );
+
+    // narrative change (HEAD)
+    assert_eq!(count_files_in_commit(&repo, "HEAD")?, 2);
+    // conversation (HEAD~1)
+    assert_eq!(count_files_in_commit(&repo, "HEAD~1")?, 0);
 
     Ok(())
 }
