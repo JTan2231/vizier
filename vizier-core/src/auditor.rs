@@ -336,12 +336,23 @@ impl Auditor {
             // Mock some random file change for the integration tests
             #[cfg(feature = "integration_testing")]
             {
-                crate::file_tracking::FileTracker::write("a", "some change")?;
-                crate::file_tracking::FileTracker::write(
-                    ".vizier/.snapshot",
-                    "some snapshot change",
-                )?;
-                crate::file_tracking::FileTracker::write(".vizier/todo.md", "some todo change")?;
+                let skip_code_change = std::env::var("VIZIER_IT_SKIP_CODE_CHANGE").is_ok();
+                let skip_vizier_change = std::env::var("VIZIER_IT_SKIP_VIZIER_CHANGE").is_ok();
+
+                if !skip_code_change {
+                    crate::file_tracking::FileTracker::write("a", "some change")?;
+                }
+
+                if !skip_vizier_change {
+                    crate::file_tracking::FileTracker::write(
+                        ".vizier/.snapshot",
+                        "some snapshot change",
+                    )?;
+                    crate::file_tracking::FileTracker::write(
+                        ".vizier/todo.md",
+                        "some todo change",
+                    )?;
+                }
             }
 
             // TODO: The number of clones here is outrageous
