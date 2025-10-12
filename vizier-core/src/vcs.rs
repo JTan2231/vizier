@@ -1,7 +1,7 @@
 use git2::{
-    BranchType, Cred, CredentialType, DiffFormat, DiffOptions, Error, ErrorClass, ErrorCode,
-    IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository, RepositoryState, Signature,
-    Sort, Status, StatusOptions,
+    BranchType, Cred, CredentialType, Diff, DiffDelta, DiffFormat, DiffLine, DiffOptions, Error,
+    ErrorClass, ErrorCode, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository,
+    RepositoryState, Signature, Sort, Status, StatusOptions, Tree,
 };
 use std::cell::RefCell;
 use std::env;
@@ -196,6 +196,43 @@ impl std::error::Error for PushError {
 
 fn sanitize_text(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn configure_diff_options(pathspec: Option<&str>) -> DiffOptions {
+    let mut opts = DiffOptions::new();
+
+    opts.ignore_submodules(true).id_abbrev(40);
+
+    if let Some(spec) = pathspec {
+        opts.pathspec(spec);
+    }
+
+    opts
+}
+
+fn diff_tree_to_workdir_tolerant<'repo>(
+    repo: &'repo Repository,
+    base: Option<&Tree<'repo>>,
+    pathspec: Option<&str>,
+) -> Result<Diff<'repo>, Error> {
+    let mut opts = configure_diff_options(pathspec);
+
+    match repo.diff_tree_to_workdir_with_index(base, Some(&mut opts)) {
+        Ok(diff) => Ok(diff),
+        Err(err) if err.class() == ErrorClass::Os && err.code() == ErrorCode::NotFound => {
+            let mut staged_opts = configure_diff_options(pathspec);
+            let mut workdir_opts = configure_diff_options(pathspec);
+
+            let index = repo.index()?;
+            let mut staged_diff =
+                repo.diff_tree_to_index(base, Some(&index), Some(&mut staged_opts))?;
+            let workdir_diff = repo.diff_index_to_workdir(Some(&index), Some(&mut workdir_opts))?;
+
+            staged_diff.merge(&workdir_diff)?;
+            Ok(staged_diff)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn sanitize_error_message(err: &Error) -> String {
@@ -454,9 +491,6 @@ pub fn get_diff(
     exclude: Option<&[&str]>,
 ) -> Result<String, Error> {
     let repo = Repository::open(repo_path)?;
-    let mut opts = DiffOptions::new();
-
-    opts.ignore_submodules(true).id_abbrev(40);
 
     let diff = match target {
         Some(spec) if spec.contains("..") => {
@@ -468,6 +502,7 @@ pub fn get_diff(
             let from = repo.revparse_single(parts[0])?.peel_to_tree()?;
             let to = repo.revparse_single(parts[1])?.peel_to_tree()?;
 
+            let mut opts = configure_diff_options(None);
             repo.diff_tree_to_tree(Some(&from), Some(&to), Some(&mut opts))?
         }
         Some(spec) => {
@@ -475,15 +510,18 @@ pub fn get_diff(
             match repo.revparse_single(spec) {
                 Ok(obj) => {
                     let base = obj.peel_to_tree()?;
-                    repo.diff_tree_to_workdir_with_index(Some(&base), Some(&mut opts))?
+                    diff_tree_to_workdir_tolerant(&repo, Some(&base), None)?
                 }
                 Err(_) => {
                     // Treat as a directory/file path
                     let normalized = normalize_pathspec(spec);
-                    opts.pathspec(&normalized);
                     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
-                    repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?
+                    diff_tree_to_workdir_tolerant(
+                        &repo,
+                        head_tree.as_ref(),
+                        Some(normalized.as_str()),
+                    )?
                 }
             }
         }
@@ -491,7 +529,7 @@ pub fn get_diff(
             // HEAD vs working dir (with index); handle unborn HEAD
             let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
-            repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?
+            diff_tree_to_workdir_tolerant(&repo, head_tree.as_ref(), None)?
         }
     };
 
@@ -506,25 +544,28 @@ pub fn get_diff(
         Vec::new()
     };
 
-    diff.print(DiffFormat::Patch, |delta, _, line| {
-        let file_path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .and_then(|p| p.to_str());
+    diff.print(
+        DiffFormat::Patch,
+        |delta: DiffDelta<'_>, _, line: DiffLine<'_>| {
+            let file_path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .and_then(|p| p.to_str());
 
-        if let Some(path) = file_path {
-            let diff_path = std::path::Path::new(path);
-            if !exclude.iter().any(|excluded| {
-                let exclude_path = std::path::Path::new(excluded);
+            if let Some(path) = file_path {
+                let diff_path = std::path::Path::new(path);
+                if !exclude.iter().any(|excluded| {
+                    let exclude_path = std::path::Path::new(excluded);
 
-                diff_path.starts_with(exclude_path)
-            }) {
-                buf.extend_from_slice(line.content());
+                    diff_path.starts_with(exclude_path)
+                }) {
+                    buf.extend_from_slice(line.content());
+                }
             }
-        }
-        true
-    })?;
+            true
+        },
+    )?;
 
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
@@ -1454,6 +1495,30 @@ mod tests {
         assert!(d.contains("x.txt")); // file appears
         assert!(d.contains("\n+")); // there is an addition hunk
         assert!(d.contains("x2")); // payload appears (don’t hard-code "+x2")
+    }
+
+    #[test]
+    fn diff_handles_staged_deletions_without_workdir_stat_failure() {
+        let (td, repo) = init_temp_repo();
+        let repo_path = td.path().to_path_buf();
+        let _cwd = CwdGuard::enter(&repo_path).unwrap();
+
+        write(Path::new("gone.txt"), "present\n");
+        raw_commit(&repo, "add gone");
+
+        // Remove from working tree and stage the deletion.
+        fs::remove_file("gone.txt").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.remove_path(Path::new("gone.txt")).unwrap();
+            index.write().unwrap();
+        }
+
+        let diff = get_diff(repo_path.to_str().unwrap(), Some("HEAD"), None)
+            .expect("diff with staged deletion");
+
+        assert!(diff.contains("gone.txt"));
+        assert!(diff.contains("deleted file mode") || diff.contains("--- a/gone.txt"));
     }
 
     #[test]
