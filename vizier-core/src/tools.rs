@@ -37,31 +37,6 @@ pub fn get_todo_dir() -> String {
     }
 }
 
-pub fn get_tools() -> Vec<Tool> {
-    vec![
-        get_tool!(create_git_issue),
-        get_tool!(diff),
-        get_tool!(git_log),
-        get_tool!(add_todo),
-        get_tool!(delete_todo),
-        get_tool!(update_todo),
-        get_tool!(list_todos),
-        get_tool!(read_file),
-        get_tool!(read_todo),
-        get_tool!(read_snapshot),
-        get_tool!(update_snapshot),
-    ]
-}
-
-pub fn get_snapshot_tools() -> Vec<Tool> {
-    vec![
-        get_tool!(git_log),
-        get_tool!(list_todos),
-        get_tool!(read_file),
-        get_tool!(update_snapshot),
-    ]
-}
-
 pub fn is_action(name: &str) -> bool {
     name == "add_todo"
         || name == "update_todo"
@@ -99,10 +74,6 @@ pub fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
 // TODO: This is probably bad form
 
 pub static SENDER: RwLock<Option<mpsc::UnboundedSender<String>>> = RwLock::new(None);
-
-pub fn get_editor_tools() -> Vec<Tool> {
-    vec![get_tool!(edit_content)]
-}
 
 #[tool(description = "Replace the content of the file shown to the user")]
 pub fn edit_content(content: String) -> String {
@@ -374,4 +345,34 @@ fn create_git_issue(title: String, body: String) -> String {
         Ok(r) => r,
         Err(e) => llm_error(&format!("Error reading response text: {}", e)),
     }
+}
+
+// TODO: We need to figure out how to get this order-agnostic with the #[tool] annotations
+pub fn get_tools() -> Vec<Tool> {
+    vec![
+        get_tool!(create_git_issue),
+        get_tool!(diff),
+        get_tool!(git_log),
+        get_tool!(add_todo),
+        get_tool!(delete_todo),
+        get_tool!(update_todo),
+        get_tool!(list_todos),
+        get_tool!(read_file),
+        get_tool!(read_todo),
+        get_tool!(read_snapshot),
+        get_tool!(update_snapshot),
+    ]
+}
+
+pub fn get_snapshot_tools() -> Vec<Tool> {
+    vec![
+        get_tool!(git_log),
+        get_tool!(list_todos),
+        get_tool!(read_file),
+        get_tool!(update_snapshot),
+    ]
+}
+
+pub fn get_editor_tools() -> Vec<Tool> {
+    vec![get_tool!(edit_content)]
 }
