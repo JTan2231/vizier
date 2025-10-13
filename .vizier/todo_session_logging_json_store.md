@@ -83,4 +83,22 @@ Pointers:
 - vizier-core/src/chat.rs (chat boundaries/hooks), vizier-core/src/auditor.rs (facts), vizier-core/src/display.rs and vizier-cli/src/actions.rs (Outcome epilogue), config schema for session_logging/redact.
 
 Implementation Notes (safety/correctness):
-- Use write-to-temp + fsync + atomic rename for each checkpoint/finalization; never partially written JSON. Validate against a minimal MVP schema before rename.
+- Use write-to-temp + fsync + atomic rename for each checkpoint/finalization; never partially written JSON. Validate against a minimal MVP schema before rename.Persist sessions as JSON artifacts and surface path in Outcome (CLI-first).
+After each operation (especially chat), write a structured session record to .vizier/sessions/<session_id>/session.json, updating checkpoints at key transitions (e.g., gate open/accept/reject) and finalizing at session end. Outcome epilogues (human and outcome.v1 JSON) include the session file path for discoverability. Honors session_logging on|off and redaction settings. No new interactive flows or commands are introduced in this MVP. (thread: session-logging; snapshot: Running Snapshot — updated)
+
+Acceptance Criteria:
+- Creation: After any chat operation and at session end, a session.json exists under .vizier/sessions/<id>/ containing: id, created_at/updated_at, tool_version, repo state (root, branch, head_sha), effective config (with provenance), system_prompt path/hash, model {provider,name,temperature,thinking_level}, chat messages (role, content, ts, optional annotations), operations (typed list with minimal VCS facts), artifacts references, and outcome {status, summary?, commit_sha?}. Includes Auditor/VCS facts (A/M/D/R counts and changed paths) and gate state.
+- Checkpoints + immutability: In-flight writes use a temporary file and atomic rename; updated_at reflects checkpoints. Once marked closed, subsequent runs never overwrite the final session.json.
+- Outcome linkage: CLI human epilogue prints the session file path; outcome.v1 JSON includes session.path. In protocol mode/--json/--json-stream, stdout carries only JSON/NDJSON and includes the same path; no ANSI ever.
+- Config levers: session_logging default on; can be disabled via config/flag. Redaction list (e.g., secrets, env) applied before writes; CLI flags override config.
+- Safety bounds: Closed-stdin never blocks persistence; non-TTY behavior identical (no ANSI). Files remain reasonably small (<10MB target).
+- Tests: Integration tests validate (a) file creation and schema validity, (b) atomic write behavior and idempotency, (c) redaction applied, (d) disable path respected, (e) Outcome/JSON includes session.path across chat and protocol modes.
+
+Pointers:
+- vizier-core/src/chat.rs (hooks at chat boundaries)
+- vizier-core/src/auditor.rs (facts)
+- vizier-core/src/display.rs, vizier-cli/src/actions.rs (Outcome epilogue)
+- vizier-core/src/config.rs (session_logging/redact)
+
+Implementation Notes (safety/correctness):
+- Write-to-temp + fsync + atomic rename for each checkpoint/finalization; validate against a minimal MVP JSONSchema before rename.
