@@ -51,4 +51,34 @@ Pointers:
 - Policy/dispatch around user message classification; CLI ask epilogue (vizier-cli/src/actions.rs); .vizier/.snapshot storage; Auditor/VCS facts as Outcome source.
 
 Implementation Notes (scope/safety):
-- CLI-first: TUI indicators are deferred until a UI surface exists; ensure no ANSI in non-TTY and adhere to stdout/stderr contract. Compute Outcome from Auditor/VCS after writes and before exit; never infer from model text.
+- CLI-first: TUI indicators are deferred until a UI surface exists; ensure no ANSI in non-TTY and adhere to stdout/stderr contract. Compute Outcome from Auditor/VCS after writes and before exit; never infer from model text.Enable Default-Action Posture (DAP) by default with per-turn opt-out and aligned Outcome epilogue.
+By default, when a user message implies a change (feature, bug, prioritization, acceptance), apply Snapshot and/or TODO updates in the same turn without extra prompting. Users can suppress action per-turn with opt-out phrases (e.g., “no-op: …”, “discuss-only: …”). All writes are confined to .vizier artifacts and summarized via the Outcome component sourced from Auditor/VCS facts. (thread: DAP; cross: outcome-summaries, stdout-stderr-contract, integration-tests)
+
+Acceptance Criteria:
+- Default action:
+  - Given a directive like “search feels slow; prioritize fixes,” the assistant updates the Snapshot narrative and creates at least one cross-linked TODO advancing an existing thread (no duplicates) or, if necessary, starts one new thread with stable IDs and links.
+  - Assistant final includes a one-line Outcome listing created/updated items and counts; the CLI prints the same epilogue; both match Auditor/VCS facts.
+- Opt-out:
+  - If the user prefixes “no-op:” or “discuss-only:”, the assistant returns analysis only; no writes occur to .vizier.
+  - Outcome states “No changes (no-op requested).”
+- Ambiguity guardrail:
+  - For clearly non-directive/chit-chat inputs (e.g., “how are you?”), no changes are made.
+  - Outcome states “No changes (no directive detected).”
+- Gates and isolation:
+  - DAP only writes within .vizier (snapshot, todos). No code changes are produced by DAP.
+  - If a Pending Commit gate pertains to conversation artifacts, Outcome reflects gate state (open/accepted/rejected/skipped) and why (auto_commit/non_interactive/no changes).
+- CLI surface:
+  - A one-line Outcome epilogue appears after DAP actions; hidden with --quiet.
+  - With --json or in protocol mode, outcome.v1 JSON is emitted on stdout with audited counts, bounded item lists, and gate state; no ANSI escapes in non-TTY.
+- Consistency:
+  - Assistant final, CLI epilogue, and JSON (when requested) agree exactly on A/M/D/R counts and item lists (bounded).
+- Tests:
+  - Cover (a) default action with new TODO + snapshot update, (b) opt-out no-op, (c) ambiguity no-op, (d) gate-open pending state, (e) rejection path, (f) protocol/--json JSON shape validation and no ANSI in non-TTY, and (g) duplicate-thread prevention.
+
+Pointers:
+- Policy/dispatch for directive detection; CLI ask epilogue (vizier-cli/src/actions.rs); .vizier/.snapshot storage; Auditor/VCS facts as Outcome source.
+
+Implementation Notes (safety/correctness):
+- CLI-first scope; defer any TUI indicators until a UI surface exists.
+- Compute Outcome from Auditor/VCS after writes and before exit; never infer from model text.
+- Honor stdout/stderr and mode-split contracts: human epilogue to stdout by default; structured outcome.v1 JSON when requested; stderr limited to errors/progress per verbosity.
