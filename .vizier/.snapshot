@@ -23,6 +23,7 @@ Active threads
 - Integration tests: ONGOING. Guard commit isolation, DAP behavior, config→CLI mapping, and (as they land) history/revert, outcome summaries, mode split, and terminal-minimal/output contracts.
 - SSH push reliability: ACTIVE. Policy: no ssh-agent dependency. Ensure `vizier save --push` works with default file-based SSH keys and provides clear, non-interactive guidance on failures; HTTPS path unchanged. [Depends on: VCS push_current_branch, CLI error surface]
 - TODO Garbage-Collection on save: ACTIVE. Vizier aggressively removes duplicate, superseded, empty, and orphaned TODOs during `vizier save` and after material TODO merges, with safety levers and clear Outcome reporting. [Depends on: Config, Auditor, VCS, file tracking, Snapshot Threads]
+- Architecture docs scaffold + prompt catalog: NEW, ACTIVE. Vizier curates architecture documentation across scopes (API/CLI/Protocol/Core primitives/etc.) via structured scaffolds and copyable prompts for external code-focused models; Vizier does not author the docs. CLI supports printing prompts, creating scaffolds, and ingesting provided content with metadata. [Cross: Outcome summaries, Mode split, Terminal-minimal]
 
 Code state (behaviors that matter)
 - CLI emits transient spinner/status to stderr via vizier-core::display with ANSI cursor controls unconditionally, causing leaked sequences like "[1G\u001b[2K⠋ Thinking..." in logs and non-TTY contexts.
@@ -38,6 +39,7 @@ Code state (behaviors that matter)
 - VCS push uses libgit2 with credentials callback; policy is to not depend on ssh-agent and to attempt default file-based key paths for SSH. Error messages are currently generic.
 - Chat navigation and scrolling: Not implemented; long outputs overflow terminal buffer with no native paging. Users rely on terminal scrollback only; no in-app paging indicators or key handling.
 - TODO GC not yet implemented; policy and levers defined; to be wired into save path and Auditor Outcome.
+- Architecture docs: No docs/architecture scaffold exists; no CLI affordance for prompts/scaffolding/intake.
 
 Acceptance checkpoints (selected)
 - Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; TTY-gated progress. JSON modes obey schema outcome.v1. [Active]
@@ -55,6 +57,7 @@ Acceptance checkpoints (selected)
 - AGENTS.md v1: Repo includes AGENTS.md with Contract, Interop Guide, and Decision Log sections. After each agent-driven operation, a single Decision Log entry is appended, referencing TODO/thread IDs and Outcome facts. CLI exposes `vizier agents show|append`. Outcome epilogue notes if AGENTS.md updated. [Planned]
 - SSH push reliability: `vizier save --push` succeeds with default SSH keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa) when usable non-interactively; on failure, error surfaces scheme, strategies attempted, and guidance; never prompts interactively. [Active]
 - TODO GC on save: During `vizier save`, duplicate/superseded/empty/orphaned TODOs are deleted or staged for deletion per config; Outcome reports deletions with reasons; dry-run supported; protected items skipped. [Active]
+- Architecture docs: A docs/architecture index with scope outlines exists; a prompt catalog (in-repo + CLI printable) exists; CLI supports scaffold creation and content intake with metadata; outcomes report doc updates; protocol mode compliant. [Active]
 
 Next moves
 1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [Active]
@@ -71,6 +74,7 @@ Next moves
 12) AGENTS.md v1 scaffold: add product-level schema and update hooks in CLI so agent-driven operations append a concise Decision Log entry; document handoff prompt in Interop Guide. [Active]
 13) Snapshot bootstrap: implement `vizier snapshot init` behavior with Threads IDs and cross-linked seed TODOs; ensure idempotence with diff-like deltas. [Planned]
 14) SSH push reliability: drop ssh-agent dependency; expand credentials strategies to include default file-based keys; enrich error reporting to be actionable; add unit-level smoke for strategy ordering; document manual verification steps. [Active]
+15) Architecture docs scaffold + prompt catalog: Design CLI affordance (e.g., `vizier docs`) to print prompts, scaffold outlines, and ingest content with metadata. Add docs/architecture index and prompt catalog markdown. Ensure protocol/TTY compliance and Outcome integration. [Active]
 
 Cross-links
 - Terminal-minimal ↔ Chat navigation: scrolling must not violate minimal rendering; event stream can drive future TUI without alt-screen.
@@ -81,3 +85,4 @@ Cross-links
 - Snapshot bootstrap ↔ Narrative timelines: generated Threads with stable IDs; TODOs and snapshot cross-reference.
 - SSH push reliability ↔ VCS + CLI: core handles auth strategies; CLI surfaces actionable guidance non-interactively; policy clarified: no ssh-agent dependency.
 - TODO GC ↔ Editorial housekeeping + DAP + Outcome: keep TODOs canonical and lean; report actions clearly; respect gates and protections.
+- Architecture docs ↔ Outcome/Mode split: prompts and scaffolds must honor IO contracts; outcomes reference doc updates for clarity.
