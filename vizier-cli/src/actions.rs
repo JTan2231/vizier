@@ -12,7 +12,7 @@ use vizier_core::{
     bootstrap::{BootstrapOptions, IssuesProvider},
     config,
     display::{self, LogLevel},
-    file_tracking, tools, vcs,
+    file_tracking, prompting, tools, vcs,
 };
 
 fn clip_message(msg: &str) -> String {
@@ -119,6 +119,98 @@ pub struct SnapshotInitOptions {
     pub paths: Vec<String>,
     pub exclude: Vec<String>,
     pub issues: Option<String>,
+}
+
+pub async fn docs_prompt(cmd: crate::DocsPromptCmd) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let crate::DocsPromptCmd {
+        scope: cli_scope,
+        write,
+        scaffold,
+        force,
+    } = cmd;
+
+    let scope = match cli_scope {
+        crate::DocsPromptScope::ArchitectureOverview => {
+            prompting::PromptScope::ArchitectureOverview
+        }
+        crate::DocsPromptScope::SubsystemDetail => prompting::PromptScope::SubsystemDetail,
+        crate::DocsPromptScope::InterfaceSummary => prompting::PromptScope::InterfaceSummary,
+        crate::DocsPromptScope::InvariantCapture => prompting::PromptScope::InvariantCapture,
+        crate::DocsPromptScope::OperationalThread => prompting::PromptScope::OperationalThread,
+    };
+
+    if scaffold {
+        prompting::ensure_prompt_directory()?;
+        let destination = prompting::prompt_directory().join(scope.file_name());
+
+        if destination.exists() && !force {
+            return Err(format!(
+                "prompt already exists at {}; pass --force to overwrite",
+                destination.display()
+            )
+            .into());
+        }
+
+        std::fs::write(&destination, scope.default_template())?;
+        display::info(format!(
+            "{} prompt scaffolded at {}",
+            scope.title(),
+            destination.display()
+        ));
+        return Ok(());
+    }
+
+    if let Some(write_path) = write {
+        if write_path.as_os_str() == "-" {
+            let template = prompting::load_prompt(scope)?;
+            let mut stdout = std::io::stdout();
+            stdout.write_all(template.as_bytes())?;
+            if !template.ends_with('\n') {
+                stdout.write_all(b"\n")?;
+            }
+            stdout.flush()?;
+            return Ok(());
+        }
+
+        let mut destination = write_path;
+        if destination.is_dir() {
+            destination = destination.join(scope.file_name());
+        }
+
+        if destination.exists() && !force {
+            return Err(format!(
+                "{} already exists; pass --force to overwrite",
+                destination.display()
+            )
+            .into());
+        }
+
+        if let Some(parent) = destination.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let template = prompting::load_prompt(scope)?;
+        std::fs::write(&destination, template)?;
+        display::info(format!(
+            "{} prompt written to {}",
+            scope.title(),
+            destination.display()
+        ));
+        return Ok(());
+    }
+
+    let template = prompting::load_prompt(scope)?;
+    let mut stdout = std::io::stdout();
+    stdout.write_all(template.as_bytes())?;
+    if !template.ends_with('\n') {
+        stdout.write_all(b"\n")?;
+    }
+    stdout.flush()?;
+    Ok(())
 }
 
 pub async fn run_snapshot_init(
