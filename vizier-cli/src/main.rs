@@ -126,6 +126,9 @@ enum Commands {
     /// Inline one-shot interaction: send a single message and exit
     Ask(AskCmd),
 
+    /// Documentation utilities
+    Docs(DocsCmd),
+
     /// Snapshot-related operations (e.g., bootstrap from history)
     Snapshot(SnapshotCmd),
 
@@ -161,6 +164,50 @@ struct AskCmd {
     /// Read the user message from the specified file instead of an inline argument
     #[arg(short = 'f', long = "file", value_name = "PATH")]
     file: Option<PathBuf>,
+}
+
+#[derive(ClapArgs, Debug)]
+struct DocsCmd {
+    #[command(subcommand)]
+    command: DocsCommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum DocsCommands {
+    /// Emit or scaffold architecture documentation prompts
+    Prompt(DocsPromptCmd),
+}
+
+#[derive(ClapArgs, Debug)]
+struct DocsPromptCmd {
+    #[arg(value_enum)]
+    scope: DocsPromptScope,
+
+    /// Write the template to PATH (use "-" for stdout)
+    #[arg(long = "write", value_name = "PATH", conflicts_with = "scaffold")]
+    write: Option<PathBuf>,
+
+    /// Scaffold the template under .vizier/docs/prompting/
+    #[arg(long, conflicts_with = "write")]
+    scaffold: bool,
+
+    /// Overwrite destination when used with --write or --scaffold
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DocsPromptScope {
+    #[value(alias = "architecture_overview")]
+    ArchitectureOverview,
+    #[value(alias = "subsystem_detail")]
+    SubsystemDetail,
+    #[value(alias = "interface_summary")]
+    InterfaceSummary,
+    #[value(alias = "invariant_capture")]
+    InvariantCapture,
+    #[value(alias = "operational_thread")]
+    OperationalThread,
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -494,6 +541,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Clean(CleanCmd { todo_list }) => clean(todo_list, push_after).await,
+
+        Commands::Docs(DocsCmd { command }) => match command {
+            DocsCommands::Prompt(cmd) => docs_prompt(cmd).await,
+        },
 
         Commands::Snapshot(SnapshotCmd { command }) => match command {
             SnapshotCommands::Init(cmd) => run_snapshot_init(cmd.into()).await,
