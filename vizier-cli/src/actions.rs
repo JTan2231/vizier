@@ -583,35 +583,47 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
     Ok(user_message)
 }
 
-/// NOTE: Filters items in the .vizier directory by whether they're markdown files
+/// NOTE: Filters out hidden entries; every visible file in `.vizier/` is a TODO candidate.
 pub async fn clean(
     todo_list: String,
     push_after_commit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let todo_dir = tools::get_todo_dir();
+    let available = std::fs::read_dir(&todo_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let file_type = entry.file_type().ok()?;
+
+            if !file_type.is_file() {
+                return None;
+            }
+
+            let name = entry.file_name().into_string().ok()?;
+            if name.starts_with('.') {
+                return None;
+            }
+
+            Some(name)
+        })
+        .collect::<Vec<_>>();
+
     let targets = match todo_list.as_str() {
-        "*" => std::fs::read_dir(&todo_dir)?
-            .filter_map(|entry| {
-                entry
-                    .ok()
-                    .and_then(|e| e.file_name().to_str().map(|s| s.to_string()))
-                    .filter(|name| name.ends_with(".md"))
-                    .map(|p| format!("{}{}", todo_dir, p))
-            })
+        "*" => available
+            .iter()
+            .map(|name| format!("{}{}", todo_dir, name))
             .collect::<Vec<_>>(),
         _ => {
-            let filenames: std::collections::HashSet<_> =
-                todo_list.split(',').map(|s| s.trim().to_string()).collect();
-
-            let path_filenames: std::collections::HashSet<_> = std::fs::read_dir(&todo_dir)?
-                .filter_map(|entry| entry.ok())
-                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            let requested: std::collections::HashSet<_> = todo_list
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
                 .collect();
 
-            filenames
-                .intersection(&path_filenames)
-                .filter(|name| name.ends_with(".md"))
-                .map(|p| format!("{}{}", todo_dir, p))
+            let available_set: std::collections::HashSet<_> = available.iter().cloned().collect();
+
+            requested
+                .intersection(&available_set)
+                .map(|name| format!("{}{}", todo_dir, name))
                 .collect()
         }
     };
