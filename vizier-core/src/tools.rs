@@ -138,20 +138,40 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
     }
 }
 
+fn build_todo_path(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(llm_error("TODO name cannot be empty"));
+    }
+
+    if trimmed.starts_with('.') {
+        return Err(llm_error(
+            "TODO name cannot start with '.'; choose a visible slug",
+        ));
+    }
+
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(llm_error(
+            "TODO name cannot contain path separators. Provide a single slug.",
+        ));
+    }
+
+    Ok(format!("{}{}", get_todo_dir(), trimmed))
+}
+
 #[tool(description = "
 Add a TODO item.
 
 Parameters:
-    todo_name: Name of the TODO item to add
-    description: Content of the TODO item
-
-Notes:
-- `name` will be a name for a markdown file--_do not_ assign its directory, just give it a name
-- `description` should be in markdown
-- The provided `todo_name` argument will be formatted as `todo_{todo_name}.md` for the final filename
+    todo_name: Slug used as the exact filename inside `.vizier/`
+    description: Content of the TODO item (markdown recommended)
 ")]
 fn add_todo(name: String, description: String) -> String {
-    let filename = format!("{}todo_{}.md", get_todo_dir(), name);
+    let filename = match build_todo_path(&name) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+
     if let Err(e) = file_tracking::FileTracker::write(&filename, &description) {
         llm_error(&format!("Failed to create todo file {}: {}", filename, e))
     } else {
@@ -163,14 +183,14 @@ fn add_todo(name: String, description: String) -> String {
 Delete a TODO item.
 
 Parameters:
-    name: Name of the TODO item to delete
-
-Notes:
-- `name` should match the name used when creating the todo (without the 'todo_' prefix or '.md' extension)
-- This will permanently remove the todo file
+    name: Slug of the TODO item to delete
 ")]
 fn delete_todo(name: String) -> String {
-    let filename = format!("{}todo_{}.md", get_todo_dir(), name);
+    let filename = match build_todo_path(&name) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+
     if let Err(e) = file_tracking::FileTracker::delete(&filename) {
         llm_error(&format!("Failed to create delete file {}: {}", filename, e))
     } else {
@@ -181,13 +201,16 @@ fn delete_todo(name: String) -> String {
 #[tool(description = "Updates an existing TODO item by appending new content.
 
 Parameters:
-    todo_name: Name of the TODO item to update
+    todo_name: Slug of the TODO item to update
     update: Content to append to the item
 
 Notes: Content is appended with separator lines for readability
 ")]
 fn update_todo(todo_name: String, update: String) -> String {
-    let filename = format!("{}todo_{}.md", get_todo_dir(), todo_name.clone());
+    let filename = match build_todo_path(&todo_name) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
 
     if let Err(e) = file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
     {
@@ -217,10 +240,33 @@ fn read_file(filepath: String) -> String {
 Returns: Semicolon-separated string of TODO item names")]
 pub fn list_todos() -> String {
     match std::fs::read_dir(get_todo_dir()) {
-        Ok(d) => d
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect::<Vec<String>>()
-            .join("; "),
+        Ok(d) => {
+            let mut names = Vec::new();
+
+            for entry in d.flatten() {
+                let file_type = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+
+                if !file_type.is_file() {
+                    continue;
+                }
+
+                let name = match entry.file_name().into_string() {
+                    Ok(name) => name,
+                    Err(_) => continue,
+                };
+
+                if name.starts_with('.') {
+                    continue;
+                }
+
+                names.push(name);
+            }
+
+            names.join("; ")
+        }
         Err(e) => llm_error(&format!(
             "Error reading directory {}: {}",
             get_todo_dir(),
@@ -232,11 +278,14 @@ pub fn list_todos() -> String {
 #[tool(description = "Retrieves the contents of a specific TODO item.
 
 Parameters:
-    todo_name: Name of the TODO item to read
+    todo_name: Slug of the TODO item to read
 
 Returns: String containing the TODO item's contents")]
 fn read_todo(todo_name: String) -> String {
-    let filename = format!("{}{}", get_todo_dir(), todo_name);
+    let filename = match build_todo_path(&todo_name) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
 
     let contents = file_tracking::FileTracker::read(&filename.clone());
     if let Err(e) = contents {

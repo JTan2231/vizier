@@ -71,6 +71,13 @@ vizier save HEAD~3..HEAD # commits specific range
 - `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits (use `--file PATH` to read the prompt from disk)
 - `vizier chat` — Interactive TUI with split diff view and narrative maintenance
 
+#### Documentation Prompts
+- `vizier docs prompt <scope>` — Emit or scaffold architecture templates described in `PROMPTING.md`
+  - `--write PATH` writes the template to a file (use `-` to force stdout)
+  - `--scaffold` materializes the template under `.vizier/docs/prompting/`
+  - `--force` overwrites existing files when used with `--write` or `--scaffold`
+  - Scopes: `architecture-overview`, `subsystem-detail`, `interface-summary`, `invariant-capture`, `operational-thread`
+
 #### Snapshot Management
 - `vizier snapshot init` — Bootstrap `.vizier/.snapshot` from repository analysis
   - `--depth N` — Limit Git history scan
