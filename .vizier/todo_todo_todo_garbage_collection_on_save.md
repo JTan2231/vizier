@@ -20,7 +20,6 @@ Scope of GC (what gets deleted):
 
 What does NOT get deleted:
 - TODOs explicitly marked keep or pinned.
-- TODOs referenced by open branches/PRs in the Agent Basic Command workflow (until merged/closed).
 
 User-facing affordances:
 - Flags:
@@ -41,7 +40,6 @@ Acceptance criteria:
   - No files deleted; Outcome includes the same plan with action:"dry-run" and exit code remains success.
 - With confirm_destructive=true:
   - Deletions appear as staged removals; user can accept/reject at the gate; Outcome reflects gate_state: pending.
-- TODOs linked to open Agent Basic Command branches/PRs are skipped; Outcome lists them under skipped with reason.
 - Pinned/keep-marked TODOs are never deleted; Outcome lists them under skipped: protected.
 
 Pointer-level anchors:
@@ -53,10 +51,10 @@ Trade space notes (kept open):
 - Orphan detection keys off Snapshot Threads section; tolerate lag by using threshold.
 
 Tests:
-- Integration tests covering: default save with GC, dry-run, opt-out, confirm_destructive gate, protocol mode JSON event, protection rules, and skip on active agent branches.
+- Integration tests covering: default save with GC, dry-run, opt-out, confirm_destructive gate, protocol mode JSON event, and protection rules.
 
 Cross-links:
 - Default-Action Posture (DAP): GC is part of default housekeeping on save; Outcome must reflect actions.
 - Outcome summaries: must include GC facts.
-- SSH push reliability: unchanged.
+- VCS push flows: unchanged (GC never touches remote auth or push strategies).
 - Mode split + stdout/stderr contract: GC respects IO rules in both modes.

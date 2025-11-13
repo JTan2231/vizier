@@ -46,12 +46,12 @@ Renderer-neutral + terminal-minimal constraints (2025-10-02)
 - Outcome delivery must work within the minimal-invasive terminal philosophy: no alt-screen/full redraws; line-oriented; status line collapses to a single Outcome line.
 - Source outcomes from the renderer-neutral event stream once available (status/outcome events). CLI consumes and renders; `--json`/`--json-stream` expose machine-readable forms.
 - Respect TTY gating: no ANSI control sequences in non-TTY contexts; human epilogue hidden with `--quiet`.
-- Cross-link: See TODO “minimal_invasive_tui_and_renderer_neutral_surface” for the event contract and constraints.
+- Cross-link: Shares the same event/IO contract as the stdout/stderr + verbosity thread; no separate renderer thread remains.
 
 
 ---
 
-Update (2025-10-04): Outcome CLI-first aligned with stdout/stderr contract and verbosity levers. The canonical epilogue is sourced from Auditor/VCS facts and emitted to stdout as outcome.v1 (when --json) or a compact human block otherwise. Assistant final mirrors the same facts. Add integration tests covering: (TTY x non-TTY) x (quiet, default, -v/-vv) ensuring no ANSI in non-TTY and stable Outcome presence. Cross-link tightened with stdout/stderr contract TODO and Agent Basic Command Outcome fields.
+Update (2025-10-04): Outcome CLI-first aligned with stdout/stderr contract and verbosity levers. The canonical epilogue is sourced from Auditor/VCS facts and emitted to stdout as outcome.v1 (when --json) or a compact human block otherwise. Assistant final mirrors the same facts. Add integration tests covering: (TTY x non-TTY) x (quiet, default, -v/-vv) ensuring no ANSI in non-TTY and stable Outcome presence. Cross-link tightened with stdout/stderr contract TODO.
 
 ---
 
@@ -74,4 +74,3 @@ Acceptance criteria additions:
 Canonicalization note (2025-10-06): This is the canonical TODO for Outcome summaries across surfaces. Duplicate consolidated: post_action_outcome_summaries_across_tui_cli_and_assistant.md.md (now a redirect stub).
 
 ---
-
