@@ -4,15 +4,21 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::sync::mpsc::channel;
 
-use crate::{config, display, file_tracking, tools, vcs};
+use crate::{
+    codex,
+    config::{self, SystemPrompt},
+    display, file_tracking, tools, vcs,
+};
 
 lazy_static! {
     static ref AUDITOR: Mutex<Auditor> = Mutex::new(Auditor::new());
 }
 
+#[derive(Clone, Debug)]
 pub struct TokenUsage {
     pub input_tokens: usize,
     pub output_tokens: usize,
+    pub known: bool,
 }
 
 pub struct AuditorCleanup {
@@ -110,6 +116,8 @@ pub struct Auditor {
     messages: Vec<wire::types::Message>,
     session_start: String,
     session_id: String,
+    #[serde(skip)]
+    usage_unknown: bool,
 }
 
 impl Auditor {
@@ -120,6 +128,7 @@ impl Auditor {
             messages: Vec::new(),
             session_start: now.to_string(),
             session_id: uuid::Uuid::new_v4().to_string(),
+            usage_unknown: false,
         }
     }
 
@@ -155,17 +164,25 @@ impl Auditor {
     }
 
     pub fn get_total_usage() -> TokenUsage {
+        let auditor = AUDITOR.lock().unwrap();
         let mut usage = TokenUsage {
             input_tokens: 0,
             output_tokens: 0,
+            known: !auditor.usage_unknown,
         };
 
-        for message in AUDITOR.lock().unwrap().messages.iter() {
+        for message in auditor.messages.iter() {
             usage.input_tokens += message.input_tokens;
             usage.output_tokens += message.output_tokens;
         }
 
         usage
+    }
+
+    fn mark_usage_unknown() {
+        if let Ok(mut auditor) = AUDITOR.lock() {
+            auditor.usage_unknown = true;
+        }
     }
 
     /// Commit the conversation (if it exists, which it should), then the narrative diff (if it exists)
@@ -297,7 +314,7 @@ impl Auditor {
             .await?)
         })
         .await
-        .unwrap();
+        .map_err(|e| e as Box<dyn std::error::Error>)?;
 
         Self::replace_messages(&response);
 
@@ -307,104 +324,256 @@ impl Auditor {
     /// Basic LLM request with tool usage
     /// NOTE: Returns the _entire_ conversation, up to date with the LLM's responses
     pub async fn llm_request_with_tools(
+        prompt_variant: Option<SystemPrompt>,
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        Self::add_message(
-            crate::config::get_config()
-                .provider
-                .new_message(user_message)
-                .as_user()
-                .build(),
-        );
+        let cfg = crate::config::get_config();
+        let backend = cfg.backend;
+        let fallback_backend = cfg.fallback_backend;
+        let provider = cfg.provider.clone();
+        let codex_opts = cfg.codex.clone();
+
+        Self::add_message(provider.new_message(user_message).as_user().build());
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
-        let response = display::call_with_status(async move |tx| {
-            tx.send(display::Status::Working("Thinking...".into()))
-                .await?;
+        match backend {
+            config::BackendKind::Wire => {
+                let response =
+                    run_wire_with_status(system_prompt, messages.clone(), tools.clone()).await?;
+                Self::replace_messages(&response);
+                Ok(response.last().unwrap().clone())
+            }
+            config::BackendKind::Codex => {
+                simulate_integration_changes()?;
+                let repo_root =
+                    find_project_root()?.unwrap_or_else(|| std::path::PathBuf::from("."));
+                let messages_clone = messages.clone();
+                let provider_clone = provider.clone();
+                let opts_clone = codex_opts.clone();
+                let prompt_clone = system_prompt.clone();
 
-            let (request_tx, mut request_rx) = channel(10);
+                let codex_run = display::call_with_status(async move |tx| {
+                    let request = codex::CodexRequest {
+                        prompt: prompt_clone.clone(),
+                        repo_root: repo_root.clone(),
+                        profile: opts_clone.profile.clone(),
+                        bin: opts_clone.binary_path.clone(),
+                        extra_args: opts_clone.extra_args.clone(),
+                    };
 
-            tokio::spawn(async move {
-                while let Some(msg) = request_rx.recv().await {
-                    tx.send(display::Status::Working(msg)).await.unwrap();
-                }
-            });
+                    let response =
+                        codex::run_exec(request, Some(codex::ProgressHook::Display(tx.clone())))
+                            .await
+                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
-            // Mock some random file change for the integration tests
-            #[cfg(feature = "integration_testing")]
-            {
-                let skip_code_change = std::env::var("VIZIER_IT_SKIP_CODE_CHANGE").is_ok();
-                let skip_vizier_change = std::env::var("VIZIER_IT_SKIP_VIZIER_CHANGE").is_ok();
+                    let mut updated = messages_clone.clone();
+                    let mut assistant_message = provider_clone
+                        .new_message(response.assistant_text.clone())
+                        .as_assistant()
+                        .build();
+                    if let Some(usage) = response.usage {
+                        assistant_message.input_tokens = usage.input_tokens;
+                        assistant_message.output_tokens = usage.output_tokens;
+                    } else {
+                        Auditor::mark_usage_unknown();
+                    }
+                    updated.push(assistant_message);
+                    Ok(updated)
+                })
+                .await;
 
-                if !skip_code_change {
-                    crate::file_tracking::FileTracker::write("a", "some change")?;
-                }
-
-                if !skip_vizier_change {
-                    crate::file_tracking::FileTracker::write(
-                        ".vizier/.snapshot",
-                        "some snapshot change",
-                    )?;
-                    crate::file_tracking::FileTracker::write(
-                        ".vizier/todo.md",
-                        "some todo change",
-                    )?;
+                match codex_run {
+                    Ok(response) => {
+                        Self::replace_messages(&response);
+                        Ok(response.last().unwrap().clone())
+                    }
+                    Err(err) => {
+                        if fallback_backend == Some(config::BackendKind::Wire) {
+                            let codex_error = match err.downcast::<codex::CodexError>() {
+                                Ok(e) => *e,
+                                Err(other) => return Err(other as Box<dyn std::error::Error>),
+                            };
+                            display::warn(format!(
+                                "Codex backend failed ({}); retrying with wire backend",
+                                codex_error
+                            ));
+                            let fallback_prompt =
+                                config::get_system_prompt_with_meta(prompt_variant)?;
+                            let fallback_tools = if tools.is_empty() {
+                                tools::get_tools()
+                            } else {
+                                tools.clone()
+                            };
+                            let response = run_wire_with_status(
+                                fallback_prompt,
+                                messages.clone(),
+                                fallback_tools,
+                            )
+                            .await?;
+                            Self::replace_messages(&response);
+                            Ok(response.last().unwrap().clone())
+                        } else {
+                            Err(err as Box<dyn std::error::Error>)
+                        }
+                    }
                 }
             }
-
-            // TODO: The number of clones here is outrageous
-            Ok(prompt_wire_with_tools(
-                &*crate::config::get_config().provider,
-                request_tx.clone(),
-                &system_prompt,
-                messages.clone(),
-                tools.clone(),
-            )
-            .await?)
-        })
-        .await
-        .unwrap();
-
-        Self::replace_messages(&response);
-
-        Ok(response.last().unwrap().clone())
+        }
     }
 
     // TODO: Rectify this with the function above
     pub async fn llm_request_with_tools_no_display(
+        prompt_variant: Option<SystemPrompt>,
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
         request_tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        Self::add_message(
-            crate::config::get_config()
-                .provider
-                .new_message(user_message)
-                .as_user()
-                .build(),
-        );
+        let cfg = crate::config::get_config();
+        let backend = cfg.backend;
+        let fallback_backend = cfg.fallback_backend;
+        let provider = cfg.provider.clone();
+        let codex_opts = cfg.codex.clone();
+
+        Self::add_message(provider.new_message(user_message).as_user().build());
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
-        let response = prompt_wire_with_tools(
+        match backend {
+            config::BackendKind::Wire => {
+                let response = prompt_wire_with_tools(
+                    &*provider,
+                    request_tx.clone(),
+                    &system_prompt,
+                    messages.clone(),
+                    tools.clone(),
+                )
+                .await?;
+
+                let last = response.last().unwrap().clone();
+                Self::add_message(last.clone());
+                Ok(last)
+            }
+            config::BackendKind::Codex => {
+                simulate_integration_changes()?;
+                let repo_root =
+                    find_project_root()?.unwrap_or_else(|| std::path::PathBuf::from("."));
+                let request = codex::CodexRequest {
+                    prompt: system_prompt.clone(),
+                    repo_root,
+                    profile: codex_opts.profile.clone(),
+                    bin: codex_opts.binary_path.clone(),
+                    extra_args: codex_opts.extra_args.clone(),
+                };
+
+                match codex::run_exec(
+                    request,
+                    Some(codex::ProgressHook::Plain(request_tx.clone())),
+                )
+                .await
+                {
+                    Ok(response) => {
+                        let mut assistant_message = provider
+                            .new_message(response.assistant_text.clone())
+                            .as_assistant()
+                            .build();
+                        if let Some(usage) = response.usage {
+                            assistant_message.input_tokens = usage.input_tokens;
+                            assistant_message.output_tokens = usage.output_tokens;
+                        } else {
+                            Auditor::mark_usage_unknown();
+                        }
+                        Self::add_message(assistant_message.clone());
+                        Ok(assistant_message)
+                    }
+                    Err(err) => {
+                        if fallback_backend == Some(config::BackendKind::Wire) {
+                            display::warn(format!(
+                                "Codex backend failed ({}); retrying with wire backend",
+                                err
+                            ));
+                            let fallback_prompt =
+                                config::get_system_prompt_with_meta(prompt_variant)?;
+                            let fallback_tools = if tools.is_empty() {
+                                tools::get_tools()
+                            } else {
+                                tools.clone()
+                            };
+                            let response = prompt_wire_with_tools(
+                                &*provider,
+                                request_tx.clone(),
+                                &fallback_prompt,
+                                messages.clone(),
+                                fallback_tools,
+                            )
+                            .await?;
+                            let last = response.last().unwrap().clone();
+                            Self::add_message(last.clone());
+                            Ok(last)
+                        } else {
+                            Err(Box::new(err))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_wire_with_status(
+    system_prompt: String,
+    messages: Vec<wire::types::Message>,
+    tools: Vec<wire::types::Tool>,
+) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+    display::call_with_status(async move |tx| {
+        tx.send(display::Status::Working("Thinking...".into()))
+            .await?;
+
+        let (request_tx, mut request_rx) = channel(10);
+        tokio::spawn(async move {
+            while let Some(msg) = request_rx.recv().await {
+                tx.send(display::Status::Working(msg)).await.unwrap();
+            }
+        });
+
+        simulate_integration_changes()?;
+
+        Ok(prompt_wire_with_tools(
             &*crate::config::get_config().provider,
             request_tx.clone(),
             &system_prompt,
             messages.clone(),
             tools.clone(),
         )
-        .await?;
+        .await?)
+    })
+    .await
+    .map_err(|e| e as Box<dyn std::error::Error>)
+}
 
-        let last = response.last().unwrap().clone();
+#[cfg(feature = "integration_testing")]
+fn simulate_integration_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let skip_code_change = std::env::var("VIZIER_IT_SKIP_CODE_CHANGE").is_ok();
+    let skip_vizier_change = std::env::var("VIZIER_IT_SKIP_VIZIER_CHANGE").is_ok();
 
-        Self::add_message(last.clone());
-
-        Ok(last)
+    if !skip_code_change {
+        crate::file_tracking::FileTracker::write("a", "some change")?;
     }
+
+    if !skip_vizier_change {
+        crate::file_tracking::FileTracker::write(".vizier/.snapshot", "some snapshot change")?;
+        crate::file_tracking::FileTracker::write(".vizier/todo.md", "some todo change")?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "integration_testing"))]
+fn simulate_integration_changes() -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
 }
 
 pub enum CommitMessageType {

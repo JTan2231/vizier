@@ -1,6 +1,7 @@
 pub mod auditor;
 pub mod bootstrap;
 pub mod chat;
+pub mod codex;
 pub mod config;
 pub mod display;
 pub mod editor;

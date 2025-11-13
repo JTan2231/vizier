@@ -16,8 +16,8 @@ use ratatui::{
 };
 
 use crate::{
-    auditor,
-    config::{self, SystemPrompt},
+    auditor, codex,
+    config::{self, BackendKind, SystemPrompt},
 };
 
 fn get_spinner_char(index: usize) -> String {
@@ -87,11 +87,16 @@ impl Chat {
     async fn send_message(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if !self.input.is_empty() {
             let tx_clone = self.tx.clone();
-            let system_prompt = config::get_system_prompt_with_meta(Some(SystemPrompt::Chat))?;
-            let tools = crate::tools::get_tools();
+            let system_prompt = if config::get_config().backend == BackendKind::Codex {
+                codex::build_prompt_for_codex(&self.input)?
+            } else {
+                config::get_system_prompt_with_meta(Some(SystemPrompt::Chat))?
+            };
+            let tools = crate::tools::active_tooling();
             let input = self.input.clone();
             self.receiving_handle = Some(tokio::spawn(async move {
                 auditor::Auditor::llm_request_with_tools_no_display(
+                    Some(SystemPrompt::Chat),
                     system_prompt,
                     input,
                     tools,

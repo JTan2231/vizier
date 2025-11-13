@@ -122,6 +122,29 @@ vizier ask "..." --thinking-level deep
 vizier save --yes --commit-message "feat: add retry logic"
 ```
 
+#### Backend selection
+
+Vizier can operate in either the legacy HTTP (`wire`) backend or the Codex backend that edits the workspace directly. The global config defaults to Codex and automatically falls back to the wire stack when Codex cannot produce a response. You can tune the behavior in `~/.config/vizier/config.toml`:
+
+```toml
+backend = "codex"            # or "wire"
+fallback_backend = "wire"    # retry with wire if Codex exits early
+
+[codex]
+binary = "/usr/local/bin/codex"          # defaults to resolving `codex` on $PATH
+profile = "vizier"                       # pass an empty string to unset
+bounds_prompt = ".vizier/codex-bounds.md" # optional override for the bounds text
+extra_args = ["--log-json"]              # forwarded to `codex exec`
+```
+
+Per-command overrides are available:
+
+- `--backend codex|wire` selects the backend for a single invocation.
+- `--codex-bin PATH`, `--codex-profile NAME`, and `--codex-bounds-prompt PATH` mirror the config keys above.
+- `-p/--model` applies only to the wire backend; the flag is ignored (with a warning) when Codex is active.
+
+When Codex runs, it edits `.vizier/.snapshot` and TODO files in-place and streams progress events through the CLI. The usual commit gates (`vizier save`, staged hunks, etc.) still apply, and token usage is reported when the backend shares it. If Codex omits usage numbers, Vizier reports them as `unknown` instead of showing stale totals.
+
 ## Architecture
 
 Vizier follows a workspace structure with clear separation of concerns:

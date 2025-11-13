@@ -35,7 +35,7 @@ Code state (behaviors that matter)
 - Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned, but Auditor facts for chat are available to drive a canonical epilogue. Outcome component targeted CLI-first with outcome.v1 JSON and stdout epilogue. Canonical TODO added.
 - Renderer stance: Terminal-minimal mode and renderer-neutral event stream are planned additions.
 - Agent Basic Command: Not implemented yet; design anchored on Workflow B (branch/PR + vizier save) with defined Outcome fields.
-- AGENTS.md contract/log: Not present yet; v1 scaffold defined at product level; duplicate TODOs consolidated.
+- AGENTS.md contract/log: Current file is just a two-line reminder to reread the snapshot/README/lib prompts; the Contract/Interop/Decision Log scaffolds described in the TODOs are still absent.
 - VCS push uses libgit2 with credentials callback; policy is to not depend on ssh-agent and to attempt default file-based key paths for SSH. Error messages are currently generic.
 - Chat navigation and scrolling: Not implemented; long outputs overflow terminal buffer with no native paging. Users rely on terminal scrollback only; no in-app paging indicators or key handling.
 - TODO GC not yet implemented; policy and levers defined; to be wired into save path and Auditor Outcome.

@@ -63,6 +63,22 @@ struct GlobalOpts {
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
 
+    /// Backend to use for edit orchestration (`codex` or `wire`)
+    #[arg(long = "backend", value_enum, global = true)]
+    backend: Option<BackendArg>,
+
+    /// Path to the Codex binary (defaults to resolving `codex` on PATH)
+    #[arg(long = "codex-bin", value_name = "PATH", global = true)]
+    codex_bin: Option<PathBuf>,
+
+    /// Codex profile to load (pass empty to unset)
+    #[arg(long = "codex-profile", value_name = "NAME", global = true)]
+    codex_profile: Option<String>,
+
+    /// Override Codex bounds prompt with a file on disk
+    #[arg(long = "codex-bounds-prompt", value_name = "PATH", global = true)]
+    codex_bounds_prompt: Option<PathBuf>,
+
     /// Emit the audit as JSON to stdout
     #[arg(short = 'j', long, global = true)]
     json: bool,
@@ -95,6 +111,10 @@ impl Default for GlobalOpts {
             load_session: None,
             no_session: false,
             model: None,
+            backend: None,
+            codex_bin: None,
+            codex_profile: None,
+            codex_bounds_prompt: None,
             json: false,
             require_confirmation: false,
             config_file: None,
@@ -109,6 +129,21 @@ enum ProgressArg {
     Auto,
     Never,
     Always,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackendArg {
+    Codex,
+    Wire,
+}
+
+impl From<BackendArg> for config::BackendKind {
+    fn from(value: BackendArg) -> Self {
+        match value {
+            BackendArg::Codex => config::BackendKind::Codex,
+            BackendArg::Wire => config::BackendKind::Wire,
+        }
+    }
 }
 
 impl From<ProgressArg> for display::ProgressMode {
@@ -506,6 +541,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cfg.no_session = cli.global.no_session;
 
+    if let Some(backend_arg) = cli.global.backend {
+        cfg.backend = backend_arg.into();
+    }
+
+    if let Some(bin_override) = cli.global.codex_bin {
+        cfg.codex.binary_path = bin_override;
+    }
+
+    if let Some(profile_override) = &cli.global.codex_profile {
+        let trimmed = profile_override.trim();
+        if trimmed.is_empty() {
+            cfg.codex.profile = None;
+        } else {
+            cfg.codex.profile = Some(trimmed.to_owned());
+        }
+    }
+
+    if let Some(bounds_override) = cli.global.codex_bounds_prompt.clone() {
+        cfg.codex.bounds_prompt_path = Some(bounds_override);
+    }
+
     let mut provider_needs_rebuild =
         cfg.provider_model != config::DEFAULT_MODEL || cfg.reasoning_effort.is_some();
 
@@ -514,8 +570,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if trimmed.is_empty() {
             return Err("model name cannot be empty".into());
         }
-        cfg.provider_model = trimmed.to_owned();
-        provider_needs_rebuild = true;
+        if cfg.backend == config::BackendKind::Wire {
+            cfg.provider_model = trimmed.to_owned();
+            provider_needs_rebuild = true;
+        } else {
+            display::warn(
+                "--model is ignored when Codex is the active backend; rerun with --backend wire \
+                 if you need to force the HTTP provider stack.",
+            );
+        }
     }
 
     if let Some(reasoning_effort) = &cli.global.reasoning_effort {

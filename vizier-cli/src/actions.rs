@@ -10,7 +10,7 @@ use vizier_core::{
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
-    config,
+    codex, config,
     display::{self, LogLevel},
     file_tracking, prompting, tools, vcs,
 };
@@ -106,10 +106,14 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
 
 pub fn print_token_usage() {
     let usage = Auditor::get_total_usage();
-    display::info(format!(
-        "Token usage: prompt={} completion={}",
-        usage.input_tokens, usage.output_tokens
-    ));
+    if usage.known {
+        display::info(format!(
+            "Token usage: prompt={} completion={}",
+            usage.input_tokens, usage.output_tokens
+        ));
+    } else {
+        display::info("Token usage: unknown");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -411,10 +415,18 @@ async fn save(
         );
     }
 
+    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
+        codex::build_prompt_for_codex(&save_instruction)
+            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
+    } else {
+        crate::config::get_system_prompt_with_meta(None)?
+    };
+
     let response = Auditor::llm_request_with_tools(
-        crate::config::get_system_prompt_with_meta(None)?,
+        None,
+        system_prompt,
         save_instruction,
-        tools::get_tools(),
+        tools::active_tooling(),
     )
     .await?;
 
@@ -697,18 +709,32 @@ pub async fn inline_command(
     user_message: String,
     push_after_commit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let system_prompt = match crate::config::get_system_prompt_with_meta(None) {
-        Ok(s) => s,
-        Err(e) => {
-            display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));
-            return Err(Box::<dyn std::error::Error>::from(e));
+    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
+        match codex::build_prompt_for_codex(&user_message) {
+            Ok(prompt) => prompt,
+            Err(e) => {
+                display::emit(
+                    LogLevel::Error,
+                    format!("Error building Codex prompt: {}", e),
+                );
+                return Err(Box::<dyn std::error::Error>::from(e));
+            }
+        }
+    } else {
+        match crate::config::get_system_prompt_with_meta(None) {
+            Ok(s) => s,
+            Err(e) => {
+                display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));
+                return Err(Box::<dyn std::error::Error>::from(e));
+            }
         }
     };
 
     let response = match Auditor::llm_request_with_tools(
+        None,
         system_prompt,
         user_message,
-        tools::get_tools(),
+        tools::active_tooling(),
     )
     .await
     {

@@ -211,7 +211,7 @@ impl App {
                 let api_clone = api.clone();
                 let message_history = self.conversation_history.clone();
                 let system_prompt = self.build_system_prompt();
-                let tools = crate::tools::get_editor_tools();
+                let tools = crate::tools::active_editor_tooling();
                 self.response_receiving_handle = Some(tokio::spawn(async move {
                     wire::prompt_with_tools_and_status(
                         tx_clone,

@@ -24,6 +24,50 @@ pub enum SystemPrompt {
     Chat,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendKind {
+    Codex,
+    Wire,
+}
+
+impl BackendKind {
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "codex" => Some(Self::Codex),
+            "wire" => Some(Self::Wire),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for BackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendKind::Codex => write!(f, "codex"),
+            BackendKind::Wire => write!(f, "wire"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CodexOptions {
+    pub binary_path: PathBuf,
+    pub profile: Option<String>,
+    pub bounds_prompt_path: Option<PathBuf>,
+    pub extra_args: Vec<String>,
+}
+
+impl Default for CodexOptions {
+    fn default() -> Self {
+        Self {
+            binary_path: PathBuf::from("codex"),
+            profile: None,
+            bounds_prompt_path: None,
+            extra_args: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub provider: Arc<dyn Prompt>,
@@ -31,6 +75,9 @@ pub struct Config {
     pub reasoning_effort: Option<ThinkingLevel>,
     pub commit_confirmation: bool,
     pub no_session: bool,
+    pub backend: BackendKind,
+    pub fallback_backend: Option<BackendKind>,
+    pub codex: CodexOptions,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
 }
 
@@ -44,6 +91,9 @@ impl Config {
             reasoning_effort: None,
             commit_confirmation: false,
             no_session: false,
+            backend: BackendKind::Codex,
+            fallback_backend: Some(BackendKind::Wire),
+            codex: CodexOptions::default(),
             prompt_store: std::collections::HashMap::from([
                 (
                     SystemPrompt::Base,
@@ -148,6 +198,78 @@ impl Config {
             config.commit_confirmation = commit_confirmation;
         }
 
+        if let Some(backend) = find_string(&file_config, BACKEND_KEY_PATHS)
+            .and_then(|value| BackendKind::from_str(value.trim()))
+        {
+            config.backend = backend;
+        }
+
+        if let Some(fallback) = find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS)
+            .and_then(|value| BackendKind::from_str(value.trim()))
+        {
+            config.fallback_backend = Some(fallback);
+        }
+
+        if let Some(codex_value) = value_at_path(&file_config, &["codex"]) {
+            if let Some(codex_object) = codex_value.as_object() {
+                if let Some(path_val) = codex_object
+                    .get("binary")
+                    .or_else(|| codex_object.get("binary_path"))
+                {
+                    if let Some(path) = path_val
+                        .as_str()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        config.codex.binary_path = PathBuf::from(path);
+                    }
+                }
+
+                if let Some(profile_val) = codex_object.get("profile") {
+                    if profile_val.is_null() {
+                        config.codex.profile = None;
+                    } else if let Some(profile) = profile_val.as_str() {
+                        let trimmed = profile.trim();
+                        config.codex.profile = if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        };
+                    }
+                }
+
+                if let Some(bounds_val) = codex_object
+                    .get("bounds_prompt_path")
+                    .or_else(|| codex_object.get("bounds_prompt"))
+                {
+                    if let Some(path) = bounds_val
+                        .as_str()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        config.codex.bounds_prompt_path = Some(PathBuf::from(path));
+                    }
+                }
+
+                if let Some(extra_val) = codex_object.get("extra_args") {
+                    if let Some(array) = extra_val.as_array() {
+                        let mut args = Vec::new();
+                        for item in array {
+                            if let Some(arg) = item.as_str() {
+                                let trimmed = arg.trim();
+                                if !trimmed.is_empty() {
+                                    args.push(trimmed.to_string());
+                                }
+                            }
+                        }
+                        if !args.is_empty() {
+                            config.codex.extra_args = args;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(prompt) = find_string(&file_config, BASE_PROMPT_KEY_PATHS) {
             config.prompt_store.insert(SystemPrompt::Base, prompt);
         }
@@ -184,6 +306,8 @@ const MODEL_KEY_PATHS: &[&[&str]] = &[
     &["provider", "model"],
     &["provider", "name"],
 ];
+const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
+const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
 const COMMIT_CONFIRMATION_KEY_PATHS: &[&[&str]] = &[
     &["commit_confirmation"],
     &["require_confirmation"],
