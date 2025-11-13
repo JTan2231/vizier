@@ -175,6 +175,23 @@ fn diff_deltas_len(diff: &Diff) -> usize {
     diff.deltas().count()
 }
 
+fn find_conversation_commit(repo: &Repository) -> Result<String, Box<dyn std::error::Error>> {
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+
+    for oid in revwalk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        if let Some(message) = commit.message() {
+            if message.contains("VIZIER CONVERSATION") {
+                return Ok(message.to_string());
+            }
+        }
+    }
+
+    Err("failed to find conversation commit".into())
+}
+
 fn git_init() -> Result<(), Box<dyn std::error::Error>> {
     init_repo_and_initial_commit()?;
     Ok(())
@@ -204,6 +221,18 @@ fn test_save() -> Result<(), Box<dyn std::error::Error>> {
 
     let after_count = count_commits_from_head(&repo)?;
     assert_eq!(after_count - before_count, 3);
+
+    let snapshot = std::fs::read_to_string("test-repo-active/.vizier/.snapshot")?;
+    assert!(
+        snapshot.contains("some snapshot change"),
+        "expected Codex mock snapshot update"
+    );
+
+    let convo = find_conversation_commit(&repo)?;
+    assert!(
+        convo.to_ascii_lowercase().contains("mock codex response"),
+        "conversation commit missing Codex response"
+    );
     Ok(())
 }
 

@@ -219,7 +219,7 @@ async fn display_status(rx: Receiver<Status>, runtime: DisplayRuntime) {
 
 pub async fn call_with_status<F, Fut>(
     f: F,
-) -> Result<Vec<wire::types::Message>, Box<dyn Error + Send + Sync>>
+) -> Result<Vec<wire::types::Message>, Box<dyn Error>>
 where
     F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>>
@@ -230,16 +230,16 @@ where
     let runtime = DisplayRuntime::from_config(get_display_config());
     let display_task = tokio::spawn(display_status(rx, runtime));
 
-    let output = match f(tx.clone()).await {
-        Ok(messages) => messages,
+    let result = match f(tx.clone()).await {
+        Ok(messages) => Ok(messages),
         Err(e) => {
             let _ = tx.send(Status::Error(e.to_string())).await;
-            Vec::new()
+            Err(e)
         }
     };
 
     let _ = tx.send(Status::Done).await;
     let _ = display_task.await;
 
-    Ok(output)
+    result
 }

@@ -3,7 +3,7 @@ use std::sync::RwLock;
 use tokio::sync::mpsc;
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
-use crate::{file_tracking, observer::CaptureGuard, vcs};
+use crate::{config, file_tracking, observer::CaptureGuard, vcs};
 
 const TODO_DIR: &str = ".vizier/";
 
@@ -424,4 +424,18 @@ pub fn get_snapshot_tools() -> Vec<Tool> {
 
 pub fn get_editor_tools() -> Vec<Tool> {
     vec![get_tool!(edit_content)]
+}
+
+pub fn active_tooling() -> Vec<Tool> {
+    match config::get_config().backend {
+        config::BackendKind::Codex => Vec::new(),
+        config::BackendKind::Wire => get_tools(),
+    }
+}
+
+pub fn active_editor_tooling() -> Vec<Tool> {
+    match config::get_config().backend {
+        config::BackendKind::Codex => Vec::new(),
+        config::BackendKind::Wire => get_editor_tools(),
+    }
 }

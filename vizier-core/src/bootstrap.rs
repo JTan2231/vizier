@@ -7,7 +7,7 @@ use chrono::{SecondsFormat, Utc};
 use git2::{Repository, Status, StatusOptions};
 use tokio::task;
 
-use crate::{auditor::Auditor, config, tools, vcs};
+use crate::{auditor::Auditor, codex, config, tools, vcs};
 
 #[derive(Debug, Clone)]
 pub struct BootstrapOptions {
@@ -98,11 +98,19 @@ pub async fn bootstrap_snapshot(
         options.issues_provider.clone(),
     );
 
-    let system_prompt = config::get_system_prompt_with_meta(None)?;
+    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
+        codex::build_prompt_for_codex(&instruction)?
+    } else {
+        config::get_system_prompt_with_meta(None)?
+    };
 
-    let response =
-        Auditor::llm_request_with_tools(system_prompt, instruction, tools::get_snapshot_tools())
-            .await?;
+    let response = Auditor::llm_request_with_tools(
+        None,
+        system_prompt,
+        instruction,
+        tools::get_snapshot_tools(),
+    )
+    .await?;
 
     let after_status = collect_vizier_status(&repo)?;
     let files_touched = diff_vizier_status(before_status, after_status);
