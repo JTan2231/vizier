@@ -46,7 +46,7 @@ Acceptance Criteria:
 - Consistency guardrails:
   - No references to non-existent commands/flags (e.g., no “vizier plan/apply/run”, no “--mode protocol” until implemented).
   - No promises of a TUI or alt-screen UX.
-  - Any “coming soon” items align with active threads (Agent Basic Command, Outcome summaries, protocol/event stream) without prescribing dates.
+  - Any “coming soon” items align with active threads (Outcome summaries, protocol/event stream, session logging) without prescribing dates.
 - No conflicting descriptions remain elsewhere in README; obsolete claims are updated or removed.
 - Links/anchors resolve where applicable (e.g., AGENTS.md if present; otherwise the text clearly indicates it will appear).
 - Copy is concise and neutral; fits within the first screenful without excessive prose.
