@@ -33,7 +33,11 @@ Code state (behaviors that matter)
 - Auditor commit plumbing now calls `FileTracker::sync_vizier_changes` before writing `.vizier` commits and returns early when nothing changed so Codex-edited snapshot/TODO files get staged without disturbing pre-existing staged code.
 - `vizier-cli` appends `(tokens: prompt=?, completion=?, total=?)` (or `unknown`) to the assistant summary line so token reporting is visible even when Codex supplies usage counts.
 - Architecture doc compliance: no docs/architecture index exists and saves succeed without citing a doc, so there is no auditable linkage from code changes to architecture intent.
-- `vizier draft` provisions a `draft/<slug>` branch from the primary branch tip via a temporary worktree, runs Codex to generate `.vizier/implementation-plans/<slug>.md`, commits the plan on that branch, then cleans up the worktree so the operator’s checkout stays untouched while stdout reports the plan path/branch pairing.
+- `vizier draft` (Codex-only) provisions a `draft/<slug>` branch from the primary branch tip via a temporary worktree, runs Codex to generate `.vizier/implementation-plans/<slug>.md`, commits the plan on that branch, then cleans up the worktree so the operator’s checkout stays untouched while stdout reports the plan path/branch pairing.
+- Implementation-plan prompting now lives in `vizier-core/src/lib.rs::IMPLEMENTATION_PLAN_PROMPT`, and `vizier-core/src/codex.rs::build_implementation_plan_prompt` feeds Codex the snapshot, active threads, plan slug/branch metadata, and operator spec so the Markdown plan includes front-matter `{plan, branch, status:draft, created_at, spec_source}` plus “Operator Spec” and “Implementation Plan” sections.
+- New VCS helpers (`detect_primary_branch`, `create_branch_from`, `add_worktree_for_branch`, `commit_paths_in_repo`, etc.) manage temporary worktrees under `.vizier/tmp-worktrees/` (now gitignored) so `vizier draft` can stage/commit plan files without touching the operator checkout.
+- `tests/src/main.rs::test_draft_creates_branch_and_plan` exercises `vizier draft --name smoke` to ensure the operator stays on `master`, the plan doc lives only on the draft branch, and metadata like `status: draft`/`spec_source` survives; unit tests cover slug sanitization, metadata rendering, and file writes for the drafting helpers.
+- README.md’s capabilities/command list now advertise `vizier draft`, and the new DRAFT.md + APPROVE.md architecture notes capture the shipped drafting flow and the pending approval workflow that will merge plan branches back into the primary branch.
 - Multi-agent workflows are ad-hoc: there is no structured runbook that walks operators through “discuss → snapshot sign-off → architecture doc draft → implement → code sign-off → save,” so intent can drift between agents and VCS gates.
 
 Acceptance checkpoints (selected)
@@ -56,7 +60,7 @@ Next moves
 6) Session logging JSON MVP: hook writer at chat boundaries to persist audited facts + workflow metadata; atomic write + schema validation; include path in Outcome epilogue and JSON. [Active]
 7) Architecture doc enforcement + history: Add compliance gates that require architecture docs for every code change, store doc references alongside commits, and surface discrepancies via Auditor/Outcome before merge. [New]
 8) Agent workflow orchestration: Give operators a first-class workflow that sequences snapshot approval, architecture doc drafting, implementation, code sign-off, and final `vizier save`, with Auditor/Outcome breadcrumbs for each checkpoint. [New]
-9) Draft approval plumbing: follow `vizier draft` with a `vizier approve <plan>` flow that reads plan metadata, verifies reviewer sign-off, and fast-forwards the draft branch (and plan status) back onto the primary branch with proper Outcome reporting. [Planned]
+9) Draft approval plumbing (`vizier approve`, per APPROVE.md): follow `vizier draft` with a `vizier approve <plan>` flow that reads plan metadata, verifies reviewer sign-off, and fast-forwards the draft branch (and plan status) back onto the primary branch with proper Outcome reporting. [Planned]
 
 Cross-links
 - Output contract + Mode split ↔ Outcome summaries: the same event stream feeds human epilogues, protocol JSON, and chat results without ANSI leakage.
