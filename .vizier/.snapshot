@@ -28,7 +28,9 @@ Code state (behaviors that matter)
 - No built-in agent command: Vizier intentionally lacks a `vizier agent run` flow; operators launch Codex directly and handle branch/PR plumbing outside the CLI.
 - AGENTS.md contract/log: The file remains a short reminder pointing agents back to README + snapshot; there is no in-repo decision log or interop schema beyond that note.
 - TODO GC not yet implemented; policy and levers defined; to be wired into save path and Auditor Outcome.
-- Codex backend preference is documented but still unenforced; with the agent backlog trimmed, Vizier simply expects operators to drive Codex however they like.
+- Codex backend path now lives in `vizier-core/src/codex.rs`: the auditor spawns `codex exec --json --output-last-message` in the repo, streams progress events, captures token usage, falls back to the wire backend when Codex errors, and CODEX.md serves as the living rollout log for this flow.
+- Auditor commit plumbing now calls `FileTracker::sync_vizier_changes` before writing `.vizier` commits and returns early when nothing changed so Codex-edited snapshot/TODO files get staged without disturbing pre-existing staged code.
+- `vizier-cli` appends `(tokens: prompt=?, completion=?, total=?)` (or `unknown`) to the assistant summary line so token reporting is visible even when Codex supplies usage counts.
 - Architecture doc compliance: no docs/architecture index exists and saves succeed without citing a doc, so there is no auditable linkage from code changes to architecture intent.
 
 Acceptance checkpoints (selected)

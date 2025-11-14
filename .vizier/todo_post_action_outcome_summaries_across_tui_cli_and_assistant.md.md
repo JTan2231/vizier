@@ -55,6 +55,9 @@ Update (2025-10-04): Outcome CLI-first aligned with stdout/stderr contract and v
 
 ---
 
+Update (2025-10-07): Codex backend is now the default execution path (vizier-core/src/codex.rs) and streams JSON events instead of the wire-mode spinner. Outcome summaries must rely on the same Auditor/VCS facts regardless of backend, surface Codex-supplied token usage (falling back to “unknown” when absent), and include Codex runs in the CLI/JSON test matrix.
+
+---
 
 ---
 Status update:
