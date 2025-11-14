@@ -1,12 +1,13 @@
 use git2::{
-    BranchType, Cred, CredentialType, Diff, DiffDelta, DiffFormat, DiffLine, DiffOptions, Error,
-    ErrorClass, ErrorCode, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository,
-    RepositoryState, Signature, Sort, Status, StatusOptions, Tree,
+    BranchType, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFormat, DiffLine, DiffOptions,
+    Error, ErrorClass, ErrorCode, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository,
+    RepositoryState, Signature, Sort, Status, StatusOptions, Tree, WorktreeAddOptions,
+    WorktreePruneOptions,
 };
 use std::cell::RefCell;
 use std::env;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 fn normalize_pathspec(path: &str) -> String {
@@ -932,6 +933,152 @@ pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<Vec<String>
     }
 
     Ok(out)
+}
+
+pub fn repo_root() -> Result<PathBuf, Error> {
+    let repo = Repository::discover(".")?;
+    repo.workdir()
+        .map(|dir| dir.to_path_buf())
+        .ok_or_else(|| Error::from_str("repository has no working directory"))
+}
+
+pub fn detect_primary_branch() -> Option<String> {
+    let repo = Repository::discover(".").ok()?;
+
+    if let Ok(ref_remote_head) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Some(symbolic) = ref_remote_head.symbolic_target() {
+            if let Some(name) = symbolic.strip_prefix("refs/remotes/origin/") {
+                if repo.find_branch(name, BranchType::Local).is_ok() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    for candidate in ["main", "master"] {
+        if repo.find_branch(candidate, BranchType::Local).is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    let mut newest: Option<(String, i64)> = None;
+    if let Ok(mut branches) = repo.branches(Some(BranchType::Local)) {
+        for branch_res in branches.by_ref() {
+            if let Ok((branch, _)) = branch_res {
+                if let Ok(commit) = branch.get().peel_to_commit() {
+                    let seconds = commit.time().seconds();
+                    if let Ok(Some(name)) = branch.name() {
+                        match newest {
+                            Some((_, current)) if current >= seconds => {}
+                            _ => {
+                                newest = Some((name.to_string(), seconds));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    newest.map(|(name, _)| name)
+}
+
+pub fn branch_exists(name: &str) -> Result<bool, Error> {
+    let repo = Repository::discover(".")?;
+    match repo.find_branch(name, BranchType::Local) {
+        Ok(_) => Ok(true),
+        Err(err) if err.code() == ErrorCode::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+pub fn create_branch_from(base: &str, new_branch: &str) -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+    let base_branch = repo.find_branch(base, BranchType::Local)?;
+    let commit = base_branch.into_reference().peel_to_commit()?;
+    repo.branch(new_branch, &commit, false)?;
+    Ok(())
+}
+
+pub fn delete_branch(name: &str) -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+    match repo.find_branch(name, BranchType::Local) {
+        Ok(mut branch) => branch.delete(),
+        Err(err) if err.code() == ErrorCode::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+pub fn add_worktree_for_branch(
+    worktree_name: &str,
+    path: &Path,
+    branch_name: &str,
+) -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+    let mut opts = WorktreeAddOptions::new();
+    let reference = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
+    opts.reference(Some(&reference));
+    repo.worktree(worktree_name, path, Some(&opts))?;
+    Ok(())
+}
+
+pub fn remove_worktree(worktree_name: &str, remove_dir: bool) -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+    let worktree = repo.find_worktree(worktree_name)?;
+    let mut opts = WorktreePruneOptions::new();
+    opts.valid(true).locked(true).working_tree(remove_dir);
+    worktree.prune(Some(&mut opts))
+}
+
+pub fn commit_paths_in_repo(
+    repo_path: &Path,
+    paths: &[&Path],
+    message: &str,
+) -> Result<Oid, Error> {
+    if paths.is_empty() {
+        return Err(Error::from_str("no paths provided for commit"));
+    }
+
+    let repo = Repository::discover(repo_path)?;
+    let mut index = repo.index()?;
+    let repo_root = repo.workdir().unwrap_or(repo_path);
+
+    let mut rel_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path.is_absolute() {
+            let relative = path
+                .strip_prefix(repo_root)
+                .map_err(|_| Error::from_str("absolute path is outside of the repository root"))?;
+            rel_paths.push(relative.to_path_buf());
+        } else {
+            rel_paths.push(path.to_path_buf());
+        }
+    }
+
+    for rel in &rel_paths {
+        index.add_path(rel)?;
+    }
+    index.write()?;
+
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+
+    let signature = repo
+        .signature()
+        .or_else(|_| Signature::now("Vizier", "vizier@local"))?;
+
+    let parent_commit = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    let parent_commits: Vec<Commit> = parent_commit.into_iter().collect();
+    let parent_refs: Vec<&Commit> = parent_commits.iter().collect();
+
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &parent_refs,
+    )
 }
 
 /// Unstage changes (index-only), mirroring `git restore --staged` / `git reset -- <paths>`.

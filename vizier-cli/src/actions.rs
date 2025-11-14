@@ -1,10 +1,18 @@
 use std::env;
 use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tempfile::{Builder, TempPath};
+use chrono::{SecondsFormat, Utc};
+use tempfile::{Builder, NamedTempFile, TempPath};
+use uuid::Uuid;
 
-use vizier_core::vcs::{AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme};
+use vizier_core::vcs::{
+    AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme, add_worktree_for_branch,
+    branch_exists, commit_paths_in_repo, create_branch_from, delete_branch, detect_primary_branch,
+    remove_worktree, repo_root,
+};
 use vizier_core::{
     auditor,
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
@@ -137,6 +145,195 @@ pub struct SnapshotInitOptions {
     pub paths: Vec<String>,
     pub exclude: Vec<String>,
     pub issues: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SpecSource {
+    Inline,
+    File(PathBuf),
+    Stdin,
+}
+
+impl SpecSource {
+    pub fn as_metadata_value(&self) -> String {
+        match self {
+            SpecSource::Inline => "inline".to_string(),
+            SpecSource::File(path) => format!("file:{}", path.display()),
+            SpecSource::Stdin => "stdin".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DraftArgs {
+    pub spec_text: String,
+    pub spec_source: SpecSource,
+    pub name_override: Option<String>,
+}
+
+fn normalize_slug(input: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_dash = false;
+
+    for ch in input.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            normalized.push(lower);
+            last_dash = false;
+        } else if !last_dash {
+            normalized.push('-');
+            last_dash = true;
+        }
+    }
+
+    while normalized.starts_with('-') {
+        normalized.remove(0);
+    }
+    while normalized.ends_with('-') {
+        normalized.pop();
+    }
+
+    if normalized.len() > 32 {
+        normalized.truncate(32);
+        while normalized.ends_with('-') {
+            normalized.pop();
+        }
+    }
+
+    normalized
+}
+
+fn slug_from_spec(spec: &str) -> String {
+    let words: Vec<&str> = spec.split_whitespace().take(6).collect();
+    let candidate = if words.is_empty() {
+        "draft-plan".to_string()
+    } else {
+        words.join("-")
+    };
+
+    let normalized = normalize_slug(&candidate);
+    if normalized.is_empty() {
+        "draft-plan".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn sanitize_name_override(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("plan name cannot be empty".to_string());
+    }
+    if trimmed.starts_with('.') {
+        return Err("plan name cannot start with '.'".to_string());
+    }
+    if trimmed.contains('/') {
+        return Err("plan name cannot contain '/'".to_string());
+    }
+    let normalized = normalize_slug(trimmed);
+    if normalized.is_empty() {
+        Err("plan name must include letters or numbers".to_string())
+    } else {
+        Ok(normalized)
+    }
+}
+
+fn short_suffix() -> String {
+    let raw = Uuid::new_v4().simple().to_string();
+    raw[..8].to_string()
+}
+
+fn ensure_unique_slug(
+    base: &str,
+    plan_dir: &Path,
+    branch_prefix: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut attempts = 0usize;
+    let mut slug = base.to_string();
+
+    loop {
+        let branch_name = format!("{branch_prefix}{slug}");
+        let plan_path = plan_dir.join(format!("{slug}.md"));
+        let branch_taken = branch_exists(&branch_name)
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+        if !branch_taken && !plan_path.exists() {
+            return Ok(slug);
+        }
+
+        attempts += 1;
+        if attempts <= 5 {
+            slug = normalize_slug(&format!("{base}-{attempts}"));
+            if slug.is_empty() {
+                slug = format!("{base}-{attempts}");
+                slug = normalize_slug(&slug);
+            }
+            continue;
+        }
+
+        slug = normalize_slug(&format!("{base}-{}", short_suffix()));
+        if slug.is_empty() {
+            slug = normalize_slug("draft-plan");
+        }
+
+        if attempts > 20 {
+            return Err("unable to allocate a unique draft slug after multiple attempts".into());
+        }
+    }
+}
+
+fn trim_trailing_newlines(text: &str) -> &str {
+    let trimmed = text.trim_end_matches(|c| c == '\n' || c == '\r');
+    if trimmed.is_empty() { "" } else { trimmed }
+}
+
+fn render_plan_document(
+    slug: &str,
+    branch_name: &str,
+    spec_source: &str,
+    spec_text: &str,
+    plan_body: &str,
+) -> String {
+    let mut doc = String::new();
+    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    doc.push_str("---\n");
+    doc.push_str(&format!("plan: {slug}\n"));
+    doc.push_str(&format!("branch: {branch_name}\n"));
+    doc.push_str("status: draft\n");
+    doc.push_str(&format!("created_at: {timestamp}\n"));
+    doc.push_str(&format!("spec_source: {spec_source}\n"));
+    doc.push_str("---\n\n");
+
+    doc.push_str("## Operator Spec\n");
+    let spec_section = trim_trailing_newlines(spec_text);
+    if !spec_section.is_empty() {
+        doc.push_str(spec_section);
+    }
+    doc.push('\n');
+    doc.push('\n');
+
+    doc.push_str("## Implementation Plan\n");
+    let plan_section = plan_body.trim();
+    if plan_section.is_empty() {
+        doc.push_str("(plan generation returned empty content)");
+    } else {
+        doc.push_str(plan_section);
+    }
+    doc.push('\n');
+
+    doc
+}
+
+fn write_plan_file(destination: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "invalid plan path: missing parent directory".to_string())?;
+    fs::create_dir_all(parent)?;
+    let mut tmp = NamedTempFile::new_in(parent)?;
+    tmp.write_all(contents.as_bytes())?;
+    tmp.flush()?;
+    tmp.persist(destination)?;
+    Ok(())
 }
 
 pub async fn docs_prompt(cmd: crate::DocsPromptCmd) -> Result<(), Box<dyn std::error::Error>> {
@@ -774,4 +971,214 @@ pub async fn inline_command(
     print_token_usage();
 
     Ok(())
+}
+
+pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>> {
+    if config::get_config().backend != config::BackendKind::Codex {
+        return Err("vizier draft requires the Codex backend; rerun with --backend codex".into());
+    }
+
+    let DraftArgs {
+        spec_text,
+        spec_source,
+        name_override,
+    } = args;
+
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let plan_dir_main = repo_root.join(".vizier/implementation-plans");
+    let branch_prefix = "draft/";
+
+    let base_slug = if let Some(name) = name_override {
+        sanitize_name_override(&name)?
+    } else {
+        slug_from_spec(&spec_text)
+    };
+
+    let slug = ensure_unique_slug(&base_slug, &plan_dir_main, branch_prefix)?;
+    let branch_name = format!("{branch_prefix}{slug}");
+    let plan_rel_path = Path::new(".vizier/implementation-plans").join(format!("{slug}.md"));
+    let plan_display = plan_rel_path.to_string_lossy().to_string();
+
+    let tmp_root = repo_root.join(".vizier/tmp-worktrees");
+    fs::create_dir_all(&tmp_root)?;
+    let worktree_suffix = short_suffix();
+    let worktree_name = format!("vizier-draft-{slug}-{worktree_suffix}");
+    let worktree_path = tmp_root.join(format!("{slug}-{worktree_suffix}"));
+    let plan_in_worktree = worktree_path.join(&plan_rel_path);
+
+    let spec_source_label = spec_source.as_metadata_value();
+
+    let primary_branch = detect_primary_branch()
+        .ok_or_else(|| "unable to detect a primary branch (tried origin/HEAD, main, master)")?;
+
+    let mut branch_created = false;
+    let mut worktree_created = false;
+    let mut plan_committed = false;
+
+    let plan_result: Result<(), Box<dyn std::error::Error>> = async {
+        create_branch_from(&primary_branch, &branch_name).map_err(|err| {
+            Box::<dyn std::error::Error>::from(format!(
+                "create_branch_from({}<-{}): {}",
+                branch_name, primary_branch, err
+            ))
+        })?;
+        branch_created = true;
+
+        add_worktree_for_branch(&worktree_name, &worktree_path, &branch_name).map_err(|err| {
+            display::emit(
+                LogLevel::Debug,
+                format!(
+                    "failed adding worktree {} at {}: {}",
+                    worktree_name,
+                    worktree_path.display(),
+                    err
+                ),
+            );
+            Box::<dyn std::error::Error>::from(format!(
+                "add_worktree({}, {}): {}",
+                worktree_name,
+                worktree_path.display(),
+                err
+            ))
+        })?;
+        worktree_created = true;
+
+        let prompt = codex::build_implementation_plan_prompt(&slug, &branch_name, &spec_text)
+            .map_err(|err| -> Box<dyn std::error::Error> {
+                Box::from(format!("build_prompt: {err}"))
+            })?;
+
+        let llm_response =
+            Auditor::llm_request_with_tools(None, prompt, spec_text.clone(), Vec::new())
+                .await
+                .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
+
+        let plan_body = llm_response.content;
+        let document = render_plan_document(
+            &slug,
+            &branch_name,
+            &spec_source_label,
+            &spec_text,
+            &plan_body,
+        );
+        write_plan_file(&plan_in_worktree, &document).map_err(
+            |err| -> Box<dyn std::error::Error> {
+                Box::from(format!(
+                    "write_plan_file({}): {err}",
+                    plan_in_worktree.display()
+                ))
+            },
+        )?;
+
+        let plan_rel = plan_rel_path.as_path();
+        commit_paths_in_repo(
+            &worktree_path,
+            &[plan_rel],
+            &format!("docs: add implementation plan {}", slug),
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            Box::from(format!("commit_plan({}): {err}", worktree_path.display()))
+        })?;
+        plan_committed = true;
+
+        Auditor::commit_audit()
+            .await
+            .map_err(|err| Box::<dyn std::error::Error>::from(format!("commit_audit: {err}")))?;
+        Ok(())
+    }
+    .await;
+
+    match plan_result {
+        Ok(()) => {
+            if worktree_created {
+                if let Err(err) = remove_worktree(&worktree_name, true) {
+                    display::warn(format!(
+                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                        err
+                    ));
+                }
+                if worktree_path.exists() {
+                    let _ = fs::remove_dir_all(&worktree_path);
+                }
+            }
+
+            display::info(format!(
+                "View with: git checkout {branch_name} && $EDITOR {plan_display}"
+            ));
+            println!("Draft ready; plan={plan_display}; branch={branch_name}");
+            print_token_usage();
+            Ok(())
+        }
+        Err(err) => {
+            if worktree_created {
+                let _ = remove_worktree(&worktree_name, true);
+                if worktree_path.exists() {
+                    let _ = fs::remove_dir_all(&worktree_path);
+                }
+            }
+            if branch_created && !plan_committed {
+                let _ = delete_branch(&branch_name);
+            } else if plan_committed {
+                display::info(format!(
+                    "Draft artifacts preserved on {branch_name}; inspect with `git checkout {branch_name}`"
+                ));
+            }
+            Err(err)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn slug_from_spec_limits_to_six_words() {
+        let slug = slug_from_spec("One two THREE four five six seven eight");
+        assert_eq!(slug, "one-two-three-four-five-six");
+    }
+
+    #[test]
+    fn sanitize_override_rejects_invalid_prefixes() {
+        assert!(sanitize_name_override(".hidden").is_err());
+        assert!(sanitize_name_override("feature/branch").is_err());
+        assert_eq!(
+            sanitize_name_override("My Draft Name").unwrap(),
+            "my-draft-name"
+        );
+    }
+
+    #[test]
+    fn render_plan_document_includes_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let doc = render_plan_document(
+            "alpha",
+            "draft/alpha",
+            "inline",
+            "spec body",
+            "## Execution Plan\n- step",
+        );
+        assert!(doc.contains("plan: alpha"));
+        assert!(doc.contains("branch: draft/alpha"));
+        assert!(doc.contains("spec body"));
+        assert!(doc.contains("## Implementation Plan"));
+        Ok(())
+    }
+
+    #[test]
+    fn write_plan_file_creates_parents() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempdir()?;
+        let destination = tmp.path().join(".vizier/implementation-plans/sample.md");
+        let doc = render_plan_document(
+            "sample",
+            "draft/sample",
+            "inline",
+            "spec text",
+            "- plan body",
+        );
+        write_plan_file(&destination, &doc)?;
+        let contents = std::fs::read_to_string(destination)?;
+        assert!(contents.contains("sample"));
+        Ok(())
+    }
 }

@@ -1,4 +1,7 @@
-use std::{io::IsTerminal, path::PathBuf};
+use std::{
+    io::IsTerminal,
+    path::{Path, PathBuf},
+};
 
 use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use vizier_core::{
@@ -161,6 +164,9 @@ enum Commands {
     /// Inline one-shot interaction: send a single message and exit
     Ask(AskCmd),
 
+    /// Generate an implementation-plan draft branch from an operator spec
+    Draft(DraftCmd),
+
     /// Documentation utilities
     Docs(DocsCmd),
 
@@ -199,6 +205,21 @@ struct AskCmd {
     /// Read the user message from the specified file instead of an inline argument
     #[arg(short = 'f', long = "file", value_name = "PATH")]
     file: Option<PathBuf>,
+}
+
+#[derive(ClapArgs, Debug)]
+struct DraftCmd {
+    /// Operator spec used to seed the implementation plan
+    #[arg(value_name = "SPEC")]
+    spec: Option<String>,
+
+    /// Read the operator spec from a file instead of inline text
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    file: Option<PathBuf>,
+
+    /// Override the derived plan/branch slug (letters, numbers, dashes only)
+    #[arg(long = "name", value_name = "NAME")]
+    name: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -326,6 +347,29 @@ struct CleanCmd {
 #[derive(ClapArgs, Debug)]
 struct ChatCmd {}
 
+#[derive(Debug, Clone)]
+struct ResolvedInput {
+    text: String,
+    origin: InputOrigin,
+}
+
+#[derive(Debug, Clone)]
+enum InputOrigin {
+    Inline,
+    File(PathBuf),
+    Stdin,
+}
+
+impl From<InputOrigin> for SpecSource {
+    fn from(origin: InputOrigin) -> Self {
+        match origin {
+            InputOrigin::Inline => SpecSource::Inline,
+            InputOrigin::File(path) => SpecSource::File(path),
+            InputOrigin::Stdin => SpecSource::Stdin,
+        }
+    }
+}
+
 fn read_all_stdin() -> Result<String, std::io::Error> {
     use std::io::{self, Read};
     let mut buf = String::new();
@@ -334,9 +378,20 @@ fn read_all_stdin() -> Result<String, std::io::Error> {
 }
 
 fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(resolve_prompt_input(cmd.message.as_deref(), cmd.file.as_deref())?.text)
+}
+
+fn resolve_draft_spec(cmd: &DraftCmd) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
+    resolve_prompt_input(cmd.spec.as_deref(), cmd.file.as_deref())
+}
+
+fn resolve_prompt_input(
+    positional: Option<&str>,
+    file: Option<&Path>,
+) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
     use std::io::{Error, ErrorKind};
 
-    if cmd.message.is_some() && cmd.file.is_some() {
+    if positional.is_some() && file.is_some() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             "cannot provide both MESSAGE and --file; choose one input source",
@@ -344,7 +399,7 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
         .into());
     }
 
-    if let Some(path) = &cmd.file {
+    if let Some(path) = file {
         let msg = std::fs::read_to_string(path).map_err(|err| {
             Error::new(
                 err.kind(),
@@ -363,19 +418,28 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
             .into());
         }
 
-        return Ok(msg);
+        return Ok(ResolvedInput {
+            text: msg,
+            origin: InputOrigin::File(path.to_path_buf()),
+        });
     }
 
-    match cmd.message.as_deref() {
+    match positional {
         Some("-") => {
             // Explicit “read stdin”
             let msg = read_all_stdin()?;
             if msg.trim().is_empty() {
                 return Err("stdin is empty; provide MESSAGE or pipe content".into());
             }
-            Ok(msg)
+            Ok(ResolvedInput {
+                text: msg,
+                origin: InputOrigin::Stdin,
+            })
         }
-        Some(positional) => Ok(positional.to_owned()),
+        Some(positional) => Ok(ResolvedInput {
+            text: positional.to_owned(),
+            origin: InputOrigin::Inline,
+        }),
         None => {
             // No positional; try stdin if it’s not a TTY (i.e., piped or redirected)
             if !std::io::stdin().is_terminal() {
@@ -383,7 +447,10 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
                 if msg.trim().is_empty() {
                     return Err("stdin is empty; provide MESSAGE or pipe content".into());
                 }
-                Ok(msg)
+                Ok(ResolvedInput {
+                    text: msg,
+                    origin: InputOrigin::Stdin,
+                })
             } else {
                 Err("no MESSAGE provided; pass a message, use '-', or pipe stdin".into())
             }
@@ -635,6 +702,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Ask(cmd) => {
             let message = resolve_ask_message(&cmd)?;
             inline_command(message, push_after).await
+        }
+
+        Commands::Draft(cmd) => {
+            let resolved = resolve_draft_spec(&cmd)?;
+            run_draft(DraftArgs {
+                spec_text: resolved.text,
+                spec_source: resolved.origin.into(),
+                name_override: cmd.name.clone(),
+            })
+            .await
         }
     }
 }
