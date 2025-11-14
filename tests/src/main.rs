@@ -1,4 +1,4 @@
-use git2::{Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort};
+use git2::{BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort};
 use std::path::{Path, PathBuf};
 
 macro_rules! assert_true {
@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_save);
     test!(test_save_with_staged_files);
     test!(test_save_without_code_changes);
+    test!(test_draft_creates_branch_and_plan);
 
     Ok(())
 }
@@ -302,6 +303,58 @@ fn test_save_without_code_changes() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(count_files_in_commit(&repo, "HEAD")?, 2);
     // conversation (HEAD~1)
     assert_eq!(count_files_in_commit(&repo, "HEAD~1")?, 0);
+
+    Ok(())
+}
+
+fn test_draft_creates_branch_and_plan() -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("../target/release/vizier")
+        .args(["draft", "--name", "smoke", "ship the draft flow"])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let repo = open_repo()?;
+    let head = repo.head()?;
+    assert_eq!(
+        head.shorthand(),
+        Some("master"),
+        "draft should not move the current branch"
+    );
+
+    assert!(
+        !Path::new("test-repo-active/.vizier/implementation-plans/smoke.md").exists(),
+        "plan should not appear in the operator’s working tree"
+    );
+
+    let branch = repo.find_branch("draft/smoke", BranchType::Local)?;
+    let commit = branch.get().peel_to_commit()?;
+    let tree = commit.tree()?;
+    let entry = tree.get_path(Path::new(".vizier/implementation-plans/smoke.md"))?;
+    let blob = repo.find_blob(entry.id())?;
+    let contents = std::str::from_utf8(blob.content())?;
+
+    assert!(
+        contents.contains("status: draft"),
+        "plan metadata missing draft status"
+    );
+    assert!(
+        contents.contains("spec_source: inline"),
+        "plan metadata missing spec source"
+    );
+    assert!(
+        contents.contains("ship the draft flow"),
+        "operator spec was not embedded"
+    );
+    assert!(
+        contents.contains("## Implementation Plan"),
+        "plan body heading missing"
+    );
 
     Ok(())
 }

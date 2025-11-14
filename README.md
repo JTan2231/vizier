@@ -40,6 +40,7 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 - **Terminal-First**: Chat TUI with diff view, modal navigation, long message handling, and scrolling
 - **LLM-Augmented**: Multiple provider support (OpenAI/Anthropic), configurable prompts, thinking modes
 - **Repository Bootstrap**: Analyze existing codebases to generate initial snapshot and seed threads
+- **Draft Reviews**: `vizier draft` converts an operator spec into `.vizier/implementation-plans/<slug>.md` on a `draft/<slug>` branch via Codex and a temporary worktree so reviewers can sign off before code lands
 
 ### Operational Tools
 - **File-Aware Context**: Ignore-aware tree walking, behavioral diff analysis, cross-repository TODO management
@@ -70,6 +71,7 @@ vizier save HEAD~3..HEAD # commits specific range
 #### Conversation & Editing
 - `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits (use `--file PATH` to read the prompt from disk)
 - `vizier chat` — Interactive TUI with split diff view and narrative maintenance
+- `vizier draft [--name SLUG] <spec>` — Spins up a temporary worktree at the primary branch tip, runs Codex to produce `.vizier/implementation-plans/<slug>.md`, commits it on `draft/<slug>`, and tells you which branch/plan file to inspect (Codex-only; your working tree stays untouched)
 
 #### Documentation Prompts
 - `vizier docs prompt <scope>` — Emit or scaffold architecture templates described in `PROMPTING.md`

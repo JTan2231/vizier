@@ -16,6 +16,7 @@ use tokio::{
 };
 
 use crate::{
+    IMPLEMENTATION_PLAN_PROMPT,
     auditor::TokenUsage,
     config::{self, SystemPrompt},
     display::{self, Status},
@@ -221,6 +222,53 @@ pub fn build_prompt(
 pub fn build_prompt_for_codex(user_input: &str) -> Result<String, CodexError> {
     let context = gather_prompt_context()?;
     build_prompt(&context.snapshot, &context.threads, user_input)
+}
+
+pub fn build_implementation_plan_prompt(
+    plan_slug: &str,
+    branch_name: &str,
+    operator_spec: &str,
+) -> Result<String, CodexError> {
+    let context = gather_prompt_context()?;
+    let bounds = load_bounds_prompt()?;
+
+    let mut prompt = String::new();
+    prompt.push_str(IMPLEMENTATION_PLAN_PROMPT);
+    prompt.push_str("\n\n<codexBounds>\n");
+    prompt.push_str(&bounds);
+    prompt.push_str("\n</codexBounds>\n\n");
+
+    prompt.push_str("<planMetadata>\n");
+    prompt.push_str(&format!(
+        "plan_slug: {plan_slug}\nbranch: {branch_name}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
+    ));
+    prompt.push_str("</planMetadata>\n\n");
+
+    prompt.push_str("<snapshot>\n");
+    if context.snapshot.trim().is_empty() {
+        prompt.push_str("(snapshot is currently empty)\n");
+    } else {
+        prompt.push_str(context.snapshot.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</snapshot>\n\n");
+
+    prompt.push_str("<todoThreads>\n");
+    if context.threads.is_empty() {
+        prompt.push_str("(no active TODO threads)\n");
+    } else {
+        for thread in &context.threads {
+            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
+        }
+    }
+    prompt.push_str("</todoThreads>\n\n");
+
+    prompt.push_str("<operatorSpec>\n");
+    prompt.push_str(operator_spec.trim());
+    prompt.push('\n');
+    prompt.push_str("</operatorSpec>\n");
+
+    Ok(prompt)
 }
 
 fn load_bounds_prompt() -> Result<String, CodexError> {
