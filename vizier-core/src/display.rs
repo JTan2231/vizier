@@ -217,9 +217,7 @@ async fn display_status(rx: Receiver<Status>, runtime: DisplayRuntime) {
     }
 }
 
-pub async fn call_with_status<F, Fut>(
-    f: F,
-) -> Result<Vec<wire::types::Message>, Box<dyn Error>>
+pub async fn call_with_status<F, Fut>(f: F) -> Result<Vec<wire::types::Message>, Box<dyn Error>>
 where
     F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>>

@@ -191,90 +191,99 @@ impl Auditor {
     ///
     /// Really, though, if this is called then there should _always_ be a resulting commit hash
     pub async fn commit_audit() -> Result<String, Box<dyn std::error::Error>> {
-        Ok(if file_tracking::FileTracker::has_pending_changes() {
-            let root = match find_project_root()? {
-                Some(p) => p,
-                None => std::path::PathBuf::from("."),
-            };
+        let project_root = match find_project_root()? {
+            Some(p) => p,
+            None => std::path::PathBuf::from("."),
+        };
 
-            let root = root.to_str().unwrap();
+        if let Err(err) = file_tracking::FileTracker::sync_vizier_changes(&project_root) {
+            display::debug(format!(
+                "Unable to auto-detect .vizier changes; continuing without sync ({})",
+                err
+            ));
+        }
 
-            let mut diff_message = None;
-            if let Ok(diff) = vcs::get_diff(root, Some(&tools::get_todo_dir()), None) {
-                display::info("Writing commit message for TODO changes...");
-                diff_message = Some(Self::llm_request(
-                        "Given a diff on a directory of TODO items, return a commit message for these changes."
-                            .to_string(),
-                        if diff.len() == 0 { "init".to_string() } else { diff },
-                    )
-                    .await?
-                    .content);
-            }
+        if !file_tracking::FileTracker::has_pending_changes() {
+            return Ok(String::new());
+        }
 
-            let currently_staged = vcs::snapshot_staged(root)?;
-            if currently_staged.len() > 0 {
-                vcs::unstage(Some(
-                    currently_staged
-                        .iter()
-                        .filter(|s| !s.path.contains(".vizier"))
-                        .map(|s| s.path.as_str())
-                        .collect(),
-                ))?;
-            }
+        let root = project_root.to_str().unwrap();
 
-            // starting to think that this should always be the case
-            let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
-                let conversation = Self::conversation_to_string();
-
-                // unstage staged changes -> commit conversation -> restore staged changes
-                display::info("Committing conversation...");
-
-                let mut commit_message = CommitMessageBuilder::new(conversation)
-                    .set_header(CommitMessageType::Conversation)
-                    .build();
-
-                if crate::config::get_config().commit_confirmation {
-                    if let Some(new_message) = crate::editor::run_editor(&commit_message).await? {
-                        commit_message = new_message;
-                    }
-                }
-
-                let hash = vcs::add_and_commit(None, &commit_message, true)?.to_string();
-                display::info("Committed conversation");
-
-                hash
-            } else {
-                String::new()
-            };
-
-            if let Some(commit_message) = diff_message {
-                display::info("Committing TODO changes...");
-                file_tracking::FileTracker::commit_changes(
-                    &conversation_hash,
-                    &CommitMessageBuilder::new(commit_message)
-                        .set_header(CommitMessageType::NarrativeChange)
-                        .with_conversation_hash(conversation_hash.clone())
-                        .build(),
+        let mut diff_message = None;
+        if let Ok(diff) = vcs::get_diff(root, Some(&tools::get_todo_dir()), None) {
+            display::info("Writing commit message for TODO changes...");
+            diff_message = Some(
+                Self::llm_request(
+                    "Given a diff on a directory of TODO items, return a commit message for these changes."
+                        .to_string(),
+                    if diff.len() == 0 { "init".to_string() } else { diff },
                 )
-                .await?;
+                .await?
+                .content,
+            );
+        }
 
-                display::info("Committed TODO changes");
+        let currently_staged = vcs::snapshot_staged(root)?;
+        if currently_staged.len() > 0 {
+            vcs::unstage(Some(
+                currently_staged
+                    .iter()
+                    .filter(|s| !s.path.contains(".vizier"))
+                    .map(|s| s.path.as_str())
+                    .collect(),
+            ))?;
+        }
+
+        // starting to think that this should always be the case
+        let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
+            let conversation = Self::conversation_to_string();
+
+            // unstage staged changes -> commit conversation -> restore staged changes
+            display::info("Committing conversation...");
+
+            let mut commit_message = CommitMessageBuilder::new(conversation)
+                .set_header(CommitMessageType::Conversation)
+                .build();
+
+            if crate::config::get_config().commit_confirmation {
+                if let Some(new_message) = crate::editor::run_editor(&commit_message).await? {
+                    commit_message = new_message;
+                }
             }
 
-            if currently_staged.len() > 0 {
-                vcs::stage(Some(
-                    currently_staged
-                        .iter()
-                        .filter(|s| !s.path.contains(".vizier"))
-                        .map(|s| s.path.as_str())
-                        .collect(),
-                ))?;
-            }
+            let hash = vcs::add_and_commit(None, &commit_message, true)?.to_string();
+            display::info("Committed conversation");
 
-            conversation_hash
+            hash
         } else {
             String::new()
-        })
+        };
+
+        if let Some(commit_message) = diff_message {
+            display::info("Committing TODO changes...");
+            file_tracking::FileTracker::commit_changes(
+                &conversation_hash,
+                &CommitMessageBuilder::new(commit_message)
+                    .set_header(CommitMessageType::NarrativeChange)
+                    .with_conversation_hash(conversation_hash.clone())
+                    .build(),
+            )
+            .await?;
+
+            display::info("Committed TODO changes");
+        }
+
+        if currently_staged.len() > 0 {
+            vcs::stage(Some(
+                currently_staged
+                    .iter()
+                    .filter(|s| !s.path.contains(".vizier"))
+                    .map(|s| s.path.as_str())
+                    .collect(),
+            ))?;
+        }
+
+        Ok(conversation_hash)
     }
 
     /// Basic LLM request without tool usage

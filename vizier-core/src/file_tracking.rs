@@ -1,10 +1,12 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::Path;
 use std::sync::Mutex;
 
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
+use git2::{Repository, StatusOptions, StatusShow};
 use lazy_static::lazy_static;
 
 use crate::vcs;
@@ -98,8 +100,64 @@ impl FileTracker {
         std::fs::read_to_string(matched)
     }
 
+    pub fn sync_vizier_changes(repo_root: &Path) -> Result<(), git2::Error> {
+        if !repo_root.join(".git").exists() {
+            return Ok(());
+        }
+
+        let changed = Self::collect_vizier_changes(repo_root)?;
+        if changed.is_empty() {
+            return Ok(());
+        }
+
+        let mut tracker = FILE_TRACKER.lock().unwrap();
+        for path in changed {
+            if tracker.updated_files.insert(path.clone()) {
+                if !tracker.all_files.iter().any(|p| p == &path) {
+                    tracker.all_files.push(path);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn clear() {
         FILE_TRACKER.lock().unwrap().updated_files.clear();
+    }
+
+    fn collect_vizier_changes(repo_root: &Path) -> Result<Vec<String>, git2::Error> {
+        let repo = Repository::open(repo_root)?;
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .include_unmodified(false)
+            .include_ignored(false)
+            .recurse_untracked_dirs(true)
+            .renames_index_to_workdir(true)
+            .show(StatusShow::Workdir)
+            .pathspec(".vizier/");
+
+        let statuses = repo.statuses(Some(&mut opts))?;
+        let mut files = Vec::new();
+
+        for entry in statuses.iter() {
+            if let Some(path) = entry.path() {
+                files.push(Self::normalize_repo_path(Path::new(path)));
+                continue;
+            }
+
+            if let Some(delta) = entry.index_to_workdir() {
+                if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
+                    files.push(Self::normalize_repo_path(path));
+                }
+            }
+        }
+
+        Ok(files)
+    }
+
+    fn normalize_repo_path(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
     }
 
     fn fuzzy_match_path(input: &str) -> String {

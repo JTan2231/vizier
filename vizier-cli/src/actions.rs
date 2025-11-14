@@ -116,6 +116,20 @@ pub fn print_token_usage() {
     }
 }
 
+fn token_usage_suffix() -> String {
+    let usage = Auditor::get_total_usage();
+    if usage.known {
+        format!(
+            " (tokens: prompt={} completion={} total={})",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.input_tokens + usage.output_tokens
+        )
+    } else {
+        " (tokens: unknown)".to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotInitOptions {
     pub force: bool,
@@ -432,7 +446,11 @@ async fn save(
 
     let conversation_hash = auditor::Auditor::commit_audit().await?;
 
-    display::info(format!("Assistant summary: {}", response.content.trim()));
+    display::info(format!(
+        "Assistant summary: {}{}",
+        response.content.trim(),
+        token_usage_suffix()
+    ));
     print_token_usage();
 
     let post_tool_diff = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"]))?;
