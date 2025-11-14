@@ -16,6 +16,7 @@ Active threads
 - Architecture doc gate + compliance: ACTIVE. Every code change needs an attached architecture doc logged in commit history; Vizier enforces creation, storage, and linkage before merges or saves. [Depends on: Outcome summaries, Commit isolation/gates]
 - Session logging to filesystem: ACTIVE, BLOCKED UNTIL WIRING. Chat sessions are not yet persisted; add a session writer at chat boundaries to save audited facts + workflow metadata. [Depends on: Auditor facts, Outcome]
 - TODO Garbage-Collection on save: ACTIVE. Vizier aggressively removes duplicate, superseded, empty, and orphaned TODOs during `vizier save` and after material TODO merges, with safety levers and clear Outcome reporting. [Depends on: Config, Auditor, VCS, file tracking, Snapshot Threads]
+- Agent workflow orchestration: NEW. Operators want Vizier to act as the conductor for multi-agent runs (snapshot wording sign-off → architecture doc draft → implementation → code sign-off → `vizier save`), so the CLI/Auditor stack must expose those checkpoints and keep the VCS gates tight. [Cross: Commit isolation, Architecture doc gate, Outcome summaries]
 
 Code state (behaviors that matter)
 - CLI emits transient spinner/status to stderr via vizier-core::display with ANSI cursor controls unconditionally, causing leaked sequences like "[1G\u001b[2K⠋ Thinking..." in logs and non-TTY contexts.
@@ -32,6 +33,7 @@ Code state (behaviors that matter)
 - Auditor commit plumbing now calls `FileTracker::sync_vizier_changes` before writing `.vizier` commits and returns early when nothing changed so Codex-edited snapshot/TODO files get staged without disturbing pre-existing staged code.
 - `vizier-cli` appends `(tokens: prompt=?, completion=?, total=?)` (or `unknown`) to the assistant summary line so token reporting is visible even when Codex supplies usage counts.
 - Architecture doc compliance: no docs/architecture index exists and saves succeed without citing a doc, so there is no auditable linkage from code changes to architecture intent.
+- Multi-agent workflows are ad-hoc: there is no structured runbook that walks operators through “discuss → snapshot sign-off → architecture doc draft → implement → code sign-off → save,” so intent can drift between agents and VCS gates.
 
 Acceptance checkpoints (selected)
 - Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr stays limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; JSON modes obey schema outcome.v1. [Active]
@@ -52,9 +54,11 @@ Next moves
 5) TODO GC wiring: Add product-level GC behavior into save path with config/flags; surface detailed Outcome facts and integrate with Pending Commit gate where enabled. [Active]
 6) Session logging JSON MVP: hook writer at chat boundaries to persist audited facts + workflow metadata; atomic write + schema validation; include path in Outcome epilogue and JSON. [Active]
 7) Architecture doc enforcement + history: Add compliance gates that require architecture docs for every code change, store doc references alongside commits, and surface discrepancies via Auditor/Outcome before merge. [New]
+8) Agent workflow orchestration: Give operators a first-class workflow that sequences snapshot approval, architecture doc drafting, implementation, code sign-off, and final `vizier save`, with Auditor/Outcome breadcrumbs for each checkpoint. [New]
 
 Cross-links
 - Output contract + Mode split ↔ Outcome summaries: the same event stream feeds human epilogues, protocol JSON, and chat results without ANSI leakage.
 - DAP ↔ Outcome ↔ TODO GC: default-action edits update .vizier, GC keeps the garden tidy, and the Outcome line reports those edits.
 - Commit isolation + gates ↔ Architecture doc compliance: pending commits and save gates must cite the architecture doc reference and surface it in outcomes/commits.
 - Session logging ↔ Auditor facts: chat operations persist audited facts to session.json, and the Outcome epilogue points to the artifact for downstream tooling.
+- Agent workflows ↔ Commit/Doc gates: the same checkpoints that gate architecture docs and pending commits must be surfaced as workflow steps so multi-agent runs stay aligned and auditable.
