@@ -1,6 +1,8 @@
 use chrono::Utc;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::mpsc::channel;
 
@@ -63,12 +65,23 @@ impl Drop for AuditorCleanup {
     }
 }
 
-pub fn find_project_root() -> std::io::Result<Option<std::path::PathBuf>> {
+pub fn find_project_root() -> std::io::Result<Option<PathBuf>> {
     let mut current_dir = std::env::current_dir()?;
 
     loop {
-        if current_dir.join(".git").is_dir() {
+        let dot_git = current_dir.join(".git");
+        if dot_git.is_dir() {
             return Ok(Some(current_dir));
+        }
+
+        if dot_git.is_file() {
+            // Worktrees expose a .git file pointing at the real gitdir.
+            if fs::read_to_string(&dot_git)
+                .map(|contents| contents.trim_start().starts_with("gitdir:"))
+                .unwrap_or(true)
+            {
+                return Ok(Some(current_dir));
+            }
         }
 
         if let Some(parent) = current_dir.parent() {
@@ -338,6 +351,7 @@ impl Auditor {
         user_message: String,
         tools: Vec<wire::types::Tool>,
         codex_model: Option<codex::CodexModel>,
+        repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         let cfg = crate::config::get_config();
         let backend = cfg.backend;
@@ -359,8 +373,10 @@ impl Auditor {
             }
             config::BackendKind::Codex => {
                 simulate_integration_changes()?;
-                let repo_root =
-                    find_project_root()?.unwrap_or_else(|| std::path::PathBuf::from("."));
+                let repo_root = match repo_root_override {
+                    Some(path) => path,
+                    None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
+                };
                 let messages_clone = messages.clone();
                 let provider_clone = provider.clone();
                 let opts_clone = codex_opts.clone();
@@ -444,6 +460,7 @@ impl Auditor {
         tools: Vec<wire::types::Tool>,
         request_tx: tokio::sync::mpsc::Sender<String>,
         codex_model: Option<codex::CodexModel>,
+        repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         let cfg = crate::config::get_config();
         let backend = cfg.backend;
@@ -473,8 +490,10 @@ impl Auditor {
             }
             config::BackendKind::Codex => {
                 simulate_integration_changes()?;
-                let repo_root =
-                    find_project_root()?.unwrap_or_else(|| std::path::PathBuf::from("."));
+                let repo_root = match repo_root_override {
+                    Some(path) => path,
+                    None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
+                };
                 let request = codex::CodexRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
@@ -604,6 +623,35 @@ pub struct CommitMessageBuilder {
     conversation_hash: Option<String>,
     author_note: Option<String>,
     body: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_project_root;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn detects_worktree_root_with_git_file() {
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir(&worktree).unwrap();
+        let nested = worktree.join("nested");
+        fs::create_dir(&nested).unwrap();
+
+        let git_dir = tmp.path().join("actual.git");
+        fs::create_dir(&git_dir).unwrap();
+        fs::write(worktree.join(".git"), format!("gitdir: {}\n", git_dir.display())).unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&nested).unwrap();
+        let detected = find_project_root().unwrap().expect("worktree root");
+        assert_eq!(
+            detected.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap()
+        );
+        std::env::set_current_dir(prev).unwrap();
+    }
 }
 
 impl CommitMessageBuilder {

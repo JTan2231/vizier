@@ -1,6 +1,6 @@
 use git2::{
     BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
-    build::CheckoutBuilder,
+    StatusOptions, build::CheckoutBuilder,
 };
 use std::path::{Path, PathBuf};
 
@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_save_without_code_changes);
     test!(test_draft_creates_branch_and_plan);
     test!(test_approve_merges_plan);
+    test!(test_approve_keeps_primary_checkout_clean);
     test!(test_merge_removes_plan_document);
 
     Ok(())
@@ -183,6 +184,21 @@ fn count_files_in_commit(repo: &Repository, spec: &str) -> Result<usize, git2::E
 
 fn diff_deltas_len(diff: &Diff) -> usize {
     diff.deltas().count()
+}
+
+fn assert_clean_primary_checkout(repo: &Repository) -> Result<(), Box<dyn std::error::Error>> {
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(true);
+    let statuses = repo.statuses(Some(&mut opts))?;
+    assert!(
+        statuses.is_empty(),
+        "expected primary checkout to remain clean but saw {} entries",
+        statuses.len()
+    );
+    Ok(())
 }
 
 fn find_conversation_commit(repo: &Repository) -> Result<String, Box<dyn std::error::Error>> {
@@ -453,6 +469,40 @@ fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
         "expected no pending plans but saw: {}",
         stdout_after
     );
+
+    Ok(())
+}
+
+fn test_approve_keeps_primary_checkout_clean() -> Result<(), Box<dyn std::error::Error>> {
+    let draft = std::process::Command::new("../target/release/vizier")
+        .args([
+            "draft",
+            "--name",
+            "approve-clean",
+            "ensure approve keeps edits inside the plan worktree",
+        ])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    let approve = std::process::Command::new("../target/release/vizier")
+        .args(["approve", "approve-clean", "--yes"])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    let repo = open_repo()?;
+    assert_clean_primary_checkout(&repo)?;
 
     Ok(())
 }
