@@ -1,6 +1,6 @@
 use git2::{
-    BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
-    StatusOptions, build::CheckoutBuilder,
+    BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort, StatusOptions,
+    build::CheckoutBuilder,
 };
 use std::path::{Path, PathBuf};
 
@@ -59,6 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_approve_merges_plan);
     test!(test_approve_keeps_primary_checkout_clean);
     test!(test_merge_removes_plan_document);
+    test!(test_merge_conflict_manual_resume);
+    test!(test_merge_conflict_auto_resolve);
 
     Ok(())
 }
@@ -106,6 +108,48 @@ fn clone_test_repo() -> Result<(), Box<dyn std::error::Error>> {
 
 fn open_repo() -> Result<Repository, git2::Error> {
     Repository::open("test-repo-active")
+}
+
+fn run_git(args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg("test-repo-active")
+        .args(args)
+        .status()?;
+    assert!(
+        status.success(),
+        "git {:?} failed with status {:?}",
+        args,
+        status.code()
+    );
+    Ok(())
+}
+
+fn prepare_conflicting_plan(
+    slug: &str,
+    on_master: &str,
+    on_plan: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let draft = std::process::Command::new("../target/release/vizier")
+        .args(["draft", "--name", slug, "conflict smoke"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    run_git(&["checkout", &format!("draft/{slug}")])?;
+    std::fs::write("test-repo-active/a", on_plan)?;
+    run_git(&["add", "a"])?;
+    run_git(&["commit", "-m", "plan branch change"])?;
+
+    run_git(&["checkout", "master"])?;
+    std::fs::write("test-repo-active/a", on_master)?;
+    run_git(&["commit", "-am", "master change"])?;
+
+    Ok(())
 }
 
 fn init_repo_and_initial_commit() -> Result<(), Box<dyn std::error::Error>> {
@@ -546,6 +590,110 @@ fn test_merge_removes_plan_document() -> Result<(), Box<dyn std::error::Error>> 
         message.contains("Implementation Plan:"),
         "merge commit should still inline the implementation plan even after deletion: {}",
         message
+    );
+
+    Ok(())
+}
+
+fn test_merge_conflict_manual_resume() -> Result<(), Box<dyn std::error::Error>> {
+    prepare_conflicting_plan(
+        "conflict-manual",
+        "master branch keeps its version\n",
+        "plan branch prefers this text\n",
+    )?;
+
+    let first_merge = std::process::Command::new("../target/release/vizier")
+        .args(["merge", "conflict-manual", "--yes"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        !first_merge.status.success(),
+        "expected merge to fail on conflicts"
+    );
+
+    let sentinel = Path::new("test-repo-active/.vizier/tmp/merge-conflicts/conflict-manual.json");
+    assert!(
+        sentinel.exists(),
+        "conflict sentinel missing after failed merge"
+    );
+
+    std::fs::write("test-repo-active/a", "manual resolution wins\n")?;
+    run_git(&["add", "a"])?;
+
+    let rerun = std::process::Command::new("../target/release/vizier")
+        .args(["merge", "conflict-manual", "--yes"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        rerun.status.success(),
+        "vizier merge rerun failed: {}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+
+    assert!(
+        !sentinel.exists(),
+        "sentinel should be removed after successful merge resume"
+    );
+
+    let repo = open_repo()?;
+    let head = repo.head()?.peel_to_commit()?;
+    let message = head.message().unwrap_or_default().to_string();
+    assert!(
+        message.contains("Plan: conflict-manual"),
+        "merge commit missing plan slug after resume: {}",
+        message
+    );
+
+    Ok(())
+}
+
+fn test_merge_conflict_auto_resolve() -> Result<(), Box<dyn std::error::Error>> {
+    prepare_conflicting_plan(
+        "conflict-auto",
+        "master edits collide\n",
+        "auto resolution should keep this line\n",
+    )?;
+
+    let merge = std::process::Command::new("../target/release/vizier")
+        .args([
+            "merge",
+            "conflict-auto",
+            "--yes",
+            "--auto-resolve-conflicts",
+        ])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        merge.status.success(),
+        "auto-resolve merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let sentinel = Path::new("test-repo-active/.vizier/tmp/merge-conflicts/conflict-auto.json");
+    assert!(
+        !sentinel.exists(),
+        "sentinel should not remain after auto resolution"
+    );
+
+    let contents = std::fs::read_to_string("test-repo-active/a")?;
+    assert!(
+        contents.contains("auto resolution should keep this line"),
+        "file contents did not reflect plan branch after auto resolution: {}",
+        contents
+    );
+
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            "test-repo-active",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ])
+        .output()?;
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "working tree should be clean after auto resolution"
     );
 
     Ok(())

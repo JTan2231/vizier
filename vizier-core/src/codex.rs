@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use crate::{
-    IMPLEMENTATION_PLAN_PROMPT,
+    IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
     auditor::TokenUsage,
     config::{self, SystemPrompt},
     display::{self, Status},
@@ -293,6 +293,56 @@ pub fn build_implementation_plan_prompt(
     Ok(prompt)
 }
 
+pub fn build_merge_conflict_prompt(
+    target_branch: &str,
+    source_branch: &str,
+    conflicts: &[String],
+) -> Result<String, CodexError> {
+    let context = gather_prompt_context()?;
+    let bounds = load_bounds_prompt()?;
+
+    let mut prompt = String::new();
+    prompt.push_str(MERGE_CONFLICT_PROMPT);
+    prompt.push_str("\n\n<codexBounds>\n");
+    prompt.push_str(&bounds);
+    prompt.push_str("\n</codexBounds>\n\n");
+
+    prompt.push_str("<mergeContext>\n");
+    prompt.push_str(&format!(
+        "target_branch: {target_branch}\nsource_branch: {source_branch}\n"
+    ));
+    prompt.push_str("conflict_files:\n");
+    if conflicts.is_empty() {
+        prompt.push_str("- (conflicts were detected but no file list was provided)\n");
+    } else {
+        for file in conflicts {
+            prompt.push_str(&format!("- {file}\n"));
+        }
+    }
+    prompt.push_str("</mergeContext>\n\n");
+
+    prompt.push_str("<snapshot>\n");
+    if context.snapshot.trim().is_empty() {
+        prompt.push_str("(snapshot is currently empty)\n");
+    } else {
+        prompt.push_str(context.snapshot.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</snapshot>\n\n");
+
+    prompt.push_str("<todoThreads>\n");
+    if context.threads.is_empty() {
+        prompt.push_str("(no active TODO threads)\n");
+    } else {
+        for thread in &context.threads {
+            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
+        }
+    }
+    prompt.push_str("</todoThreads>\n");
+
+    Ok(prompt)
+}
+
 fn load_bounds_prompt() -> Result<String, CodexError> {
     if let Some(path) = &config::get_config().codex.bounds_prompt_path {
         let contents = std::fs::read_to_string(path)
@@ -309,6 +359,7 @@ pub async fn run_exec(
 ) -> Result<CodexResponse, CodexError> {
     #[cfg(feature = "mock_llm")]
     {
+        let _ = (req, progress);
         return Ok(mock_codex_response());
     }
 

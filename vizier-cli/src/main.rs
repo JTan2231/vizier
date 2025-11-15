@@ -277,6 +277,10 @@ struct MergeCmd {
     /// Optional note appended to the merge commit body
     #[arg(long = "note", value_name = "TEXT")]
     note: Option<String>,
+
+    /// Attempt Codex-backed auto-resolution when conflicts arise
+    #[arg(long = "auto-resolve-conflicts")]
+    auto_resolve_conflicts: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -468,6 +472,11 @@ fn resolve_merge_options(
         .plan
         .clone()
         .ok_or_else(|| "plan argument is required for vizier merge")?;
+    let conflict_strategy = if cmd.auto_resolve_conflicts {
+        MergeConflictStrategy::Codex
+    } else {
+        MergeConflictStrategy::Manual
+    };
 
     Ok(MergeOptions {
         plan,
@@ -477,6 +486,7 @@ fn resolve_merge_options(
         delete_branch: cmd.delete_branch,
         note: cmd.note.clone(),
         push_after,
+        conflict_strategy,
     })
 }
 

@@ -102,6 +102,7 @@ async fn prompt_wire_with_tools(
     // TODO: Mock server??? why did we even implement it if not to use it
     #[cfg(feature = "mock_llm")]
     {
+        let _ = (&tx, system_prompt, &tools);
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
         let mut new_messages = messages.clone();
         new_messages.push(
@@ -641,7 +642,11 @@ mod tests {
 
         let git_dir = tmp.path().join("actual.git");
         fs::create_dir(&git_dir).unwrap();
-        fs::write(worktree.join(".git"), format!("gitdir: {}\n", git_dir.display())).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )
+        .unwrap();
 
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(&nested).unwrap();
