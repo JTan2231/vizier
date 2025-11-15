@@ -54,7 +54,7 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 - **Configurable Guardrails**: Control destructive operations, auto-commit behavior, thinking depth
 
 ### Development Workflow Integration
-- **Git-Native**: All changes are commits; conversation transcripts embed in empty commits for reconstruction
+- **Git-Native**: All changes are commits; transcripts live under `.vizier/sessions/<id>/session.json`, keeping Git history focused on narrative + code diffs only
 - **Terminal-First**: Chat TUI for interactive conversations; line‑oriented CLI for scripting
 - **LLM-Augmented**: Multiple provider support (OpenAI/Anthropic), configurable prompts, thinking modes
 - **Repository Bootstrap**: Analyze existing codebases to generate initial snapshot and seed threads
@@ -62,7 +62,7 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 
 ### Operational Tools
 - **File-Aware Context**: Ignore-aware tree walking, behavioral diff analysis, cross-repository TODO management
-- **Audit Trail**: Token counting, session recording, transcript commits with conversation hashes
+- **Audit Trail**: Token counting plus repo-local session logs whose IDs are referenced from every narrative/code commit
 - **Extensible Prompts**: System prompt customization via drop-in files or CLI flags; visible in meta
 - **Issue Bridge**: Connect to GitHub Issues for task tracking while preserving narrative focus
 
@@ -109,13 +109,12 @@ vizier save HEAD~3..HEAD # commits specific range
 #### Commit Workflow
 - `vizier save [REV]` — The "save button" for your work:
   1. Updates snapshot/TODOs based on changes
-  2. Creates conversation commit (full transcript)
+  2. Writes the session transcript + metadata to `.vizier/sessions/<session_id>/session.json`
   3. Creates .vizier commit (narrative changes)
   4. Creates code commit (with AI-generated message)
 
   Options:
   - `-m <note>` — Add developer note to commit
-  - `--no-conversation` — Skip conversation commit
   - `--no-code` — Skip code commit
 
 #### TODO Maintenance
