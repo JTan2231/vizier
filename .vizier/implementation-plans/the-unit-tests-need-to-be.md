@@ -1,9 +1,10 @@
 ---
 plan: the-unit-tests-need-to-be
 branch: draft/the-unit-tests-need-to-be
-status: draft
+status: implemented
 created_at: 2025-11-15T09:22:29Z
 spec_source: inline
+implemented_at: 2025-11-15T09:49:14Z
 ---
 
 ## Operator Spec

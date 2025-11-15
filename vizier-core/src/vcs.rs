@@ -571,8 +571,7 @@ pub fn get_diff(
 ///     * if file → add that single path.
 /// - `None`: update tracked paths (like `git add -u`), staging modifications/deletions,
 ///     but NOT newly untracked files.
-pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
-    let repo = Repository::open(".")?;
+fn stage_impl(repo: &Repository, paths: Option<Vec<&str>>) -> Result<(), Error> {
     let mut index = repo.index()?;
 
     match paths {
@@ -598,6 +597,16 @@ pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
     Ok(())
 }
 
+pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
+    let repo = Repository::open(".")?;
+    stage_impl(&repo, paths)
+}
+
+pub fn stage_in<P: AsRef<Path>>(repo_path: P, paths: Option<Vec<&str>>) -> Result<(), Error> {
+    let repo = Repository::open(repo_path)?;
+    stage_impl(&repo, paths)
+}
+
 // TODO: Remove the `add` portion from this
 /// Stage changes and create a commit in the current repository, returning the new commit `Oid`.
 ///
@@ -611,12 +620,12 @@ pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
 /// - If no parent exists (unborn branch), commit has no parents.
 /// - Commit metadata uses repo config signature if available, else falls back to
 ///   `"Vizier <vizier@local>"`.
-pub fn add_and_commit(
+fn add_and_commit_impl(
+    repo: &Repository,
     paths: Option<Vec<&str>>,
     message: &str,
     allow_empty: bool,
 ) -> Result<Oid, git2::Error> {
-    let repo = Repository::open(".")?;
     let mut index = repo.index()?;
 
     match paths {
@@ -674,6 +683,25 @@ pub fn add_and_commit(
     )
 }
 
+pub fn add_and_commit(
+    paths: Option<Vec<&str>>,
+    message: &str,
+    allow_empty: bool,
+) -> Result<Oid, git2::Error> {
+    let repo = Repository::open(".")?;
+    add_and_commit_impl(&repo, paths, message, allow_empty)
+}
+
+pub fn add_and_commit_in<P: AsRef<Path>>(
+    repo_path: P,
+    paths: Option<Vec<&str>>,
+    message: &str,
+    allow_empty: bool,
+) -> Result<Oid, git2::Error> {
+    let repo = Repository::open(repo_path)?;
+    add_and_commit_impl(&repo, paths, message, allow_empty)
+}
+
 /// Push the current HEAD branch to the specified remote without invoking the git binary.
 ///
 /// Safety rails:
@@ -681,10 +709,7 @@ pub fn add_and_commit(
 /// - Requires `HEAD` to be a named local branch.
 /// - Performs a fast-forward check when an upstream tracking ref is configured.
 /// - Updates the matching `refs/remotes/<remote>/<branch>` reference on success.
-pub fn push_current_branch(remote_name: &str) -> Result<(), PushError> {
-    let repo = Repository::discover(".")
-        .map_err(|err| PushError::from_git("failed to discover git repository", err))?;
-
+fn push_current_branch_impl(repo: &Repository, remote_name: &str) -> Result<(), PushError> {
     let state = repo.state();
     if state != RepositoryState::Clean {
         let msg = match state {
@@ -858,6 +883,21 @@ pub fn push_current_branch(remote_name: &str) -> Result<(), PushError> {
     .map_err(|err| PushError::from_git("failed to update remote tracking ref", err))?;
 
     Ok(())
+}
+
+pub fn push_current_branch(remote_name: &str) -> Result<(), PushError> {
+    let repo = Repository::discover(".")
+        .map_err(|err| PushError::from_git("failed to discover git repository", err))?;
+    push_current_branch_impl(&repo, remote_name)
+}
+
+pub fn push_current_branch_in<P: AsRef<Path>>(
+    repo_path: P,
+    remote_name: &str,
+) -> Result<(), PushError> {
+    let repo = Repository::discover(repo_path)
+        .map_err(|err| PushError::from_git("failed to discover git repository", err))?;
+    push_current_branch_impl(&repo, remote_name)
 }
 
 /// Return up to `depth` commits whose messages match any of the `filters` (OR),
@@ -1279,8 +1319,7 @@ pub fn commit_paths_in_repo(
 ///     - If `HEAD` exists, the entire index is reset to `HEAD`’s tree (no working tree changes).
 ///     - If `HEAD` is unborn, the index is cleared.
 /// - Never updates the working directory, and never moves `HEAD`.
-pub fn unstage(paths: Option<Vec<&str>>) -> Result<(), Error> {
-    let repo = Repository::open(".")?;
+fn unstage_impl(repo: &Repository, paths: Option<Vec<&str>>) -> Result<(), Error> {
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let mut index = repo.index()?;
 
@@ -1332,6 +1371,16 @@ pub fn unstage(paths: Option<Vec<&str>>) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+pub fn unstage(paths: Option<Vec<&str>>) -> Result<(), Error> {
+    let repo = Repository::open(".")?;
+    unstage_impl(&repo, paths)
+}
+
+pub fn unstage_in<P: AsRef<Path>>(repo_path: P, paths: Option<Vec<&str>>) -> Result<(), Error> {
+    let repo = Repository::open(repo_path)?;
+    unstage_impl(&repo, paths)
 }
 
 #[derive(Debug, Clone)]
@@ -1504,32 +1553,51 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    struct CwdGuard {
-        old: PathBuf,
+    struct TestRepo {
+        tempdir: tempfile::TempDir,
+        repo: Repository,
+        path_utf8: String,
     }
 
-    impl CwdGuard {
-        fn enter<P: AsRef<Path>>(p: P) -> std::io::Result<Self> {
-            let old = std::env::current_dir()?;
-            std::env::set_current_dir(p)?;
-            Ok(Self { old })
+    impl TestRepo {
+        fn new() -> Self {
+            let tempdir = tempfile::TempDir::new().expect("tempdir");
+            let repo = Repository::init(tempdir.path()).expect("init repo");
+            let _ = repo.config().and_then(|mut c| {
+                c.set_str("user.name", "Tester")?;
+                c.set_str("user.email", "tester@example.com")
+            });
+            let path_utf8 = tempdir.path().to_str().expect("repo path utf8").to_string();
+            Self {
+                tempdir,
+                repo,
+                path_utf8,
+            }
         }
-    }
 
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.old);
+        fn repo(&self) -> &Repository {
+            &self.repo
         }
-    }
 
-    fn init_temp_repo() -> (tempfile::TempDir, Repository) {
-        let td = tempfile::TempDir::new().expect("tempdir");
-        let repo = Repository::init(td.path()).expect("init repo");
-        let _ = repo.config().and_then(|mut c| {
-            c.set_str("user.name", "Tester")?;
-            c.set_str("user.email", "tester@example.com")
-        });
-        (td, repo)
+        fn path(&self) -> &Path {
+            self.tempdir.path()
+        }
+
+        fn path_str(&self) -> &str {
+            self.path_utf8.as_str()
+        }
+
+        fn join(&self, rel: &str) -> PathBuf {
+            self.tempdir.path().join(rel)
+        }
+
+        fn write(&self, rel: &str, contents: &str) {
+            write(&self.join(rel), contents);
+        }
+
+        fn append(&self, rel: &str, contents: &str) {
+            append(&self.join(rel), contents);
+        }
     }
 
     fn write(path: &Path, contents: &str) {
@@ -1578,7 +1646,7 @@ mod tests {
 
     #[test]
     fn push_current_branch_updates_remote_tracking() {
-        let (td, repo) = init_temp_repo();
+        let repo = TestRepo::new();
         let remote_dir = tempfile::TempDir::new().expect("remote tempdir");
         Repository::init_bare(remote_dir.path()).expect("init bare remote");
         let remote_path = remote_dir
@@ -1587,35 +1655,34 @@ mod tests {
             .expect("remote path utf8")
             .to_owned();
 
-        repo.remote("origin", &remote_path)
+        repo.repo()
+            .remote("origin", &remote_path)
             .expect("configure remote");
 
-        {
-            let _cwd = CwdGuard::enter(td.path()).unwrap();
-            write(Path::new("file.txt"), "hello\n");
-            raw_commit(&repo, "initial");
+        repo.write("file.txt", "hello\n");
+        raw_commit(repo.repo(), "initial");
 
-            let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+        let branch = repo.repo().head().unwrap().shorthand().unwrap().to_string();
 
-            push_current_branch("origin").expect("push succeeds");
+        push_current_branch_in(repo.path(), "origin").expect("push succeeds");
 
-            let remote_repo = Repository::open(remote_dir.path()).expect("open remote repo");
-            let remote_ref = remote_repo
-                .find_reference(&format!("refs/heads/{branch}"))
-                .expect("remote branch exists");
-            let local_oid = repo.head().unwrap().target().unwrap();
-            assert_eq!(remote_ref.target(), Some(local_oid));
+        let remote_repo = Repository::open(remote_dir.path()).expect("open remote repo");
+        let remote_ref = remote_repo
+            .find_reference(&format!("refs/heads/{branch}"))
+            .expect("remote branch exists");
+        let local_oid = repo.repo().head().unwrap().target().unwrap();
+        assert_eq!(remote_ref.target(), Some(local_oid));
 
-            let tracking_ref = repo
-                .find_reference(&format!("refs/remotes/origin/{branch}"))
-                .expect("tracking ref updated");
-            assert_eq!(tracking_ref.target(), Some(local_oid));
-        }
+        let tracking_ref = repo
+            .repo()
+            .find_reference(&format!("refs/remotes/origin/{branch}"))
+            .expect("tracking ref updated");
+        assert_eq!(tracking_ref.target(), Some(local_oid));
     }
 
     #[test]
     fn push_current_branch_rejects_detached_head() {
-        let (td, repo) = init_temp_repo();
+        let repo = TestRepo::new();
         let remote_dir = tempfile::TempDir::new().expect("remote tempdir");
         Repository::init_bare(remote_dir.path()).expect("init bare remote");
         let remote_path = remote_dir
@@ -1624,23 +1691,21 @@ mod tests {
             .expect("remote path utf8")
             .to_owned();
 
-        repo.remote("origin", &remote_path)
+        repo.repo()
+            .remote("origin", &remote_path)
             .expect("configure remote");
 
-        {
-            let _cwd = CwdGuard::enter(td.path()).unwrap();
-            write(Path::new("note.txt"), "one\n");
-            let oid = raw_commit(&repo, "detached");
+        repo.write("note.txt", "one\n");
+        let oid = raw_commit(repo.repo(), "detached");
 
-            repo.set_head_detached(oid).expect("detach head");
+        repo.repo().set_head_detached(oid).expect("detach head");
 
-            let err = push_current_branch("origin").expect_err("push should fail");
-            match err.kind() {
-                PushErrorKind::General(message) => {
-                    assert!(message.contains("not pointing to a branch"));
-                }
-                other => panic!("unexpected error variant: {:?}", other),
+        let err = push_current_branch_in(repo.path(), "origin").expect_err("push should fail");
+        match err.kind() {
+            PushErrorKind::General(message) => {
+                assert!(message.contains("not pointing to a branch"));
             }
+            other => panic!("unexpected error variant: {:?}", other),
         }
     }
 
@@ -1727,50 +1792,48 @@ mod tests {
 
     #[test]
     fn add_and_commit_basic_and_noop() {
-        let (td, _repo) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
+        let repo = TestRepo::new();
 
-        write(Path::new("README.md"), "# one\n");
-        let oid1 = add_and_commit(Some(vec!["README.md"]), "init", false).expect("commit ok");
+        repo.write("README.md", "# one\n");
+        let oid1 = add_and_commit_in(repo.path(), Some(vec!["README.md"]), "init", false)
+            .expect("commit ok");
         assert_ne!(oid1, Oid::zero());
 
         // No changes, allow_empty=false → "nothing to commit"
-        let err = add_and_commit(None, "noop", false).unwrap_err();
+        let err = add_and_commit_in(repo.path(), None, "noop", false).unwrap_err();
         assert!(format!("{err}").contains("nothing to commit"));
 
         // Empty commit (allow_empty=true) → OK
-        let oid2 = add_and_commit(None, "empty ok", true).expect("empty commit ok");
+        let oid2 = add_and_commit_in(repo.path(), None, "empty ok", true).expect("empty commit ok");
         assert_ne!(oid2, oid1);
     }
 
     #[test]
     fn add_and_commit_pathspecs_and_deletes_and_ignores() {
-        let (td, _) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
+        let repo = TestRepo::new();
 
         // .gitignore excludes dist/** and vendor/**
-        write(Path::new(".gitignore"), "dist/\nvendor/\n");
+        repo.write(".gitignore", "dist/\nvendor/\n");
 
         // Create a mix
-        write(Path::new("src/a.rs"), "fn a(){}\n");
-        write(Path::new("src/b.rs"), "fn b(){}\n");
-        write(Path::new("dist/bundle.js"), "/* build */\n");
-        write(Path::new("vendor/lib/x.c"), "/* vendored */\n");
-        let c1 = add_and_commit(Some(vec!["./src//"]), "src only", false).unwrap();
+        repo.write("src/a.rs", "fn a(){}\n");
+        repo.write("src/b.rs", "fn b(){}\n");
+        repo.write("dist/bundle.js", "/* build */\n");
+        repo.write("vendor/lib/x.c", "/* vendored */\n");
+        let c1 = add_and_commit_in(repo.path(), Some(vec!["./src//"]), "src only", false).unwrap();
         assert_ne!(c1, Oid::zero());
 
         // Update tracked files + delete one; update_all should stage deletes.
-        fs::remove_file("src/a.rs").unwrap();
-        append(Path::new("src/b.rs"), "// mod\n");
+        fs::remove_file(repo.join("src/a.rs")).unwrap();
+        repo.append("src/b.rs", "// mod\n");
 
         // Ignored paths shouldn't be added even with update_all
-        let c2 = add_and_commit(None, "update tracked & deletions", false).unwrap();
+        let c2 = add_and_commit_in(repo.path(), None, "update tracked & deletions", false).unwrap();
         assert_ne!(c2, c1);
 
         // Show that vendor/dist are still untracked (ignored), not part of commit 2
         // Verify via a diff: HEAD..workdir should be empty (no pending tracked changes)
-        let repo_path = td.path().to_str().unwrap();
-        let d = get_diff(repo_path, None, None).unwrap();
+        let d = get_diff(repo.path_str(), None, None).unwrap();
         // No pending tracked changes post-commit; any diff would now be due to ignored dirs (which aren't included)
         assert!(d.is_empty() || !d.contains("src/")); // conservative assertion
     }
@@ -1779,53 +1842,45 @@ mod tests {
 
     #[test]
     fn diff_head_vs_workdir_and_path_and_exclude() {
-        let (td, repo) = init_temp_repo();
-        let repo_path = td.path().to_path_buf();
-        let _cwd = CwdGuard::enter(&repo_path).unwrap();
+        let repo = TestRepo::new();
 
-        write(Path::new("a/file.txt"), "hello\n");
-        write(Path::new("b/file.txt"), "world\n");
-        raw_commit(&repo, "base");
+        repo.write("a/file.txt", "hello\n");
+        repo.write("b/file.txt", "world\n");
+        raw_commit(repo.repo(), "base");
 
-        append(Path::new("a/file.txt"), "change-a\n"); // unstaged, tracked file
-        append(Path::new("b/file.txt"), "change-b\n");
-        write(Path::new("b/inner/keep.txt"), "keep\n"); // untracked; should not appear
+        repo.append("a/file.txt", "change-a\n"); // unstaged, tracked file
+        repo.append("b/file.txt", "change-b\n");
+        repo.write("b/inner/keep.txt", "keep\n"); // untracked; should not appear
 
         // 1) None → HEAD vs workdir(+index). Shows tracked edits, not untracked files.
-        let d_all = get_diff(repo_path.to_str().unwrap(), None, None).expect("diff");
+        let d_all = get_diff(repo.path_str(), None, None).expect("diff");
         assert!(d_all.contains("a/file.txt"));
         assert!(d_all.contains("b/file.txt"));
         assert!(!d_all.contains("b/inner/keep.txt")); // untracked → absent
 
         // 2) Treat `target` as a path
-        let d_b = get_diff(repo_path.to_str().unwrap(), Some("b"), None).expect("diff b");
+        let d_b = get_diff(repo.path_str(), Some("b"), None).expect("diff b");
         assert!(!d_b.contains("a/file.txt"));
         assert!(d_b.contains("b/file.txt"));
         assert!(!d_b.contains("b/inner/keep.txt")); // still untracked → absent
 
         // 3) Exclude subdir via Windows-ish input → normalized
-        let d_b_ex = get_diff(
-            repo_path.to_str().unwrap(),
-            Some("b"),
-            Some(&[r".\b\inner"]),
-        )
-        .expect("diff b excl inner");
+        let d_b_ex =
+            get_diff(repo.path_str(), Some("b"), Some(&[r".\b\inner"])).expect("diff b excl inner");
         assert!(d_b_ex.contains("b/file.txt"));
         assert!(!d_b_ex.contains("b/inner/keep.txt"));
     }
 
     #[test]
     fn diff_single_rev_to_workdir() {
-        let (td, repo) = init_temp_repo();
-        let repo_path = td.path().to_path_buf();
-        let _cwd = CwdGuard::enter(&repo_path).unwrap();
+        let repo = TestRepo::new();
 
-        write(Path::new("x.txt"), "x1\n");
-        let first = raw_commit(&repo, "c1");
+        repo.write("x.txt", "x1\n");
+        let first = raw_commit(repo.repo(), "c1");
 
-        append(Path::new("x.txt"), "x2\n"); // unstaged, tracked change is visible
+        repo.append("x.txt", "x2\n"); // unstaged, tracked change is visible
         let spec = first.to_string();
-        let d = get_diff(repo_path.to_str().unwrap(), Some(&spec), None).expect("diff");
+        let d = get_diff(repo.path_str(), Some(&spec), None).expect("diff");
         println!("d: {}", d);
         assert!(d.contains("x.txt")); // file appears
         assert!(d.contains("\n+")); // there is an addition hunk
@@ -1834,23 +1889,21 @@ mod tests {
 
     #[test]
     fn diff_handles_staged_deletions_without_workdir_stat_failure() {
-        let (td, repo) = init_temp_repo();
-        let repo_path = td.path().to_path_buf();
-        let _cwd = CwdGuard::enter(&repo_path).unwrap();
+        let repo = TestRepo::new();
 
-        write(Path::new("gone.txt"), "present\n");
-        raw_commit(&repo, "add gone");
+        repo.write("gone.txt", "present\n");
+        raw_commit(repo.repo(), "add gone");
 
         // Remove from working tree and stage the deletion.
-        fs::remove_file("gone.txt").unwrap();
+        fs::remove_file(repo.join("gone.txt")).unwrap();
         {
-            let mut index = repo.index().unwrap();
+            let mut index = repo.repo().index().unwrap();
             index.remove_path(Path::new("gone.txt")).unwrap();
             index.write().unwrap();
         }
 
-        let diff = get_diff(repo_path.to_str().unwrap(), Some("HEAD"), None)
-            .expect("diff with staged deletion");
+        let diff =
+            get_diff(repo.path_str(), Some("HEAD"), None).expect("diff with staged deletion");
 
         assert!(diff.contains("gone.txt"));
         assert!(diff.contains("deleted file mode") || diff.contains("--- a/gone.txt"));
@@ -1858,41 +1911,41 @@ mod tests {
 
     #[test]
     fn diff_with_excludes() {
-        let (td, repo) = init_temp_repo();
-        let repo_path = td.path().to_path_buf();
-        let _cwd = CwdGuard::enter(&repo_path).unwrap();
+        let repo = TestRepo::new();
 
         // Base on main
-        write(Path::new("common.txt"), "base\n");
-        let base = raw_commit(&repo, "base");
+        repo.write("common.txt", "base\n");
+        let base = raw_commit(repo.repo(), "base");
 
         // Branch at base
         {
-            let head_commit = repo.find_commit(base).unwrap();
-            repo.branch("feature", &head_commit, true).unwrap();
+            let head_commit = repo.repo().find_commit(base).unwrap();
+            repo.repo().branch("feature", &head_commit, true).unwrap();
         }
 
         // Advance main
-        write(Path::new("main.txt"), "m1\n");
-        write(Path::new("vendor/ignored.txt"), "should be excluded\n"); // will test exclusion
-        let main1 = raw_commit(&repo, "main1");
+        repo.write("main.txt", "m1\n");
+        repo.write("vendor/ignored.txt", "should be excluded\n"); // will test exclusion
+        let main1 = raw_commit(repo.repo(), "main1");
 
         // Checkout feature and diverge
         {
             let mut checkout = git2::build::CheckoutBuilder::new();
-            repo.set_head("refs/heads/feature").unwrap();
-            repo.checkout_head(Some(&mut checkout.force())).unwrap();
+            repo.repo().set_head("refs/heads/feature").unwrap();
+            repo.repo()
+                .checkout_head(Some(&mut checkout.force()))
+                .unwrap();
         }
-        write(Path::new("feat.txt"), "f1\n");
+        repo.write("feat.txt", "f1\n");
 
         // A..B (base..main1) shows main changes (including vendor/ by default)
         let dd = format!("{}..{}", base, main1);
-        let out_dd = get_diff(repo_path.to_str().unwrap(), Some(&dd), None).expect("A..B");
+        let out_dd = get_diff(repo.path_str(), Some(&dd), None).expect("A..B");
         assert!(out_dd.contains("main.txt"));
 
         // Now exclude vendor/** using normalize-able pathspec; vendor should disappear
-        let out_dd_ex = get_diff(repo_path.to_str().unwrap(), Some(&dd), Some(&["vendor//"]))
-            .expect("A..B excl");
+        let out_dd_ex =
+            get_diff(repo.path_str(), Some(&dd), Some(&["vendor//"])).expect("A..B excl");
         println!("DIFF: {}", out_dd_ex);
         assert!(out_dd_ex.contains("main.txt"));
         assert!(!out_dd_ex.contains("vendor/ignored.txt"));
@@ -1902,16 +1955,14 @@ mod tests {
 
     #[test]
     fn diff_unborn_head_against_workdir_without_untracked() {
-        let (td, repo) = init_temp_repo();
-        let repo_path = td.path().to_path_buf();
-        let _cwd = CwdGuard::enter(&repo_path).unwrap();
+        let repo = TestRepo::new();
 
         // File exists in workdir and is STAGED (tracked) but no commits yet.
-        write(Path::new("z.txt"), "hello\n");
-        raw_stage(&repo, "z.txt"); // index-only
+        repo.write("z.txt", "hello\n");
+        raw_stage(repo.repo(), "z.txt"); // index-only
 
         // get_diff(None) compares empty tree → workdir+index, so z.txt appears even with untracked disabled
-        let out = get_diff(repo_path.to_str().unwrap(), None, None).expect("diff unborn");
+        let out = get_diff(repo.path_str(), None, None).expect("diff unborn");
         println!("OUT: {}", out);
         assert!(out.contains("z.txt"));
         assert!(out.contains("hello"));
@@ -1921,26 +1972,25 @@ mod tests {
 
     #[test]
     fn stage_paths_and_update_tracked_only() {
-        let (td, repo) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
+        let repo = TestRepo::new();
 
         // Base commit with two tracked files
-        write(Path::new("a.txt"), "A0\n");
-        write(Path::new("b.txt"), "B0\n");
-        raw_commit(&repo, "base");
+        repo.write("a.txt", "A0\n");
+        repo.write("b.txt", "B0\n");
+        raw_commit(repo.repo(), "base");
 
         // Workdir changes:
         // - modify tracked a.txt
         // - delete tracked b.txt
         // - create new untracked c.txt
-        append(Path::new("a.txt"), "A1\n");
-        fs::remove_file("b.txt").unwrap();
-        write(Path::new("c.txt"), "C0\n");
+        repo.append("a.txt", "A1\n");
+        fs::remove_file(repo.join("b.txt")).unwrap();
+        repo.write("c.txt", "C0\n");
 
         // 1) stage(None) should mirror `git add -u`: stage tracked changes (a.txt mod, b.txt del)
         //    but NOT the new untracked c.txt.
-        stage(None).expect("stage -u");
-        let staged1 = snapshot_staged(".").expect("snapshot staged after -u");
+        stage_in(repo.path(), None).expect("stage -u");
+        let staged1 = snapshot_staged(repo.path_str()).expect("snapshot staged after -u");
 
         // Expect: a.txt Modified, b.txt Deleted; no c.txt
         let mut kinds = staged1
@@ -1965,8 +2015,8 @@ mod tests {
         );
 
         // 2) Now explicitly stage c.txt via stage(Some)
-        stage(Some(vec!["c.txt"])).expect("stage c.txt");
-        let staged2 = snapshot_staged(".").expect("snapshot staged after explicit add");
+        stage_in(repo.path(), Some(vec!["c.txt"])).expect("stage c.txt");
+        let staged2 = snapshot_staged(repo.path_str()).expect("snapshot staged after explicit add");
 
         let names2: Vec<_> = staged2.iter().map(|s| s.path.as_str()).collect();
         assert!(names2.contains(&"a.txt"));
@@ -1983,29 +2033,28 @@ mod tests {
 
     #[test]
     fn unstage_specific_paths_and_all_with_head() {
-        let (td, repo) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
+        let repo = TestRepo::new();
 
-        write(Path::new("x.txt"), "X0\n");
-        write(Path::new("y.txt"), "Y0\n");
-        raw_commit(&repo, "base");
+        repo.write("x.txt", "X0\n");
+        repo.write("y.txt", "Y0\n");
+        raw_commit(repo.repo(), "base");
 
-        append(Path::new("x.txt"), "X1\n");
-        append(Path::new("y.txt"), "Y1\n");
+        repo.append("x.txt", "X1\n");
+        repo.append("y.txt", "Y1\n");
 
         // Stage both changes (explicit)
-        stage(Some(vec!["x.txt", "y.txt"])).expect("stage both");
+        stage_in(repo.path(), Some(vec!["x.txt", "y.txt"])).expect("stage both");
 
         // Unstage only x.txt → y.txt should remain staged
-        unstage(Some(vec!["x.txt"])).expect("unstage x");
+        unstage_in(repo.path(), Some(vec!["x.txt"])).expect("unstage x");
 
-        let after_x = snapshot_staged(".").expect("snapshot after unstage x");
+        let after_x = snapshot_staged(repo.path_str()).expect("snapshot after unstage x");
         assert!(after_x.iter().any(|s| s.path == "y.txt"));
         assert!(!after_x.iter().any(|s| s.path == "x.txt"));
 
         // Unstage everything → nothing should be staged
-        unstage(None).expect("unstage all");
-        let after_all = snapshot_staged(".").expect("snapshot after unstage all");
+        unstage_in(repo.path(), None).expect("unstage all");
+        let after_all = snapshot_staged(repo.path_str()).expect("snapshot after unstage all");
         assert!(after_all.is_empty());
     }
 
@@ -2013,25 +2062,25 @@ mod tests {
 
     #[test]
     fn unstage_with_unborn_head() {
-        let (td, repo) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
+        let repo = TestRepo::new();
 
         // No commits yet; create two files and stage both
-        write(Path::new("u.txt"), "U0\n");
-        write(Path::new("v.txt"), "V0\n");
-        raw_stage(&repo, "u.txt");
-        raw_stage(&repo, "v.txt");
+        repo.write("u.txt", "U0\n");
+        repo.write("v.txt", "V0\n");
+        raw_stage(repo.repo(), "u.txt");
+        raw_stage(repo.repo(), "v.txt");
 
         // Path-limited unstage on unborn HEAD should remove entries from index for those paths
-        unstage(Some(vec!["u.txt"])).expect("unstage u.txt on unborn");
-        let staged1 = snapshot_staged(".").expect("snapshot staged after partial unstage");
+        unstage_in(repo.path(), Some(vec!["u.txt"])).expect("unstage u.txt on unborn");
+        let staged1 =
+            snapshot_staged(repo.path_str()).expect("snapshot staged after partial unstage");
         let names1: Vec<_> = staged1.iter().map(|s| s.path.as_str()).collect();
         assert!(names1.contains(&"v.txt"));
         assert!(!names1.contains(&"u.txt"));
 
         // Full unstage on unborn HEAD should clear the index
-        unstage(None).expect("unstage all unborn");
-        let staged2 = snapshot_staged(".").expect("snapshot staged after clear");
+        unstage_in(repo.path(), None).expect("unstage all unborn");
+        let staged2 = snapshot_staged(repo.path_str()).expect("snapshot staged after clear");
         assert!(staged2.is_empty());
     }
 
@@ -2039,26 +2088,25 @@ mod tests {
 
     #[test]
     fn snapshot_and_restore_roundtrip_with_rename() {
-        let (td, repo) = init_temp_repo();
-        let _cwd = CwdGuard::enter(td.path()).unwrap();
+        let repo = TestRepo::new();
 
         // Base: a.txt, b.txt
-        write(Path::new("a.txt"), "A0\n");
-        write(Path::new("b.txt"), "B0\n");
-        raw_commit(&repo, "base");
+        repo.write("a.txt", "A0\n");
+        repo.write("b.txt", "B0\n");
+        raw_commit(repo.repo(), "base");
 
         // Workdir staged set (before snapshot):
         // - RENAME: a.txt -> a_ren.txt (same content to improve rename detection)
         // - DELETE: b.txt
         // - ADD: c.txt
         // - (no explicit extra modifications; rely on rename detection)
-        fs::rename("a.txt", "a_ren.txt").unwrap();
-        fs::remove_file("b.txt").unwrap();
-        write(Path::new("c.txt"), "C0\n");
+        fs::rename(repo.join("a.txt"), repo.join("a_ren.txt")).unwrap();
+        fs::remove_file(repo.join("b.txt")).unwrap();
+        repo.write("c.txt", "C0\n");
 
         // Stage all changes so index reflects A/M/D/R
         {
-            let mut idx = repo.index().unwrap();
+            let mut idx = repo.repo().index().unwrap();
             idx.add_all(["."], git2::IndexAddOption::DEFAULT, None)
                 .unwrap();
             // ensure deletion is captured
@@ -2067,7 +2115,7 @@ mod tests {
         }
 
         // Take snapshot of what's staged now
-        let snap = snapshot_staged(".").expect("snapshot staged");
+        let snap = snapshot_staged(repo.path_str()).expect("snapshot staged");
 
         // Sanity: ensure we actually captured the expected kinds
         // Expect at least: Added c.txt, Deleted b.txt, and a rename a.txt -> a_ren.txt
@@ -2093,17 +2141,17 @@ mod tests {
         );
 
         // Unstage everything
-        unstage(None).expect("unstage all");
+        unstage_in(repo.path(), None).expect("unstage all");
 
         // Mutate workdir arbitrarily (should not affect restoration correctness)
-        append(Path::new("c.txt"), "C1\n"); // change content after snapshot
-        write(Path::new("d.txt"), "D0 (noise)\n"); // create a noise file that won't be staged by restore
+        repo.append("c.txt", "C1\n"); // change content after snapshot
+        repo.write("d.txt", "D0 (noise)\n"); // create a noise file that won't be staged by restore
 
         // Restore exact staged set captured in `snap`
-        restore_staged(".", &snap).expect("restore staged");
+        restore_staged(repo.path_str(), &snap).expect("restore staged");
 
         // Re-snapshot after restore to compare equivalence (semantic equality of staged set)
-        let after = snapshot_staged(".").expect("snapshot after restore");
+        let after = snapshot_staged(repo.path_str()).expect("snapshot after restore");
 
         // Normalize into comparable tuples
         fn key(s: &super::StagedItem) -> (String, String) {
