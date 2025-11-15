@@ -18,7 +18,7 @@ Acceptance Criteria
 - If deeper docs appear (DRAFT.md/APPROVE.md), README links to them; otherwise links to `--help` are present.
 
 Status
-- README Core Commands updated to list accurate flags for `approve` and `merge`; removed misleading copy. Ready to close after a quick pass against `vizier approve --help` and `vizier merge --help`.
+- README Core Commands updated to list accurate flags for `approve` and `merge`; removed misleading copy. Verified against `vizier-cli/src/main.rs` CLI definitions for Approve/Merge; acceptance criteria met—this thread can be treated as closed.
 
 Pointers
 - README.md (Core Commands)

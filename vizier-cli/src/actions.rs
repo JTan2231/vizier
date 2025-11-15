@@ -1,15 +1,18 @@
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use git2::{BranchType, Repository};
-use tempfile::{Builder, TempPath};
+use git2::{BranchType, Oid, Repository, RepositoryState};
+use serde::{Deserialize, Serialize};
+use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::vcs::{
-    AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme, add_worktree_for_branch,
-    commit_paths_in_repo, create_branch_from, delete_branch, detect_primary_branch,
+    AttemptOutcome, CredentialAttempt, MergePreparation, PushErrorKind, RemoteScheme,
+    add_worktree_for_branch, commit_in_progress_merge, commit_paths_in_repo, commit_ready_merge,
+    create_branch_from, delete_branch, detect_primary_branch, list_conflicted_paths, prepare_merge,
     remove_worktree, repo_root,
 };
 use vizier_core::{
@@ -139,13 +142,8 @@ fn token_usage_suffix() -> String {
     }
 }
 
-fn spawn_plain_progress_logger(
-    mut rx: mpsc::Receiver<String>,
-) -> Option<JoinHandle<()>> {
-    if matches!(
-        display::get_display_config().verbosity,
-        Verbosity::Quiet
-    ) {
+fn spawn_plain_progress_logger(mut rx: mpsc::Receiver<String>) -> Option<JoinHandle<()>> {
+    if matches!(display::get_display_config().verbosity, Verbosity::Quiet) {
         return None;
     }
 
@@ -212,6 +210,13 @@ pub struct MergeOptions {
     pub delete_branch: bool,
     pub note: Option<String>,
     pub push_after: bool,
+    pub conflict_strategy: MergeConflictStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeConflictStrategy {
+    Manual,
+    Codex,
 }
 
 pub async fn docs_prompt(cmd: crate::DocsPromptCmd) -> Result<(), Box<dyn std::error::Error>> {
@@ -1035,9 +1040,7 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
     }
 
     if config::get_config().backend != config::BackendKind::Codex {
-        return Err(
-            "vizier approve requires the Codex backend; rerun with --backend codex".into(),
-        );
+        return Err("vizier approve requires the Codex backend; rerun with --backend codex".into());
     }
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1101,8 +1104,14 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
     let plan_path = worktree.plan_path(&spec.slug);
     let mut worktree = Some(worktree);
 
-    let approval =
-        apply_plan_in_worktree(&spec, &plan_meta, &worktree_path, &plan_path, opts.push_after).await;
+    let approval = apply_plan_in_worktree(
+        &spec,
+        &plan_meta,
+        &worktree_path,
+        &plan_path,
+        opts.push_after,
+    )
+    .await;
 
     match approval {
         Ok(commit_oid) => {
@@ -1173,6 +1182,18 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
     }
 
     let plan_meta = spec.load_metadata()?;
+
+    if let Some((merge_oid, source_oid)) = try_complete_pending_merge(&spec)? {
+        finalize_merge(
+            &spec,
+            merge_oid,
+            source_oid,
+            opts.delete_branch,
+            opts.push_after,
+        )?;
+        return Ok(());
+    }
+
     if !opts.assume_yes {
         spec.show_preview(&plan_meta);
         if !prompt_for_confirmation("Merge this plan? [y/N] ")? {
@@ -1222,7 +1243,10 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
 
     let current_branch = current_branch_name(&repo)?;
     if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
-        display::info(format!("Checking out {} before merge...", spec.target_branch));
+        display::info(format!(
+            "Checking out {} before merge...",
+            spec.target_branch
+        ));
         vcs::checkout_branch(&spec.target_branch)?;
     }
 
@@ -1232,9 +1256,36 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
         plan_document.as_deref(),
         opts.note.as_deref(),
     );
-    let merge_oid = vcs::merge_branch_no_ff(&spec.branch, &merge_message)?;
 
-    if opts.delete_branch {
+    let (merge_oid, source_oid) = match prepare_merge(&spec.branch)? {
+        MergePreparation::Ready(ready) => {
+            let source_tip = ready.source_oid;
+            let oid = commit_ready_merge(&merge_message, ready)?;
+            (oid, source_tip)
+        }
+        MergePreparation::Conflicted(conflict) => {
+            handle_merge_conflict(&spec, &merge_message, conflict, opts.conflict_strategy).await?
+        }
+    };
+
+    finalize_merge(
+        &spec,
+        merge_oid,
+        source_oid,
+        opts.delete_branch,
+        opts.push_after,
+    )?;
+    Ok(())
+}
+
+fn finalize_merge(
+    spec: &plan::PlanBranchSpec,
+    merge_oid: Oid,
+    source_oid: Oid,
+    delete_branch: bool,
+    push_after: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if delete_branch {
         let repo = Repository::discover(".")?;
         if repo.graph_descendant_of(merge_oid, source_oid)? {
             vcs::delete_branch(&spec.branch)?;
@@ -1247,12 +1298,283 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    push_origin_if_requested(opts.push_after)?;
+    push_origin_if_requested(push_after)?;
     println!(
         "Merged plan {} into {}; merge_commit={}",
         spec.slug, spec.target_branch, merge_oid
     );
     print_token_usage();
+    Ok(())
+}
+
+fn try_complete_pending_merge(
+    spec: &plan::PlanBranchSpec,
+) -> Result<Option<(Oid, Oid)>, Box<dyn std::error::Error>> {
+    let Some(state) = read_conflict_state(&spec.slug)? else {
+        return Ok(None);
+    };
+
+    if state.source_branch != spec.branch {
+        display::warn(format!(
+            "Found stale merge-conflict metadata for {}; stored branch {}!=requested {}. Cleaning it up.",
+            spec.slug, state.source_branch, spec.branch
+        ));
+        let _ = clear_conflict_state(&spec.slug);
+        return Ok(None);
+    }
+
+    if state.target_branch != spec.target_branch {
+        display::warn(format!(
+            "Found stale merge-conflict metadata for {}; stored target {}!=requested {}. Cleaning it up.",
+            spec.slug, state.target_branch, spec.target_branch
+        ));
+        let _ = clear_conflict_state(&spec.slug);
+        return Ok(None);
+    }
+
+    let repo = Repository::discover(".")?;
+    let current_branch = current_branch_name(&repo)?;
+    if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
+        return Err(format!(
+            "merge for plan {} is still in progress; checkout {} to continue resolution",
+            spec.slug, spec.target_branch
+        )
+        .into());
+    }
+
+    if repo.state() != RepositoryState::Merge {
+        display::warn(format!(
+            "Merge metadata for plan {} exists but the repository is no longer in a merge state; assuming it was aborted.",
+            spec.slug
+        ));
+        let _ = clear_conflict_state(&spec.slug);
+        return Ok(None);
+    }
+
+    let outstanding = list_conflicted_paths()?;
+    if !outstanding.is_empty() {
+        display::warn("Merge conflicts remain:");
+        for path in outstanding {
+            display::warn(format!("  - {path}"));
+        }
+        display::info(format!(
+            "Resolve the conflicts above, stage the files, then rerun `vizier merge {}`.",
+            spec.slug
+        ));
+        return Err("merge blocked until conflicts are resolved".into());
+    }
+
+    let head_oid = Oid::from_str(&state.head_oid)?;
+    let source_oid = Oid::from_str(&state.source_oid)?;
+    let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
+    let _ = clear_conflict_state(&spec.slug);
+    display::info("Conflicts resolved; finalizing merge now.");
+    Ok(Some((merge_oid, source_oid)))
+}
+
+async fn handle_merge_conflict(
+    spec: &plan::PlanBranchSpec,
+    merge_message: &str,
+    conflict: vcs::MergeConflict,
+    strategy: MergeConflictStrategy,
+) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
+    let files = conflict.files.clone();
+    let state = MergeConflictState {
+        slug: spec.slug.clone(),
+        source_branch: spec.branch.clone(),
+        target_branch: spec.target_branch.clone(),
+        head_oid: conflict.head_oid.to_string(),
+        source_oid: conflict.source_oid.to_string(),
+        merge_message: merge_message.to_string(),
+    };
+
+    let state_path = write_conflict_state(&state)?;
+    match strategy {
+        MergeConflictStrategy::Manual => {
+            emit_conflict_instructions(&spec.slug, &files, &state_path);
+            Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
+        }
+        MergeConflictStrategy::Codex => {
+            match try_auto_resolve_conflicts(spec, &state, &files).await {
+                Ok((merge_oid, source_oid)) => Ok((merge_oid, source_oid)),
+                Err(err) => {
+                    display::warn(format!(
+                        "Codex auto-resolution failed: {err}. Falling back to manual resolution."
+                    ));
+                    emit_conflict_instructions(&spec.slug, &files, &state_path);
+                    Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
+                }
+            }
+        }
+    }
+}
+
+fn emit_conflict_instructions(slug: &str, files: &[String], state_path: &Path) {
+    if files.is_empty() {
+        display::warn("Merge resulted in conflicts; run `git status` to inspect them.");
+    } else {
+        display::warn("Merge conflicts detected in:");
+        for file in files {
+            display::warn(format!("  - {file}"));
+        }
+    }
+
+    display::info(format!(
+        "Resolve the conflicts, stage the results, then rerun `vizier merge {slug}` to finish the merge."
+    ));
+    display::info(format!(
+        "Vizier stored merge metadata at {}; keep it until the merge completes.",
+        state_path.display()
+    ));
+}
+
+async fn try_auto_resolve_conflicts(
+    spec: &plan::PlanBranchSpec,
+    state: &MergeConflictState,
+    files: &[String],
+) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
+    display::info("Attempting to resolve conflicts with Codex...");
+    let prompt = codex::build_merge_conflict_prompt(&spec.target_branch, &spec.branch, files)?;
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let cfg = config::get_config();
+    let request = codex::CodexRequest {
+        prompt,
+        repo_root,
+        profile: cfg.codex.profile.clone(),
+        bin: cfg.codex.binary_path.clone(),
+        extra_args: cfg.codex.extra_args.clone(),
+        model: codex::CodexModel::Gpt5Codex,
+    };
+
+    let (progress_tx, progress_rx) = mpsc::channel(64);
+    let progress_handle = spawn_plain_progress_logger(progress_rx);
+    let result = codex::run_exec(request, Some(codex::ProgressHook::Plain(progress_tx))).await;
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
+    result.map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+    #[cfg(feature = "mock_llm")]
+    {
+        mock_conflict_resolution(files)?;
+    }
+
+    if files.is_empty() {
+        vcs::stage(None)?;
+    } else {
+        let paths: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+        vcs::stage(Some(paths))?;
+    }
+
+    let remaining = list_conflicted_paths()?;
+    if !remaining.is_empty() {
+        return Err("conflicts remain after Codex attempt".into());
+    }
+
+    let head_oid = Oid::from_str(&state.head_oid)?;
+    let source_oid = Oid::from_str(&state.source_oid)?;
+    let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
+    clear_conflict_state(&state.slug)?;
+    display::info("Codex resolved the conflicts; finalizing merge.");
+    Ok((merge_oid, source_oid))
+}
+
+#[cfg(feature = "mock_llm")]
+fn mock_conflict_resolution(files: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    for rel in files {
+        let path = Path::new(rel);
+        if !path.exists() {
+            continue;
+        }
+
+        let contents = std::fs::read_to_string(path)?;
+        if let Some(resolved) = strip_conflict_markers(&contents) {
+            std::fs::write(path, resolved)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "mock_llm")]
+fn strip_conflict_markers(input: &str) -> Option<String> {
+    if !input.contains("<<<<<<<") {
+        return None;
+    }
+
+    let mut output = String::new();
+    let mut remainder = input;
+
+    while let Some(start) = remainder.find("<<<<<<<") {
+        let (before, after_start) = remainder.split_at(start);
+        output.push_str(before);
+
+        let (_, after_marker) = after_start.split_once("<<<<<<<")?;
+        let (_, after_left) = after_marker.split_once("=======")?;
+        let (right, after_right) = after_left.split_once(">>>>>>>")?;
+        output.push_str(right);
+
+        if let Some(idx) = after_right.find('\n') {
+            remainder = &after_right[idx + 1..];
+        } else {
+            remainder = "";
+        }
+    }
+
+    output.push_str(remainder);
+    Some(output)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MergeConflictState {
+    slug: String,
+    source_branch: String,
+    target_branch: String,
+    head_oid: String,
+    source_oid: String,
+    merge_message: String,
+}
+
+fn merge_conflict_state_path(slug: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    Ok(root
+        .join(".vizier/tmp/merge-conflicts")
+        .join(format!("{slug}.json")))
+}
+
+fn write_conflict_state(state: &MergeConflictState) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = merge_conflict_state_path(&state.slug)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        let mut tmp = NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(tmp.as_file_mut(), state)?;
+        tmp.as_file_mut().flush()?;
+        tmp.persist(&path)?;
+    } else {
+        return Err("unable to determine merge-conflict metadata directory".into());
+    }
+
+    Ok(path)
+}
+
+fn read_conflict_state(
+    slug: &str,
+) -> Result<Option<MergeConflictState>, Box<dyn std::error::Error>> {
+    let path = merge_conflict_state_path(slug)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&path)?;
+    let state = serde_json::from_str::<MergeConflictState>(&contents)?;
+    Ok(Some(state))
+}
+
+fn clear_conflict_state(slug: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = merge_conflict_state_path(slug)?;
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
     Ok(())
 }
 
@@ -1368,9 +1690,7 @@ async fn apply_plan_in_worktree(
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
-        return Err(
-            "Codex completed without modifying files; nothing new to approve.".into(),
-        );
+        return Err("Codex completed without modifying files; nothing new to approve.".into());
     }
 
     plan::set_plan_status(plan_path, "implemented", Some("implemented_at"))?;

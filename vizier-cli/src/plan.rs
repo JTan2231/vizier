@@ -45,13 +45,12 @@ impl PlanBranchSpec {
         let target_branch = if let Some(target) = target_override {
             target.to_string()
         } else {
-            detect_primary_branch()
-                .ok_or_else(|| {
-                    Box::<dyn std::error::Error>::from(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "unable to detect primary branch; use --target",
-                    ))
-                })?
+            detect_primary_branch().ok_or_else(|| {
+                Box::<dyn std::error::Error>::from(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "unable to detect primary branch; use --target",
+                ))
+            })?
         };
 
         Ok(Self {

@@ -1,9 +1,9 @@
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFormat, DiffLine, DiffOptions,
-    Error, ErrorClass, ErrorCode, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository,
-    RepositoryState, Signature, Sort, Status, StatusOptions, Tree, WorktreeAddOptions,
-    WorktreePruneOptions,
+    Error, ErrorClass, ErrorCode, Index, IndexAddOption, MergeOptions as GitMergeOptions, Oid,
+    PushOptions, RemoteCallbacks, Repository, RepositoryState, Signature, Sort, Status,
+    StatusOptions, Tree, WorktreeAddOptions, WorktreePruneOptions,
 };
 use std::cell::RefCell;
 use std::env;
@@ -960,8 +960,34 @@ pub fn checkout_branch(name: &str) -> Result<(), Error> {
     repo.checkout_head(Some(&mut checkout))
 }
 
-pub fn merge_branch_no_ff(source_branch: &str, message: &str) -> Result<Oid, Error> {
+#[derive(Debug, Clone)]
+pub struct MergeReady {
+    pub head_oid: Oid,
+    pub source_oid: Oid,
+    pub tree_oid: Oid,
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeConflict {
+    pub head_oid: Oid,
+    pub source_oid: Oid,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MergePreparation {
+    Ready(MergeReady),
+    Conflicted(MergeConflict),
+}
+
+pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
     let repo = Repository::discover(".")?;
+    if repo.state() != RepositoryState::Clean {
+        return Err(Error::from_str(
+            "cannot start a merge while another git operation is in progress",
+        ));
+    }
+
     let head_ref = repo.head()?;
     if !head_ref.is_branch() {
         return Err(Error::from_str(
@@ -971,17 +997,33 @@ pub fn merge_branch_no_ff(source_branch: &str, message: &str) -> Result<Oid, Err
 
     let head_commit = head_ref.peel_to_commit()?;
     let source_ref = repo.find_branch(source_branch, BranchType::Local)?;
-    let source_commit = source_ref.into_reference().peel_to_commit()?;
+    let source_commit = source_ref.get().peel_to_commit()?;
 
     let mut index = repo.merge_commits(&head_commit, &source_commit, None)?;
     if index.has_conflicts() {
-        return Err(Error::from_str(
-            "merge resulted in conflicts; resolve manually before retrying vizier approve",
-        ));
+        let conflicts = collect_conflict_paths(&mut index);
+        materialize_conflicts(&repo, source_branch)?;
+        return Ok(MergePreparation::Conflicted(MergeConflict {
+            head_oid: head_commit.id(),
+            source_oid: source_commit.id(),
+            files: conflicts,
+        }));
     }
 
     let tree_oid = index.write_tree_to(&repo)?;
-    let tree = repo.find_tree(tree_oid)?;
+    Ok(MergePreparation::Ready(MergeReady {
+        head_oid: head_commit.id(),
+        source_oid: source_commit.id(),
+        tree_oid,
+    }))
+}
+
+pub fn commit_ready_merge(message: &str, ready: MergeReady) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    let mut checkout = CheckoutBuilder::new();
+    let head_commit = repo.find_commit(ready.head_oid)?;
+    let source_commit = repo.find_commit(ready.source_oid)?;
+    let tree = repo.find_tree(ready.tree_oid)?;
     let sig = repo.signature()?;
 
     let oid = repo.commit(
@@ -993,11 +1035,97 @@ pub fn merge_branch_no_ff(source_branch: &str, message: &str) -> Result<Oid, Err
         &[&head_commit, &source_commit],
     )?;
 
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
+}
+
+pub fn commit_in_progress_merge(
+    message: &str,
+    head_oid: Oid,
+    source_oid: Oid,
+) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    if repo.state() != RepositoryState::Merge {
+        return Err(Error::from_str("no merge in progress to finalize"));
+    }
+
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Err(Error::from_str(
+            "cannot finalize merge until all conflicts are resolved",
+        ));
+    }
+
+    index.write()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+    let head_commit = repo.find_commit(head_oid)?;
+    let source_commit = repo.find_commit(source_oid)?;
+    let sig = repo.signature()?;
+
+    let oid = repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        message,
+        &tree,
+        &[&head_commit, &source_commit],
+    )?;
+
+    repo.cleanup_state()?;
     let mut checkout = CheckoutBuilder::new();
     checkout.force();
     repo.checkout_head(Some(&mut checkout))?;
 
     Ok(oid)
+}
+
+pub fn list_conflicted_paths() -> Result<Vec<String>, Error> {
+    let repo = Repository::discover(".")?;
+    let mut index = repo.index()?;
+    Ok(collect_conflict_paths(&mut index))
+}
+
+fn collect_conflict_paths(index: &mut Index) -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(mut conflicts) = index.conflicts() {
+        while let Some(entry) = conflicts.next() {
+            if let Ok(conflict) = entry {
+                let path_bytes = conflict
+                    .our
+                    .as_ref()
+                    .or(conflict.their.as_ref())
+                    .or(conflict.ancestor.as_ref())
+                    .map(|entry| entry.path.clone());
+                if let Some(bytes) = path_bytes {
+                    let path = String::from_utf8_lossy(&bytes).to_string();
+                    files.push(path);
+                }
+            }
+        }
+    }
+
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn materialize_conflicts(repo: &Repository, source_branch: &str) -> Result<(), Error> {
+    let branch = repo.find_branch(source_branch, BranchType::Local)?;
+    let reference = branch.into_reference();
+    let mut checkout = CheckoutBuilder::new();
+    checkout
+        .allow_conflicts(true)
+        .conflict_style_merge(true)
+        .force();
+
+    let annotated = repo.reference_to_annotated_commit(&reference)?;
+    let mut merge_opts = GitMergeOptions::new();
+    merge_opts.fail_on_conflict(false);
+
+    repo.merge(&[&annotated], Some(&mut merge_opts), Some(&mut checkout))
 }
 
 /// Determine the repository's primary branch by preferring origin/HEAD, then main/master, then
