@@ -893,6 +893,7 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
     let plan_in_worktree = worktree_path.join(&plan_rel_path);
 
     let spec_source_label = spec_source.as_metadata_value();
+    let mut plan_document_preview: Option<String> = None;
 
     let primary_branch = detect_primary_branch()
         .ok_or_else(|| "unable to detect a primary branch (tried origin/HEAD, main, master)")?;
@@ -952,6 +953,7 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
             &spec_text,
             &plan_body,
         );
+        plan_document_preview = Some(document.clone());
         plan::write_plan_file(&plan_in_worktree, &document).map_err(
             |err| -> Box<dyn std::error::Error> {
                 Box::from(format!(
@@ -981,6 +983,10 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
 
     match plan_result {
         Ok(()) => {
+            let plan_to_print = plan_document_preview
+                .clone()
+                .or_else(|| fs::read_to_string(&plan_in_worktree).ok());
+
             if worktree_created {
                 if let Err(err) = remove_worktree(&worktree_name, true) {
                     display::warn(format!(
@@ -997,6 +1003,10 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
                 "View with: git checkout {branch_name} && $EDITOR {plan_display}"
             ));
             println!("Draft ready; plan={plan_display}; branch={branch_name}");
+            if let Some(plan_text) = plan_to_print {
+                println!();
+                println!("{plan_text}");
+            }
             print_token_usage();
             Ok(())
         }
