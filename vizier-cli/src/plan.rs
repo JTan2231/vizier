@@ -3,11 +3,13 @@ use git2::{BranchType, Repository};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use vizier_core::vcs::branch_exists;
+use vizier_core::vcs::{
+    add_worktree_for_branch, branch_exists, detect_primary_branch, remove_worktree, repo_root,
+};
 
 pub const PLAN_DIR: &str = ".vizier/implementation-plans";
 const MAX_SUMMARY_LEN: usize = 160;
@@ -18,6 +20,120 @@ pub fn plan_rel_path(slug: &str) -> PathBuf {
 
 pub fn default_branch_for_slug(slug: &str) -> String {
     format!("draft/{slug}")
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanBranchSpec {
+    pub slug: String,
+    pub branch: String,
+    pub target_branch: String,
+}
+
+impl PlanBranchSpec {
+    pub fn resolve(
+        plan: Option<&str>,
+        branch_override: Option<&str>,
+        target_override: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let plan_name = plan.ok_or_else(|| "plan name is required".to_string())?;
+        let slug = sanitize_name_override(plan_name).map_err(|err| {
+            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+        })?;
+        let branch = branch_override
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| default_branch_for_slug(&slug));
+        let target_branch = if let Some(target) = target_override {
+            target.to_string()
+        } else {
+            detect_primary_branch()
+                .ok_or_else(|| {
+                    Box::<dyn std::error::Error>::from(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "unable to detect primary branch; use --target",
+                    ))
+                })?
+        };
+
+        Ok(Self {
+            slug,
+            branch,
+            target_branch,
+        })
+    }
+
+    pub fn plan_rel_path(&self) -> PathBuf {
+        plan_rel_path(&self.slug)
+    }
+
+    pub fn load_metadata(&self) -> Result<PlanMetadata, PlanError> {
+        load_plan_from_branch(&self.slug, &self.branch)
+    }
+
+    pub fn show_preview(&self, meta: &PlanMetadata) {
+        println!("Plan: {}", meta.slug);
+        println!("Branch: {}", self.branch);
+        println!("Created: {}", meta.created_at_display());
+        println!(
+            "Spec source: {}",
+            meta.spec_source
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+        println!("Spec summary: {}", summarize_spec(meta));
+    }
+
+    pub fn diff_command(&self) -> String {
+        format!("git diff {}...{}", self.target_branch, self.branch)
+    }
+}
+
+pub struct PlanWorktree {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl PlanWorktree {
+    pub fn create(
+        slug: &str,
+        branch: &str,
+        purpose: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let repo_root = repo_root()
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
+            .to_path_buf();
+        let tmp_root = repo_root.join(".vizier/tmp-worktrees");
+        fs::create_dir_all(&tmp_root)?;
+
+        let suffix = short_suffix();
+        let dir_name = format!("{slug}-{suffix}");
+        let worktree_path = tmp_root.join(&dir_name);
+        let worktree_name = format!("vizier-{purpose}-{dir_name}");
+
+        add_worktree_for_branch(&worktree_name, &worktree_path, branch)
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+        Ok(Self {
+            name: worktree_name,
+            path: worktree_path,
+        })
+    }
+
+    pub fn plan_path(&self, slug: &str) -> PathBuf {
+        self.path.join(plan_rel_path(slug))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn cleanup(self) -> Result<(), Box<dyn std::error::Error>> {
+        remove_worktree(&self.name, true)
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+        if self.path.exists() {
+            fs::remove_dir_all(&self.path)?;
+        }
+        Ok(())
+    }
 }
 
 pub fn short_suffix() -> String {
@@ -317,6 +433,34 @@ pub fn summarize_spec(meta: &PlanMetadata) -> String {
         .unwrap_or_else(|| format!("Plan {} lacks an operator spec summary", meta.slug))
 }
 
+pub fn implementation_plan_section(document: &str) -> Option<String> {
+    extract_section(document, "Implementation Plan")
+}
+
+pub fn set_plan_status(
+    plan_path: &Path,
+    status: &str,
+    timestamp_field: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let contents = fs::read_to_string(plan_path)?;
+    let (front, body) = split_front_matter(&contents)?;
+    let mut fields = parse_front_matter_pairs(front);
+    set_front_field(&mut fields, "status", status);
+    if let Some(field) = timestamp_field {
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+        set_front_field(&mut fields, field, &now);
+    }
+
+    let mut document = String::new();
+    document.push_str("---\n");
+    document.push_str(&render_front_matter(&fields));
+    document.push_str("---\n");
+    document.push_str(body);
+
+    fs::write(plan_path, document)?;
+    Ok(())
+}
+
 fn clip_summary(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.len() <= MAX_SUMMARY_LEN {
@@ -367,6 +511,37 @@ fn parse_front_matter(front: &str) -> HashMap<String, String> {
         }
     }
     fields
+}
+
+fn parse_front_matter_pairs(front: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    for line in front.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            entries.push((key.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    entries
+}
+
+fn render_front_matter(entries: &[(String, String)]) -> String {
+    let mut rendered = String::new();
+    for (key, value) in entries {
+        rendered.push_str(&format!("{key}: {value}\n"));
+    }
+    rendered
+}
+
+fn set_front_field(entries: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some(existing) = entries.iter_mut().find(|(entry_key, _)| entry_key == key) {
+        existing.1 = value.to_string();
+        return;
+    }
+
+    entries.push((key.to_string(), value.to_string()));
 }
 
 fn extract_section(document: &str, header: &str) -> Option<String> {
@@ -491,5 +666,33 @@ Add streaming UI with guard rails.
         };
 
         assert_eq!(summarize_spec(&meta), "Line one\nLine two".to_string());
+    }
+
+    #[test]
+    fn set_plan_status_updates_front_matter() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("plan.md");
+        let contents = r#"---
+plan: alpha
+branch: draft/alpha
+status: draft
+created_at: 2024-07-01T12:00:00Z
+spec_source: inline
+---
+
+## Operator Spec
+Do a thing.
+
+## Implementation Plan
+- Step 1
+- Step 2
+"#;
+        std::fs::write(&path, contents)?;
+
+        set_plan_status(&path, "implemented", Some("implemented_at"))?;
+        let updated = std::fs::read_to_string(&path)?;
+        assert!(updated.contains("status: implemented"));
+        assert!(updated.contains("implemented_at: "));
+        Ok(())
     }
 }

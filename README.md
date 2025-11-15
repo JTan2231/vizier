@@ -40,7 +40,7 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 - **Terminal-First**: Chat TUI with diff view, modal navigation, long message handling, and scrolling
 - **LLM-Augmented**: Multiple provider support (OpenAI/Anthropic), configurable prompts, thinking modes
 - **Repository Bootstrap**: Analyze existing codebases to generate initial snapshot and seed threads
-- **Draft Reviews**: `vizier draft` converts an operator spec into `.vizier/implementation-plans/<slug>.md` on a `draft/<slug>` branch via Codex and a temporary worktree so reviewers can sign off before code lands
+- **Draft Reviews**: `vizier draft` spins up a temporary worktree, runs Codex, and commits `.vizier/implementation-plans/<slug>.md` on `draft/<slug>`; `vizier approve <plan>` reuses a disposable worktree to implement the approved plan via Codex (auto-staging and committing the branch); `vizier merge <plan>` refreshes `.vizier/.snapshot` inside a worktree and then lands the branch into the primary line with a plan-driven commit message
 
 ### Operational Tools
 - **File-Aware Context**: Ignore-aware tree walking, behavioral diff analysis, cross-repository TODO management
@@ -72,6 +72,8 @@ vizier save HEAD~3..HEAD # commits specific range
 - `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits (use `--file PATH` to read the prompt from disk)
 - `vizier chat` — Interactive TUI with split diff view and narrative maintenance
 - `vizier draft [--name SLUG] <spec>` — Spins up a temporary worktree at the primary branch tip, runs Codex to produce `.vizier/implementation-plans/<slug>.md`, commits it on `draft/<slug>`, and tells you which branch/plan file to inspect (Codex-only; your working tree stays untouched)
+- `vizier approve <plan> [--branch BRANCH]` — Executes the approved implementation plan inside a disposable worktree (Codex-only), streaming Codex output to stderr, updating `.vizier`, and auto-committing the draft branch so reviewers can diff `git diff <target>...<branch>`
+- `vizier merge <plan> [--branch BRANCH]` — Runs the same narrative-refresh flow as `vizier save` inside a temporary worktree, commits any `.vizier` edits on the plan branch, then merges `draft/<plan>` into the detected primary branch with a plan-driven commit message (supports `--delete-branch` and `--push`)
 
 #### Documentation Prompts
 - `vizier docs prompt <scope>` — Emit or scaffold architecture templates described in `PROMPTING.md`
