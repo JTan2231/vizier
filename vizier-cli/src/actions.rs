@@ -1812,10 +1812,9 @@ fn build_merge_commit_message(
     note: Option<&str>,
 ) -> String {
     let mut body = format!(
-        "Plan: {}\nBranch: {}\nPlan doc: {}\nSummary: {}",
+        "Plan: {}\nBranch: {}\nSummary: {}",
         spec.slug,
         spec.branch,
-        spec.plan_rel_path().display(),
         plan::summarize_spec(meta)
     );
 
@@ -1829,9 +1828,9 @@ fn build_merge_commit_message(
         body.push_str(&format!("\nNotes: {}", note_text.trim()));
     }
 
-    if let Some(section) = plan_document.and_then(|doc| plan::implementation_plan_section(doc)) {
-        body.push_str("\n\nImplementation Plan:\n");
-        body.push_str(section.trim());
+    if let Some(document) = plan_document {
+        body.push_str("\n\nPlan Document:\n");
+        body.push_str(document.trim());
     }
 
     format!("feat: merge plan {}\n\n{}", spec.slug, body)
