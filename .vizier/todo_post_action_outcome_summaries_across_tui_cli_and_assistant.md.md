@@ -8,7 +8,7 @@ Desired behavior:
 - Standardize a compact “What happened” Outcome Summary available in both CLI (epilogue) and TUI (right/foot pane), sourced from Auditor/VCS facts. Assistant final message mirrors this structure.
 
 Acceptance criteria:
-1) Every user-visible action path (CLI ask, CLI save, Chat TUI apply/continue) ends with an Outcome Summary containing:
+1) Every user-visible assistant action path (CLI ask, CLI save, and any future TUI apply/continue surface) ends with an Outcome Summary containing:
    - Operations: action label (e.g., ask/apply/save), elapsed time, model used.
    - Changes: counts for files A/M/D/R, hunks, and lines +/-.
    - Commits: whether a conversation commit occurred, whether a .vizier commit occurred, and whether a code commit occurred (Y/N) with SHAs if created.
