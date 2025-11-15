@@ -977,9 +977,6 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
         })?;
         plan_committed = true;
 
-        Auditor::commit_audit()
-            .await
-            .map_err(|err| Box::<dyn std::error::Error>::from(format!("commit_audit: {err}")))?;
         Ok(())
     }
     .await;
