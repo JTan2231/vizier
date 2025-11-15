@@ -562,13 +562,7 @@ async fn save(
             message_builder.with_author_note(note.clone());
         }
 
-        let mut commit_message = message_builder.build();
-
-        if crate::config::get_config().commit_confirmation {
-            if let Some(new_message) = vizier_core::editor::run_editor(&commit_message).await? {
-                commit_message = new_message;
-            }
-        }
+        let commit_message = message_builder.build();
 
         display::info("Committing remaining code changes...");
         let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
@@ -1706,13 +1700,7 @@ async fn apply_plan_in_worktree(
         .set_header(CommitMessageType::CodeChange)
         .with_conversation_hash(conversation_hash.clone());
 
-    let mut commit_message = builder.build();
-    if config::get_config().commit_confirmation {
-        if let Some(edited) = vizier_core::editor::run_editor(&commit_message).await? {
-            commit_message = edited;
-        }
-    }
-
+    let commit_message = builder.build();
     vcs::stage(Some(vec!["."]))?;
     let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
 
@@ -1825,7 +1813,7 @@ fn build_merge_commit_message(
     }
 
     if let Some(document) = plan_document {
-        body.push_str("\n\nPlan Document:\n");
+        body.push_str("\n\nImplementation Plan:\n");
         body.push_str(document.trim());
     }
 

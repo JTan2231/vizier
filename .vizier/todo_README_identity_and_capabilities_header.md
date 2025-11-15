@@ -17,7 +17,7 @@ Vizier is a repo‑native assistant that plans, edits, and audits changes with y
 ### How to use me (quickstart)
 - Get help: `vizier help`
 - One-shot request: `vizier ask "add retry logic to the API client"`
-- Chat interactively: `vizier chat`
+- Draft from a spec: `vizier draft --file specs/retry.md`
 - Save narrative + code changes: `vizier save`
 
 ### How agents can talk to me
@@ -37,8 +37,8 @@ Acceptance Criteria:
 - Placement: Header block appears at the very top of README.md and renders within the first screenful on GitHub (≈ first 25–30 lines).
 - Sections present:
   - “Who I am”: Repo-native assistant that plans/edits/audits with human-in-the-loop and commit isolation.
-  - “What I can do (today)”: High-level capabilities consistent with Snapshot (plan/edit within repo context, gate changes, explain decisions). TUI may be mentioned only as `vizier chat` (no alt‑screen promises).
-  - “How to use me (quickstart)”: Uses existing commands only (e.g., vizier help; vizier ask "..."; vizier chat; vizier save). No “plan/apply/run” examples and no install curl script; link to the project’s install/Getting Started doc if available.
+  - “What I can do (today)”: High-level capabilities consistent with Snapshot (plan/edit within repo context, gate changes, explain decisions). No alt-screen/TUI promises.
+  - “How to use me (quickstart)”: Uses existing commands only (e.g., vizier help; vizier ask "..."; vizier draft; vizier save). No “plan/apply/run” examples and no install curl script; link to the project’s install/Getting Started doc if available.
   - “How agents can talk to me”: Today: drive via CLI/stdio; prefer structured outputs where available. Coming soon: protocol/JSON stream and AGENTS.md contract (without naming unavailable flags); link to AGENTS.md if present, otherwise state “coming soon”.
 - Consistency guardrails:
   - No references to non-existent commands/flags (e.g., no “vizier plan/apply/run”, no “--mode protocol” until implemented).

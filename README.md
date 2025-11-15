@@ -14,7 +14,6 @@ Repo‑native assistant that plans, edits, and audits with you in the loop. It u
 ### How To Use Me (quickstart)
 - Get help: `vizier help`
 - One‑shot: `vizier ask "add retry logic to the API client"`
-- Chat: `vizier chat`
 - Save narrative + code changes: `vizier save`
 
 ### How Agents Can Talk To Me
@@ -55,7 +54,7 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 
 ### Development Workflow Integration
 - **Git-Native**: All changes are commits; conversation transcripts embed in empty commits for reconstruction
-- **Terminal-First**: Chat TUI for interactive conversations; line‑oriented CLI for scripting
+- **Terminal-First**: Line-oriented CLI flows (`vizier ask`, `vizier save`, `vizier draft/approve/merge`) — no alt-screen surfaces
 - **LLM-Augmented**: Multiple provider support (OpenAI/Anthropic), configurable prompts, thinking modes
 - **Repository Bootstrap**: Analyze existing codebases to generate initial snapshot and seed threads
 - **Draft Reviews**: `vizier draft` spins up a temporary worktree, runs Codex, and commits `.vizier/implementation-plans/<slug>.md` on `draft/<slug>`; `vizier approve <plan>` reuses a disposable worktree to implement the approved plan via Codex (auto-staging and committing the branch); `vizier merge <plan>` refreshes `.vizier/.snapshot` inside a worktree and then lands the branch into the primary line with a plan-driven commit message
@@ -76,8 +75,8 @@ vizier ask "add retry logic to the API client"
 # or pull the prompt from a file
 vizier ask --file specs/retry.md
 
-# Interactive: Launch chat for ongoing conversation
-vizier chat
+# Draft: Capture a Codex-generated plan branch from a spec file
+vizier draft --file specs/retry.md --name retry-plan
 
 # Save: Commit your work with AI-generated conventional messages
 vizier save              # commits HEAD changes
@@ -88,7 +87,6 @@ vizier save HEAD~3..HEAD # commits specific range
 
 #### Conversation & Editing
 - `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits (use `--file PATH` to read the prompt from disk)
-- `vizier chat` — Interactive TUI for conversational maintenance
 - `vizier draft [--name SLUG] <spec>` — Spins up a temporary worktree at the primary branch tip, runs Codex to produce `.vizier/implementation-plans/<slug>.md`, commits it on `draft/<slug>`, and tells you which branch/plan file to inspect (Codex-only; your working tree stays untouched)
 - `vizier approve <plan>` — Executes the approved implementation plan inside a disposable worktree (Codex-only), streaming Codex output to stderr, updating `.vizier`, and auto‑committing the draft branch so reviewers can diff `git diff <target>...<branch>`. Flags: `--list`, `-y/--yes`, `--target`, `--branch`. [Learn more](docs/workflows/draft-approve-merge.md#vizier-approve-implement-the-plan-safely)
 - `vizier merge <plan>` — Runs the same narrative-refresh flow as `vizier save` inside a temporary worktree, removes `.vizier/implementation-plans/<plan>.md`, commits the `.vizier` edits on the plan branch, then merges `draft/<plan>` into the detected primary branch with a plan-driven commit message. On conflicts, Vizier writes a resume token under `.vizier/tmp/merge-conflicts/<plan>.json`; resolve the files (or rerun with `--auto-resolve-conflicts` to let Codex try first) and invoke `vizier merge <plan>` again to finish the merge. Flags: `-y/--yes`, `--delete-branch`, `--target`, `--branch`, `--note`, `--auto-resolve-conflicts`. [Learn more](docs/workflows/draft-approve-merge.md#vizier-merge-land-the-plan-with-metadata)
@@ -135,7 +133,7 @@ If no path is provided, Vizier will look for `~/.config/vizier/config.toml` (TOM
 vizier ask "..." -p anthropic
 
 # Override system prompt
-vizier chat --system-prompt-override ./prompts/custom.md
+vizier ask --system-prompt-override ./prompts/custom.md
 
 # Set thinking level
 vizier ask "..." --reasoning-effort high
@@ -185,11 +183,12 @@ Command-line interface and workflow orchestration:
 - **Provider Management**: Multi-LLM support with runtime switching
 - **Config System**: Hierarchical settings (CLI > session > profile > default)
 
-### Terminal UI
-Interactive interfaces for narrative work:
-- **Chat TUI**: Streaming conversations
-- **Modal Navigation**: View mode (safe browsing) vs Edit mode
-- **Editor Integration**: `$EDITOR` launching for detailed edits
+### Terminal UX
+Line-oriented CLI workflow with no alt-screen surfaces:
+- **Ask**: `vizier ask` captures a directive, updates snapshot/TODOs, and exits.
+- **Save**: `vizier save` is the gatekeeper — it stages conversation logs, `.vizier` edits, and code diffs with AI-authored commits.
+- **Plan branches**: `vizier draft/approve/merge` orchestrate Codex-driven implementation behind disposable worktrees.
+- **Editors**: When you need to edit commit messages, Vizier defers to `$EDITOR` rather than launching a custom interface.
 
 ## The Maintainer Mindset
 

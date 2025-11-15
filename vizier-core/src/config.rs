@@ -8,7 +8,7 @@ use wire::{
     new_client_with_options, openai,
 };
 
-use crate::{CHAT_PROMPT, COMMIT_PROMPT, EDITOR_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
+use crate::{COMMIT_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
 
 pub const DEFAULT_MODEL: &str = "gpt-5";
 
@@ -19,9 +19,7 @@ lazy_static! {
 #[derive(Clone, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum SystemPrompt {
     Base,
-    Editor,
     Commit,
-    Chat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +71,6 @@ pub struct Config {
     pub provider: Arc<dyn Prompt>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
-    pub commit_confirmation: bool,
     pub no_session: bool,
     pub backend: BackendKind,
     pub fallback_backend: Option<BackendKind>,
@@ -83,47 +80,34 @@ pub struct Config {
 
 impl Config {
     pub fn default() -> Self {
-        let prompt_directory = std::path::PathBuf::from(tools::get_todo_dir());
+        let prompt_directory = tools::try_get_todo_dir().map(std::path::PathBuf::from);
+
+        let mut prompt_store = std::collections::HashMap::new();
+        let load_prompt = |filename: &str, fallback: &str| {
+            prompt_directory
+                .as_ref()
+                .and_then(|dir| std::fs::read_to_string(dir.join(filename)).ok())
+                .unwrap_or_else(|| fallback.to_string())
+        };
+
+        prompt_store.insert(
+            SystemPrompt::Base,
+            load_prompt("BASE_SYSTEM_PROMPT.md", SYSTEM_PROMPT_BASE),
+        );
+        prompt_store.insert(
+            SystemPrompt::Commit,
+            load_prompt("COMMIT_PROMPT.md", COMMIT_PROMPT),
+        );
 
         Self {
             provider: Arc::new(openai::OpenAIClient::new(DEFAULT_MODEL)),
             provider_model: DEFAULT_MODEL.to_owned(),
             reasoning_effort: None,
-            commit_confirmation: false,
             no_session: false,
             backend: BackendKind::Codex,
             fallback_backend: Some(BackendKind::Wire),
             codex: CodexOptions::default(),
-            prompt_store: std::collections::HashMap::from([
-                (
-                    SystemPrompt::Base,
-                    match std::fs::read_to_string(prompt_directory.join("BASE_SYSTEM_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => SYSTEM_PROMPT_BASE.to_string(),
-                    },
-                ),
-                (
-                    SystemPrompt::Editor,
-                    match std::fs::read_to_string(prompt_directory.join("EDITOR_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => EDITOR_PROMPT.to_string(),
-                    },
-                ),
-                (
-                    SystemPrompt::Commit,
-                    match std::fs::read_to_string(prompt_directory.join("COMMIT_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => COMMIT_PROMPT.to_string(),
-                    },
-                ),
-                (
-                    SystemPrompt::Chat,
-                    match std::fs::read_to_string(prompt_directory.join("CHAT_PROMPT.md")) {
-                        Ok(s) => s,
-                        Err(_) => CHAT_PROMPT.to_string(),
-                    },
-                ),
-            ]),
+            prompt_store,
         }
     }
 
@@ -192,10 +176,6 @@ impl Config {
             if !level.is_empty() {
                 config.reasoning_effort = Some(ThinkingLevel::from_string(level)?);
             }
-        }
-
-        if let Some(commit_confirmation) = find_bool(&file_config, COMMIT_CONFIRMATION_KEY_PATHS) {
-            config.commit_confirmation = commit_confirmation;
         }
 
         if let Some(backend) = find_string(&file_config, BACKEND_KEY_PATHS)
@@ -274,16 +254,8 @@ impl Config {
             config.prompt_store.insert(SystemPrompt::Base, prompt);
         }
 
-        if let Some(prompt) = find_string(&file_config, EDITOR_PROMPT_KEY_PATHS) {
-            config.prompt_store.insert(SystemPrompt::Editor, prompt);
-        }
-
         if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
             config.prompt_store.insert(SystemPrompt::Commit, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, CHAT_PROMPT_KEY_PATHS) {
-            config.prompt_store.insert(SystemPrompt::Chat, prompt);
         }
 
         Ok(config)
@@ -308,12 +280,6 @@ const MODEL_KEY_PATHS: &[&[&str]] = &[
 ];
 const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
 const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
-const COMMIT_CONFIRMATION_KEY_PATHS: &[&[&str]] = &[
-    &["commit_confirmation"],
-    &["require_confirmation"],
-    &["prompts", "commit_confirmation"],
-    &["flags", "require_confirmation"],
-];
 const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["reasoning_effort"],
     &["reasoning-effort"],
@@ -335,26 +301,12 @@ const BASE_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["prompts", "base"],
     &["prompts", "base_system_prompt"],
 ];
-const EDITOR_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["EDITOR_PROMPT"],
-    &["editor_prompt"],
-    &["prompts", "EDITOR_PROMPT"],
-    &["prompts", "editor"],
-    &["prompts", "editor_prompt"],
-];
 const COMMIT_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["COMMIT_PROMPT"],
     &["commit_prompt"],
     &["prompts", "COMMIT_PROMPT"],
     &["prompts", "commit"],
     &["prompts", "commit_prompt"],
-];
-const CHAT_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["CHAT_PROMPT"],
-    &["chat_prompt"],
-    &["prompts", "CHAT_PROMPT"],
-    &["prompts", "chat"],
-    &["prompts", "chat_prompt"],
 ];
 
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -378,16 +330,6 @@ fn find_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
             if !s.is_empty() {
                 return Some(s.clone());
             }
-        }
-    }
-
-    None
-}
-
-fn find_bool(value: &serde_json::Value, paths: &[&[&str]]) -> Option<bool> {
-    for path in paths {
-        if let Some(serde_json::Value::Bool(b)) = value_at_path(value, path) {
-            return Some(*b);
         }
     }
 
@@ -502,7 +444,6 @@ mod tests {
         let json = r#"
         {
             "BASE_SYSTEM_PROMPT": "base override",
-            "EDITOR_PROMPT": "editor override",
             "COMMIT_PROMPT": "commit override"
         }
         "#;
@@ -511,27 +452,22 @@ mod tests {
         let cfg = Config::from_json(file.path().to_path_buf()).expect("should parse JSON config");
 
         assert_eq!(cfg.get_prompt(SystemPrompt::Base), "base override");
-        assert_eq!(cfg.get_prompt(SystemPrompt::Editor), "editor override");
         assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "commit override");
     }
 
     #[test]
     fn test_from_json_partial_override() {
-        let json = r#"{ "EDITOR_PROMPT": "only editor override" }"#;
+        let json = r#"{ "COMMIT_PROMPT": "only commit override" }"#;
         let file = write_json_file(json);
 
         let cfg = Config::from_json(file.path().to_path_buf()).expect("should parse JSON config");
 
         let default_cfg = Config::default();
 
-        assert_eq!(cfg.get_prompt(SystemPrompt::Editor), "only editor override");
+        assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "only commit override");
         assert_eq!(
             cfg.get_prompt(SystemPrompt::Base),
             default_cfg.get_prompt(SystemPrompt::Base)
-        );
-        assert_eq!(
-            cfg.get_prompt(SystemPrompt::Commit),
-            default_cfg.get_prompt(SystemPrompt::Commit)
         );
     }
 
@@ -542,7 +478,6 @@ model = "gpt-5"
 
 [prompts]
 base = "toml base override"
-editor = "toml editor override"
 commit = "toml commit override"
 "#;
 
@@ -553,7 +488,6 @@ commit = "toml commit override"
         let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
 
         assert_eq!(cfg.get_prompt(SystemPrompt::Base), "toml base override");
-        assert_eq!(cfg.get_prompt(SystemPrompt::Editor), "toml editor override");
         assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "toml commit override");
     }
 
