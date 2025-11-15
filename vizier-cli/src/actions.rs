@@ -1,10 +1,11 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use git2::{BranchType, Repository};
 use tempfile::{Builder, TempPath};
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme, add_worktree_for_branch,
@@ -17,7 +18,7 @@ use vizier_core::{
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
     codex, config,
-    display::{self, LogLevel},
+    display::{self, LogLevel, Verbosity},
     file_tracking, prompting, tools, vcs,
 };
 
@@ -138,6 +139,27 @@ fn token_usage_suffix() -> String {
     }
 }
 
+fn spawn_plain_progress_logger(
+    mut rx: mpsc::Receiver<String>,
+) -> Option<JoinHandle<()>> {
+    if matches!(
+        display::get_display_config().verbosity,
+        Verbosity::Quiet
+    ) {
+        return None;
+    }
+
+    Some(tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            eprintln!("[codex] {trimmed}");
+        }
+    }))
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotInitOptions {
     pub force: bool,
@@ -175,6 +197,15 @@ pub struct DraftArgs {
 pub struct ApproveOptions {
     pub plan: Option<String>,
     pub list_only: bool,
+    pub target: Option<String>,
+    pub branch_override: Option<String>,
+    pub assume_yes: bool,
+    pub push_after: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeOptions {
+    pub plan: String,
     pub target: Option<String>,
     pub branch_override: Option<String>,
     pub assume_yes: bool,
@@ -444,6 +475,20 @@ fn short_hash(hash: &str) -> String {
     }
 }
 
+fn build_save_instruction(note: Option<&str>) -> String {
+    let mut instruction =
+        "<instruction>Update the snapshot and existing TODOs as needed</instruction>".to_string();
+
+    if let Some(text) = note {
+        instruction.push_str(&format!(
+            "<change_author_note>{}</change_author_note>",
+            text
+        ));
+    }
+
+    instruction
+}
+
 async fn save(
     _initial_diff: String,
     // NOTE: These two should never be Some(...) && true
@@ -463,15 +508,7 @@ async fn save(
         None
     };
 
-    let mut save_instruction =
-        "<instruction>Update the snapshot and existing TODOs as needed</instruction>".to_string();
-
-    if let Some(note) = &provided_note {
-        save_instruction = format!(
-            "{}<change_author_note>{}</change_author_note>",
-            save_instruction, note
-        );
-    }
+    let save_instruction = build_save_instruction(provided_note.as_deref());
 
     let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
         codex::build_prompt_for_codex(&save_instruction)
@@ -982,21 +1019,22 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
     }
 }
 
-pub fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error::Error>> {
     if opts.list_only {
         return list_pending_plans(opts.target.clone());
     }
 
-    let plan_name = opts
-        .plan
-        .as_deref()
-        .ok_or_else(|| "plan name is required unless --list is set")?;
-    let slug = plan::sanitize_name_override(plan_name)?;
-    let source_branch = opts
-        .branch_override
-        .clone()
-        .unwrap_or_else(|| plan::default_branch_for_slug(&slug));
-    let target_branch = resolve_target_branch(opts.target.clone())?;
+    if config::get_config().backend != config::BackendKind::Codex {
+        return Err(
+            "vizier approve requires the Codex backend; rerun with --backend codex".into(),
+        );
+    }
+
+    let spec = plan::PlanBranchSpec::resolve(
+        opts.plan.as_deref(),
+        opts.branch_override.as_deref(),
+        opts.target.as_deref(),
+    )?;
 
     vcs::ensure_clean_worktree().map_err(|err| {
         Box::<dyn std::error::Error>::from(format!(
@@ -1004,94 +1042,193 @@ pub fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error::Error
         ))
     })?;
 
-    let mut repo = Repository::discover(".")?;
-    let current_branch = current_branch_name(&repo)?;
-    if current_branch.as_deref() != Some(target_branch.as_str()) {
-        display::info(format!("Checking out {target_branch} before approval..."));
-        vcs::checkout_branch(&target_branch)?;
-        repo = Repository::discover(".")?;
-    }
-
-    let source = repo
-        .find_branch(&source_branch, BranchType::Local)
-        .map_err(|_| {
-            format!("draft branch {source_branch} not found; rerun vizier draft or pass --branch")
-        })?;
-    let source_commit = source.get().peel_to_commit()?;
+    let repo = Repository::discover(".")?;
+    let source_ref = repo
+        .find_branch(&spec.branch, BranchType::Local)
+        .map_err(|_| format!("draft branch {} not found", spec.branch))?;
+    let source_commit = source_ref.get().peel_to_commit()?;
     let source_oid = source_commit.id();
 
     let target_ref = repo
-        .find_branch(&target_branch, BranchType::Local)
-        .map_err(|_| format!("target branch {target_branch} not found"))?;
+        .find_branch(&spec.target_branch, BranchType::Local)
+        .map_err(|_| format!("target branch {} not found", spec.target_branch))?;
     let target_commit = target_ref.into_reference().peel_to_commit()?;
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
         println!(
-            "Plan {slug} already merged into {target_branch}; latest commit={}",
-            source_oid
+            "Plan {} already merged into {}; latest commit={}",
+            spec.slug, spec.target_branch, source_oid
         );
         return Ok(());
     }
 
     if !repo.graph_descendant_of(source_oid, target_oid)? {
         display::warn(format!(
-            "{source_branch} does not include the latest {target_branch} commits; merge may require manual resolution."
+            "{} does not include the latest {} commits; merge may require manual resolution.",
+            spec.branch, spec.target_branch
         ));
     }
 
-    let plan_meta = plan::load_plan_from_branch(&slug, &source_branch)?;
-    if plan_meta.branch != source_branch {
+    let plan_meta = spec.load_metadata()?;
+    if plan_meta.branch != spec.branch {
         display::warn(format!(
-            "Plan metadata references branch {} but --branch resolved to {source_branch}",
-            plan_meta.branch
+            "Plan metadata references branch {} but CLI resolved to {}",
+            plan_meta.branch, spec.branch
         ));
     }
 
     if !opts.assume_yes {
-        show_plan_preview(&plan_meta, &source_branch);
-        if !prompt_for_confirmation("Proceed with merge? [y/N] ")? {
+        spec.show_preview(&plan_meta);
+        if !prompt_for_confirmation("Implement plan now? [y/N] ")? {
             println!("Approval cancelled; no changes were made.");
             return Ok(());
         }
     }
 
-    let commit_message = build_approve_commit_message(
-        &plan_meta,
-        plan_meta.slug.as_str(),
-        &source_branch,
-        opts.note.as_deref(),
-    );
-    let merge_oid = vcs::merge_branch_no_ff(&source_branch, &commit_message)?;
+    let worktree = plan::PlanWorktree::create(&spec.slug, &spec.branch, "approve")?;
+    let worktree_path = worktree.path().to_path_buf();
+    let plan_path = worktree.plan_path(&spec.slug);
+    let mut worktree = Some(worktree);
+
+    let approval =
+        apply_plan_in_worktree(&spec, &plan_meta, &worktree_path, &plan_path, opts.push_after).await;
+
+    match approval {
+        Ok(commit_oid) => {
+            if let Some(tree) = worktree.take() {
+                if let Err(err) = tree.cleanup() {
+                    display::warn(format!(
+                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                        err
+                    ));
+                }
+            }
+
+            println!(
+                "Plan {} implemented on {}; latest commit={}; review with `{}`",
+                spec.slug,
+                spec.branch,
+                commit_oid,
+                spec.diff_command()
+            );
+            print_token_usage();
+            Ok(())
+        }
+        Err(err) => {
+            if let Some(tree) = worktree.take() {
+                display::warn(format!(
+                    "Plan worktree preserved at {}; inspect branch {} for partial changes.",
+                    tree.path().display(),
+                    spec.branch
+                ));
+            }
+            Err(err)
+        }
+    }
+}
+
+pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Error>> {
+    vcs::ensure_clean_worktree().map_err(|err| {
+        Box::<dyn std::error::Error>::from(format!(
+            "clean working tree required before merge: {err}"
+        ))
+    })?;
+
+    let spec = plan::PlanBranchSpec::resolve(
+        Some(opts.plan.as_str()),
+        opts.branch_override.as_deref(),
+        opts.target.as_deref(),
+    )?;
+
+    let repo = Repository::discover(".")?;
+    let source_ref = repo
+        .find_branch(&spec.branch, BranchType::Local)
+        .map_err(|_| format!("draft branch {} not found", spec.branch))?;
+    let source_commit = source_ref.get().peel_to_commit()?;
+    let source_oid = source_commit.id();
+
+    let target_ref = repo
+        .find_branch(&spec.target_branch, BranchType::Local)
+        .map_err(|_| format!("target branch {} not found", spec.target_branch))?;
+    let target_commit = target_ref.into_reference().peel_to_commit()?;
+    let target_oid = target_commit.id();
+
+    if repo.graph_descendant_of(target_oid, source_oid)? {
+        println!(
+            "Plan {} already merged into {}; latest commit={}",
+            spec.slug, spec.target_branch, source_oid
+        );
+        return Ok(());
+    }
+
+    let plan_meta = spec.load_metadata()?;
+    if !opts.assume_yes {
+        spec.show_preview(&plan_meta);
+        if !prompt_for_confirmation("Merge this plan? [y/N] ")? {
+            println!("Merge cancelled; no changes were made.");
+            return Ok(());
+        }
+    }
+
+    let worktree = plan::PlanWorktree::create(&spec.slug, &spec.branch, "merge")?;
+    let worktree_path = worktree.path().to_path_buf();
+    let plan_path = worktree.plan_path(&spec.slug);
+    let mut worktree = Some(worktree);
+
+    let refresh_result =
+        refresh_plan_branch(&worktree_path, opts.push_after).await.map(|_| plan_path.clone());
+
+    if let Err(err) = refresh_result {
+        display::warn(format!(
+            "Plan worktree preserved at {}; inspect {} for unresolved narrative changes.",
+            worktree.as_ref().unwrap().path().display(),
+            spec.branch
+        ));
+        return Err(err);
+    }
+
+    let plan_document = fs::read_to_string(refresh_result.unwrap())?;
+
+    if let Some(tree) = worktree.take() {
+        if let Err(err) = tree.cleanup() {
+            display::warn(format!(
+                "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                err
+            ));
+        }
+    }
+
+    let current_branch = current_branch_name(&repo)?;
+    if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
+        display::info(format!("Checking out {} before merge...", spec.target_branch));
+        vcs::checkout_branch(&spec.target_branch)?;
+    }
+
+    let merge_message =
+        build_merge_commit_message(&spec, &plan_meta, &plan_document, opts.note.as_deref());
+    let merge_oid = vcs::merge_branch_no_ff(&spec.branch, &merge_message)?;
 
     if opts.delete_branch {
         let repo = Repository::discover(".")?;
         if repo.graph_descendant_of(merge_oid, source_oid)? {
-            vcs::delete_branch(&source_branch)?;
-            display::info(format!("Deleted {source_branch} after approval"));
+            vcs::delete_branch(&spec.branch)?;
+            display::info(format!("Deleted {} after merge", spec.branch));
         } else {
             display::warn(format!(
-                "Skipping deletion of {source_branch}; merge commit did not include the branch tip."
+                "Skipping deletion of {}; merge commit did not include the branch tip.",
+                spec.branch
             ));
         }
     }
 
     push_origin_if_requested(opts.push_after)?;
-    println!("Approved plan; merged {source_branch} into {target_branch}; commit={merge_oid}");
-    Ok(())
-}
-
-fn show_plan_preview(meta: &plan::PlanMetadata, branch: &str) {
-    println!("Plan: {}", meta.slug);
-    println!("Branch: {}", branch);
-    println!("Created: {}", meta.created_at_display());
     println!(
-        "Spec source: {}",
-        meta.spec_source
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string())
+        "Merged plan {} into {}; merge_commit={}",
+        spec.slug, spec.target_branch, merge_oid
     );
-    println!("Spec summary: {}", plan::summarize_spec(meta));
+    print_token_usage();
+    Ok(())
 }
 
 fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -1164,6 +1301,117 @@ fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std
     Ok(())
 }
 
+async fn apply_plan_in_worktree(
+    spec: &plan::PlanBranchSpec,
+    plan_meta: &plan::PlanMetadata,
+    worktree_path: &Path,
+    plan_path: &Path,
+    push_after: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let _cwd = WorkdirGuard::enter(worktree_path)?;
+
+    let plan_rel = spec.plan_rel_path();
+    let mut instruction = format!(
+        "<instruction>Read the implementation plan at {} and implement its Execution Plan on this branch. Apply the listed steps, update `.vizier/.snapshot` plus TODO threads as needed, and stage the resulting edits for commit.</instruction>",
+        plan_rel.display()
+    );
+    instruction.push_str(&format!(
+        "<planSummary>{}</planSummary>",
+        plan::summarize_spec(plan_meta)
+    ));
+
+    let system_prompt = codex::build_prompt_for_codex(&instruction)
+        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+    let (progress_tx, progress_rx) = mpsc::channel(64);
+    let progress_handle = spawn_plain_progress_logger(progress_rx);
+    let response = Auditor::llm_request_with_tools_no_display(
+        None,
+        system_prompt,
+        instruction.clone(),
+        tools::active_tooling(),
+        progress_tx,
+        Some(codex::CodexModel::Gpt5Codex),
+    )
+    .await?;
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
+
+    let conversation_hash = Auditor::commit_audit().await?;
+
+    let diff = vcs::get_diff(".", Some("HEAD"), None)?;
+    if diff.trim().is_empty() {
+        return Err(
+            "Codex completed without modifying files; nothing new to approve.".into(),
+        );
+    }
+
+    plan::set_plan_status(plan_path, "implemented", Some("implemented_at"))?;
+
+    let mut summary = response.content.trim().to_string();
+    if summary.is_empty() {
+        summary = format!(
+            "Plan {} implemented on {}.\nSpec summary: {}",
+            spec.slug,
+            spec.branch,
+            plan::summarize_spec(plan_meta)
+        );
+    }
+
+    let mut builder = CommitMessageBuilder::new(summary);
+    builder
+        .set_header(CommitMessageType::CodeChange)
+        .with_conversation_hash(conversation_hash.clone());
+
+    let mut commit_message = builder.build();
+    if config::get_config().commit_confirmation {
+        if let Some(edited) = vizier_core::editor::run_editor(&commit_message).await? {
+            commit_message = edited;
+        }
+    }
+
+    vcs::stage(Some(vec!["."]))?;
+    let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+
+    if push_after {
+        push_origin_if_requested(true)?;
+    }
+
+    Ok(commit_oid.to_string())
+}
+
+async fn refresh_plan_branch(
+    worktree_path: &Path,
+    push_after: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _cwd = WorkdirGuard::enter(worktree_path)?;
+
+    let instruction = build_save_instruction(None);
+    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
+        codex::build_prompt_for_codex(&instruction)
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
+    } else {
+        crate::config::get_system_prompt_with_meta(None)?
+    };
+
+    Auditor::llm_request_with_tools(
+        None,
+        system_prompt,
+        instruction,
+        tools::active_tooling(),
+        None,
+    )
+    .await?;
+    Auditor::commit_audit().await?;
+
+    if push_after {
+        push_origin_if_requested(true)?;
+    }
+
+    Ok(())
+}
+
 fn current_branch_name(repo: &Repository) -> Result<Option<String>, git2::Error> {
     let head = repo.head()?;
     if head.is_branch() {
@@ -1173,27 +1421,54 @@ fn current_branch_name(repo: &Repository) -> Result<Option<String>, git2::Error>
     }
 }
 
-fn build_approve_commit_message(
+fn build_merge_commit_message(
+    spec: &plan::PlanBranchSpec,
     meta: &plan::PlanMetadata,
-    slug: &str,
-    source_branch: &str,
+    plan_document: &str,
     note: Option<&str>,
 ) -> String {
-    let plan_doc = plan::plan_rel_path(slug);
     let mut body = format!(
-        "Plan: {slug}\nBranch: {source_branch}\nPlan doc: {}\nStatus: {}\nSpec source: {}\nCreated: {}\nSummary: {}",
-        plan_doc.display(),
-        meta.status.clone().unwrap_or_else(|| "draft".to_string()),
-        meta.spec_source
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string()),
-        meta.created_at_display(),
+        "Plan: {}\nBranch: {}\nPlan doc: {}\nSummary: {}",
+        spec.slug,
+        spec.branch,
+        spec.plan_rel_path().display(),
         plan::summarize_spec(meta)
     );
 
+    if let Some(status) = &meta.status {
+        body.push_str(&format!("\nStatus: {}", status));
+    }
+    if let Some(source) = &meta.spec_source {
+        body.push_str(&format!("\nSpec source: {}", source));
+    }
     if let Some(note_text) = note.filter(|value| !value.trim().is_empty()) {
-        body.push_str(&format!("\nNotes: {}", note_text));
+        body.push_str(&format!("\nNotes: {}", note_text.trim()));
     }
 
-    format!("feat: approve plan {slug}\n\n{body}")
+    if let Some(section) = plan::implementation_plan_section(plan_document) {
+        body.push_str("\n\nImplementation Plan:\n");
+        body.push_str(section.trim());
+    }
+
+    format!("feat: merge plan {}\n\n{}", spec.slug, body)
+}
+
+struct WorkdirGuard {
+    previous: PathBuf,
+}
+
+impl WorkdirGuard {
+    fn enter(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let previous = std::env::current_dir()?;
+        std::env::set_current_dir(path)?;
+        Ok(Self { previous })
+    }
+}
+
+impl Drop for WorkdirGuard {
+    fn drop(&mut self) {
+        if let Err(err) = std::env::set_current_dir(&self.previous) {
+            display::debug(format!("failed to restore working directory: {err}"));
+        }
+    }
 }

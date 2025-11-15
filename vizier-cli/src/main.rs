@@ -171,6 +171,9 @@ enum Commands {
     /// Approve plan branches created by `vizier draft`
     Approve(ApproveCmd),
 
+    /// Merge approved plan branches back into the primary branch
+    Merge(MergeCmd),
+
     /// Documentation utilities
     Docs(DocsCmd),
 
@@ -232,9 +235,28 @@ struct ApproveCmd {
     #[arg(value_name = "PLAN")]
     plan: Option<String>,
 
-    /// List pending plan branches instead of merging
+    /// List pending plan branches instead of approving
     #[arg(long = "list")]
     list: bool,
+
+    /// Destination branch for preview/reference (defaults to detected primary)
+    #[arg(long = "target", value_name = "BRANCH")]
+    target: Option<String>,
+
+    /// Draft branch name when it deviates from draft/<plan>
+    #[arg(long = "branch", value_name = "BRANCH")]
+    branch: Option<String>,
+
+    /// Skip confirmation prompt
+    #[arg(long = "yes", short = 'y')]
+    assume_yes: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+struct MergeCmd {
+    /// Plan slug to merge
+    #[arg(value_name = "PLAN")]
+    plan: Option<String>,
 
     /// Destination branch for merge (defaults to detected primary)
     #[arg(long = "target", value_name = "BRANCH")]
@@ -248,11 +270,11 @@ struct ApproveCmd {
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
 
-    /// Delete the draft branch locally after approval
+    /// Delete the draft branch locally after merge
     #[arg(long = "delete-branch")]
     delete_branch: bool,
 
-    /// Optional approver note added to the merge commit body
+    /// Optional note appended to the merge commit body
     #[arg(long = "note", value_name = "TEXT")]
     note: Option<String>,
 }
@@ -431,6 +453,24 @@ fn resolve_approve_options(
     Ok(ApproveOptions {
         plan: cmd.plan.clone(),
         list_only: cmd.list,
+        target: cmd.target.clone(),
+        branch_override: cmd.branch.clone(),
+        assume_yes: cmd.assume_yes,
+        push_after,
+    })
+}
+
+fn resolve_merge_options(
+    cmd: &MergeCmd,
+    push_after: bool,
+) -> Result<MergeOptions, Box<dyn std::error::Error>> {
+    let plan = cmd
+        .plan
+        .clone()
+        .ok_or_else(|| "plan argument is required for vizier merge")?;
+
+    Ok(MergeOptions {
+        plan,
         target: cmd.target.clone(),
         branch_override: cmd.branch.clone(),
         assume_yes: cmd.assume_yes,
@@ -769,6 +809,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         }
 
-        Commands::Approve(cmd) => run_approve(resolve_approve_options(&cmd, push_after)?),
+        Commands::Approve(cmd) => run_approve(resolve_approve_options(&cmd, push_after)?).await,
+
+        Commands::Merge(cmd) => run_merge(resolve_merge_options(&cmd, push_after)?).await,
     }
 }
