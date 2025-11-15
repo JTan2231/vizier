@@ -35,7 +35,7 @@ Implementation Notes (justified: safety/correctness):
 
 
 ---
-Update (2025-10-02): Outcome summaries are now the canonical epilogue for actions initiated under DAP. Scope narrowed to CLI-first given lack of vizier-tui in this repo. Acceptance: After any assistant-initiated change (snapshot/TODO), the CLI prints a compact factual summary sourced from Auditor/VCS facts. Assistant final turn mirrors it. Tests to assert message presence and contents.
+Update (2025-10-02): Outcome summaries are now the canonical epilogue for actions initiated under DAP. Scope focused on CLI-first; a chat TUI exists, but a dedicated Outcome panel is deferred. Acceptance: After any assistant-initiated change (snapshot/TODO), the CLI prints a compact factual summary sourced from Auditor/VCS facts. Assistant final turn mirrors it. Tests to assert message presence and contents.
 
 
 ---
