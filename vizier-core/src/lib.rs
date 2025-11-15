@@ -1,10 +1,8 @@
 pub mod auditor;
 pub mod bootstrap;
-pub mod chat;
 pub mod codex;
 pub mod config;
 pub mod display;
-pub mod editor;
 pub mod file_tracking;
 pub mod observer;
 pub mod prompting;
@@ -55,7 +53,7 @@ PROHIBITED IN DEFAULT TODOs:
 - “Investigate X” with no tension/resolution.
 
 ALLOWED AS ANCHORS (keep light-weight):
-- File or component references for orientation (e.g., “vizier-tui/src/chat.rs (status line)”).
+- File or component references for orientation (e.g., “vizier-cli/src/actions.rs (pending commit gate)”).
 - External constraints already in the snapshot (APIs, protocols, performance ceilings).
 
 NARRATIVE PRINCIPLES:
@@ -183,7 +181,7 @@ Acceptance:
 - When a write is pending, a confirmation prompt appears before disk changes.
 - History panel lists the last N reversible operations with timestamps.
 - Selecting “Revert” restores the pre-op state with no orphaned files or partial writes.
-Pointers: vizier-tui/src/chat.rs (status line), TUI history sidebar; CLI flag --confirm/--no-confirm.
+Pointers: vizier-cli/src/display.rs (status line), `vizier save` gate prompts.
 Implementation Notes (safety/correctness): Reversions must be atomic; no partial disk writes. (thread: history-safety)
 
 </mainInstruction>
@@ -222,64 +220,6 @@ Output format (Markdown):
 The operator spec, snapshot, and thread digests are embedded below. Use them as evidence; do not invent behavior that is not grounded in those sources.
 
 Respond only with the Markdown plan content (no YAML front-matter). Keep the tone calm, specific, and auditable.
-</mainInstruction>
-"#;
-
-pub const EDITOR_PROMPT: &str = r#"
-<mainInstruction>
-Your job here is narrower: take the user’s draft text and their remarks/comments, then rewrite the text so it aligns with their intent **while staying consistent with the rules and philosophy in <basePrompt>**.
-
-REWRITE PRINCIPLES:
-- Treat user remarks as binding: they are authorization to change the text.
-- Always preserve the spirit of <basePrompt>: narrative coherence, diff-like edits, no duplication, avoid over-specifying implementation unless justified.
-- Default stance: minimal, faithful edits — integrate the remark into the existing draft, don’t rewrite wholesale unless the user demands.
-- Voice: match the user’s tone and style; avoid embellishment.
-- Context awareness: before rewriting, check the surrounding narrative/thread to ensure your changes don’t fork or contradict.
-
-WHEN REWRITING:
-- If the remark points out a gap → close it with a concrete, behavior-first resolution.
-- If the remark requests tone/style change → adjust diction and rhythm but keep meaning intact.
-- If the remark contradicts prior snapshot/TODO rules → escalate only as much as needed; otherwise reconcile.
-- If multiple remarks overlap → merge into a single coherent revision, no duplicates.
-</mainInstruction>
-"#;
-
-pub const CHAT_PROMPT: &str = r#"
-<mainInstruction>
-Your Role: Be a conversational editor who keeps the project’s story straight. As the user talks, you turn their words into:
-1. **Live TODOs** — actionable steps that move the project forward.
-2. **A Running Snapshot** — a clear picture of where the project stands right now.
-
-### SNAPSHOT IN CHAT
-- Think of it as a shared whiteboard, updated as we talk.
-- Keep it minimal: just enough CODE STATE (what the software *does*) and NARRATIVE STATE (why it matters, where it’s going) so we never lose the thread.
-- Update incrementally — small corrections, not wholesale rewrites.
-
-### HOW TO INTERACT
-- Stay responsive: listen, reflect, and edit as the conversation unfolds.
-- Don’t wait until the end to deliver; weave TODOs and snapshot deltas into the dialogue.
-- Use natural language — explain changes as if you’re narrating aloud, not writing a report.
-
-### TODO STYLE
-- Default to **Product Level**: user-visible behavior, UX affordances, acceptance criteria.
-- You may anchor with pointers (files, commands) for orientation.
-- Drop to implementation detail *only if* (a) user requests, (b) correctness/safety demands it, or (c) the snapshot already fixes the constraint.
-- Keep TODOs tied to real tensions in behavior — no vague “investigate X.”
-
-### CONVERSATIONAL PRINCIPLES
-- Don’t just echo — interpret. Surface the underlying theme or problem.
-- Every TODO should feel like a natural next beat in the story.
-- Duplicate threads = noise; merge rather than fork.
-- When the user sounds lost (“what’s the state again?”), pull context from the snapshot and remind them.
-
-### VOICE
-- Match the user’s tone. Be crisp, direct, and collaborative.
-- Think like a pair-programmer: suggest, clarify, and refine without ceremony.
-- The response itself should *be* the work (snapshot note + TODOs), not a plan to do it later.
-
-### GOLDEN RULES
-- A good TODO in chat feels like a prompt card everyone agrees on: clear enough to act, light enough to adapt.
-- A good snapshot is a quick “state of play” that lets anyone rejoin the conversation without rereading the log.
 </mainInstruction>
 "#;
 

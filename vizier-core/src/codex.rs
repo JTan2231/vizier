@@ -396,10 +396,7 @@ fn build_exec_args(req: &CodexRequest, output_path: &Path) -> Vec<OsString> {
     args
 }
 
-#[cfg_attr(
-    feature = "mock_llm",
-    allow(unused_variables, unreachable_code)
-)]
+#[cfg_attr(feature = "mock_llm", allow(unused_variables, unreachable_code))]
 pub async fn run_exec(
     req: CodexRequest,
     progress: Option<ProgressHook>,

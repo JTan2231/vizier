@@ -1,6 +1,3 @@
-use std::sync::RwLock;
-
-use tokio::sync::mpsc;
 use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
 
 use crate::{config, file_tracking, observer::CaptureGuard, vcs};
@@ -9,7 +6,7 @@ const TODO_DIR: &str = ".vizier/";
 
 // TODO: We should only default to the current directory if there isn't a configured target
 //       directory (for more automated/transient uses)
-pub fn get_todo_dir() -> String {
+fn resolve_todo_dir() -> Option<String> {
     let start_dir = std::env::current_dir()
         .ok()
         .expect("Couldn't grab the current working directory");
@@ -20,11 +17,11 @@ pub fn get_todo_dir() -> String {
         if current.join(TODO_DIR).exists() {
             let mut path = "../".repeat(levels_up);
             path.push_str(TODO_DIR);
-            return path;
+            return Some(path);
         }
 
         if current.join(".git").exists() {
-            panic!("Couldn't find `.vizier/`! How'd this happen?");
+            return None;
         }
 
         match current.parent() {
@@ -32,9 +29,17 @@ pub fn get_todo_dir() -> String {
                 current = parent.to_path_buf();
                 levels_up += 1;
             }
-            None => panic!("Couldn't find `.vizier/`! How'd this happen?"),
+            None => return None,
         }
     }
+}
+
+pub fn get_todo_dir() -> String {
+    resolve_todo_dir().unwrap_or_else(|| panic!("Couldn't find `.vizier/`! How'd this happen?"))
+}
+
+pub fn try_get_todo_dir() -> Option<String> {
+    resolve_todo_dir()
 }
 
 pub fn is_action(name: &str) -> bool {
@@ -67,23 +72,6 @@ pub fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
     }
 
     response
-}
-
-// This is our hook into TUI app state
-// Initialized in the editor::App constructor
-// TODO: This is probably bad form
-
-pub static SENDER: RwLock<Option<mpsc::UnboundedSender<String>>> = RwLock::new(None);
-
-#[tool(description = "Replace the content of the file shown to the user")]
-pub fn edit_content(content: String) -> String {
-    let guard = CaptureGuard::start();
-
-    // bro lmfao
-    match SENDER.read().unwrap().clone().unwrap().send(content) {
-        Ok(_) => build_llm_response(String::new(), &guard),
-        Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
-    }
 }
 
 #[tool(description = "Get the `git diff` of the project")]
@@ -422,20 +410,9 @@ pub fn get_snapshot_tools() -> Vec<Tool> {
     ]
 }
 
-pub fn get_editor_tools() -> Vec<Tool> {
-    vec![get_tool!(edit_content)]
-}
-
 pub fn active_tooling() -> Vec<Tool> {
     match config::get_config().backend {
         config::BackendKind::Codex => Vec::new(),
         config::BackendKind::Wire => get_tools(),
-    }
-}
-
-pub fn active_editor_tooling() -> Vec<Tool> {
-    match config::get_config().backend {
-        config::BackendKind::Codex => Vec::new(),
-        config::BackendKind::Wire => get_editor_tools(),
     }
 }

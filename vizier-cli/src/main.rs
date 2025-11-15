@@ -87,10 +87,6 @@ struct GlobalOpts {
     #[arg(short = 'j', long, global = true)]
     json: bool,
 
-    /// Require user confirmation for commit messages
-    #[arg(short = 'c', long = "require-confirmation", global = true)]
-    require_confirmation: bool,
-
     /// Config file to load (supports JSON or TOML)
     #[arg(short = 'C', long = "config-file", global = true)]
     config_file: Option<String>,
@@ -120,7 +116,6 @@ impl Default for GlobalOpts {
             codex_profile: None,
             codex_bounds_prompt: None,
             json: false,
-            require_confirmation: false,
             config_file: None,
             reasoning_effort: None,
             push: false,
@@ -198,9 +193,6 @@ enum Commands {
     ///   vizier clean "*"
     ///   vizier clean "Parser bugs,UI polish"
     Clean(CleanCmd),
-
-    /// Launch interactive chat TUI
-    Chat(ChatCmd),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -404,9 +396,6 @@ struct CleanCmd {
     #[arg(value_name = "TODO_LIST")]
     todo_list: String,
 }
-
-#[derive(ClapArgs, Debug)]
-struct ChatCmd {}
 
 #[derive(Debug, Clone)]
 struct ResolvedInput {
@@ -768,8 +757,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config::Config::provider_from_settings(&cfg.provider_model, cfg.reasoning_effort)?;
     }
 
-    cfg.commit_confirmation = cli.global.require_confirmation;
-
     config::set_config(cfg);
 
     let push_after = cli.global.push;
@@ -801,8 +788,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await
         }
-
-        Commands::Chat(_cmd) => vizier_core::chat::chat_tui().await,
 
         Commands::Ask(cmd) => {
             let message = resolve_ask_message(&cmd)?;

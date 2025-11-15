@@ -64,20 +64,8 @@ impl FileTracker {
             return Ok(());
         }
 
-        let mut commit_message = format!("{}", message);
-
-        if crate::config::get_config().commit_confirmation {
-            if let Some(new_message) = crate::editor::run_editor(&commit_message).await? {
-                commit_message = new_message;
-            }
-        }
-
         // TODO: Commit message builder
-        vcs::add_and_commit(
-            Some(vec![&crate::tools::get_todo_dir()]),
-            &commit_message,
-            false,
-        )?;
+        vcs::add_and_commit(Some(vec![&crate::tools::get_todo_dir()]), message, false)?;
 
         Self::clear();
 
