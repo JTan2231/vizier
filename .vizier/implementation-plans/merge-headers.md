@@ -1,9 +1,10 @@
 ---
 plan: merge-headers
 branch: draft/merge-headers
-status: draft
+status: implemented
 created_at: 2025-11-15T17:23:11Z
 spec_source: file:draft
+implemented_at: 2025-11-15T17:32:25Z
 ---
 
 ## Operator Spec

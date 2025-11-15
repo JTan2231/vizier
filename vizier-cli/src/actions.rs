@@ -1807,33 +1807,43 @@ fn current_branch_name(repo: &Repository) -> Result<Option<String>, git2::Error>
 
 fn build_merge_commit_message(
     spec: &plan::PlanBranchSpec,
-    meta: &plan::PlanMetadata,
+    _meta: &plan::PlanMetadata,
     plan_document: Option<&str>,
     note: Option<&str>,
 ) -> String {
-    let mut body = format!(
-        "Plan: {}\nBranch: {}\nSummary: {}",
+    // Merge commits now keep a concise subject line and embed the stored plan
+    // document directly so reviewers see the same content Codex implemented.
+    let mut sections: Vec<String> = Vec::new();
+
+    if let Some(note_text) = note.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) {
+        sections.push(format!("Operator Note: {}", note_text));
+    }
+
+    let plan_block = plan_document
+        .and_then(|document| {
+            let trimmed = document.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_else(|| format!("Implementation plan document unavailable for {}", spec.slug));
+
+    sections.push(format!("Implementation Plan:\n{}", plan_block));
+
+    format!(
+        "feat: merge plan {}\n\n{}",
         spec.slug,
-        spec.branch,
-        plan::summarize_spec(meta)
-    );
-
-    if let Some(status) = &meta.status {
-        body.push_str(&format!("\nStatus: {}", status));
-    }
-    if let Some(source) = &meta.spec_source {
-        body.push_str(&format!("\nSpec source: {}", source));
-    }
-    if let Some(note_text) = note.filter(|value| !value.trim().is_empty()) {
-        body.push_str(&format!("\nNotes: {}", note_text.trim()));
-    }
-
-    if let Some(document) = plan_document {
-        body.push_str("\n\nPlan Document:\n");
-        body.push_str(document.trim());
-    }
-
-    format!("feat: merge plan {}\n\n{}", spec.slug, body)
+        sections.join("\n\n")
+    )
 }
 
 struct WorkdirGuard {
@@ -1853,5 +1863,85 @@ impl Drop for WorkdirGuard {
         if let Err(err) = std::env::set_current_dir(&self.previous) {
             display::debug(format!("failed to restore working directory: {err}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_merge_commit_message;
+    use crate::plan::{PlanBranchSpec, PlanMetadata};
+
+    fn sample_spec() -> PlanBranchSpec {
+        PlanBranchSpec {
+            slug: "merge-headers".to_string(),
+            branch: "draft/merge-headers".to_string(),
+            target_branch: "main".to_string(),
+        }
+    }
+
+    fn sample_meta(spec: &PlanBranchSpec) -> PlanMetadata {
+        PlanMetadata {
+            slug: spec.slug.clone(),
+            branch: spec.branch.clone(),
+            status: Some("implemented".to_string()),
+            created_at: None,
+            created_at_raw: None,
+            spec_source: Some("inline".to_string()),
+            spec_excerpt: None,
+            spec_summary: Some("Trim redundant headers".to_string()),
+        }
+    }
+
+    #[test]
+    fn merge_commit_message_embeds_plan_document() {
+        let spec = sample_spec();
+        let meta = sample_meta(&spec);
+        let plan_doc = r#"---
+plan: merge-headers
+branch: draft/merge-headers
+status: implemented
+created_at: 2025-11-15T00:00:00Z
+spec_source: inline
+
+## Operator Spec
+
+Tidy merge message bodies.
+"#;
+
+        let message = build_merge_commit_message(&spec, &meta, Some(plan_doc), None);
+
+        assert!(
+            message.starts_with("feat: merge plan merge-headers\n\nImplementation Plan:\n---"),
+            "Implementation Plan block missing: {message}"
+        );
+        assert!(
+            !message.contains("\nPlan: merge-headers"),
+            "old Plan header should not appear: {message}"
+        );
+        assert!(
+            !message.contains("\nBranch: draft/merge-headers"),
+            "old Branch header should not appear: {message}"
+        );
+        assert!(
+            !message.contains("Spec source: inline"),
+            "old Spec source header should not appear: {message}"
+        );
+    }
+
+    #[test]
+    fn merge_commit_message_handles_notes_and_missing_document() {
+        let spec = sample_spec();
+        let meta = sample_meta(&spec);
+        let message =
+            build_merge_commit_message(&spec, &meta, None, Some("  needs manual review  "));
+
+        assert!(
+            message.contains("Operator Note: needs manual review"),
+            "note should be trimmed and rendered: {message}"
+        );
+        assert!(
+            message.contains("Implementation plan document unavailable for merge-headers"),
+            "missing plan placeholder should be present: {message}"
+        );
     }
 }
