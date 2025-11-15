@@ -524,8 +524,8 @@ fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
     let merge_commit = repo.head()?.peel_to_commit()?;
     let message = merge_commit.message().unwrap_or_default().to_string();
     assert!(
-        message.contains("Plan: approve-smoke"),
-        "merge commit missing plan metadata: {}",
+        message.contains("Implementation Plan:\n---"),
+        "merge commit missing implementation plan block: {}",
         message
     );
 
@@ -624,7 +624,7 @@ fn test_merge_removes_plan_document() -> Result<(), Box<dyn std::error::Error>> 
     let head = repo.head()?.peel_to_commit()?;
     let message = head.message().unwrap_or_default().to_string();
     assert!(
-        message.contains("Plan Document:"),
+        message.contains("Implementation Plan:\n---"),
         "merge commit should inline the plan document even after deletion: {}",
         message
     );
@@ -691,8 +691,8 @@ fn test_merge_conflict_manual_resume() -> Result<(), Box<dyn std::error::Error>>
     let head = repo.head()?.peel_to_commit()?;
     let message = head.message().unwrap_or_default().to_string();
     assert!(
-        message.contains("Plan: conflict-manual"),
-        "merge commit missing plan slug after resume: {}",
+        message.contains("Implementation Plan:\n---"),
+        "merge commit missing implementation plan block after resume: {}",
         message
     );
 
