@@ -33,6 +33,9 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 - Auditor + session logging (vizier-core/src/auditor.rs, .vizier/sessions/)
 - Architecture doc gate + Pending Commit gate threads
 - DRAFT.md and APPROVE.md (integrated draft→approve flow), `.vizier/implementation-plans/`
+- docs/workflows/draft-approve-merge.md (textual runbook for today’s manual process; keeps humans aligned while orchestration tooling is built)
 
 ## Implementation notes
 - Reuse existing gates/outcome machinery; add workflow state as metadata rather than inventing parallel tracking. Ensure each transition is idempotent so multi-agent runs remain recoverable after interruptions.
+
+Update (2025-11-15): Authored docs/workflows/draft-approve-merge.md so operators/agents have a documented draft→approve→merge checklist today. Workflow orchestration remains CLI-first work (stage tracker, approvals, gates) beyond this documentation boost.
