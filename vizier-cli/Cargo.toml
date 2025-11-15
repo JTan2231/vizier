@@ -3,6 +3,10 @@ name = "vizier"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+mock_llm = []
+integration_testing = []
+
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
 rusqlite = "0.35.0"

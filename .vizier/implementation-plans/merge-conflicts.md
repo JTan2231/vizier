@@ -1,9 +1,10 @@
 ---
 plan: merge-conflicts
 branch: draft/merge-conflicts
-status: draft
+status: implemented
 created_at: 2025-11-15T06:57:57Z
 spec_source: inline
+implemented_at: 2025-11-15T08:58:56Z
 ---
 
 ## Operator Spec
