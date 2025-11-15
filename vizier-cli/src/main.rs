@@ -262,9 +262,13 @@ struct MergeCmd {
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
 
-    /// Delete the draft branch locally after merge
-    #[arg(long = "delete-branch")]
-    delete_branch: bool,
+    /// Keep the draft branch locally after merge (default is to delete)
+    #[arg(long = "keep-branch", conflicts_with = "legacy_delete_branch")]
+    keep_branch: bool,
+
+    /// Deprecated alias for when deletion was opt-in; retained for compatibility
+    #[arg(long = "delete-branch", hide = true)]
+    legacy_delete_branch: bool,
 
     /// Optional note appended to the merge commit body
     #[arg(long = "note", value_name = "TEXT")]
@@ -467,12 +471,19 @@ fn resolve_merge_options(
         MergeConflictStrategy::Manual
     };
 
+    if cmd.legacy_delete_branch {
+        display::warn(
+            "--delete-branch is deprecated; vizier merge now deletes draft branches by default. \
+             Pass --keep-branch to retain the branch after merging.",
+        );
+    }
+
     Ok(MergeOptions {
         plan,
         target: cmd.target.clone(),
         branch_override: cmd.branch.clone(),
         assume_yes: cmd.assume_yes,
-        delete_branch: cmd.delete_branch,
+        delete_branch: !cmd.keep_branch,
         note: cmd.note.clone(),
         push_after,
         conflict_strategy,

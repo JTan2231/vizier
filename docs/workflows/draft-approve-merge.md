@@ -81,7 +81,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - When conflicts occur, Vizier writes `.vizier/tmp/merge-conflicts/<slug>.json` with the HEAD/source commit IDs and conflict list, then:
   - With `--auto-resolve-conflicts`, runs Codex inside the repo to try resolving and, if successful, finalizes the merge automatically.
   - Otherwise, instructs you to resolve conflicts manually, stage the files, and rerun `vizier merge <slug>`; Vizier will detect the sentinel JSON and finish the merge once the index is clean.
-- `--delete-branch` removes `draft/<slug>` after a successful merge **only if** the merge commit contains the branch tip.
+- Successful merges delete `draft/<slug>` automatically as long as the merge commit contains the branch tip; pass `--keep-branch` to retain the branch locally (legacy `--delete-branch` remains as a compatibility alias but is no longer required).
 - `--yes` skips the confirmation prompt, and `--target/--branch` behave like they do for `approve`.
 
 **Post-merge artifacts**
@@ -116,10 +116,11 @@ Both commands should show the plan commit sitting one commit ahead of the primar
    - If satisfied, they push `draft/ingest-backpressure` for further review or proceed locally.
 3. **Merge**
    ```bash
-   vizier merge ingest-backpressure --delete-branch
+   vizier merge ingest-backpressure
    ```
    - Vizier refreshes `.vizier/.snapshot`, removes the plan doc, and merges into the detected primary branch (e.g., `main`).
    - Final output looks like `Merged plan ingest-backpressure into main; merge_commit=<sha>`.
+   - Need the branch for a follow-up? Append `--keep-branch` to suppress the default deletion step.
 
 Throughout the process, Outcome lines and Auditor records cite the plan slug, affected files, and any pending commit gates so auditors can trace who approved what. Tie this workflow into the broader agent-orchestration story by referencing this document in `AGENTS.md` or external SOPs when onboarding third-party agents.
 
