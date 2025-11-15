@@ -333,6 +333,10 @@ fn test_save_without_code_changes() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn test_draft_creates_branch_and_plan() -> Result<(), Box<dyn std::error::Error>> {
+    let before_commits = {
+        let repo = open_repo()?;
+        count_commits_from_head(&repo)?
+    };
     let output = std::process::Command::new("../target/release/vizier")
         .args(["draft", "--name", "smoke", "ship the draft flow"])
         .current_dir("test-repo-active")
@@ -379,6 +383,12 @@ fn test_draft_creates_branch_and_plan() -> Result<(), Box<dyn std::error::Error>
     assert!(
         contents.contains("## Implementation Plan"),
         "plan body heading missing"
+    );
+
+    let after_commits = count_commits_from_head(&repo)?;
+    assert_eq!(
+        after_commits, before_commits,
+        "vizier draft should not add commits to the primary branch"
     );
 
     Ok(())
