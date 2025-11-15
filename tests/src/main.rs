@@ -1,4 +1,7 @@
-use git2::{BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort};
+use git2::{
+    BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
+    build::CheckoutBuilder,
+};
 use std::path::{Path, PathBuf};
 
 macro_rules! assert_true {
@@ -53,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_save_with_staged_files);
     test!(test_save_without_code_changes);
     test!(test_draft_creates_branch_and_plan);
+    test!(test_approve_merges_plan);
 
     Ok(())
 }
@@ -89,6 +93,10 @@ fn clone_test_repo() -> Result<(), Box<dyn std::error::Error>> {
 
     let src = Path::new("./test-repo");
     let dst = Path::new("./test-repo-active");
+
+    if dst.exists() {
+        fs::remove_dir_all(dst)?;
+    }
 
     copy_dir_recursive(src, dst)?;
     Ok(())
@@ -354,6 +362,95 @@ fn test_draft_creates_branch_and_plan() -> Result<(), Box<dyn std::error::Error>
     assert!(
         contents.contains("## Implementation Plan"),
         "plan body heading missing"
+    );
+
+    Ok(())
+}
+
+fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
+    let draft = std::process::Command::new("../target/release/vizier")
+        .args([
+            "draft",
+            "--name",
+            "approve-smoke",
+            "approval smoke test spec",
+        ])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    let list_before = std::process::Command::new("../target/release/vizier")
+        .args(["approve", "--list"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        list_before.status.success(),
+        "vizier approve --list failed: {}",
+        String::from_utf8_lossy(&list_before.stderr)
+    );
+    let stdout_before = String::from_utf8_lossy(&list_before.stdout);
+    assert!(
+        stdout_before.contains("plan=approve-smoke"),
+        "pending plans missing approve-smoke: {}",
+        stdout_before
+    );
+
+    {
+        let repo = open_repo()?;
+        let mut checkout = CheckoutBuilder::new();
+        checkout.force();
+        repo.checkout_head(Some(&mut checkout))?;
+    }
+
+    let approve = std::process::Command::new("../target/release/vizier")
+        .args(["approve", "approve-smoke", "--yes", "--delete-branch"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    assert!(
+        Path::new("test-repo-active/.vizier/implementation-plans/approve-smoke.md").exists(),
+        "plan file should be present after approval"
+    );
+
+    let repo = open_repo()?;
+    let merge_commit = repo.head()?.peel_to_commit()?;
+    let message = merge_commit.message().unwrap_or_default().to_string();
+    assert!(
+        message.contains("Plan: approve-smoke"),
+        "merge commit missing plan metadata: {}",
+        message
+    );
+
+    assert!(
+        repo.find_branch("draft/approve-smoke", BranchType::Local)
+            .is_err(),
+        "draft branch should be deleted when --delete-branch is used"
+    );
+
+    let list_after = std::process::Command::new("../target/release/vizier")
+        .args(["approve", "--list"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        list_after.status.success(),
+        "vizier approve --list failed after merge: {}",
+        String::from_utf8_lossy(&list_after.stderr)
+    );
+    let stdout_after = String::from_utf8_lossy(&list_after.stdout);
+    assert!(
+        stdout_after.contains("No pending draft branches"),
+        "expected no pending plans but saw: {}",
+        stdout_after
     );
 
     Ok(())

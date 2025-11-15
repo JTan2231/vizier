@@ -12,6 +12,7 @@ use vizier_core::{
 
 mod actions;
 use crate::actions::*;
+mod plan;
 
 /// A CLI for LLM project management.
 #[derive(Parser, Debug)]
@@ -167,6 +168,9 @@ enum Commands {
     /// Generate an implementation-plan draft branch from an operator spec
     Draft(DraftCmd),
 
+    /// Approve plan branches created by `vizier draft`
+    Approve(ApproveCmd),
+
     /// Documentation utilities
     Docs(DocsCmd),
 
@@ -220,6 +224,37 @@ struct DraftCmd {
     /// Override the derived plan/branch slug (letters, numbers, dashes only)
     #[arg(long = "name", value_name = "NAME")]
     name: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+struct ApproveCmd {
+    /// Plan slug to approve (omit when using --list)
+    #[arg(value_name = "PLAN")]
+    plan: Option<String>,
+
+    /// List pending plan branches instead of merging
+    #[arg(long = "list")]
+    list: bool,
+
+    /// Destination branch for merge (defaults to detected primary)
+    #[arg(long = "target", value_name = "BRANCH")]
+    target: Option<String>,
+
+    /// Draft branch name when it deviates from draft/<plan>
+    #[arg(long = "branch", value_name = "BRANCH")]
+    branch: Option<String>,
+
+    /// Skip confirmation prompt
+    #[arg(long = "yes", short = 'y')]
+    assume_yes: bool,
+
+    /// Delete the draft branch locally after approval
+    #[arg(long = "delete-branch")]
+    delete_branch: bool,
+
+    /// Optional approver note added to the merge commit body
+    #[arg(long = "note", value_name = "TEXT")]
+    note: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -383,6 +418,26 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
 
 fn resolve_draft_spec(cmd: &DraftCmd) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
     resolve_prompt_input(cmd.spec.as_deref(), cmd.file.as_deref())
+}
+
+fn resolve_approve_options(
+    cmd: &ApproveCmd,
+    push_after: bool,
+) -> Result<ApproveOptions, Box<dyn std::error::Error>> {
+    if !cmd.list && cmd.plan.is_none() {
+        return Err("plan argument is required unless --list is set".into());
+    }
+
+    Ok(ApproveOptions {
+        plan: cmd.plan.clone(),
+        list_only: cmd.list,
+        target: cmd.target.clone(),
+        branch_override: cmd.branch.clone(),
+        assume_yes: cmd.assume_yes,
+        delete_branch: cmd.delete_branch,
+        note: cmd.note.clone(),
+        push_after,
+    })
 }
 
 fn resolve_prompt_input(
@@ -713,5 +768,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await
         }
+
+        Commands::Approve(cmd) => run_approve(resolve_approve_options(&cmd, push_after)?),
     }
 }

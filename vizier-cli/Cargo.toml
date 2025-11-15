@@ -22,4 +22,5 @@ fuzzy-matcher = "*"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 uuid = { version = "1.4", features = ["v4"] }
+git2 = "0.20"
 vizier-core = { path = "../vizier-core" }

@@ -1,3 +1,4 @@
+use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFormat, DiffLine, DiffOptions,
     Error, ErrorClass, ErrorCode, IndexAddOption, Oid, PushOptions, RemoteCallbacks, Repository,
@@ -942,6 +943,73 @@ pub fn repo_root() -> Result<PathBuf, Error> {
         .ok_or_else(|| Error::from_str("repository has no working directory"))
 }
 
+pub fn ensure_clean_worktree() -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(true);
+    let statuses = repo.statuses(Some(&mut opts))?;
+    if statuses.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::from_str(
+            "working tree has uncommitted or untracked changes",
+        ))
+    }
+}
+
+pub fn checkout_branch(name: &str) -> Result<(), Error> {
+    let repo = Repository::discover(".")?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.set_head(&format!("refs/heads/{name}"))?;
+    repo.checkout_head(Some(&mut checkout))
+}
+
+pub fn merge_branch_no_ff(source_branch: &str, message: &str) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    let head_ref = repo.head()?;
+    if !head_ref.is_branch() {
+        return Err(Error::from_str(
+            "cannot merge into detached HEAD; checkout a branch first",
+        ));
+    }
+
+    let head_commit = head_ref.peel_to_commit()?;
+    let source_ref = repo.find_branch(source_branch, BranchType::Local)?;
+    let source_commit = source_ref.into_reference().peel_to_commit()?;
+
+    let mut index = repo.merge_commits(&head_commit, &source_commit, None)?;
+    if index.has_conflicts() {
+        return Err(Error::from_str(
+            "merge resulted in conflicts; resolve manually before retrying vizier approve",
+        ));
+    }
+
+    let tree_oid = index.write_tree_to(&repo)?;
+    let tree = repo.find_tree(tree_oid)?;
+    let sig = repo.signature()?;
+
+    let oid = repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        message,
+        &tree,
+        &[&head_commit, &source_commit],
+    )?;
+
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
+}
+
+/// Determine the repository's primary branch by preferring origin/HEAD, then main/master, then
+/// the most recently updated local branch.
 pub fn detect_primary_branch() -> Option<String> {
     let repo = Repository::discover(".").ok()?;
 
