@@ -245,21 +245,49 @@ fn assert_clean_primary_checkout(repo: &Repository) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn find_conversation_commit(repo: &Repository) -> Result<String, Box<dyn std::error::Error>> {
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
-
-    for oid in revwalk {
-        let oid = oid?;
-        let commit = repo.find_commit(oid)?;
-        if let Some(message) = commit.message() {
-            if message.contains("VIZIER CONVERSATION") {
-                return Ok(message.to_string());
+fn session_id_from_commit(
+    repo: &Repository,
+    spec: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let commit = repo.find_commit(oid_for_spec(repo, spec)?)?;
+    let message = commit.message().unwrap_or("");
+    for line in message.lines() {
+        if let Some(rest) = line.strip_prefix("Session ID: ") {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
             }
         }
     }
 
-    Err("failed to find conversation commit".into())
+    Err("Session ID not found in commit".into())
+}
+
+fn session_log_path(session_id: &str) -> PathBuf {
+    Path::new("test-repo-active")
+        .join(".vizier")
+        .join("sessions")
+        .join(session_id)
+        .join("session.json")
+}
+
+fn assert_session_log_contains(
+    session_id: &str,
+    needle: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = session_log_path(session_id);
+    assert!(
+        path.exists(),
+        "session log does not exist: {}",
+        path.display()
+    );
+    let contents = std::fs::read_to_string(&path)?;
+    assert!(
+        contents.contains(needle),
+        "session log missing expected text: {}",
+        needle
+    );
+    Ok(())
 }
 
 fn git_init() -> Result<(), Box<dyn std::error::Error>> {
@@ -276,7 +304,7 @@ fn test_init() -> Result<(), Box<dyn std::error::Error>> {
 // TEST: save with nothing staged
 //   before: count HEAD commits
 //   action: run vizier save (external binary under test)
-//   expect: +3 commits
+//   expect: +2 commits (narrative + code)
 fn test_save() -> Result<(), Box<dyn std::error::Error>> {
     let repo = open_repo()?;
     let before_count = count_commits_from_head(&repo)?;
@@ -290,7 +318,7 @@ fn test_save() -> Result<(), Box<dyn std::error::Error>> {
         .wait()?;
 
     let after_count = count_commits_from_head(&repo)?;
-    assert_eq!(after_count - before_count, 3);
+    assert_eq!(after_count - before_count, 2);
 
     let snapshot = std::fs::read_to_string("test-repo-active/.vizier/.snapshot")?;
     assert!(
@@ -298,19 +326,15 @@ fn test_save() -> Result<(), Box<dyn std::error::Error>> {
         "expected Codex mock snapshot update"
     );
 
-    let convo = find_conversation_commit(&repo)?;
-    assert!(
-        convo.to_ascii_lowercase().contains("mock codex response"),
-        "conversation commit missing Codex response"
-    );
+    let session_id = session_id_from_commit(&repo, "HEAD~1")?;
+    assert_session_log_contains(&session_id, "mock codex response")?;
     Ok(())
 }
 
 // TEST: save with staged files
 //   setup: write a file, stage it
 //   action: run vizier save
-//   expect: last three commits correspond to code/narrative/conversation
-//           with file counts {2, 2, 0} respectively (matches your original)
+//   expect: last two commits correspond to code/narrative with file counts {2, 2}
 fn test_save_with_staged_files() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write("test-repo-active/b", "this is an integration test")?;
     let repo = open_repo()?;
@@ -328,15 +352,13 @@ fn test_save_with_staged_files() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(count_files_in_commit(&repo, "HEAD")?, 2);
     // narrative change (HEAD~1)
     assert_eq!(count_files_in_commit(&repo, "HEAD~1")?, 2);
-    // conversation (HEAD~2)
-    assert_eq!(count_files_in_commit(&repo, "HEAD~2")?, 0);
 
     Ok(())
 }
 
 // TEST: save with clean tree (no tracked code changes)
 //   action: run vizier save with code-change stub disabled
-//   expect: only conversation and narrative commits; CLI reports no code commit
+//   expect: only the narrative commit; CLI reports no code commit and session path
 fn test_save_without_code_changes() -> Result<(), Box<dyn std::error::Error>> {
     let repo = open_repo()?;
     let before_count = count_commits_from_head(&repo)?;
@@ -359,19 +381,24 @@ fn test_save_without_code_changes() -> Result<(), Box<dyn std::error::Error>> {
         "expected save output to skip code commit but saw: {}",
         stdout
     );
+    assert!(
+        stdout.contains("session="),
+        "expected save output to include session path"
+    );
 
     let repo = open_repo()?;
     let after_count = count_commits_from_head(&repo)?;
     assert_eq!(
         after_count - before_count,
-        2,
-        "expected only conversation + narrative commits"
+        1,
+        "expected only the narrative commit"
     );
 
     // narrative change (HEAD)
     assert_eq!(count_files_in_commit(&repo, "HEAD")?, 2);
-    // conversation (HEAD~1)
-    assert_eq!(count_files_in_commit(&repo, "HEAD~1")?, 0);
+
+    let session_id = session_id_from_commit(&repo, "HEAD")?;
+    assert_session_log_contains(&session_id, "mock codex response")?;
 
     Ok(())
 }

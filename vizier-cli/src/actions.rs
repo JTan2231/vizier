@@ -446,7 +446,7 @@ pub async fn run_save(
 
 #[derive(Debug)]
 pub struct SaveOutcome {
-    pub conversation_hash: Option<String>,
+    pub session_log: Option<String>,
     pub code_commit: Option<String>,
     pub pushed: bool,
 }
@@ -454,9 +454,9 @@ pub struct SaveOutcome {
 fn format_save_outcome(outcome: &SaveOutcome) -> String {
     let mut parts = vec!["Save complete".to_string()];
 
-    match &outcome.conversation_hash {
-        Some(hash) if !hash.is_empty() => parts.push(format!("conversation={}", short_hash(hash))),
-        _ => parts.push("conversation=none".to_string()),
+    match &outcome.session_log {
+        Some(path) if !path.is_empty() => parts.push(format!("session={}", path)),
+        _ => parts.push("session=none".to_string()),
     }
 
     match &outcome.code_commit {
@@ -532,7 +532,10 @@ async fn save(
     )
     .await?;
 
-    let conversation_hash = auditor::Auditor::commit_audit().await?;
+    let session_artifact = auditor::Auditor::commit_audit().await?;
+    let session_display = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path());
 
     display::info(format!(
         "Assistant summary: {}{}",
@@ -556,7 +559,7 @@ async fn save(
         let mut message_builder = CommitMessageBuilder::new(commit_body);
         message_builder
             .set_header(CommitMessageType::CodeChange)
-            .with_conversation_hash(conversation_hash.clone());
+            .with_session_log_path(session_display.clone());
 
         if let Some(note) = provided_note.as_ref() {
             message_builder.with_author_note(note.clone());
@@ -591,11 +594,7 @@ async fn save(
     push_origin_if_requested(push_after_commit)?;
 
     Ok(SaveOutcome {
-        conversation_hash: if conversation_hash.is_empty() {
-            None
-        } else {
-            Some(conversation_hash)
-        },
+        session_log: session_display,
         code_commit,
         pushed: push_after_commit,
     })
@@ -791,19 +790,18 @@ pub async fn clean(
     display::info(format!("Revised {} TODO items", revised));
     display::info(format!("Removed {} TODO items", removed));
 
-    let conversation_hash = Auditor::commit_audit().await?;
+    let session_artifact = Auditor::commit_audit().await?;
 
     push_origin_if_requested(push_after_commit)?;
 
-    let conversation_summary = if conversation_hash.is_empty() {
-        "none".to_string()
-    } else {
-        short_hash(&conversation_hash)
-    };
+    let session_summary = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path())
+        .unwrap_or_else(|| "none".to_string());
 
     println!(
-        "Clean complete; revised={}; removed={}; conversation={}",
-        revised, removed, conversation_summary
+        "Clean complete; revised={}; removed={}; session={}",
+        revised, removed, session_summary
     );
 
     print_token_usage();
@@ -1682,7 +1680,10 @@ async fn apply_plan_in_worktree(
     )
     .await?;
 
-    let conversation_hash = Auditor::commit_audit().await?;
+    let session_artifact = Auditor::commit_audit().await?;
+    let session_path = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path());
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -1704,7 +1705,7 @@ async fn apply_plan_in_worktree(
     let mut builder = CommitMessageBuilder::new(summary);
     builder
         .set_header(CommitMessageType::CodeChange)
-        .with_conversation_hash(conversation_hash.clone());
+        .with_session_log_path(session_path.clone());
 
     let mut commit_message = builder.build();
     if config::get_config().commit_confirmation {
@@ -1748,7 +1749,10 @@ async fn refresh_plan_branch(
         Some(worktree_path.to_path_buf()),
     )
     .await?;
-    let conversation_hash = Auditor::commit_audit().await?;
+    let session_artifact = Auditor::commit_audit().await?;
+    let session_path = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path());
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -1774,7 +1778,7 @@ async fn refresh_plan_branch(
     let mut builder = CommitMessageBuilder::new(summary);
     builder
         .set_header(CommitMessageType::NarrativeChange)
-        .with_conversation_hash(conversation_hash.clone());
+        .with_session_log_path(session_path.clone());
     let commit_message = builder.build();
 
     vcs::stage(Some(vec!["."]))?;

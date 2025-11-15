@@ -668,6 +668,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
+    if let Err(e) = std::fs::create_dir_all(project_root.join(".vizier").join("sessions")) {
+        display::emit(
+            LogLevel::Error,
+            format!("Error creating .vizier/sessions directory: {e}"),
+        );
+        return Err(Box::<dyn std::error::Error>::from(e));
+    }
+
     let _auditor_cleanup = auditor::AuditorCleanup {
         debug: cli.global.debug,
         print_json: cli.global.json,
@@ -698,17 +706,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(session_id) = &cli.global.load_session {
-        if let Some(config_dir) = config::base_config_dir() {
-            let path = config_dir
+        let repo_session = project_root
+            .join(".vizier")
+            .join("sessions")
+            .join(session_id)
+            .join("session.json");
+
+        let messages = if repo_session.exists() {
+            auditor::Auditor::load_session_messages_from_path(&repo_session)?
+        } else if let Some(config_dir) = config::base_config_dir() {
+            let legacy = config_dir
                 .join("vizier")
                 .join(format!("{}.json", session_id));
-            if path.exists() {
-                let messages = serde_json::from_str(&std::fs::read_to_string(path)?)?;
-                auditor::Auditor::replace_messages(&messages);
+            if legacy.exists() {
+                auditor::Auditor::load_session_messages_from_path(&legacy)?
             } else {
                 return Err("could not find session file".into());
             }
-        }
+        } else {
+            return Err("could not find session file".into());
+        };
+
+        auditor::Auditor::replace_messages(&messages);
     }
 
     cfg.no_session = cli.global.no_session;

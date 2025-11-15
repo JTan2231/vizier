@@ -1,9 +1,10 @@
 ---
 plan: convo
 branch: draft/convo
-status: draft
+status: implemented
 created_at: 2025-11-15T16:35:43Z
 spec_source: inline
+implemented_at: 2025-11-15T17:02:32Z
 ---
 
 ## Operator Spec
