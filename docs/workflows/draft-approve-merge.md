@@ -6,7 +6,7 @@ This guide explains how Vizier’s plan workflow turns a high-level spec into au
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.
 2. **`vizier approve <slug>`** — Applies the plan on `draft/<slug>` from within another temporary worktree, staging and committing the resulting edits on that branch only.
-3. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, and performs a non–fast-forward merge into the target branch with plan metadata embedded in the commit.
+3. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, and performs a non–fast-forward merge into the target branch with the stored plan embedded under an `Implementation Plan:` block in the merge commit.
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
@@ -74,7 +74,9 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 5. Checks out the target branch locally (switches branches if needed).
 
 **Merge mechanics**
-- Builds a merge commit body containing the plan slug, branch, spec source, status, summary, optional operator note (`--note`), and the full plan text.
+- Builds a merge commit with subject `feat: merge plan <slug>` and a body that only contains
+  - An optional `Operator Note: …` line when `--note` is present.
+  - An `Implementation Plan:` block that inlines the stored plan document (or a placeholder if the file cannot be read).
 - Calls `vcs::prepare_merge` for a non–fast-forward merge. If there are no conflicts, `vizier merge` immediately commits the merge with parents `[target, draft/<slug>]` and prints the resulting SHA.
 - When conflicts occur, Vizier writes `.vizier/tmp/merge-conflicts/<slug>.json` with the HEAD/source commit IDs and conflict list, then:
   - With `--auto-resolve-conflicts`, runs Codex inside the repo to try resolving and, if successful, finalizes the merge automatically.
@@ -83,7 +85,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - `--yes` skips the confirmation prompt, and `--target/--branch` behave like they do for `approve`.
 
 **Post-merge artifacts**
-- Merge commit on the target branch titled `feat: merge plan <slug>` with plan metadata embedded in the body.
+- Merge commit on the target branch titled `feat: merge plan <slug>` with the plan document embedded under `Implementation Plan:` (plus any optional operator note).
 - Optional branch deletion (local only).
 - `.vizier/tmp/merge-conflicts/<slug>.json` cleaned up automatically when the merge completes.
 

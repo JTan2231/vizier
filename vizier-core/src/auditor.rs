@@ -421,9 +421,7 @@ impl Auditor {
     }
 
     fn prompt_info(project_root: &Path, cfg: &config::Config) -> SessionPromptInfo {
-        let prompt_path = project_root
-            .join(".vizier")
-            .join("BASE_SYSTEM_PROMPT.md");
+        let prompt_path = project_root.join(".vizier").join("BASE_SYSTEM_PROMPT.md");
         let prompt_hash = {
             let prompt = cfg.get_prompt(config::SystemPrompt::Base);
             let digest = Sha256::digest(prompt.as_bytes());
@@ -454,10 +452,7 @@ impl Auditor {
         project_root: &Path,
         log: &SessionLog,
     ) -> Result<SessionArtifact, std::io::Error> {
-        let sessions_dir = project_root
-            .join(".vizier")
-            .join("sessions")
-            .join(&log.id);
+        let sessions_dir = project_root.join(".vizier").join("sessions").join(&log.id);
         fs::create_dir_all(&sessions_dir)?;
 
         let session_path = sessions_dir.join("session.json");
