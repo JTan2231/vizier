@@ -1,6 +1,6 @@
 use git2::{
-    BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
-    StatusOptions, build::CheckoutBuilder,
+    BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort, StatusOptions,
+    build::CheckoutBuilder,
 };
 use std::path::{Path, PathBuf};
 
