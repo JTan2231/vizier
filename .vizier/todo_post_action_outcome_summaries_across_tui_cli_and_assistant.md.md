@@ -1,26 +1,26 @@
 Thread: Outcome summaries across interfaces. Depends on Snapshot: Running Snapshot — updated (Outcome summaries: implement standardized component and prompt nudge).
 
 Problem (behavioral):
-- After actions (ask/chat/apply/save), users don’t get a concise, factual summary of what actually occurred. TUI and CLI messages are inconsistent; assistant final response is verbose and loosely coupled to audited changes.
+- After actions (ask/apply/save), users don’t get a concise, factual summary of what actually occurred. CLI messaging is inconsistent; assistant final response is verbose and loosely coupled to audited changes.
 - This causes uncertainty about: files touched, hunks staged, commits created, gates encountered, and what to do next.
 
 Desired behavior:
 - Standardize a compact “What happened” Outcome Summary available in both CLI (epilogue) and TUI (right/foot pane), sourced from Auditor/VCS facts. Assistant final message mirrors this structure.
 
 Acceptance criteria:
-1) Every user-visible action path (CLI ask, CLI save, Chat TUI apply/continue) ends with an Outcome Summary containing:
+1) Every user-visible assistant action path (CLI ask, CLI save, and any future TUI apply/continue surface) ends with an Outcome Summary containing:
    - Operations: action label (e.g., ask/apply/save), elapsed time, model used.
    - Changes: counts for files A/M/D/R, hunks, and lines +/-.
    - Commits: whether a conversation commit occurred, whether a .vizier commit occurred, and whether a code commit occurred (Y/N) with SHAs if created.
    - Gates: whether Pending Commit gate is open, accepted, rejected, or skipped (and why: auto_commit, non_interactive, or no changes).
    - Next steps: 1–2 imperative suggestions (e.g., “Press A to accept pending commit” in TUI, or “Run `vizier save` to commit” in CLI).
-2) TUI: Dedicated Outcome panel that auto-refreshes after tool calls and on gate transitions; never obscures the diff pane. Minimal key to toggle expand/collapse.
+2) TUI: (Deferred) Dedicated Outcome panel that auto-refreshes after tool calls and on gate transitions; never obscures the diff pane. Minimal key to toggle expand/collapse.
 3) CLI: Epilogue block printed at the end of commands. Hidden with `--quiet`; JSON with `--json`.
 4) Assistant final message: Ends with a terse Outcome block that exactly matches the Auditor facts. If no changes, clearly states “No code changes were created.”
 5) Tests cover: presence/format under (a) no changes, (b) pending commit open, (c) auto-commit on, (d) rejected changes, (e) failure paths (shows error summary).
 
 Pointers:
-- Auditor facts source; VCS helpers for counts; vizier-cli/src/actions.rs for CLI epilogues; chat TUI render pane (vizier-core/src/chat.rs or TUI surface if present).
+- Auditor facts source; VCS helpers for counts; vizier-cli/src/actions.rs and vizier-core/src/display.rs for CLI epilogues and renderer-neutral events.
 
 Implementation Notes (justified: safety/correctness):
 - Outcome must reflect actual repo state post-action. Derive from VCS/Auditor, not model text. Ensure atomicity: compute after any writes and before process exit; in TUI, recompute on each state transition.
@@ -35,7 +35,7 @@ Implementation Notes (justified: safety/correctness):
 
 
 ---
-Update (2025-10-02): Outcome summaries are now the canonical epilogue for actions initiated under DAP. Scope focused on CLI-first; a chat TUI exists, but a dedicated Outcome panel is deferred. Acceptance: After any assistant-initiated change (snapshot/TODO), the CLI prints a compact factual summary sourced from Auditor/VCS facts. Assistant final turn mirrors it. Tests to assert message presence and contents.
+Update (2025-10-02): Outcome summaries are now the canonical epilogue for actions initiated under DAP. Scope stays CLI-first; no alt-screen UI exists today, and the Outcome panel remains deferred until a new surface ships. Acceptance: After any assistant-initiated change (snapshot/TODO), the CLI prints a compact factual summary sourced from Auditor/VCS facts. Assistant final turn mirrors it. Tests to assert message presence and contents.
 
 
 ---
@@ -61,15 +61,15 @@ Update (2025-10-07): Codex backend is now the default execution path (vizier-cor
 
 ---
 Status update:
-- Auditor now backs the chat path, so Outcome summaries can source A/M/D/R facts reliably after chat operations.
+- Auditor now backs every assistant path, so Outcome summaries can source A/M/D/R facts reliably after ask/save/draft operations.
 - Some commands already emit ad-hoc human epilogues to stdout (e.g., `Save complete; …`, `Snapshot bootstrap complete; …`, `Clean complete; …`), but these are not standardized and there is no outcome.v1 JSON path.
 
 Clarifications:
-- Ensure the Outcome epilogue appears after every chat action and matches Auditor facts exactly.
+- Ensure the Outcome epilogue appears after every assistant action and matches Auditor facts exactly.
 - In protocol mode, the outcome.v1 JSON must include audited counts, file lists (optional, bounded), and gate state.
 
 Acceptance criteria additions:
-- For a chat that produces no changes, Outcome explicitly reports zero-diff state with a clear message and JSON {diff:false}.
+- For an action that produces no changes, Outcome explicitly reports zero-diff state with a clear message and JSON {diff:false}.
 - For destructive diffs with confirm_destructive=true, Outcome reflects "blocked: confirmation required" and no changes applied.
 
 
