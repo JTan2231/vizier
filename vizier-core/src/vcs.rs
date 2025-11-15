@@ -407,14 +407,6 @@ impl RealCredentialExecutor {
         }
     }
 
-    fn ssh_agent_failure_message(err: &Error) -> String {
-        if err.class() == ErrorClass::Ssh && err.code() == ErrorCode::Auth {
-            "ssh-agent had no matching keys or rejected the request".to_string()
-        } else {
-            sanitize_error_message(err)
-        }
-    }
-
     fn ssh_file_failure_message(err: &Error) -> String {
         if err.class() == ErrorClass::Ssh && err.code() == ErrorCode::Auth {
             "key requires a passphrase or ssh-agent session".to_string()

@@ -485,6 +485,7 @@ async fn save(
         system_prompt,
         save_instruction,
         tools::active_tooling(),
+        None,
     )
     .await?;
 
@@ -797,6 +798,7 @@ pub async fn inline_command(
         system_prompt,
         user_message,
         tools::active_tooling(),
+        None,
     )
     .await
     {
@@ -895,10 +897,15 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
                 Box::from(format!("build_prompt: {err}"))
             })?;
 
-        let llm_response =
-            Auditor::llm_request_with_tools(None, prompt, spec_text.clone(), Vec::new())
-                .await
-                .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
+        let llm_response = Auditor::llm_request_with_tools(
+            None,
+            prompt,
+            spec_text.clone(),
+            Vec::new(),
+            Some(codex::CodexModel::Gpt5Codex),
+        )
+        .await
+        .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
 
         let plan_body = llm_response.content;
         let document = plan::render_plan_document(
