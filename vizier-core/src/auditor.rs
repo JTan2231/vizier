@@ -1,8 +1,13 @@
 use chrono::Utc;
+use git2::Repository;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::env;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::{
     sync::mpsc::{Sender, channel},
@@ -39,35 +44,12 @@ pub struct AuditorCleanup {
 
 impl Drop for AuditorCleanup {
     fn drop(&mut self) {
-        if let Ok(auditor) = AUDITOR.lock() {
-            // double negative, I know
-            if auditor.messages.len() > 0 && !config::get_config().no_session {
-                let output = serde_json::to_string_pretty(&auditor.messages).unwrap();
-                if let Some(config_dir) = config::base_config_dir() {
-                    let sessions_dir = config_dir.join("vizier").join("sessions");
-                    if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
-                        display::warn(format!("Failed to create sessions directory: {}", e));
-                        display::warn("Session left unsaved");
+        if let Some(artifact) = Auditor::persist_session_log() {
+            display::info(format!("Session saved to {}", artifact.display_path()));
 
-                        return;
-                    }
-
-                    match std::fs::write(
-                        sessions_dir.join(format!("./{}.json", auditor.session_id)),
-                        output.clone(),
-                    ) {
-                        Ok(_) => {
-                            display::info(format!("Session saved to {}", auditor.session_start))
-                        }
-                        Err(e) => display::emit(
-                            display::LogLevel::Error,
-                            format!("Error writing session file {}: {}", "./debug.json", e),
-                        ),
-                    };
-                }
-
-                if self.print_json {
-                    println!("{}", output);
+            if self.print_json {
+                if let Ok(contents) = fs::read_to_string(&artifact.path) {
+                    println!("{}", contents);
                 }
             }
         }
@@ -154,6 +136,8 @@ pub struct Auditor {
     session_id: String,
     #[serde(skip)]
     usage_unknown: bool,
+    #[serde(skip)]
+    last_session_artifact: Option<SessionArtifact>,
 }
 
 impl Auditor {
@@ -165,6 +149,7 @@ impl Auditor {
             session_start: now.to_string(),
             session_id: uuid::Uuid::new_v4().to_string(),
             usage_unknown: false,
+            last_session_artifact: None,
         }
     }
 
@@ -221,12 +206,10 @@ impl Auditor {
         }
     }
 
-    /// Commit the conversation (if it exists, which it should), then the narrative diff (if it exists)
-    /// Returns the commit hash for the conversation, or an empty string if there's nothing to
-    /// commit
-    ///
-    /// Really, though, if this is called then there should _always_ be a resulting commit hash
-    pub async fn commit_audit() -> Result<String, Box<dyn std::error::Error>> {
+    /// Persist the session log + commit narrative changes (if any).
+    /// Returns the session artifact that now owns the transcript for downstream plumbing.
+    pub async fn commit_audit() -> Result<Option<SessionArtifact>, Box<dyn std::error::Error>> {
+        let session_artifact = Self::persist_session_log();
         let project_root = match find_project_root()? {
             Some(p) => p,
             None => std::path::PathBuf::from("."),
@@ -240,7 +223,7 @@ impl Auditor {
         }
 
         if !file_tracking::FileTracker::has_pending_changes() {
-            return Ok(String::new());
+            return Ok(session_artifact);
         }
 
         let root = project_root.to_str().unwrap();
@@ -259,49 +242,16 @@ impl Auditor {
             );
         }
 
-        let currently_staged = vcs::snapshot_staged(root)?;
-        if currently_staged.len() > 0 {
-            vcs::unstage(Some(
-                currently_staged
-                    .iter()
-                    .filter(|s| !s.path.contains(".vizier"))
-                    .map(|s| s.path.as_str())
-                    .collect(),
-            ))?;
-        }
-
-        // starting to think that this should always be the case
-        let conversation_hash = if AUDITOR.lock().unwrap().messages.len() > 0 {
-            let conversation = Self::conversation_to_string();
-
-            // unstage staged changes -> commit conversation -> restore staged changes
-            display::info("Committing conversation...");
-
-            let mut commit_message = CommitMessageBuilder::new(conversation)
-                .set_header(CommitMessageType::Conversation)
-                .build();
-
-            if crate::config::get_config().commit_confirmation {
-                if let Some(new_message) = crate::editor::run_editor(&commit_message).await? {
-                    commit_message = new_message;
-                }
-            }
-
-            let hash = vcs::add_and_commit(None, &commit_message, true)?.to_string();
-            display::info("Committed conversation");
-
-            hash
-        } else {
-            String::new()
-        };
-
         if let Some(commit_message) = diff_message {
             display::info("Committing TODO changes...");
             file_tracking::FileTracker::commit_changes(
-                &conversation_hash,
                 &CommitMessageBuilder::new(commit_message)
                     .set_header(CommitMessageType::NarrativeChange)
-                    .with_conversation_hash(conversation_hash.clone())
+                    .with_session_log_path(
+                        session_artifact
+                            .as_ref()
+                            .map(|artifact| artifact.display_path()),
+                    )
                     .build(),
             )
             .await?;
@@ -309,17 +259,217 @@ impl Auditor {
             display::info("Committed TODO changes");
         }
 
-        if currently_staged.len() > 0 {
-            vcs::stage(Some(
-                currently_staged
-                    .iter()
-                    .filter(|s| !s.path.contains(".vizier"))
-                    .map(|s| s.path.as_str())
-                    .collect(),
-            ))?;
+        Ok(session_artifact)
+    }
+
+    pub fn load_session_messages_from_path(
+        path: &Path,
+    ) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        Ok(Self::parse_session_messages(&contents)?)
+    }
+
+    fn parse_session_messages(
+        contents: &str,
+    ) -> Result<Vec<wire::types::Message>, serde_json::Error> {
+        if let Ok(wrapper) = serde_json::from_str::<SessionLogWrapper>(contents) {
+            return Ok(wrapper.messages);
         }
 
-        Ok(conversation_hash)
+        serde_json::from_str(contents)
+    }
+
+    pub fn persist_session_log() -> Option<SessionArtifact> {
+        if config::get_config().no_session {
+            return None;
+        }
+
+        let project_root = match find_project_root().ok().flatten() {
+            Some(root) => root,
+            None => return None,
+        };
+
+        let log = {
+            let auditor = AUDITOR.lock().ok()?;
+            auditor.build_session_log(&project_root)?
+        };
+
+        match Self::write_session_file(&project_root, &log) {
+            Ok(artifact) => {
+                if let Ok(mut auditor) = AUDITOR.lock() {
+                    auditor.last_session_artifact = Some(artifact.clone());
+                }
+                Some(artifact)
+            }
+            Err(err) => {
+                display::warn(format!(
+                    "Failed to write session log for {}: {}",
+                    log.id, err
+                ));
+                None
+            }
+        }
+    }
+
+    fn build_session_log(&self, project_root: &Path) -> Option<SessionLog> {
+        if self.messages.is_empty() {
+            return None;
+        }
+
+        let cfg = config::get_config();
+        Some(SessionLog {
+            schema: "vizier.session.v1".to_string(),
+            id: self.session_id.clone(),
+            created_at: self.session_start.clone(),
+            updated_at: Utc::now().to_rfc3339(),
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            workflow_type: Self::workflow_label(),
+            mode: Self::mode_label(),
+            repo: Self::repo_snapshot(project_root),
+            config_effective: Self::config_snapshot(&cfg),
+            system_prompt: Self::prompt_info(project_root, &cfg),
+            model: SessionModelInfo {
+                provider: if cfg.backend == config::BackendKind::Codex {
+                    "codex".to_string()
+                } else {
+                    "wire".to_string()
+                },
+                name: cfg.provider_model.clone(),
+                reasoning_effort: cfg
+                    .reasoning_effort
+                    .as_ref()
+                    .map(|level| format!("{level:?}")),
+            },
+            messages: self.messages.clone(),
+            operations: Vec::new(),
+            artifacts: Vec::new(),
+            outcome: SessionOutcome {
+                status: "completed".to_string(),
+                summary: Self::summarize_assistant(&self.messages),
+            },
+        })
+    }
+
+    fn workflow_label() -> String {
+        env::args()
+            .nth(1)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "cli".to_string())
+    }
+
+    fn mode_label() -> String {
+        env::var("VIZIER_MODE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "default".to_string())
+    }
+
+    fn repo_snapshot(project_root: &Path) -> SessionRepoState {
+        if let Ok(repo) = Repository::open(project_root) {
+            let (branch, head) = match repo.head() {
+                Ok(reference) if reference.is_branch() => {
+                    let b = reference.shorthand().map(|s| s.to_string());
+                    let h = reference
+                        .peel_to_commit()
+                        .ok()
+                        .map(|commit| commit.id().to_string());
+                    (b, h)
+                }
+                Ok(reference) => (
+                    None,
+                    reference
+                        .peel_to_commit()
+                        .ok()
+                        .map(|commit| commit.id().to_string()),
+                ),
+                Err(_) => (None, None),
+            };
+
+            SessionRepoState {
+                root: project_root.display().to_string(),
+                branch,
+                head,
+            }
+        } else {
+            SessionRepoState {
+                root: project_root.display().to_string(),
+                branch: None,
+                head: None,
+            }
+        }
+    }
+
+    fn config_snapshot(cfg: &config::Config) -> serde_json::Value {
+        json!({
+            "backend": cfg.backend.to_string(),
+            "fallback_backend": cfg.fallback_backend.map(|kind| kind.to_string()),
+            "commit_confirmation": cfg.commit_confirmation,
+            "reasoning_effort": cfg
+                .reasoning_effort
+                .as_ref()
+                .map(|level| format!("{level:?}")),
+            "codex": {
+                "binary": cfg.codex.binary_path.display().to_string(),
+                "profile": cfg.codex.profile.clone(),
+                "bounds_prompt": cfg
+                    .codex
+                    .bounds_prompt_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            },
+        })
+    }
+
+    fn prompt_info(project_root: &Path, cfg: &config::Config) -> SessionPromptInfo {
+        let prompt_path = project_root
+            .join(".vizier")
+            .join("BASE_SYSTEM_PROMPT.md");
+        let prompt_hash = {
+            let prompt = cfg.get_prompt(config::SystemPrompt::Base);
+            let digest = Sha256::digest(prompt.as_bytes());
+            format!("{:x}", digest)
+        };
+
+        SessionPromptInfo {
+            path: prompt_path
+                .exists()
+                .then(|| prompt_path.strip_prefix(project_root).ok())
+                .flatten()
+                .map(|relative| relative.to_string_lossy().to_string()),
+            hash: prompt_hash,
+        }
+    }
+
+    fn summarize_assistant(messages: &[wire::types::Message]) -> Option<String> {
+        for message in messages.iter().rev() {
+            if message.message_type == wire::types::MessageType::Assistant {
+                return Some(message.content.clone());
+            }
+        }
+
+        None
+    }
+
+    fn write_session_file(
+        project_root: &Path,
+        log: &SessionLog,
+    ) -> Result<SessionArtifact, std::io::Error> {
+        let sessions_dir = project_root
+            .join(".vizier")
+            .join("sessions")
+            .join(&log.id);
+        fs::create_dir_all(&sessions_dir)?;
+
+        let session_path = sessions_dir.join("session.json");
+        let tmp_path = sessions_dir.join("session.json.tmp");
+        let buffer = serde_json::to_vec_pretty(log)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let mut tmp = File::create(&tmp_path)?;
+        tmp.write_all(&buffer)?;
+        tmp.sync_all()?;
+        fs::rename(&tmp_path, &session_path)?;
+
+        Ok(SessionArtifact::new(&log.id, session_path, project_root))
     }
 
     /// Basic LLM request without tool usage
@@ -656,10 +806,87 @@ pub enum CommitMessageType {
 pub struct CommitMessageBuilder {
     header: String,
     session_id: String,
-    // This should only be None for the conversation commits themselves
-    conversation_hash: Option<String>,
+    session_log_path: Option<String>,
     author_note: Option<String>,
     body: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SessionRepoState {
+    root: String,
+    branch: Option<String>,
+    head: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SessionPromptInfo {
+    path: Option<String>,
+    hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SessionModelInfo {
+    provider: String,
+    name: String,
+    reasoning_effort: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SessionOutcome {
+    status: String,
+    summary: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SessionLog {
+    schema: String,
+    id: String,
+    created_at: String,
+    updated_at: String,
+    tool_version: String,
+    workflow_type: String,
+    mode: String,
+    repo: SessionRepoState,
+    config_effective: serde_json::Value,
+    system_prompt: SessionPromptInfo,
+    model: SessionModelInfo,
+    messages: Vec<wire::types::Message>,
+    operations: Vec<serde_json::Value>,
+    artifacts: Vec<String>,
+    outcome: SessionOutcome,
+}
+
+#[derive(Deserialize)]
+struct SessionLogWrapper {
+    messages: Vec<wire::types::Message>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionArtifact {
+    pub id: String,
+    pub path: PathBuf,
+    relative_path: Option<String>,
+}
+
+impl SessionArtifact {
+    fn new(id: &str, path: PathBuf, project_root: &Path) -> Self {
+        let relative = path
+            .strip_prefix(project_root)
+            .ok()
+            .map(|value| value.to_string_lossy().to_string());
+
+        Self {
+            id: id.to_string(),
+            path,
+            relative_path: relative,
+        }
+    }
+
+    pub fn display_path(&self) -> String {
+        self.relative_path
+            .clone()
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
 }
 
 #[cfg(test)]
@@ -700,7 +927,7 @@ impl CommitMessageBuilder {
         Self {
             header: "VIZIER".to_string(),
             session_id: AUDITOR.lock().unwrap().session_id.clone(),
-            conversation_hash: None,
+            session_log_path: None,
             author_note: None,
             body,
         }
@@ -724,8 +951,8 @@ impl CommitMessageBuilder {
         self
     }
 
-    pub fn with_conversation_hash(&mut self, conversation_hash: String) -> &mut Self {
-        self.conversation_hash = Some(conversation_hash);
+    pub fn with_session_log_path(&mut self, session_log_path: Option<String>) -> &mut Self {
+        self.session_log_path = session_log_path;
 
         self
     }
@@ -733,8 +960,8 @@ impl CommitMessageBuilder {
     pub fn build(&self) -> String {
         let mut message = format!("{}\nSession ID: {}", self.header.clone(), self.session_id);
 
-        if let Some(ch) = &self.conversation_hash {
-            message = format!("{}\nConversation: {}", message, ch);
+        if let Some(path) = &self.session_log_path {
+            message = format!("{}\nSession Log: {}", message, path);
         }
 
         if let Some(an) = &self.author_note {

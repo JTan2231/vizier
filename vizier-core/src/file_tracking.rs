@@ -56,10 +56,7 @@ impl FileTracker {
     /// Commits changes specific to the `.vizier` directory--primarily intended as a log for Vizier
     /// changes to existing TODOs and narrative threads
     /// Doesn't do anything if there are no changes to commit
-    pub async fn commit_changes(
-        _conversation_hash: &str,
-        message: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn commit_changes(message: &str) -> Result<(), Box<dyn std::error::Error>> {
         if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
             return Ok(());
         }

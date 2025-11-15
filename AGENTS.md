@@ -2,3 +2,4 @@ Please observe `.vizier/.snapshot`, the README.md, and the various prompts in li
 Please also take a careful look around the implementation to understand the architectural and styling patterns before implementating
 
 Need the draft → approve → merge choreography? Read `docs/workflows/draft-approve-merge.md` before editing plan branches so you understand how Vizier manages worktrees, commits, and merge sentinels.
+Session transcripts now live under `.vizier/sessions/<session_id>/session.json`; reference those artifacts (not Git commits) when you need to audit prior conversations or reload context.

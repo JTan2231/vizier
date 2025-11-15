@@ -103,3 +103,7 @@ Pointers:
 
 Implementation Notes (safety/correctness):
 - Write-to-temp + fsync + atomic rename for each checkpoint/finalization; validate against a minimal MVP JSONSchema before rename.
+
+---
+
+Update (2025-11-15): Repo-local session logging is now wired. Each CLI run writes `.vizier/sessions/<session_id>/session.json` (transcript, repo state, config snapshot, prompt hash, model info, outcome summary) via the Auditor, commit messages reference the session path, CLI epilogues print `session=<path>`, and integration tests assert that the log exists after `vizier save` and contains the mock Codex response. Legacy `--load-session` falls back to the old config-dir JSON but prefers the new repo-local artifact. Follow-ups: add schema validation + resume UX, capture gate transitions/A/M/D/R facts inside the JSON, and expose redaction controls.
