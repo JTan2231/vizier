@@ -321,6 +321,8 @@ pub async fn run_exec(
         .arg("--dangerously-bypass-approvals-and-sandbox")
         .arg("--model")
         .arg(req.model.as_model_name())
+        .arg("-c")
+        .arg("model_reasoning_effort=\"high\"")
         .arg("--json")
         .arg("--output-last-message")
         .arg(&output_path)
