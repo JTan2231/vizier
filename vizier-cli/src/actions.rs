@@ -1,16 +1,14 @@
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-use chrono::{SecondsFormat, Utc};
-use tempfile::{Builder, NamedTempFile, TempPath};
-use uuid::Uuid;
+use git2::{BranchType, Repository};
+use tempfile::{Builder, TempPath};
 
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme, add_worktree_for_branch,
-    branch_exists, commit_paths_in_repo, create_branch_from, delete_branch, detect_primary_branch,
+    commit_paths_in_repo, create_branch_from, delete_branch, detect_primary_branch,
     remove_worktree, repo_root,
 };
 use vizier_core::{
@@ -22,6 +20,8 @@ use vizier_core::{
     display::{self, LogLevel},
     file_tracking, prompting, tools, vcs,
 };
+
+use crate::plan;
 
 fn clip_message(msg: &str) -> String {
     const LIMIT: usize = 90;
@@ -171,169 +171,16 @@ pub struct DraftArgs {
     pub name_override: Option<String>,
 }
 
-fn normalize_slug(input: &str) -> String {
-    let mut normalized = String::new();
-    let mut last_dash = false;
-
-    for ch in input.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            normalized.push(lower);
-            last_dash = false;
-        } else if !last_dash {
-            normalized.push('-');
-            last_dash = true;
-        }
-    }
-
-    while normalized.starts_with('-') {
-        normalized.remove(0);
-    }
-    while normalized.ends_with('-') {
-        normalized.pop();
-    }
-
-    if normalized.len() > 32 {
-        normalized.truncate(32);
-        while normalized.ends_with('-') {
-            normalized.pop();
-        }
-    }
-
-    normalized
-}
-
-fn slug_from_spec(spec: &str) -> String {
-    let words: Vec<&str> = spec.split_whitespace().take(6).collect();
-    let candidate = if words.is_empty() {
-        "draft-plan".to_string()
-    } else {
-        words.join("-")
-    };
-
-    let normalized = normalize_slug(&candidate);
-    if normalized.is_empty() {
-        "draft-plan".to_string()
-    } else {
-        normalized
-    }
-}
-
-fn sanitize_name_override(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("plan name cannot be empty".to_string());
-    }
-    if trimmed.starts_with('.') {
-        return Err("plan name cannot start with '.'".to_string());
-    }
-    if trimmed.contains('/') {
-        return Err("plan name cannot contain '/'".to_string());
-    }
-    let normalized = normalize_slug(trimmed);
-    if normalized.is_empty() {
-        Err("plan name must include letters or numbers".to_string())
-    } else {
-        Ok(normalized)
-    }
-}
-
-fn short_suffix() -> String {
-    let raw = Uuid::new_v4().simple().to_string();
-    raw[..8].to_string()
-}
-
-fn ensure_unique_slug(
-    base: &str,
-    plan_dir: &Path,
-    branch_prefix: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let mut attempts = 0usize;
-    let mut slug = base.to_string();
-
-    loop {
-        let branch_name = format!("{branch_prefix}{slug}");
-        let plan_path = plan_dir.join(format!("{slug}.md"));
-        let branch_taken = branch_exists(&branch_name)
-            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-        if !branch_taken && !plan_path.exists() {
-            return Ok(slug);
-        }
-
-        attempts += 1;
-        if attempts <= 5 {
-            slug = normalize_slug(&format!("{base}-{attempts}"));
-            if slug.is_empty() {
-                slug = format!("{base}-{attempts}");
-                slug = normalize_slug(&slug);
-            }
-            continue;
-        }
-
-        slug = normalize_slug(&format!("{base}-{}", short_suffix()));
-        if slug.is_empty() {
-            slug = normalize_slug("draft-plan");
-        }
-
-        if attempts > 20 {
-            return Err("unable to allocate a unique draft slug after multiple attempts".into());
-        }
-    }
-}
-
-fn trim_trailing_newlines(text: &str) -> &str {
-    let trimmed = text.trim_end_matches(|c| c == '\n' || c == '\r');
-    if trimmed.is_empty() { "" } else { trimmed }
-}
-
-fn render_plan_document(
-    slug: &str,
-    branch_name: &str,
-    spec_source: &str,
-    spec_text: &str,
-    plan_body: &str,
-) -> String {
-    let mut doc = String::new();
-    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-
-    doc.push_str("---\n");
-    doc.push_str(&format!("plan: {slug}\n"));
-    doc.push_str(&format!("branch: {branch_name}\n"));
-    doc.push_str("status: draft\n");
-    doc.push_str(&format!("created_at: {timestamp}\n"));
-    doc.push_str(&format!("spec_source: {spec_source}\n"));
-    doc.push_str("---\n\n");
-
-    doc.push_str("## Operator Spec\n");
-    let spec_section = trim_trailing_newlines(spec_text);
-    if !spec_section.is_empty() {
-        doc.push_str(spec_section);
-    }
-    doc.push('\n');
-    doc.push('\n');
-
-    doc.push_str("## Implementation Plan\n");
-    let plan_section = plan_body.trim();
-    if plan_section.is_empty() {
-        doc.push_str("(plan generation returned empty content)");
-    } else {
-        doc.push_str(plan_section);
-    }
-    doc.push('\n');
-
-    doc
-}
-
-fn write_plan_file(destination: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| "invalid plan path: missing parent directory".to_string())?;
-    fs::create_dir_all(parent)?;
-    let mut tmp = NamedTempFile::new_in(parent)?;
-    tmp.write_all(contents.as_bytes())?;
-    tmp.flush()?;
-    tmp.persist(destination)?;
-    Ok(())
+#[derive(Debug, Clone)]
+pub struct ApproveOptions {
+    pub plan: Option<String>,
+    pub list_only: bool,
+    pub target: Option<String>,
+    pub branch_override: Option<String>,
+    pub assume_yes: bool,
+    pub delete_branch: bool,
+    pub note: Option<String>,
+    pub push_after: bool,
 }
 
 pub async fn docs_prompt(cmd: crate::DocsPromptCmd) -> Result<(), Box<dyn std::error::Error>> {
@@ -989,19 +836,19 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
     let branch_prefix = "draft/";
 
     let base_slug = if let Some(name) = name_override {
-        sanitize_name_override(&name)?
+        plan::sanitize_name_override(&name)?
     } else {
-        slug_from_spec(&spec_text)
+        plan::slug_from_spec(&spec_text)
     };
 
-    let slug = ensure_unique_slug(&base_slug, &plan_dir_main, branch_prefix)?;
+    let slug = plan::ensure_unique_slug(&base_slug, &plan_dir_main, branch_prefix)?;
     let branch_name = format!("{branch_prefix}{slug}");
-    let plan_rel_path = Path::new(".vizier/implementation-plans").join(format!("{slug}.md"));
+    let plan_rel_path = plan::plan_rel_path(&slug);
     let plan_display = plan_rel_path.to_string_lossy().to_string();
 
     let tmp_root = repo_root.join(".vizier/tmp-worktrees");
     fs::create_dir_all(&tmp_root)?;
-    let worktree_suffix = short_suffix();
+    let worktree_suffix = plan::short_suffix();
     let worktree_name = format!("vizier-draft-{slug}-{worktree_suffix}");
     let worktree_path = tmp_root.join(format!("{slug}-{worktree_suffix}"));
     let plan_in_worktree = worktree_path.join(&plan_rel_path);
@@ -1054,14 +901,14 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
                 .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
 
         let plan_body = llm_response.content;
-        let document = render_plan_document(
+        let document = plan::render_plan_document(
             &slug,
             &branch_name,
             &spec_source_label,
             &spec_text,
             &plan_body,
         );
-        write_plan_file(&plan_in_worktree, &document).map_err(
+        plan::write_plan_file(&plan_in_worktree, &document).map_err(
             |err| -> Box<dyn std::error::Error> {
                 Box::from(format!(
                     "write_plan_file({}): {err}",
@@ -1128,57 +975,218 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn slug_from_spec_limits_to_six_words() {
-        let slug = slug_from_spec("One two THREE four five six seven eight");
-        assert_eq!(slug, "one-two-three-four-five-six");
+pub fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error::Error>> {
+    if opts.list_only {
+        return list_pending_plans(opts.target.clone());
     }
 
-    #[test]
-    fn sanitize_override_rejects_invalid_prefixes() {
-        assert!(sanitize_name_override(".hidden").is_err());
-        assert!(sanitize_name_override("feature/branch").is_err());
-        assert_eq!(
-            sanitize_name_override("My Draft Name").unwrap(),
-            "my-draft-name"
+    let plan_name = opts
+        .plan
+        .as_deref()
+        .ok_or_else(|| "plan name is required unless --list is set")?;
+    let slug = plan::sanitize_name_override(plan_name)?;
+    let source_branch = opts
+        .branch_override
+        .clone()
+        .unwrap_or_else(|| plan::default_branch_for_slug(&slug));
+    let target_branch = resolve_target_branch(opts.target.clone())?;
+
+    vcs::ensure_clean_worktree().map_err(|err| {
+        Box::<dyn std::error::Error>::from(format!(
+            "clean working tree required before approval: {err}"
+        ))
+    })?;
+
+    let mut repo = Repository::discover(".")?;
+    let current_branch = current_branch_name(&repo)?;
+    if current_branch.as_deref() != Some(target_branch.as_str()) {
+        display::info(format!("Checking out {target_branch} before approval..."));
+        vcs::checkout_branch(&target_branch)?;
+        repo = Repository::discover(".")?;
+    }
+
+    let source = repo
+        .find_branch(&source_branch, BranchType::Local)
+        .map_err(|_| {
+            format!("draft branch {source_branch} not found; rerun vizier draft or pass --branch")
+        })?;
+    let source_commit = source.get().peel_to_commit()?;
+    let source_oid = source_commit.id();
+
+    let target_ref = repo
+        .find_branch(&target_branch, BranchType::Local)
+        .map_err(|_| format!("target branch {target_branch} not found"))?;
+    let target_commit = target_ref.into_reference().peel_to_commit()?;
+    let target_oid = target_commit.id();
+
+    if repo.graph_descendant_of(target_oid, source_oid)? {
+        println!(
+            "Plan {slug} already merged into {target_branch}; latest commit={}",
+            source_oid
         );
+        return Ok(());
     }
 
-    #[test]
-    fn render_plan_document_includes_metadata() -> Result<(), Box<dyn std::error::Error>> {
-        let doc = render_plan_document(
-            "alpha",
-            "draft/alpha",
-            "inline",
-            "spec body",
-            "## Execution Plan\n- step",
-        );
-        assert!(doc.contains("plan: alpha"));
-        assert!(doc.contains("branch: draft/alpha"));
-        assert!(doc.contains("spec body"));
-        assert!(doc.contains("## Implementation Plan"));
-        Ok(())
+    if !repo.graph_descendant_of(source_oid, target_oid)? {
+        display::warn(format!(
+            "{source_branch} does not include the latest {target_branch} commits; merge may require manual resolution."
+        ));
     }
 
-    #[test]
-    fn write_plan_file_creates_parents() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = tempdir()?;
-        let destination = tmp.path().join(".vizier/implementation-plans/sample.md");
-        let doc = render_plan_document(
-            "sample",
-            "draft/sample",
-            "inline",
-            "spec text",
-            "- plan body",
-        );
-        write_plan_file(&destination, &doc)?;
-        let contents = std::fs::read_to_string(destination)?;
-        assert!(contents.contains("sample"));
-        Ok(())
+    let plan_meta = plan::load_plan_from_branch(&slug, &source_branch)?;
+    if plan_meta.branch != source_branch {
+        display::warn(format!(
+            "Plan metadata references branch {} but --branch resolved to {source_branch}",
+            plan_meta.branch
+        ));
     }
+
+    if !opts.assume_yes {
+        show_plan_preview(&plan_meta, &source_branch);
+        if !prompt_for_confirmation("Proceed with merge? [y/N] ")? {
+            println!("Approval cancelled; no changes were made.");
+            return Ok(());
+        }
+    }
+
+    let commit_message = build_approve_commit_message(
+        &plan_meta,
+        plan_meta.slug.as_str(),
+        &source_branch,
+        opts.note.as_deref(),
+    );
+    let merge_oid = vcs::merge_branch_no_ff(&source_branch, &commit_message)?;
+
+    if opts.delete_branch {
+        let repo = Repository::discover(".")?;
+        if repo.graph_descendant_of(merge_oid, source_oid)? {
+            vcs::delete_branch(&source_branch)?;
+            display::info(format!("Deleted {source_branch} after approval"));
+        } else {
+            display::warn(format!(
+                "Skipping deletion of {source_branch}; merge commit did not include the branch tip."
+            ));
+        }
+    }
+
+    push_origin_if_requested(opts.push_after)?;
+    println!("Approved plan; merged {source_branch} into {target_branch}; commit={merge_oid}");
+    Ok(())
+}
+
+fn show_plan_preview(meta: &plan::PlanMetadata, branch: &str) {
+    println!("Plan: {}", meta.slug);
+    println!("Branch: {}", branch);
+    println!("Created: {}", meta.created_at_display());
+    println!(
+        "Spec source: {}",
+        meta.spec_source
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!("Spec summary: {}", plan::summarize_spec(meta));
+}
+
+fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let normalized = input.trim().to_ascii_lowercase();
+    Ok(matches!(normalized.as_str(), "y" | "yes"))
+}
+
+fn resolve_target_branch(
+    target_override: Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(target) = target_override {
+        return Ok(target);
+    }
+    detect_primary_branch().ok_or_else(|| "unable to detect primary branch; use --target".into())
+}
+
+fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let target_branch = resolve_target_branch(target_override)?;
+    let repo = Repository::discover(".")?;
+    let target_ref = repo
+        .find_branch(&target_branch, BranchType::Local)
+        .map_err(|_| format!("target branch {target_branch} not found"))?;
+    let target_commit = target_ref.into_reference().peel_to_commit()?;
+    let target_oid = target_commit.id();
+
+    let mut branches = repo.branches(Some(BranchType::Local))?;
+    let mut pending = 0usize;
+    while let Some(branch_res) = branches.next() {
+        let (branch, _) = branch_res?;
+        let Some(name) = branch.name()? else {
+            continue;
+        };
+        if !name.starts_with("draft/") {
+            continue;
+        }
+        let commit = branch.get().peel_to_commit()?;
+        if repo.graph_descendant_of(target_oid, commit.id())? {
+            continue;
+        }
+
+        let slug = name.trim_start_matches("draft/").to_string();
+        match plan::load_plan_from_branch(&slug, name) {
+            Ok(meta) => {
+                let summary = plan::summarize_spec(&meta).replace('"', "'");
+                println!(
+                    "plan={} branch={} created={} summary=\"{}\"",
+                    meta.slug,
+                    name,
+                    meta.created_at_display(),
+                    summary
+                );
+                pending += 1;
+            }
+            Err(err) => {
+                display::warn(format!("Failed to load plan metadata for {name}: {err}"));
+            }
+        }
+    }
+
+    if pending == 0 {
+        println!("No pending draft branches");
+    }
+
+    Ok(())
+}
+
+fn current_branch_name(repo: &Repository) -> Result<Option<String>, git2::Error> {
+    let head = repo.head()?;
+    if head.is_branch() {
+        Ok(head.shorthand().map(|s| s.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn build_approve_commit_message(
+    meta: &plan::PlanMetadata,
+    slug: &str,
+    source_branch: &str,
+    note: Option<&str>,
+) -> String {
+    let plan_doc = plan::plan_rel_path(slug);
+    let mut body = format!(
+        "Plan: {slug}\nBranch: {source_branch}\nPlan doc: {}\nStatus: {}\nSpec source: {}\nCreated: {}\nSummary: {}",
+        plan_doc.display(),
+        meta.status.clone().unwrap_or_else(|| "draft".to_string()),
+        meta.spec_source
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        meta.created_at_display(),
+        plan::summarize_spec(meta)
+    );
+
+    if let Some(note_text) = note.filter(|value| !value.trim().is_empty()) {
+        body.push_str(&format!("\nNotes: {}", note_text));
+    }
+
+    format!("feat: approve plan {slug}\n\n{body}")
 }
