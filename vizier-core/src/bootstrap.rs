@@ -110,6 +110,7 @@ pub async fn bootstrap_snapshot(
         instruction,
         tools::get_snapshot_tools(),
         None,
+        None,
     )
     .await?;
 

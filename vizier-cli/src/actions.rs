@@ -523,6 +523,7 @@ async fn save(
         save_instruction,
         tools::active_tooling(),
         None,
+        None,
     )
     .await?;
 
@@ -836,6 +837,7 @@ pub async fn inline_command(
         user_message,
         tools::active_tooling(),
         None,
+        None,
     )
     .await
     {
@@ -941,6 +943,7 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
             spec_text.clone(),
             Vec::new(),
             Some(codex::CodexModel::Gpt5Codex),
+            None,
         )
         .await
         .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
@@ -1357,6 +1360,7 @@ async fn apply_plan_in_worktree(
         tools::active_tooling(),
         progress_tx,
         Some(codex::CodexModel::Gpt5Codex),
+        Some(worktree_path.to_path_buf()),
     )
     .await?;
     if let Some(handle) = progress_handle {
@@ -1428,6 +1432,7 @@ async fn refresh_plan_branch(
         instruction,
         tools::active_tooling(),
         None,
+        Some(worktree_path.to_path_buf()),
     )
     .await?;
     let conversation_hash = Auditor::commit_audit().await?;

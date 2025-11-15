@@ -102,6 +102,7 @@ impl Chat {
                     tools,
                     tx_clone,
                     None,
+                    None,
                 )
                 .await
                 .unwrap()
