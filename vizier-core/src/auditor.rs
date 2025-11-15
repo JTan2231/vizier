@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tokio::sync::mpsc::channel;
+use tokio::{
+    sync::mpsc::{Sender, channel},
+    task::JoinHandle,
+};
 
 use crate::{
     codex,
@@ -21,6 +24,12 @@ pub struct TokenUsage {
     pub input_tokens: usize,
     pub output_tokens: usize,
     pub known: bool,
+}
+
+#[derive(Clone)]
+pub enum RequestStream {
+    Status(Sender<String>),
+    PassthroughStderr,
 }
 
 pub struct AuditorCleanup {
@@ -120,6 +129,19 @@ async fn prompt_wire_with_tools(
         client
             .prompt_with_tools_with_status(tx, &system_prompt, messages, tools)
             .await
+    }
+}
+
+fn channel_for_stream(
+    stream: &RequestStream,
+) -> (tokio::sync::mpsc::Sender<String>, Option<JoinHandle<()>>) {
+    match stream {
+        RequestStream::Status(tx) => (tx.clone(), None),
+        RequestStream::PassthroughStderr => {
+            let (silent_tx, mut silent_rx) = channel(32);
+            let handle = tokio::spawn(async move { while silent_rx.recv().await.is_some() {} });
+            (silent_tx, Some(handle))
+        }
     }
 }
 
@@ -391,6 +413,7 @@ impl Auditor {
                         bin: opts_clone.binary_path.clone(),
                         extra_args: opts_clone.extra_args.clone(),
                         model: resolved_codex_model,
+                        output_mode: codex::CodexOutputMode::EventsJson,
                     };
 
                     let response =
@@ -459,7 +482,7 @@ impl Auditor {
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
-        request_tx: tokio::sync::mpsc::Sender<String>,
+        stream: RequestStream,
         codex_model: Option<codex::CodexModel>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
@@ -476,14 +499,18 @@ impl Auditor {
 
         match backend {
             config::BackendKind::Wire => {
+                let (wire_tx, drain_handle) = channel_for_stream(&stream);
                 let response = prompt_wire_with_tools(
                     &*provider,
-                    request_tx.clone(),
+                    wire_tx,
                     &system_prompt,
                     messages.clone(),
                     tools.clone(),
                 )
                 .await?;
+                if let Some(handle) = drain_handle {
+                    let _ = handle.await;
+                }
 
                 let last = response.last().unwrap().clone();
                 Self::add_message(last.clone());
@@ -495,6 +522,15 @@ impl Auditor {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
+                let (output_mode, progress_hook) = match &stream {
+                    RequestStream::Status(tx) => (
+                        codex::CodexOutputMode::EventsJson,
+                        Some(codex::ProgressHook::Plain(tx.clone())),
+                    ),
+                    RequestStream::PassthroughStderr => {
+                        (codex::CodexOutputMode::PassthroughHuman, None)
+                    }
+                };
                 let request = codex::CodexRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
@@ -502,14 +538,10 @@ impl Auditor {
                     bin: codex_opts.binary_path.clone(),
                     extra_args: codex_opts.extra_args.clone(),
                     model: resolved_codex_model,
+                    output_mode,
                 };
 
-                match codex::run_exec(
-                    request,
-                    Some(codex::ProgressHook::Plain(request_tx.clone())),
-                )
-                .await
-                {
+                match codex::run_exec(request, progress_hook).await {
                     Ok(response) => {
                         let mut assistant_message = provider
                             .new_message(response.assistant_text.clone())
@@ -537,14 +569,18 @@ impl Auditor {
                             } else {
                                 tools.clone()
                             };
+                            let (fallback_tx, drain_handle) = channel_for_stream(&stream);
                             let response = prompt_wire_with_tools(
                                 &*provider,
-                                request_tx.clone(),
+                                fallback_tx,
                                 &fallback_prompt,
                                 messages.clone(),
                                 fallback_tools,
                             )
                             .await?;
+                            if let Some(handle) = drain_handle {
+                                let _ = handle.await;
+                            }
                             let last = response.last().unwrap().clone();
                             Self::add_message(last.clone());
                             Ok(last)
