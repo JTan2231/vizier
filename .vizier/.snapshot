@@ -28,7 +28,7 @@ Code state (behaviors that matter)
 - CLI exposes global `--load-session <id>` and `--no-session` flags that reload or disable those config-dir session logs via the Auditor, but they still operate on `~/.config/vizier/sessions/<id>.json` rather than the planned repo-local `.vizier/sessions/<id>/session.json` store.
 - Post‑action UX lacks a unified Outcome section; current ad‑hoc lines (e.g., "Save complete; …", snapshot bootstrap summary) are not standardized. Auditor facts for chat are available to drive a canonical epilogue. Outcome component remains a priority (CLI‑first with outcome.v1 JSON and stdout epilogue). Canonical TODO added.
 - No built-in agent command: Vizier intentionally lacks a `vizier agent run` flow; operators launch Codex directly and handle branch/PR plumbing outside the CLI.
-- AGENTS.md contract/log: The file remains a short reminder pointing agents back to README + snapshot; there is no in-repo decision log or interop schema beyond that note.
+- AGENTS.md contract/log: Still a short reminder that directs agents to README, `.vizier/.snapshot`, prompts, and now the draft→approve→merge workflow doc; no dedicated decision log or interop schema yet.
 - TODO GC not yet implemented; policy and levers defined; to be wired into save path and Auditor Outcome.
 - Docs prompts exist: `vizier docs prompt <scope>` scaffolds/prints architecture prompt templates; the architecture‑doc compliance gate is not yet enforced.
 - Policy prompts + remote runner contract: `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE` now bakes in the Default-Action Posture, commit-style summary guidance (assistant output as a concise Outcome line without dumping raw snapshot/TODO text), and a `vm_commands.sh` SSH remote-runner description; the helper script is referenced for operators but not yet wired into vizier-cli flows within this repo.
@@ -44,6 +44,7 @@ Code state (behaviors that matter)
 - `tests/src/lib.rs` exposes standard `#[test]` cases built on an `IntegrationRepo` fixture that clones `test-repo` + `.vizier` into per-test temp dirs, configures Git identity, and caches the release `vizier` binary via `OnceLock`. Coverage spans `vizier save` flows, approve/merge wiring, conflict auto-resolution, and sentinel creation without relying on a custom harness.
 - `vizier-core/src/vcs.rs` tests use a `TestRepo` fixture plus repo-aware helpers (`stage_in`, `add_and_commit_in`, `push_current_branch_in`, `unstage_in`) instead of mutating the process CWD, so `cargo test -p vizier-core` runs at default parallelism without `--test-threads=1`.
 - README.md documents `vizier draft`, `vizier approve` (implementation on the draft branch), and `vizier merge` (non‑FF merge with plan metadata) with accurate flags; copy updated to avoid drift. Dedicated DRAFT.md/APPROVE.md are still absent. [Cross: todo_README_add_approve_command.md]
+- docs/workflows/draft-approve-merge.md now walks operators through the `vizier draft → vizier approve → vizier merge` choreography, covering prerequisites, Git effects, conflict sentinels, walkthrough, FAQ, and compliance tie-ins.
 - Multi-agent workflows are ad-hoc: there is no structured runbook that walks operators through “discuss → snapshot sign-off → architecture doc draft → implement → code sign-off → save,” so intent can drift between agents and VCS gates.
 
 Acceptance checkpoints (selected)
