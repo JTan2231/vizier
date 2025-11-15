@@ -5,7 +5,6 @@ use std::process::Command;
 
 use git2::{BranchType, Repository};
 use tempfile::{Builder, TempPath};
-use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, PushErrorKind, RemoteScheme, add_worktree_for_branch,
@@ -18,7 +17,7 @@ use vizier_core::{
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
     codex, config,
-    display::{self, LogLevel, Verbosity},
+    display::{self, LogLevel},
     file_tracking, prompting, tools, vcs,
 };
 
@@ -137,27 +136,6 @@ fn token_usage_suffix() -> String {
     } else {
         " (tokens: unknown)".to_string()
     }
-}
-
-fn spawn_plain_progress_logger(
-    mut rx: mpsc::Receiver<String>,
-) -> Option<JoinHandle<()>> {
-    if matches!(
-        display::get_display_config().verbosity,
-        Verbosity::Quiet
-    ) {
-        return None;
-    }
-
-    Some(tokio::spawn(async move {
-        while let Some(line) = rx.recv().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            eprintln!("[codex] {trimmed}");
-        }
-    }))
 }
 
 #[derive(Debug, Clone)]
@@ -1038,9 +1016,7 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
     }
 
     if config::get_config().backend != config::BackendKind::Codex {
-        return Err(
-            "vizier approve requires the Codex backend; rerun with --backend codex".into(),
-        );
+        return Err("vizier approve requires the Codex backend; rerun with --backend codex".into());
     }
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1104,8 +1080,14 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
     let plan_path = worktree.plan_path(&spec.slug);
     let mut worktree = Some(worktree);
 
-    let approval =
-        apply_plan_in_worktree(&spec, &plan_meta, &worktree_path, &plan_path, opts.push_after).await;
+    let approval = apply_plan_in_worktree(
+        &spec,
+        &plan_meta,
+        &worktree_path,
+        &plan_path,
+        opts.push_after,
+    )
+    .await;
 
     match approval {
         Ok(commit_oid) => {
@@ -1225,7 +1207,10 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
 
     let current_branch = current_branch_name(&repo)?;
     if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
-        display::info(format!("Checking out {} before merge...", spec.target_branch));
+        display::info(format!(
+            "Checking out {} before merge...",
+            spec.target_branch
+        ));
         vcs::checkout_branch(&spec.target_branch)?;
     }
 
@@ -1351,29 +1336,22 @@ async fn apply_plan_in_worktree(
     let system_prompt = codex::build_prompt_for_codex(&instruction)
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
-    let (progress_tx, progress_rx) = mpsc::channel(64);
-    let progress_handle = spawn_plain_progress_logger(progress_rx);
     let response = Auditor::llm_request_with_tools_no_display(
         None,
         system_prompt,
         instruction.clone(),
         tools::active_tooling(),
-        progress_tx,
+        auditor::RequestStream::PassthroughStderr,
         Some(codex::CodexModel::Gpt5Codex),
         Some(worktree_path.to_path_buf()),
     )
     .await?;
-    if let Some(handle) = progress_handle {
-        let _ = handle.await;
-    }
 
     let conversation_hash = Auditor::commit_audit().await?;
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
-        return Err(
-            "Codex completed without modifying files; nothing new to approve.".into(),
-        );
+        return Err("Codex completed without modifying files; nothing new to approve.".into());
     }
 
     plan::set_plan_status(plan_path, "implemented", Some("implemented_at"))?;

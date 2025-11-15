@@ -100,7 +100,7 @@ impl Chat {
                     system_prompt,
                     input,
                     tools,
-                    tx_clone,
+                    auditor::RequestStream::Status(tx_clone),
                     None,
                     None,
                 )

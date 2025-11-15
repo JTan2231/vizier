@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -10,9 +10,10 @@ use serde_json::Value;
 use serde_json::json;
 use tempfile::NamedTempFile;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
     sync::Mutex,
+    task::JoinHandle,
 };
 
 use crate::{
@@ -51,6 +52,18 @@ impl Default for CodexModel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexOutputMode {
+    EventsJson,
+    PassthroughHuman,
+}
+
+impl Default for CodexOutputMode {
+    fn default() -> Self {
+        CodexOutputMode::EventsJson
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexRequest {
     pub prompt: String,
@@ -59,6 +72,7 @@ pub struct CodexRequest {
     pub bin: PathBuf,
     pub extra_args: Vec<String>,
     pub model: CodexModel,
+    pub output_mode: CodexOutputMode,
 }
 
 #[derive(Debug, Clone)]
@@ -303,6 +317,39 @@ fn load_bounds_prompt() -> Result<String, CodexError> {
     }
 }
 
+fn build_exec_args(req: &CodexRequest, output_path: &Path) -> Vec<OsString> {
+    let mut args = Vec::new();
+    args.push(OsString::from("exec"));
+    args.push(OsString::from("--dangerously-bypass-approvals-and-sandbox"));
+    args.push(OsString::from("--model"));
+    args.push(OsString::from(req.model.as_model_name()));
+    args.push(OsString::from("-c"));
+    args.push(OsString::from("model_reasoning_effort=\"high\""));
+    if matches!(req.output_mode, CodexOutputMode::EventsJson) {
+        args.push(OsString::from("--json"));
+    }
+    args.push(OsString::from("--output-last-message"));
+    args.push(output_path.as_os_str().to_os_string());
+    args.push(OsString::from("--cd"));
+    args.push(req.repo_root.clone().into_os_string());
+
+    if let Some(profile) = &req.profile {
+        args.push(OsString::from("-p"));
+        args.push(OsString::from(profile));
+    }
+
+    for extra in &req.extra_args {
+        args.push(OsString::from(extra));
+    }
+
+    args.push(OsString::from("-"));
+    args
+}
+
+#[cfg_attr(
+    feature = "mock_llm",
+    allow(unused_variables, unreachable_code)
+)]
 pub async fn run_exec(
     req: CodexRequest,
     progress: Option<ProgressHook>,
@@ -316,28 +363,9 @@ pub async fn run_exec(
     let output_path = _tempfile_guard.path().to_path_buf();
 
     let mut command = Command::new(&req.bin);
-    command
-        .arg("exec")
-        .arg("--dangerously-bypass-approvals-and-sandbox")
-        .arg("--model")
-        .arg(req.model.as_model_name())
-        .arg("-c")
-        .arg("model_reasoning_effort=\"high\"")
-        .arg("--json")
-        .arg("--output-last-message")
-        .arg(&output_path)
-        .arg("--cd")
-        .arg(&req.repo_root);
-
-    if let Some(profile) = &req.profile {
-        command.arg("-p").arg(profile);
+    for arg in build_exec_args(&req, &output_path) {
+        command.arg(arg);
     }
-
-    for extra in &req.extra_args {
-        command.arg(extra);
-    }
-
-    command.arg("-");
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -358,12 +386,25 @@ pub async fn run_exec(
         stdin.shutdown().await?;
     }
 
+    let passthrough = matches!(req.output_mode, CodexOutputMode::PassthroughHuman);
     let stderr_lines = Arc::new(Mutex::new(Vec::new()));
     let stderr_handle = if let Some(stderr) = child.stderr.take() {
         let stderr_lines = stderr_lines.clone();
         Some(tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
+            let mut writer = if passthrough {
+                Some(io::stderr())
+            } else {
+                None
+            };
             while let Ok(Some(line)) = reader.next_line().await {
+                if let Some(writer) = writer.as_mut() {
+                    let mut outbound = line.clone();
+                    outbound.push('\n');
+                    let _ = writer.write_all(outbound.as_bytes()).await;
+                    let _ = writer.flush().await;
+                }
+
                 let trimmed = line.trim().to_string();
                 if trimmed.is_empty() {
                     continue;
@@ -378,44 +419,61 @@ pub async fn run_exec(
 
     let mut events = Vec::new();
     let mut usage: Option<TokenUsage> = None;
+    let mut stdout_passthrough: Option<JoinHandle<()>> = None;
+    let mut stdout = child.stdout.take();
 
-    if let Some(stdout) = child.stdout.take() {
-        let mut reader = BufReader::new(stdout).lines();
-        while let Some(line) = reader.next_line().await? {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
+    match req.output_mode {
+        CodexOutputMode::EventsJson => {
+            if let Some(reader_stdout) = stdout.take() {
+                let mut reader = BufReader::new(reader_stdout).lines();
+                while let Some(line) = reader.next_line().await? {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    let payload: Value = serde_json::from_str(trimmed)
+                        .map_err(|_| CodexError::MalformedEvent(trimmed.to_string()))?;
+
+                    let kind = payload
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| CodexError::MalformedEvent(trimmed.to_string()))?
+                        .to_string();
+
+                    let event = CodexEvent {
+                        kind: kind.clone(),
+                        payload: payload.clone(),
+                    };
+
+                    if let Some(ref hook) = progress {
+                        let status_line = summarize_event(&event);
+                        hook.send(status_line).await;
+                    }
+
+                    if kind == "turn.completed" && usage.is_none() {
+                        usage = extract_usage(&payload);
+                    }
+
+                    events.push(event);
+                }
             }
-
-            let payload: Value = serde_json::from_str(trimmed)
-                .map_err(|_| CodexError::MalformedEvent(trimmed.to_string()))?;
-
-            let kind = payload
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CodexError::MalformedEvent(trimmed.to_string()))?
-                .to_string();
-
-            let event = CodexEvent {
-                kind: kind.clone(),
-                payload: payload.clone(),
-            };
-
-            if let Some(ref hook) = progress {
-                let status_line = summarize_event(&event);
-                hook.send(status_line).await;
+        }
+        CodexOutputMode::PassthroughHuman => {
+            if let Some(mut stdout_stream) = stdout.take() {
+                stdout_passthrough = Some(tokio::spawn(async move {
+                    let mut stderr_writer = io::stderr();
+                    let _ = io::copy(&mut stdout_stream, &mut stderr_writer).await;
+                }));
             }
-
-            if kind == "turn.completed" && usage.is_none() {
-                usage = extract_usage(&payload);
-            }
-
-            events.push(event);
         }
     }
 
     let status = child.wait().await?;
     if let Some(handle) = stderr_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = stdout_passthrough {
         let _ = handle.await;
     }
 
@@ -510,5 +568,44 @@ fn mock_codex_response() -> CodexResponse {
                 "usage": { "input_tokens": 10, "output_tokens": 20 }
             }),
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_request(mode: CodexOutputMode) -> CodexRequest {
+        CodexRequest {
+            prompt: "prompt".to_string(),
+            repo_root: PathBuf::from("/tmp/repo"),
+            profile: None,
+            bin: PathBuf::from("/bin/codex"),
+            extra_args: vec!["--foo".to_string()],
+            model: CodexModel::Gpt5,
+            output_mode: mode,
+        }
+    }
+
+    #[test]
+    fn events_mode_includes_json_flag() {
+        let req = base_request(CodexOutputMode::EventsJson);
+        let args = build_exec_args(&req, Path::new("/tmp/out"));
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(rendered.iter().any(|arg| arg == "--json"));
+    }
+
+    #[test]
+    fn passthrough_mode_skips_json_flag() {
+        let req = base_request(CodexOutputMode::PassthroughHuman);
+        let args = build_exec_args(&req, Path::new("/tmp/out"));
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!rendered.iter().any(|arg| arg == "--json"));
     }
 }
