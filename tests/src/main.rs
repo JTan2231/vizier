@@ -597,8 +597,23 @@ fn test_merge_removes_plan_document() -> Result<(), Box<dyn std::error::Error>> 
     let head = repo.head()?.peel_to_commit()?;
     let message = head.message().unwrap_or_default().to_string();
     assert!(
-        message.contains("Implementation Plan:"),
-        "merge commit should still inline the implementation plan even after deletion: {}",
+        message.contains("Plan Document:"),
+        "merge commit should inline the plan document even after deletion: {}",
+        message
+    );
+    assert!(
+        message.contains("plan: remove-plan"),
+        "merge commit should include the plan front matter: {}",
+        message
+    );
+    assert!(
+        message.contains("## Implementation Plan"),
+        "merge commit should include the plan body: {}",
+        message
+    );
+    assert!(
+        !message.contains(".vizier/implementation-plans"),
+        "merge commit should not reference implementation plan file paths: {}",
         message
     );
 

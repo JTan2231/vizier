@@ -432,10 +432,6 @@ pub fn summarize_spec(meta: &PlanMetadata) -> String {
         .unwrap_or_else(|| format!("Plan {} lacks an operator spec summary", meta.slug))
 }
 
-pub fn implementation_plan_section(document: &str) -> Option<String> {
-    extract_section(document, "Implementation Plan")
-}
-
 pub fn set_plan_status(
     plan_path: &Path,
     status: &str,
