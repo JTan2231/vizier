@@ -1444,6 +1444,7 @@ async fn try_auto_resolve_conflicts(
         bin: cfg.codex.binary_path.clone(),
         extra_args: cfg.codex.extra_args.clone(),
         model: codex::CodexModel::Gpt5Codex,
+        output_mode: codex::CodexOutputMode::PassthroughHuman,
     };
 
     let (progress_tx, progress_rx) = mpsc::channel(64);
@@ -1670,21 +1671,16 @@ async fn apply_plan_in_worktree(
     let system_prompt = codex::build_prompt_for_codex(&instruction)
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
-    let (progress_tx, progress_rx) = mpsc::channel(64);
-    let progress_handle = spawn_plain_progress_logger(progress_rx);
     let response = Auditor::llm_request_with_tools_no_display(
         None,
         system_prompt,
         instruction.clone(),
         tools::active_tooling(),
-        progress_tx,
+        auditor::RequestStream::PassthroughStderr,
         Some(codex::CodexModel::Gpt5Codex),
         Some(worktree_path.to_path_buf()),
     )
     .await?;
-    if let Some(handle) = progress_handle {
-        let _ = handle.await;
-    }
 
     let conversation_hash = Auditor::commit_audit().await?;
 
