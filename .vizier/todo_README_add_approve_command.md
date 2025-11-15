@@ -1,24 +1,24 @@
-# Add `vizier approve` to README Core Commands
+# README: Document draft → approve → merge flow (correct semantics)
 
 Thread: Agent workflow orchestration (docs alignment)
 
 Tension
-- The feature is shipped (`vizier approve` merges `draft/<slug>` plan branches with a metadata-rich commit), but `README.md` does not list or describe it alongside `vizier draft`. This creates a documentation mismatch that hides an important step in the draft→approve flow.
+- CLI ships a two-step flow: `vizier approve` implements the plan on the draft branch, and `vizier merge` performs the non‑FF merge back onto the primary. README now mentions both, but copy/flags must match actual behavior to avoid confusion left over from the earlier one-step approval.
 
 Desired behavior (Product-level)
-- README’s Core Commands section includes a concise entry for `vizier approve` with observable behavior and safe flags (e.g., `--list`, `-y`, `--delete-branch`, `--target`).
-- Description matches current behavior (non-FF merge, commit message embeds plan metadata) without over-specifying internal implementation.
-- Cross-link deeper docs when present. If `DRAFT.md`/`APPROVE.md` are not yet in-repo, link to `vizier approve --help` and keep copy concise until the docs land.
+- README Core Commands concisely document both commands with observable outcomes and correct flags:
+  - `vizier approve <plan>`: implements plan on `draft/<plan>` using Codex. Flags: `--list`, `-y/--yes`, `--target`, `--branch`.
+  - `vizier merge <plan>`: merges `draft/<plan>` to primary (or `--target`) with a metadata‑rich non‑FF commit. Flags: `-y/--yes`, `--delete-branch`, `--target`, `--branch`, `--note`.
+- Each entry states that the merge commit embeds plan metadata (plan, branch, status, spec source, created_at, summary).
+- Provide “Learn more” anchors to `vizier approve --help` and `vizier merge --help` until DRAFT.md/APPROVE.md land.
 
 Acceptance Criteria
-- README.md gains a Core Commands bullet for `vizier approve <slug>` that:
-  - States it merges `draft/<slug>` back into the primary branch (or `--target`) with a non-FF merge.
-  - Mentions `--list` and `-y` at minimum; optional `--delete-branch` and `--target` can be included if space permits.
-  - Notes that the merge commit includes plan metadata.
-  - Provides a “Learn more” link:
-    - Prefer DRAFT.md and APPROVE.md when available;
-    - Otherwise, link to `vizier approve --help` as an interim anchor.
-- Language is consistent with Snapshot and does not promise unshipped flags or UI.
+- README.md Core Commands show both entries with accurate behavior and flag sets; no claim suggests that `approve` performs the Git merge.
+- Language matches current CLI and Snapshot; no unshipped flags/UI.
+- If deeper docs appear (DRAFT.md/APPROVE.md), README links to them; otherwise links to `--help` are present.
+
+Status
+- README already lists `approve` and `merge`; verify and adjust copy/flags for accuracy. Close this TODO once verified in the same PR that updates wording if needed.
 
 Pointers
 - README.md (Core Commands)
