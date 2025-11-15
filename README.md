@@ -2,6 +2,24 @@
 
 **The narrative maintainer for software development — where code changes become story arcs, and every commit advances the plot.**
 
+### Who I Am
+Repo‑native assistant that plans, edits, and audits with you in the loop. It understands your tree and turns conversations into TODOs and a living snapshot — fast, auditable, reversible.
+
+### What I Can Do (today)
+- Plan concrete steps from a high‑level goal
+- Make scoped edits across files and keep diffs tidy
+- Gate changes with an auditor/pending‑commit flow
+- Explain decisions and current project state on demand
+
+### How To Use Me (quickstart)
+- Get help: `vizier help`
+- One‑shot: `vizier ask "add retry logic to the API client"`
+- Chat: `vizier chat`
+- Save narrative + code changes: `vizier save`
+
+### How Agents Can Talk To Me
+Drive via CLI/stdio today; prefer structured outputs where available. Coming soon: stable protocol/JSON stream mode for tight interop. See `AGENTS.md`.
+
 ## Ethos
 
 Software is a living narrative. Every codebase tells an evolving story about promises made, constraints discovered, and tensions resolved. Most development tools treat this story as exhaust — comments scattered through code, issues divorced from implementation, and commit messages that explain the "what" but forget the "why."
@@ -31,13 +49,13 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 
 ### Intelligent Gates & Controls
 - **Commit Isolation**: Conversation changes never contaminate code commits; staged work is preserved
-- **Pending Commit Gate**: Review diffs with split-view TUI; accept/reject changes before they land
+- **Pending Commit Gate**: Review and accept/reject changes before they land
 - **Reversible Operations**: Every accepted change can be reverted; prefer patches, fall back to VCS
 - **Configurable Guardrails**: Control destructive operations, auto-commit behavior, thinking depth
 
 ### Development Workflow Integration
 - **Git-Native**: All changes are commits; conversation transcripts embed in empty commits for reconstruction
-- **Terminal-First**: Chat TUI with diff view, modal navigation, long message handling, and scrolling
+- **Terminal-First**: Chat TUI for interactive conversations; line‑oriented CLI for scripting
 - **LLM-Augmented**: Multiple provider support (OpenAI/Anthropic), configurable prompts, thinking modes
 - **Repository Bootstrap**: Analyze existing codebases to generate initial snapshot and seed threads
 - **Draft Reviews**: `vizier draft` spins up a temporary worktree, runs Codex, and commits `.vizier/implementation-plans/<slug>.md` on `draft/<slug>`; `vizier approve <plan>` reuses a disposable worktree to implement the approved plan via Codex (auto-staging and committing the branch); `vizier merge <plan>` refreshes `.vizier/.snapshot` inside a worktree and then lands the branch into the primary line with a plan-driven commit message
@@ -58,7 +76,7 @@ vizier ask "add retry logic to the API client"
 # or pull the prompt from a file
 vizier ask --file specs/retry.md
 
-# Interactive: Launch the chat TUI for ongoing conversation
+# Interactive: Launch chat for ongoing conversation
 vizier chat
 
 # Save: Commit your work with AI-generated conventional messages
@@ -70,10 +88,10 @@ vizier save HEAD~3..HEAD # commits specific range
 
 #### Conversation & Editing
 - `vizier ask <message>` — Single-shot request; updates TODOs/snapshot and exits (use `--file PATH` to read the prompt from disk)
-- `vizier chat` — Interactive TUI with split diff view and narrative maintenance
+- `vizier chat` — Interactive TUI for conversational maintenance
 - `vizier draft [--name SLUG] <spec>` — Spins up a temporary worktree at the primary branch tip, runs Codex to produce `.vizier/implementation-plans/<slug>.md`, commits it on `draft/<slug>`, and tells you which branch/plan file to inspect (Codex-only; your working tree stays untouched)
-- `vizier approve <plan> [--branch BRANCH]` — Executes the approved implementation plan inside a disposable worktree (Codex-only), streaming Codex output to stderr, updating `.vizier`, and auto-committing the draft branch so reviewers can diff `git diff <target>...<branch>`
-- `vizier merge <plan> [--branch BRANCH]` — Runs the same narrative-refresh flow as `vizier save` inside a temporary worktree, commits any `.vizier` edits on the plan branch, then merges `draft/<plan>` into the detected primary branch with a plan-driven commit message (supports `--delete-branch` and `--push`)
+- `vizier approve <plan>` — Executes the approved implementation plan inside a disposable worktree (Codex-only), streaming Codex output to stderr, updating `.vizier`, and auto‑committing the draft branch so reviewers can diff `git diff <target>...<branch>`. Flags: `--list`, `-y/--yes`, `--target`, `--branch`.
+- `vizier merge <plan>` — Runs the same narrative-refresh flow as `vizier save` inside a temporary worktree, removes `.vizier/implementation-plans/<plan>.md`, commits the `.vizier` edits on the plan branch, then merges `draft/<plan>` into the detected primary branch with a plan-driven commit message. Flags: `-y/--yes`, `--delete-branch`, `--target`, `--branch`, `--note`.
 
 #### Documentation Prompts
 - `vizier docs prompt <scope>` — Emit or scaffold architecture templates described in `PROMPTING.md`
@@ -120,10 +138,10 @@ vizier ask "..." -p anthropic
 vizier chat --system-prompt-override ./prompts/custom.md
 
 # Set thinking level
-vizier ask "..." --thinking-level deep
+vizier ask "..." --reasoning-effort high
 
-# Non-interactive mode
-vizier save --yes --commit-message "feat: add retry logic"
+# Non-interactive commit message
+vizier save -m "feat: add retry logic"
 ```
 
 #### Backend selection
@@ -169,7 +187,7 @@ Command-line interface and workflow orchestration:
 
 ### Terminal UI
 Interactive interfaces for narrative work:
-- **Chat TUI**: Streaming conversations with diff preview
+- **Chat TUI**: Streaming conversations
 - **Modal Navigation**: View mode (safe browsing) vs Edit mode
 - **Editor Integration**: `$EDITOR` launching for detailed edits
 

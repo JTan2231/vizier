@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_save_without_code_changes);
     test!(test_draft_creates_branch_and_plan);
     test!(test_approve_merges_plan);
+    test!(test_merge_removes_plan_document);
 
     Ok(())
 }
@@ -451,6 +452,50 @@ fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
         stdout_after.contains("No pending draft branches"),
         "expected no pending plans but saw: {}",
         stdout_after
+    );
+
+    Ok(())
+}
+
+fn test_merge_removes_plan_document() -> Result<(), Box<dyn std::error::Error>> {
+    let draft = std::process::Command::new("../target/release/vizier")
+        .args([
+            "draft",
+            "--name",
+            "remove-plan",
+            "remove plan document during merge",
+        ])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    let merge = std::process::Command::new("../target/release/vizier")
+        .args(["merge", "remove-plan", "--yes", "--delete-branch"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    assert!(
+        !Path::new("test-repo-active/.vizier/implementation-plans/remove-plan.md").exists(),
+        "plan document should be removed after vizier merge"
+    );
+
+    let repo = open_repo()?;
+    let head = repo.head()?.peel_to_commit()?;
+    let message = head.message().unwrap_or_default().to_string();
+    assert!(
+        message.contains("Implementation Plan:"),
+        "merge commit should still inline the implementation plan even after deletion: {}",
+        message
     );
 
     Ok(())
