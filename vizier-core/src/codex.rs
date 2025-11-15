@@ -30,6 +30,27 @@ const DEFAULT_BOUNDS: &str = r#"You are operating inside the current Git reposit
 - Aggressively make changes--the story is continuously evolving.
 - Every run must end with a brief summary of the narrative changes you made."#;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexModel {
+    Gpt5,
+    Gpt5Codex,
+}
+
+impl CodexModel {
+    fn as_model_name(self) -> &'static str {
+        match self {
+            CodexModel::Gpt5 => "gpt-5",
+            CodexModel::Gpt5Codex => "gpt-5-codex",
+        }
+    }
+}
+
+impl Default for CodexModel {
+    fn default() -> Self {
+        CodexModel::Gpt5
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexRequest {
     pub prompt: String,
@@ -37,6 +58,7 @@ pub struct CodexRequest {
     pub profile: Option<String>,
     pub bin: PathBuf,
     pub extra_args: Vec<String>,
+    pub model: CodexModel,
 }
 
 #[derive(Debug, Clone)]
@@ -298,7 +320,7 @@ pub async fn run_exec(
         .arg("exec")
         .arg("--dangerously-bypass-approvals-and-sandbox")
         .arg("--model")
-        .arg("gpt-5")
+        .arg(req.model.as_model_name())
         .arg("--json")
         .arg("--output-last-message")
         .arg(&output_path)

@@ -337,12 +337,14 @@ impl Auditor {
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
+        codex_model: Option<codex::CodexModel>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         let cfg = crate::config::get_config();
         let backend = cfg.backend;
         let fallback_backend = cfg.fallback_backend;
         let provider = cfg.provider.clone();
         let codex_opts = cfg.codex.clone();
+        let resolved_codex_model = codex_model.unwrap_or_default();
 
         Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -371,6 +373,7 @@ impl Auditor {
                         profile: opts_clone.profile.clone(),
                         bin: opts_clone.binary_path.clone(),
                         extra_args: opts_clone.extra_args.clone(),
+                        model: resolved_codex_model,
                     };
 
                     let response =
@@ -440,12 +443,14 @@ impl Auditor {
         user_message: String,
         tools: Vec<wire::types::Tool>,
         request_tx: tokio::sync::mpsc::Sender<String>,
+        codex_model: Option<codex::CodexModel>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         let cfg = crate::config::get_config();
         let backend = cfg.backend;
         let fallback_backend = cfg.fallback_backend;
         let provider = cfg.provider.clone();
         let codex_opts = cfg.codex.clone();
+        let resolved_codex_model = codex_model.unwrap_or_default();
 
         Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -476,6 +481,7 @@ impl Auditor {
                     profile: codex_opts.profile.clone(),
                     bin: codex_opts.binary_path.clone(),
                     extra_args: codex_opts.extra_args.clone(),
+                    model: resolved_codex_model,
                 };
 
                 match codex::run_exec(

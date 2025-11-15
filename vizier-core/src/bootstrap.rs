@@ -109,6 +109,7 @@ pub async fn bootstrap_snapshot(
         system_prompt,
         instruction,
         tools::get_snapshot_tools(),
+        None,
     )
     .await?;
 
