@@ -1185,11 +1185,24 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
     let worktree_path = worktree.path().to_path_buf();
     let plan_path = worktree.plan_path(&spec.slug);
     let mut worktree = Some(worktree);
+    let plan_document = fs::read_to_string(&plan_path).ok();
 
-    let refresh_result =
-        refresh_plan_branch(&worktree_path, opts.push_after).await.map(|_| plan_path.clone());
+    if plan_path.exists() {
+        display::info(format!(
+            "Removing {} from the plan branch before merge",
+            spec.plan_rel_path().display()
+        ));
+        if let Err(err) = fs::remove_file(&plan_path) {
+            return Err(Box::<dyn std::error::Error>::from(format!(
+                "failed to remove {} before merge: {}",
+                plan_path.display(),
+                err
+            )));
+        }
+    }
 
-    if let Err(err) = refresh_result {
+    if let Err(err) = refresh_plan_branch(&spec, &plan_meta, &worktree_path, opts.push_after).await
+    {
         display::warn(format!(
             "Plan worktree preserved at {}; inspect {} for unresolved narrative changes.",
             worktree.as_ref().unwrap().path().display(),
@@ -1197,8 +1210,6 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
         ));
         return Err(err);
     }
-
-    let plan_document = fs::read_to_string(refresh_result.unwrap())?;
 
     if let Some(tree) = worktree.take() {
         if let Err(err) = tree.cleanup() {
@@ -1215,8 +1226,12 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
         vcs::checkout_branch(&spec.target_branch)?;
     }
 
-    let merge_message =
-        build_merge_commit_message(&spec, &plan_meta, &plan_document, opts.note.as_deref());
+    let merge_message = build_merge_commit_message(
+        &spec,
+        &plan_meta,
+        plan_document.as_deref(),
+        opts.note.as_deref(),
+    );
     let merge_oid = vcs::merge_branch_no_ff(&spec.branch, &merge_message)?;
 
     if opts.delete_branch {
@@ -1392,6 +1407,8 @@ async fn apply_plan_in_worktree(
 }
 
 async fn refresh_plan_branch(
+    spec: &plan::PlanBranchSpec,
+    plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
     push_after: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1405,7 +1422,7 @@ async fn refresh_plan_branch(
         crate::config::get_system_prompt_with_meta(None)?
     };
 
-    Auditor::llm_request_with_tools(
+    let response = Auditor::llm_request_with_tools(
         None,
         system_prompt,
         instruction,
@@ -1413,11 +1430,46 @@ async fn refresh_plan_branch(
         None,
     )
     .await?;
-    Auditor::commit_audit().await?;
+    let conversation_hash = Auditor::commit_audit().await?;
+
+    let diff = vcs::get_diff(".", Some("HEAD"), None)?;
+    if diff.trim().is_empty() {
+        display::info(format!(
+            "Plan {} already has up-to-date narrative assets; no refresh needed.",
+            spec.slug
+        ));
+        if push_after {
+            push_origin_if_requested(true)?;
+        }
+        return Ok(());
+    }
+
+    let mut summary = response.content.trim().to_string();
+    if summary.is_empty() {
+        summary = format!(
+            "Refreshed narrative assets before merging plan {}.\nSpec summary: {}",
+            spec.slug,
+            plan::summarize_spec(plan_meta)
+        );
+    }
+
+    let mut builder = CommitMessageBuilder::new(summary);
+    builder
+        .set_header(CommitMessageType::NarrativeChange)
+        .with_conversation_hash(conversation_hash.clone());
+    let commit_message = builder.build();
+
+    vcs::stage(Some(vec!["."]))?;
+    let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
 
     if push_after {
         push_origin_if_requested(true)?;
     }
+
+    display::info(format!(
+        "Refreshed {} at {}; ready to merge plan {}",
+        spec.branch, commit_oid, spec.slug
+    ));
 
     Ok(())
 }
@@ -1434,7 +1486,7 @@ fn current_branch_name(repo: &Repository) -> Result<Option<String>, git2::Error>
 fn build_merge_commit_message(
     spec: &plan::PlanBranchSpec,
     meta: &plan::PlanMetadata,
-    plan_document: &str,
+    plan_document: Option<&str>,
     note: Option<&str>,
 ) -> String {
     let mut body = format!(
@@ -1455,7 +1507,7 @@ fn build_merge_commit_message(
         body.push_str(&format!("\nNotes: {}", note_text.trim()));
     }
 
-    if let Some(section) = plan::implementation_plan_section(plan_document) {
+    if let Some(section) = plan_document.and_then(|doc| plan::implementation_plan_section(doc)) {
         body.push_str("\n\nImplementation Plan:\n");
         body.push_str(section.trim());
     }
