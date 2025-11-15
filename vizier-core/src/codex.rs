@@ -297,6 +297,8 @@ pub async fn run_exec(
     command
         .arg("exec")
         .arg("--dangerously-bypass-approvals-and-sandbox")
+        .arg("--model")
+        .arg("gpt-5")
         .arg("--json")
         .arg("--output-last-message")
         .arg(&output_path)
