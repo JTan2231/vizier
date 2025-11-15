@@ -7,7 +7,7 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 - Today these steps are ad-hoc, so different agents can reinterpret the desired direction and bypass gates meant for humans-in-the-loop.
 - Architecture doc enforcement, Pending Commit gates, and snapshot maintenance already exist but are not connected into a single runbook, making it hard to prove that each phase received human approval.
 - Vizier is expected to be the conductor whenever operators bring in external agents; we need a consistent story for how sign-offs happen and how the VCS state ties back to those approvals.
-- `vizier draft` now spins `draft/<slug>` branches and commits `.vizier/implementation-plans/<slug>.md`, but nothing in the workflow records when that plan is required, who approved it, or how it’s merged back, so agents still improvise around the drafting stage.
+- `vizier draft` now spins `draft/<slug>` branches and commits `.vizier/implementation-plans/<slug>.md`, and `vizier approve` merges those branches back with metadata‑rich commits. What’s still missing is an orchestrated runbook that records when a plan is required, captures who approved it, and ties these approvals to the overall workflow so agents don’t improvise around these checkpoints.
 
 ## Workflow scope
 - Stage 1: Discuss high-level goals with Vizier; capture the proposed snapshot delta and mark it “awaiting sign-off.”
@@ -32,7 +32,7 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 - CLI workflow orchestration (vizier-cli/src/actions.rs)
 - Auditor + session logging (vizier-core/src/auditor.rs, .vizier/sessions/)
 - Architecture doc gate + Pending Commit gate threads
-- DRAFT.md (draft workflow design), APPROVE.md (pending approval flow), `.vizier/implementation-plans/`
+- DRAFT.md and APPROVE.md (integrated draft→approve flow), `.vizier/implementation-plans/`
 
 ## Implementation notes
 - Reuse existing gates/outcome machinery; add workflow state as metadata rather than inventing parallel tracking. Ensure each transition is idempotent so multi-agent runs remain recoverable after interruptions.
