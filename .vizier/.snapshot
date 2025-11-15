@@ -8,7 +8,7 @@ Narrative theme
 - Bureaucratic enforcement: Treat Vizier as the compliance enforcer for large-organization processes (architecture docs per change, auditable histories, PR-ready artifacts).
 
 Active threads
-- Stdout/stderr contract + verbosity: ACTIVE. Enforce TTY-gated progress, -q/-v/-vv levers, and a stable stdout Outcome line or JSON (outcome.v1). Stderr stays reserved for progress/errors per verbosity; no ANSI in non-TTY contexts. [Cross: Outcome summaries]
+- Stdout/stderr contract + verbosity: ACTIVE (partially shipped). CLI now supports -q/-v/-vv, --no-ansi, and progress gating (Auto/Never/Always) wired through vizier-core::display with TTY checks. Spinner/progress rendering is suppressed in non‑TTY and when quiet; remaining work is to standardize a stable stdout Outcome line/JSON (outcome.v1) across commands. Stderr remains for progress/errors per verbosity; ensure no ANSI in non‑TTY. [Cross: Outcome summaries]
 - Mode split: Chat (default) vs Protocol Mode v1: ACTIVE. Chat remains human-first with readable epilogues; Protocol mode is machine-first with structured JSON/NDJSON on stdout, no ANSI, deterministic ordering, and categorized exit codes. `--mode protocol` toggles behavior; JSON stream shares the same event contract as chat. [Cross: Stdout/stderr, Outcome summaries]
 - Commit isolation + gates: ACTIVE. Conversation- and agent-sourced changes are staged behind a Pending Commit gate; chat flows must funnel through the Auditor before commits land. [Depends on: Outcome summaries, Session logging]
 - Default-Action Posture (DAP): ACTIVE. By default, snapshot and TODOs update on any directive unless the user opts out (e.g., “discuss-only”). CLI surfaces a one-line Outcome whenever DAP acts. [Cross: Outcome summaries]
@@ -19,18 +19,18 @@ Active threads
 - Agent workflow orchestration: NEW. Operators want Vizier to act as the conductor for multi-agent runs (snapshot wording sign-off → architecture doc draft → implementation → code sign-off → `vizier save`), so the CLI/Auditor stack must expose those checkpoints and keep the VCS gates tight. [Cross: Commit isolation, Architecture doc gate, Outcome summaries]
 
 Code state (behaviors that matter)
-- CLI emits transient spinner/status to stderr via vizier-core::display with ANSI cursor controls unconditionally, causing leaked sequences like "[1G\u001b[2K⠋ Thinking..." in logs and non-TTY contexts.
-- stdout is inconsistently used; many operations primarily talk via stderr (status) and have no stable stdout outcome line.
-- No verbosity controls beyond a debug flag; no quiet mode; no progress/ANSI gating by TTY.
-- No explicit mode switch exists; protocol-style behavior is not yet implemented. JSON stream/eventing is planned.
+- Display/verbosity: vizier-cli wires -q/-v/-vv and --no-ansi into vizier-core::display; progress rendering is gated by stdout/stderr TTY and verbosity. Non‑TTY no longer leaks ANSI spinner frames; Info/Debug lines are governed by verbosity.
+- stdout usage remains inconsistent; some commands (e.g., save, snapshot init, clean) emit ad‑hoc outcome lines, but there is no standardized outcome.v1 JSON or unified Outcome component yet.
+- No explicit mode switch exists; protocol-style behavior is not yet implemented. `--json` prints conversation JSON in some paths but is not the outcome.v1 schema. JSON stream/eventing for Codex is present internally.
 - No vizier-tui crate present; CLI + vizier-core surfaces (display/chat) are the user-facing paths in this repo.
-- Chat path now routes through the Auditor; diffs from chat-initiated changes can be reported with A/M/D/R. Session JSON logging is not wired yet.
-- Post-action UX lacks a unified Outcome section; assistant epilogues can be verbose/misaligned, but Auditor facts for chat are available to drive a canonical epilogue. Outcome component targeted CLI-first with outcome.v1 JSON and stdout epilogue. Canonical TODO added.
+- Chat path now routes through the Auditor; diffs from chat‑initiated changes can be reported with A/M/D/R. Session JSON logging exists in a minimal form (messages persisted under the user config dir), but not to a repo‑local `.vizier/sessions/` with a validated schema.
+- Post‑action UX lacks a unified Outcome section; current ad‑hoc lines (e.g., "Save complete; …", snapshot bootstrap summary) are not standardized. Auditor facts for chat are available to drive a canonical epilogue. Outcome component remains a priority (CLI‑first with outcome.v1 JSON and stdout epilogue). Canonical TODO added.
 - No built-in agent command: Vizier intentionally lacks a `vizier agent run` flow; operators launch Codex directly and handle branch/PR plumbing outside the CLI.
 - AGENTS.md contract/log: The file remains a short reminder pointing agents back to README + snapshot; there is no in-repo decision log or interop schema beyond that note.
 - TODO GC not yet implemented; policy and levers defined; to be wired into save path and Auditor Outcome.
+- Docs prompts exist: `vizier docs prompt <scope>` scaffolds/prints architecture prompt templates; the architecture‑doc compliance gate is not yet enforced.
 - Codex backend path now lives in `vizier-core/src/codex.rs`: the auditor spawns `codex exec --json --output-last-message` in the repo, streams progress events, captures token usage, falls back to the wire backend when Codex errors, and CODEX.md serves as the living rollout log for this flow.
-- Auditor commit plumbing now calls `FileTracker::sync_vizier_changes` before writing `.vizier` commits and returns early when nothing changed so Codex-edited snapshot/TODO files get staged without disturbing pre-existing staged code.
+- Auditor commit plumbing now calls `FileTracker::sync_vizier_changes` before writing `.vizier` commits and returns early when nothing changed so Codex‑edited snapshot/TODO files get staged without disturbing pre‑existing staged code. Inline `ask/clean` flows currently commit conversation and .vizier changes immediately; a Pending Commit gate for assistant‑initiated edits is not yet in place.
 - `vizier-cli` appends `(tokens: prompt=?, completion=?, total=?)` (or `unknown`) to the assistant summary line so token reporting is visible even when Codex supplies usage counts.
 - Architecture doc compliance: no docs/architecture index exists and saves succeed without citing a doc, so there is no auditable linkage from code changes to architecture intent.
 - `vizier draft` (Codex-only) provisions a `draft/<slug>` branch from the primary branch tip via a temporary worktree, runs Codex to generate `.vizier/implementation-plans/<slug>.md`, commits the plan on that branch, then cleans up the worktree so the operator’s checkout stays untouched while stdout reports the plan path/branch pairing.
@@ -41,23 +41,23 @@ Code state (behaviors that matter)
 - Multi-agent workflows are ad-hoc: there is no structured runbook that walks operators through “discuss → snapshot sign-off → architecture doc draft → implement → code sign-off → save,” so intent can drift between agents and VCS gates.
 
 Acceptance checkpoints (selected)
-- Stdout/stderr contract: Non-TTY emits no ANSI; stdout carries final results; stderr stays limited to errors/warnings unless verbose. Flags -q/-v/-vv implemented; JSON modes obey schema outcome.v1. [Active]
+- Stdout/stderr contract: Non‑TTY emits no ANSI; stdout carries final results; stderr stays limited to errors/warnings per verbosity. Flags -q/-v/-vv and --no-ansi implemented; progress gated by TTY. outcome.v1 JSON not yet implemented; standardize across commands. [Active]
 - Mode split: `--mode protocol` produces only structured JSON/NDJSON on stdout (no human prose), no ANSI in any environment, deterministic event ordering, and categorized exit codes. Chat mode remains default with human epilogue and optional `--json`/`--json-stream`. Closed-stdin never blocks. [Active]
 - Pending Commit gate guards conversation changes with confirm_destructive=true and auto_commit=false.
 - Conversation commits only touch .vizier; preserve pre-existing staged changes exactly (A/M/D/R).
 - Non-interactive CLI requires explicit consent; never opens editor.
-- Session JSON MVP: session.json written atomically at session end, validating schema; includes workflow_type and thinking_level. [Pending; not yet saving]
+- Session JSON MVP: Minimal message log saved today under the user config directory on process exit; migrate to repo‑local `.vizier/sessions/<id>/session.json`, add atomic writes + schema validation, and include workflow metadata (workflow_type, thinking_level). [Pending]
 - Outcome summaries: After each operation, users see a compact summary matching Auditor/VCS facts; assistant final mirrors it. For chat, the Auditor-backed A/M/D/R must be reflected in both human epilogue and outcome.v1 JSON. Deterministic final Outcome emission. [CLI-first]
 - TODO GC on save: During `vizier save`, duplicate/superseded/empty/orphaned TODOs are deleted or staged for deletion per config; Outcome reports deletions with reasons; dry-run supported; protected items skipped. [Active]
 - Architecture doc gate: Saves refuse to finalize without a cited architecture doc; outcomes and commits include the referenced path, and multi-agent runs share the same doc reference. [Planned]
 
 Next moves
-1) Stdout/stderr contract + verbosity: introduce -q/-v/-vv, progress/ANSI gating by TTY, and ensure stdout carries final results/outcomes; refactor vizier-core::display accordingly. [Active]
-2) Outcome component: implement outcome.v1 schema; include audited A/M/D/R, gate state, and (when applicable) {todo, branch, commit_count, pr_url}. Print to stdout on success; `--json` and `--json-stream` variants. Ensure it fires after every chat operation. [Active]
+1) Stdout/stderr contract + verbosity: complete the contract by standardizing a stable stdout Outcome across commands and wiring an outcome.v1 JSON; keep spinner/ANSI gating as shipped. [Active]
+2) Outcome component: implement outcome.v1 schema; include audited A/M/D/R, gate state, and (when applicable) {todo, branch, commit_count, pr_url}. Print to stdout on success; `--json`/stream variants. Ensure it fires after every chat/ask/save. [Active]
 3) Mode split wiring: Add `--mode protocol` to CLI, thread through to core display/observer; enforce protocol-mode IO rules, exit codes, and metadata {mode:"protocol"}. Ensure closed-stdin safe behavior. [Active]
-4) Chat gate parity: keep chat-initiated edits behind the Auditor and Pending Commit gate, mirroring `ask`, and surface results via Outcome/JSON plus optional commits. [Active]
-5) TODO GC wiring: Add product-level GC behavior into save path with config/flags; surface detailed Outcome facts and integrate with Pending Commit gate where enabled. [Active]
-6) Session logging JSON MVP: hook writer at chat boundaries to persist audited facts + workflow metadata; atomic write + schema validation; include path in Outcome epilogue and JSON. [Active]
+4) Chat and ask gate parity: Place assistant‑initiated edits (ask/chat) behind a Pending Commit gate instead of immediate commit; surface via Outcome/JSON. Preserve pre‑existing staged work. [Active]
+5) TODO GC wiring: Add product‑level GC behavior into save path with config/flags; surface detailed Outcome facts and integrate with Pending Commit gate where enabled. [Active]
+6) Session logging JSON MVP: hook writer at chat boundaries to persist audited facts + workflow metadata; write atomically to .vizier/sessions/<id>/; include path in Outcome epilogue and JSON. [Active]
 7) Architecture doc enforcement + history: Add compliance gates that require architecture docs for every code change, store doc references alongside commits, and surface discrepancies via Auditor/Outcome before merge. [New]
 8) Agent workflow orchestration: Give operators a first-class workflow that sequences snapshot approval, architecture doc drafting, implementation, code sign-off, and final `vizier save`, with Auditor/Outcome breadcrumbs for each checkpoint. [New]
 9) Draft approval plumbing (`vizier approve`, per APPROVE.md): follow `vizier draft` with a `vizier approve <plan>` flow that reads plan metadata, verifies reviewer sign-off, and fast-forwards the draft branch (and plan status) back onto the primary branch with proper Outcome reporting. [Planned]

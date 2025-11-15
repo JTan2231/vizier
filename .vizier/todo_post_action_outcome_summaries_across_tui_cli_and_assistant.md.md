@@ -62,6 +62,7 @@ Update (2025-10-07): Codex backend is now the default execution path (vizier-cor
 ---
 Status update:
 - Auditor now backs the chat path, so Outcome summaries can source A/M/D/R facts reliably after chat operations.
+- Some commands already emit ad-hoc human epilogues to stdout (e.g., `Save complete; …`, `Snapshot bootstrap complete; …`, `Clean complete; …`), but these are not standardized and there is no outcome.v1 JSON path.
 
 Clarifications:
 - Ensure the Outcome epilogue appears after every chat action and matches Auditor facts exactly.
