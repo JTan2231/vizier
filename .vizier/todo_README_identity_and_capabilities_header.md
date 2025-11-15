@@ -53,4 +53,4 @@ Pointers:
 - Cross-links in text: AGENTS.md (when available).
 
 Status
-- Header block added at top of README with Who/What/How/Agents sections; removed "diff view" claims to avoid unshipped UI promises. Verify first-screenful render on GitHub and close.
+- Header block added at top of README with Who/What/How/Agents sections; removed "diff view" claims to avoid unshipped UI promises. Verified against current README; acceptance criteria met—this thread can be treated as closed.
