@@ -1294,6 +1294,11 @@ fn finalize_merge(
                 spec.branch
             ));
         }
+    } else {
+        display::info(format!(
+            "Keeping {} after merge (branch deletion disabled).",
+            spec.branch
+        ));
     }
 
     push_origin_if_requested(push_after)?;

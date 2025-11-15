@@ -1,9 +1,10 @@
 ---
 plan: we-need-to-default-to-deleting
 branch: draft/we-need-to-default-to-deleting
-status: draft
+status: implemented
 created_at: 2025-11-15T18:14:15Z
 spec_source: inline
+implemented_at: 2025-11-15T21:14:10Z
 ---
 
 ## Operator Spec
