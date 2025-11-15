@@ -403,7 +403,6 @@ impl Auditor {
         json!({
             "backend": cfg.backend.to_string(),
             "fallback_backend": cfg.fallback_backend.map(|kind| kind.to_string()),
-            "commit_confirmation": cfg.commit_confirmation,
             "reasoning_effort": cfg
                 .reasoning_effort
                 .as_ref()
