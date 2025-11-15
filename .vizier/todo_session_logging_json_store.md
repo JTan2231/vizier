@@ -53,6 +53,7 @@ Persist each assistant session to the filesystem as structured JSON so it can be
 Status update:
 - Chat path now routes through the Auditor, providing authoritative A/M/D/R facts per chat operation.
 - Minimal session persistence exists today: on process exit, the Auditor writes the message log to the user config directory under `~/.config/vizier/sessions/<id>.json` when session logging is enabled. This is not repo‑local, not schema‑validated, and not atomic; path is not surfaced in Outcomes.
+- CLI already exposes `--load-session <id>` to reload those config-dir session logs into the Auditor at startup and `--no-session` to disable recording; the repo-local `.vizier/sessions/<id>/session.json` store must stay compatible with (or replace) this flow.
 
 Next steps to close gap:
 - Hook session writer at chat operation boundaries to persist audited facts + workflow metadata (workflow_type=chat, thinking_level, mode, timestamps, repo state, outcome summary).
