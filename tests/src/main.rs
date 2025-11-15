@@ -56,9 +56,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_save_with_staged_files);
     test!(test_save_without_code_changes);
     test!(test_draft_creates_branch_and_plan);
-    test!(test_approve_merges_plan);
+    test!(test_merge_deletes_branch_by_default);
     test!(test_approve_keeps_primary_checkout_clean);
     test!(test_merge_removes_plan_document);
+    test!(test_merge_keep_branch_opt_out);
     test!(test_merge_conflict_manual_resume);
     test!(test_merge_conflict_auto_resolve);
 
@@ -465,7 +466,7 @@ fn test_draft_creates_branch_and_plan() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
+fn test_merge_deletes_branch_by_default() -> Result<(), Box<dyn std::error::Error>> {
     let draft = std::process::Command::new("../target/release/vizier")
         .args([
             "draft",
@@ -506,7 +507,7 @@ fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let approve = std::process::Command::new("../target/release/vizier")
-        .args(["approve", "approve-smoke", "--yes", "--delete-branch"])
+        .args(["approve", "approve-smoke", "--yes"])
         .current_dir("test-repo-active")
         .output()?;
     assert!(
@@ -518,6 +519,16 @@ fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         Path::new("test-repo-active/.vizier/implementation-plans/approve-smoke.md").exists(),
         "plan file should be present after approval"
+    );
+
+    let merge = std::process::Command::new("../target/release/vizier")
+        .args(["merge", "approve-smoke", "--yes"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
     );
 
     let repo = open_repo()?;
@@ -532,7 +543,7 @@ fn test_approve_merges_plan() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         repo.find_branch("draft/approve-smoke", BranchType::Local)
             .is_err(),
-        "draft branch should be deleted when --delete-branch is used"
+        "draft branch should be deleted by default after vizier merge"
     );
 
     let list_after = std::process::Command::new("../target/release/vizier")
@@ -606,7 +617,7 @@ fn test_merge_removes_plan_document() -> Result<(), Box<dyn std::error::Error>> 
     );
 
     let merge = std::process::Command::new("../target/release/vizier")
-        .args(["merge", "remove-plan", "--yes", "--delete-branch"])
+        .args(["merge", "remove-plan", "--yes"])
         .current_dir("test-repo-active")
         .output()?;
     assert!(
@@ -642,6 +653,55 @@ fn test_merge_removes_plan_document() -> Result<(), Box<dyn std::error::Error>> 
         !message.contains(".vizier/implementation-plans"),
         "merge commit should not reference implementation plan file paths: {}",
         message
+    );
+
+    Ok(())
+}
+
+fn test_merge_keep_branch_opt_out() -> Result<(), Box<dyn std::error::Error>> {
+    let draft = std::process::Command::new("../target/release/vizier")
+        .args([
+            "draft",
+            "--name",
+            "keep-branch",
+            "exercise --keep-branch opt-out",
+        ])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    let approve = std::process::Command::new("../target/release/vizier")
+        .args(["approve", "keep-branch", "--yes"])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    let merge = std::process::Command::new("../target/release/vizier")
+        .args(["merge", "keep-branch", "--yes", "--keep-branch"])
+        .current_dir("test-repo-active")
+        .output()?;
+
+    assert!(
+        merge.status.success(),
+        "vizier merge --keep-branch failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let repo = open_repo()?;
+    assert!(
+        repo.find_branch("draft/keep-branch", BranchType::Local)
+            .is_ok(),
+        "draft branch should remain when --keep-branch is supplied"
     );
 
     Ok(())
