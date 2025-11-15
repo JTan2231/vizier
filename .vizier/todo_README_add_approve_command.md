@@ -8,7 +8,7 @@ Tension
 Desired behavior (Product-level)
 - README Core Commands concisely document both commands with observable outcomes and correct flags:
   - `vizier approve <plan>`: implements plan on `draft/<plan>` using Codex. Flags: `--list`, `-y/--yes`, `--target`, `--branch`.
-  - `vizier merge <plan>`: merges `draft/<plan>` to primary (or `--target`) with a metadata‑rich non‑FF commit. Flags: `-y/--yes`, `--delete-branch`, `--target`, `--branch`, `--note`.
+  - `vizier merge <plan>`: merges `draft/<plan>` to primary (or `--target`) with a metadata‑rich non‑FF commit. Flags: `-y/--yes`, `--keep-branch` (default is to delete the draft branch; `--delete-branch` remains as a deprecated alias), `--target`, `--branch`, `--note`, `--auto-resolve-conflicts`.
 - Each entry states that the merge commit embeds plan metadata (plan, branch, status, spec source, created_at, summary).
 - Provide “Learn more” anchors to `vizier approve --help` and `vizier merge --help` until DRAFT.md/APPROVE.md land.
 
@@ -18,8 +18,8 @@ Acceptance Criteria
 - If deeper docs appear (DRAFT.md/APPROVE.md), README links to them; otherwise links to `--help` are present.
 
 Status
-- README Core Commands updated to list accurate flags for `approve` and `merge`; removed misleading copy. Verified against `vizier-cli/src/main.rs` CLI definitions for Approve/Merge; acceptance criteria met—this thread can be treated as closed.
+- README Core Commands updated to list accurate flags for `approve` and `merge`, including the new default-branch-deletion behavior (`--keep-branch` to retain, `--delete-branch` as a deprecated alias) and `--auto-resolve-conflicts`. Verified against `vizier-cli/src/main.rs` CLI definitions for Approve/Merge and `docs/workflows/draft-approve-merge.md`; acceptance criteria met—this thread can be treated as closed and now also documents the default deletion posture.
 
 Pointers
 - README.md (Core Commands)
-- DRAFT.md, APPROVE.md (integrated draft→approve docs) — missing today; interim link is CLI help
+- docs/workflows/draft-approve-merge.md (end-to-end draft→approve→merge choreography); future DRAFT.md/APPROVE.md docs can layer on top if needed
