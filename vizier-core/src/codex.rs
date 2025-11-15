@@ -39,8 +39,8 @@ pub enum CodexModel {
 impl CodexModel {
     fn as_model_name(self) -> &'static str {
         match self {
-            CodexModel::Gpt5 => "gpt-5",
-            CodexModel::Gpt5Codex => "gpt-5-codex",
+            CodexModel::Gpt5 => "gpt-5.1",
+            CodexModel::Gpt5Codex => "gpt-5.1-codex",
         }
     }
 }
