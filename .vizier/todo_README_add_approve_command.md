@@ -18,7 +18,7 @@ Acceptance Criteria
 - If deeper docs appear (DRAFT.md/APPROVE.md), README links to them; otherwise links to `--help` are present.
 
 Status
-- README already lists `approve` and `merge`; verify and adjust copy/flags for accuracy. Close this TODO once verified in the same PR that updates wording if needed.
+- README Core Commands updated to list accurate flags for `approve` and `merge`; removed misleading copy. Ready to close after a quick pass against `vizier approve --help` and `vizier merge --help`.
 
 Pointers
 - README.md (Core Commands)

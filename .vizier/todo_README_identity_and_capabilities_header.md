@@ -51,3 +51,6 @@ Acceptance Criteria:
 Pointers:
 - README.md (repo root); link to docs/ or INSTALL/Getting Started if present.
 - Cross-links in text: AGENTS.md (when available).
+
+Status
+- Header block added at top of README with Who/What/How/Agents sections; removed "diff view" claims to avoid unshipped UI promises. Verify first-screenful render on GitHub and close.
