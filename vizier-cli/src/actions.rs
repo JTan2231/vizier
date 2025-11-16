@@ -1411,50 +1411,18 @@ fn resolve_target_branch(
 }
 
 fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let target_branch = resolve_target_branch(target_override)?;
-    let repo = Repository::discover(".")?;
-    let target_ref = repo
-        .find_branch(&target_branch, BranchType::Local)
-        .map_err(|_| format!("target branch {target_branch} not found"))?;
-    let target_commit = target_ref.into_reference().peel_to_commit()?;
-    let target_oid = target_commit.id();
-
-    let mut branches = repo.branches(Some(BranchType::Local))?;
-    let mut pending = 0usize;
-    while let Some(branch_res) = branches.next() {
-        let (branch, _) = branch_res?;
-        let Some(name) = branch.name()? else {
-            continue;
-        };
-        if !name.starts_with("draft/") {
-            continue;
-        }
-        let commit = branch.get().peel_to_commit()?;
-        if repo.graph_descendant_of(target_oid, commit.id())? {
-            continue;
-        }
-
-        let slug = name.trim_start_matches("draft/").to_string();
-        match plan::load_plan_from_branch(&slug, name) {
-            Ok(meta) => {
-                let summary = plan::summarize_spec(&meta).replace('"', "'");
-                println!(
-                    "plan={} branch={} created={} summary=\"{}\"",
-                    meta.slug,
-                    name,
-                    meta.created_at_display(),
-                    summary
-                );
-                pending += 1;
-            }
-            Err(err) => {
-                display::warn(format!("Failed to load plan metadata for {name}: {err}"));
-            }
-        }
+    let entries = plan::PlanSlugInventory::collect(target_override.as_deref())?;
+    if entries.is_empty() {
+        println!("No pending draft branches");
+        return Ok(());
     }
 
-    if pending == 0 {
-        println!("No pending draft branches");
+    for entry in entries {
+        let summary = entry.summary.replace('"', "'");
+        println!(
+            "plan={} branch={} created={} summary=\"{}\"",
+            entry.slug, entry.branch, entry.created_at, summary
+        );
     }
 
     Ok(())
