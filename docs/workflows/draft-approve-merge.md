@@ -46,6 +46,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Creates a temporary worktree `.vizier/tmp-worktrees/<slug>-<suffix>/` checked out to the plan branch and runs Codex against the stored plan document.
 - Codex edits `.vizier/.snapshot`, TODOs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
 - Your original checkout stays untouched. On success the temp worktree is removed; on failure it is preserved for debugging and the branch keeps whatever Codex staged.
+- While Codex runs, Vizier prints one `[codex] phase — message` line per Codex event (with status, percentage, and file hints) so you keep a scrolling history of what the agent is doing instead of watching a spinner. Pass `-q` to suppress them or `-v/-vv` for timestamps/raw JSON.
 
 **Flags to remember**
 - `vizier approve <slug>` — default flow.

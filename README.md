@@ -155,6 +155,10 @@ Per-command overrides are available:
 
 When Codex runs, it edits `.vizier/.snapshot` and TODO files in-place and streams progress events through the CLI. The usual commit gates (`vizier save`, staged hunks, etc.) still apply, and token usage is reported when the backend shares it. If Codex omits usage numbers, Vizier reports them as `unknown` instead of showing stale totals.
 
+#### Codex progress history
+
+Codex already emits a `codex exec --json` event stream; Vizier renders each event as a persistent `[codex] …` log line on stderr so you can see every phase instead of watching a spinner overwrite itself. Each line includes the phase/label, optional status + percentage, and any scoped detail/path pulled from the event’s `phase`, `label`, `message`, `detail`, `data.path`, `progress`, `status`, and `timestamp` fields. Quiet mode (`-q`) suppresses the lines, `-v` adds timestamps, and `-vv` appends the raw JSON payload for debugging. `vizier approve`, conflict auto-resolution, and all Codex-backed ask/save flows now share this renderer, so the history looks identical regardless of which command is running.
+
 ## Architecture
 
 Vizier follows a workspace structure with clear separation of concerns:

@@ -33,7 +33,10 @@ pub struct TokenUsage {
 
 #[derive(Clone)]
 pub enum RequestStream {
-    Status(Sender<String>),
+    Status {
+        text: Sender<String>,
+        events: Option<Sender<display::ProgressEvent>>,
+    },
     PassthroughStderr,
 }
 
@@ -118,7 +121,7 @@ fn channel_for_stream(
     stream: &RequestStream,
 ) -> (tokio::sync::mpsc::Sender<String>, Option<JoinHandle<()>>) {
     match stream {
-        RequestStream::Status(tx) => (tx.clone(), None),
+        RequestStream::Status { text, .. } => (text.clone(), None),
         RequestStream::PassthroughStderr => {
             let (silent_tx, mut silent_rx) = channel(32);
             let handle = tokio::spawn(async move { while silent_rx.recv().await.is_some() {} });
@@ -673,9 +676,9 @@ impl Auditor {
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
                 let (output_mode, progress_hook) = match &stream {
-                    RequestStream::Status(tx) => (
+                    RequestStream::Status { events, .. } => (
                         codex::CodexOutputMode::EventsJson,
-                        Some(codex::ProgressHook::Plain(tx.clone())),
+                        events.clone().map(codex::ProgressHook::Plain),
                     ),
                     RequestStream::PassthroughStderr => {
                         (codex::CodexOutputMode::PassthroughHuman, None)
