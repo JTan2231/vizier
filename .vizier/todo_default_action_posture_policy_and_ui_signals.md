@@ -82,3 +82,9 @@ Implementation Notes (safety/correctness):
 - CLI-first scope; defer any TUI indicators until a UI surface exists.
 - Compute Outcome from Auditor/VCS after writes and before exit; never infer from model text.
 - Honor stdout/stderr and mode-split contracts: human epilogue to stdout by default; structured outcome.v1 JSON when requested; stderr limited to errors/progress per verbosity.
+
+---
+TODO authoring discipline (policy extension 2025-11-16)
+- Treat conversations as authorization to evolve the Snapshot and TODO set by default; every TODO must cite its thread and snapshot moment so downstream agents can follow the arc.
+- Default abstraction level is product behavior and acceptance criteria; pointer-level anchors (files, commands) are allowed for orientation, while implementation-level prescriptions are reserved for safety/correctness constraints or explicit operator requests.
+- Avoid bare “investigate X” items; each TODO should resolve a concrete, observable tension in current behavior, and duplicated TODOs should be merged into a single canonical artifact per thread.

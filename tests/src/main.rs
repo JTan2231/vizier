@@ -484,12 +484,12 @@ fn test_merge_deletes_branch_by_default() -> Result<(), Box<dyn std::error::Erro
     );
 
     let list_before = std::process::Command::new("../target/release/vizier")
-        .args(["approve", "--list"])
+        .args(["list"])
         .current_dir("test-repo-active")
         .output()?;
     assert!(
         list_before.status.success(),
-        "vizier approve --list failed: {}",
+        "vizier list failed: {}",
         String::from_utf8_lossy(&list_before.stderr)
     );
     let stdout_before = String::from_utf8_lossy(&list_before.stdout);
@@ -547,12 +547,12 @@ fn test_merge_deletes_branch_by_default() -> Result<(), Box<dyn std::error::Erro
     );
 
     let list_after = std::process::Command::new("../target/release/vizier")
-        .args(["approve", "--list"])
+        .args(["list"])
         .current_dir("test-repo-active")
         .output()?;
     assert!(
         list_after.status.success(),
-        "vizier approve --list failed after merge: {}",
+        "vizier list failed after merge: {}",
         String::from_utf8_lossy(&list_after.stderr)
     );
     let stdout_after = String::from_utf8_lossy(&list_after.stdout);

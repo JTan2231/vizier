@@ -10,6 +10,8 @@ This guide explains how Vizier’s plan workflow turns a high-level spec into au
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
+Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary), along with the stored metadata summary.
+
 ## `vizier draft`: create the plan branch
 
 **Prerequisites**
@@ -50,7 +52,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 
 **Flags to remember**
 - `vizier approve <slug>` — default flow.
-- `vizier approve --list` — dump every `draft/*` branch that is ahead of the target.
+- `vizier list [--target BRANCH]` — standalone command to print every `draft/*` branch ahead of the target before approving or merging.
 - `vizier approve --target release/1.0` — preview and diff against a branch other than the detected primary.
 - `vizier approve --branch feature/foo` — when your work diverges from `draft/<slug>` naming.
 - `vizier approve -y` — skip the confirmation prompt.

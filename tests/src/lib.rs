@@ -428,10 +428,10 @@ fn test_approve_merges_plan() -> TestResult {
         String::from_utf8_lossy(&draft.stderr)
     );
 
-    let list_before = repo.vizier_output(&["approve", "--list"])?;
+    let list_before = repo.vizier_output(&["list"])?;
     assert!(
         list_before.status.success(),
-        "vizier approve --list failed: {}",
+        "vizier list failed: {}",
         String::from_utf8_lossy(&list_before.stderr)
     );
     let stdout_before = String::from_utf8_lossy(&list_before.stdout);
