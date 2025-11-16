@@ -96,12 +96,17 @@ impl CodexEvent {
     /// schema grows to ensure CLI history stays stable.
     fn to_progress_event(&self) -> ProgressEvent {
         let payload = &self.payload;
-        let phase = value_from(payload, "phase").or_else(|| pointer_value(payload, "/data/phase"));
-        let label = value_from(payload, "label");
-        let message =
-            value_from(payload, "message").or_else(|| pointer_value(payload, "/data/message"));
-        let detail =
-            value_from(payload, "detail").or_else(|| pointer_value(payload, "/data/detail"));
+        let phase = value_from(payload, "phase")
+            .or_else(|| pointer_value(payload, "/data/phase"))
+            .or_else(|| Some(humanize_event_type(&self.kind)));
+        let label = value_from(payload, "label")
+            .or_else(|| pointer_value(payload, "/item/type"));
+        let message = value_from(payload, "message")
+            .or_else(|| pointer_value(payload, "/data/message"))
+            .or_else(|| pointer_value(payload, "/item/text"));
+        let detail = value_from(payload, "detail")
+            .or_else(|| pointer_value(payload, "/data/detail"))
+            .or_else(|| pointer_value(payload, "/item/id"));
         let path = pointer_value(payload, "/data/path")
             .or_else(|| pointer_value(payload, "/data/file"))
             .or_else(|| pointer_value(payload, "/data/target"));
@@ -138,6 +143,25 @@ fn pointer_value(payload: &Value, pointer: &str) -> Option<String> {
     payload
         .pointer(pointer)
         .and_then(|value| display::value_to_string(value))
+}
+
+fn humanize_event_type(kind: &str) -> String {
+    let mut out = String::new();
+    for part in kind.split(|c| c == '.' || c == '_') {
+        if part.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(part);
+    }
+
+    if out.is_empty() {
+        kind.to_string()
+    } else {
+        out
+    }
 }
 
 #[derive(Clone)]
@@ -709,5 +733,62 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(!rendered.iter().any(|arg| arg == "--json"));
+    }
+
+    #[test]
+    fn progress_event_uses_event_type_as_phase_fallback() {
+        let payload = serde_json::json!({
+            "type": "thread.started",
+            "thread_id": "abc123"
+        });
+        let event = CodexEvent {
+            kind: "thread.started".to_string(),
+            payload,
+        };
+
+        let progress = event.to_progress_event();
+        let lines = crate::display::render_progress_event(
+            &progress,
+            crate::display::Verbosity::Normal,
+        );
+
+        assert!(
+            lines[0].contains("[codex] thread started"),
+            "unexpected progress line: {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn progress_event_maps_item_completed_message() {
+        let payload = serde_json::json!({
+            "type": "item.completed",
+            "item": {
+                "id": "item_0",
+                "type": "agent_message",
+                "text": "Understood; I received your message."
+            }
+        });
+        let event = CodexEvent {
+            kind: "item.completed".to_string(),
+            payload,
+        };
+
+        let progress = event.to_progress_event();
+        let lines = crate::display::render_progress_event(
+            &progress,
+            crate::display::Verbosity::Normal,
+        );
+
+        assert!(
+            lines[0].contains("[codex] item completed"),
+            "unexpected progress line: {}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("Understood; I received your message."),
+            "missing message in progress line: {}",
+            lines[0]
+        );
     }
 }
