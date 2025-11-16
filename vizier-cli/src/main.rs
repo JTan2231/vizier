@@ -3,7 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, ArgGroup, Args as ClapArgs, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use vizier_core::{
     auditor, config,
     display::{self, LogLevel},
@@ -12,6 +13,7 @@ use vizier_core::{
 
 mod actions;
 use crate::actions::*;
+mod completions;
 mod plan;
 
 /// A CLI for LLM project management.
@@ -166,6 +168,13 @@ enum Commands {
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
 
+    /// Generate shell completion scripts
+    Completions(CompletionsCmd),
+
+    /// Internal completion entry point (invoked by shell integration)
+    #[command(name = "__complete", hide = true)]
+    Complete(HiddenCompleteCmd),
+
     /// Approve plan branches created by `vizier draft`
     Approve(ApproveCmd),
 
@@ -221,7 +230,7 @@ struct ListCmd {
 #[derive(ClapArgs, Debug)]
 struct ApproveCmd {
     /// Plan slug to approve
-    #[arg(value_name = "PLAN")]
+    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
     plan: Option<String>,
 
     /// List pending plan branches instead of approving
@@ -248,7 +257,7 @@ struct ApproveCmd {
 #[derive(ClapArgs, Debug)]
 struct MergeCmd {
     /// Plan slug to merge
-    #[arg(value_name = "PLAN")]
+    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
     plan: Option<String>,
 
     /// Destination branch for merge (defaults to detected primary)
@@ -278,6 +287,37 @@ struct MergeCmd {
     /// Attempt Codex-backed auto-resolution when conflicts arise
     #[arg(long = "auto-resolve-conflicts")]
     auto_resolve_conflicts: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+struct CompletionsCmd {
+    /// Shell to generate completion script for
+    #[arg(value_enum)]
+    shell: CompletionShell,
+}
+
+#[derive(ClapArgs, Debug)]
+struct HiddenCompleteCmd {}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    Elvish,
+    Powershell,
+}
+
+impl From<CompletionShell> for Shell {
+    fn from(value: CompletionShell) -> Self {
+        match value {
+            CompletionShell::Bash => Shell::Bash,
+            CompletionShell::Zsh => Shell::Zsh,
+            CompletionShell::Fish => Shell::Fish,
+            CompletionShell::Elvish => Shell::Elvish,
+            CompletionShell::Powershell => Shell::PowerShell,
+        }
+    }
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -560,6 +600,12 @@ mod tests {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if crate::completions::try_handle_completion(|| Cli::command())
+        .map_err(|err| Box::<dyn std::error::Error>::from(err))?
+    {
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
     let stdout_is_tty = std::io::stdout().is_terminal();
@@ -736,6 +782,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let push_after = cli.global.push;
 
     match cli.command {
+        Commands::Completions(cmd) => {
+            crate::completions::write_registration(cmd.shell.into(), || Cli::command())?;
+            Ok(())
+        }
+        Commands::Complete(_) => Ok(()),
         Commands::InitSnapshot(cmd) => run_snapshot_init(cmd.into()).await,
 
         Commands::Save(SaveCmd {

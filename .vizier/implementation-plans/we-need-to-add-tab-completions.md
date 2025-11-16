@@ -1,9 +1,10 @@
 ---
 plan: we-need-to-add-tab-completions
 branch: draft/we-need-to-add-tab-completions
-status: draft
+status: implemented
 created_at: 2025-11-16T19:12:56Z
 spec_source: inline
+implemented_at: 2025-11-16T19:33:50Z
 ---
 
 ## Operator Spec

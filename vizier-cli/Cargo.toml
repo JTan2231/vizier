@@ -8,7 +8,8 @@ mock_llm = []
 integration_testing = []
 
 [dependencies]
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.5.4", features = ["derive"] }
+clap_complete = { version = "4.5.2", features = ["unstable-dynamic"] }
 rusqlite = "0.35.0"
 sqlite-vec = "0.1.6"
 zerocopy = "0.8.25"

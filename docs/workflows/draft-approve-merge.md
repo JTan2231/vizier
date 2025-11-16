@@ -12,6 +12,8 @@ At every stage you can pause, review the artifacts, and hand control back to a h
 
 Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary), along with the stored metadata summary.
 
+> 💡 Quality-of-life: `vizier completions --shell <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions --shell zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
+
 ## `vizier draft`: create the plan branch
 
 **Prerequisites**
