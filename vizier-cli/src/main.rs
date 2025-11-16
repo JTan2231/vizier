@@ -163,6 +163,9 @@ enum Commands {
     /// Generate an implementation-plan draft branch from an operator spec
     Draft(DraftCmd),
 
+    /// List pending implementation-plan branches that are ahead of the target branch
+    List(ListCmd),
+
     /// Approve plan branches created by `vizier draft`
     Approve(ApproveCmd),
 
@@ -209,13 +212,24 @@ struct DraftCmd {
 }
 
 #[derive(ClapArgs, Debug)]
+struct ListCmd {
+    /// Target branch to compare against (defaults to detected primary)
+    #[arg(long = "target", value_name = "BRANCH")]
+    target: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
 struct ApproveCmd {
-    /// Plan slug to approve (omit when using --list)
+    /// Plan slug to approve
     #[arg(value_name = "PLAN")]
     plan: Option<String>,
 
     /// List pending plan branches instead of approving
-    #[arg(long = "list")]
+    #[arg(
+        long = "list",
+        hide = true,
+        help = "DEPRECATED: use `vizier list` instead."
+    )]
     list: bool,
 
     /// Destination branch for preview/reference (defaults to detected primary)
@@ -361,12 +375,20 @@ fn resolve_draft_spec(cmd: &DraftCmd) -> Result<ResolvedInput, Box<dyn std::erro
     resolve_prompt_input(cmd.spec.as_deref(), cmd.file.as_deref())
 }
 
+fn resolve_list_options(cmd: &ListCmd) -> ListOptions {
+    ListOptions {
+        target: cmd.target.clone(),
+    }
+}
+
 fn resolve_approve_options(
     cmd: &ApproveCmd,
     push_after: bool,
 ) -> Result<ApproveOptions, Box<dyn std::error::Error>> {
     if !cmd.list && cmd.plan.is_none() {
-        return Err("plan argument is required unless --list is set".into());
+        return Err(
+            "plan argument is required (use `vizier list` to inspect pending drafts)".into(),
+        );
     }
 
     Ok(ApproveOptions {
@@ -745,6 +767,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await
         }
+
+        Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
 
         Commands::Approve(cmd) => run_approve(resolve_approve_options(&cmd, push_after)?).await,
 
