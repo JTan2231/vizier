@@ -93,14 +93,6 @@ WHEN USERS SIGNAL:
 
 FORMAT GUIDANCE:
 - To the user: output only a concise commit-message-like summary of what changed (not the raw snapshot or todos).
-
-VM_COMMANDS.SH REMOTE RUNNER:
-- Run the helper from the repo root: `./vm_commands.sh <action> ...`.
-- `send "<command>"` (or `send command "<command>"`) starts a remote job via SSH; stdout returns the RUN_ID/SESSION/PGID you'll need for follow-ups.
-- `interrupt <pgid>` sends SIGINT to the remote process group; use the PGID emitted by `send` or `list`.
-- `list` enumerates `/run/vizier/*` with each run's id, pgid, status, and original command text.
-- Export `SSH_TARGET=user@host`; optionally set `SSH_PORT`, `SSH_EXTRA_OPTS` (space-separated), and `SSH_STRICT=1` to keep strict host key checking.
-- Remote stdout/stderr live under `/run/vizier/<RUN_ID>/`; fetch them via `ssh "$SSH_TARGET" 'cat /run/vizier/<RUN_ID>/stdout'` (or `stderr`) when you need logs.
 </mainInstruction>
 "#;
 

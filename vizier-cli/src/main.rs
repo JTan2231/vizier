@@ -169,13 +169,7 @@ enum Commands {
     /// Merge approved plan branches back into the primary branch
     Merge(MergeCmd),
 
-    /// Documentation utilities
-    Docs(DocsCmd),
-
-    /// Snapshot-related operations (e.g., bootstrap from history)
-    Snapshot(SnapshotCmd),
-
-    /// Alias for `snapshot init`
+    /// Bootstrap `.vizier/.snapshot` and TODO threads from repo history
     #[command(name = "init-snapshot")]
     InitSnapshot(SnapshotInitCmd),
 
@@ -186,13 +180,6 @@ enum Commands {
     ///   vizier save HEAD~3..HEAD   # explicit range
     ///   vizier save main           # single rev compared to workdir/index
     Save(SaveCmd),
-
-    /// Decide whether to revise/leave/remove selected TODOs (use "*" for all)
-    ///
-    /// Examples:
-    ///   vizier clean "*"
-    ///   vizier clean "Parser bugs,UI polish"
-    Clean(CleanCmd),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -279,50 +266,6 @@ struct MergeCmd {
     auto_resolve_conflicts: bool,
 }
 
-#[derive(ClapArgs, Debug)]
-struct DocsCmd {
-    #[command(subcommand)]
-    command: DocsCommands,
-}
-
-#[derive(Subcommand, Debug)]
-enum DocsCommands {
-    /// Emit or scaffold architecture documentation prompts
-    Prompt(DocsPromptCmd),
-}
-
-#[derive(ClapArgs, Debug)]
-struct DocsPromptCmd {
-    #[arg(value_enum)]
-    scope: DocsPromptScope,
-
-    /// Write the template to PATH (use "-" for stdout)
-    #[arg(long = "write", value_name = "PATH", conflicts_with = "scaffold")]
-    write: Option<PathBuf>,
-
-    /// Scaffold the template under .vizier/docs/prompting/
-    #[arg(long, conflicts_with = "write")]
-    scaffold: bool,
-
-    /// Overwrite destination when used with --write or --scaffold
-    #[arg(long)]
-    force: bool,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum DocsPromptScope {
-    #[value(alias = "architecture_overview")]
-    ArchitectureOverview,
-    #[value(alias = "subsystem_detail")]
-    SubsystemDetail,
-    #[value(alias = "interface_summary")]
-    InterfaceSummary,
-    #[value(alias = "invariant_capture")]
-    InvariantCapture,
-    #[value(alias = "operational_thread")]
-    OperationalThread,
-}
-
 #[derive(ClapArgs, Debug, Clone)]
 struct SnapshotInitCmd {
     /// Overwrite existing snapshot/TODOs without confirmation
@@ -358,18 +301,6 @@ impl From<SnapshotInitCmd> for crate::actions::SnapshotInitOptions {
     }
 }
 
-#[derive(Subcommand, Debug)]
-enum SnapshotCommands {
-    /// Analyze repository history and bootstrap `.vizier/.snapshot` plus TODO threads
-    Init(SnapshotInitCmd),
-}
-
-#[derive(ClapArgs, Debug)]
-struct SnapshotCmd {
-    #[command(subcommand)]
-    command: SnapshotCommands,
-}
-
 #[derive(ClapArgs, Debug)]
 #[command(
     group = ArgGroup::new("commit_msg_src")
@@ -390,15 +321,6 @@ struct SaveCmd {
     /// Open $EDITOR to compose the commit message
     #[arg(short = 'M', long = "edit-message")]
     commit_message_editor: bool,
-}
-
-#[derive(ClapArgs, Debug)]
-struct CleanCmd {
-    /// Comma-delimited list of TODO names, or "*" for all.
-    ///
-    /// Example: "*"  or  "Parser bugs,UI polish"
-    #[arg(value_name = "TODO_LIST")]
-    todo_list: String,
 }
 
 #[derive(Debug, Clone)]
@@ -792,16 +714,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let push_after = cli.global.push;
 
     match cli.command {
-        Commands::Clean(CleanCmd { todo_list }) => clean(todo_list, push_after).await,
-
-        Commands::Docs(DocsCmd { command }) => match command {
-            DocsCommands::Prompt(cmd) => docs_prompt(cmd).await,
-        },
-
-        Commands::Snapshot(SnapshotCmd { command }) => match command {
-            SnapshotCommands::Init(cmd) => run_snapshot_init(cmd.into()).await,
-        },
-
         Commands::InitSnapshot(cmd) => run_snapshot_init(cmd.into()).await,
 
         Commands::Save(SaveCmd {

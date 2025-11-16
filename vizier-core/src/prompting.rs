@@ -3,6 +3,10 @@ use std::path::PathBuf;
 
 use crate::tools;
 
+// NOTE: The CLI no longer exposes `vizier docs prompt`, but the architecture-doc
+// gate work (.vizier/todo_architecture_doc_gate_and_commit_history.md) will reuse
+// these templates once enforcement lands, so we keep this module available.
+
 const PROMPT_RELATIVE_DIR: &str = "docs/prompting";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
