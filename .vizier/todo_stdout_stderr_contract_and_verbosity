@@ -13,7 +13,7 @@ Desired behavior (Product-level)
   - Non-TTY: never emit ANSI; stderr carries only errors/warnings per verbosity; stdout carries a single, stable Outcome (human or JSON).
   - TTY: progress spinner/status allowed per verbosity; final Outcome always printed to stdout.
 - Provide levers: -q suppresses non-error output; -v/-vv increase detail on stderr; --no-ansi disables ANSI even on TTY; --progress=auto|never|always controls status emission.
-- Standardize Outcome: every action (ask, chat step, save, snapshot init, draft/approve) emits the same compact epilogue; with --json emit outcome.v1 on stdout.
+- Standardize Outcome: every action (ask, chat step, save, init-snapshot, draft/approve) emits the same compact epilogue; with --json emit outcome.v1 on stdout.
 
 Acceptance criteria
 1) Verbosity + progress levers:
@@ -22,16 +22,17 @@ Acceptance criteria
 2) TTY gating:
    - Non-TTY never writes ANSI sequences; progress is line-oriented at most; Outcome still appears on stdout.
 3) Outcome standardization:
-   - ask/clean/save/snapshot/draft/approve/merge all print a one-line human Outcome on stdout by default; with --json print outcome.v1 JSON only (no human text).
+   - ask/save/init-snapshot/draft/approve/merge all print a one-line human Outcome on stdout by default; with --json print outcome.v1 JSON only (no human text).
    - Fields cover {action, elapsed_ms, changes:{A,M,D,R,lines}, commits:{conversation,.vizier,code}, gates:{state,reason}, token_usage?, session.path?}.
 4) Tests: matrix across (TTY vs non-TTY) × (quiet/default/-v/-vv) asserting no ANSI in non-TTY, stable presence/shape of Outcome, and correct gating of progress.
 
 Status update (2025-11-15)
 - Shipped: -q/-v/-vv, --no-ansi, progress gating tied to TTY/verbosity (vizier-core/src/display.rs; vizier-cli wires config).
 - Outstanding: unify stdout Outcome across commands; implement outcome.v1 schema; ensure non-TTY never sees ANSI and stderr respects verbosity in all paths.
+- Manual `vizier clean` epilogues were removed entirely; TODO hygiene now flows through Default-Action Posture plus the dedicated GC work tracked in `.vizier/todo_todo_todo_garbage_collection_on_save.md`.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)
 - vizier-core/src/display.rs (TTY gating, spinner, verbosity)
-- vizier-cli/src/actions.rs (current ad-hoc outcomes for save/snapshot/clean)
+- vizier-cli/src/actions.rs (current ad-hoc outcomes for save/init-snapshot)
 - Cross-link: .vizier/todo_post_action_outcome_summaries_across_tui_cli_and_assistant.md.md
