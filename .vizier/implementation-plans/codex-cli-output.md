@@ -1,9 +1,10 @@
 ---
 plan: codex-cli-output
 branch: draft/codex-cli-output
-status: draft
+status: implemented
 created_at: 2025-11-16T01:04:50Z
 spec_source: inline
+implemented_at: 2025-11-16T01:26:59Z
 ---
 
 ## Operator Spec
