@@ -192,6 +192,11 @@ pub struct DraftArgs {
 }
 
 #[derive(Debug, Clone)]
+pub struct ListOptions {
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ApproveOptions {
     pub plan: Option<String>,
     pub list_only: bool,
@@ -830,8 +835,13 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
     }
 }
 
+pub fn run_list(opts: ListOptions) -> Result<(), Box<dyn std::error::Error>> {
+    list_pending_plans(opts.target)
+}
+
 pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error::Error>> {
     if opts.list_only {
+        display::warn("`vizier approve --list` is deprecated; use `vizier list` instead.");
         return list_pending_plans(opts.target.clone());
     }
 
