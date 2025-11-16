@@ -91,18 +91,13 @@ vizier save HEAD~3..HEAD # commits specific range
 - `vizier approve <plan>` — Executes the approved implementation plan inside a disposable worktree (Codex-only), streaming Codex output to stderr, updating `.vizier`, and auto‑committing the draft branch so reviewers can diff `git diff <target>...<branch>`. Flags: `--list`, `-y/--yes`, `--target`, `--branch`. [Learn more](docs/workflows/draft-approve-merge.md#vizier-approve-implement-the-plan-safely)
 - `vizier merge <plan>` — Runs the same narrative-refresh flow as `vizier save` inside a temporary worktree, removes `.vizier/implementation-plans/<plan>.md`, commits the `.vizier` edits on the plan branch, then merges `draft/<plan>` into the detected primary branch with a plan-driven commit message. On conflicts, Vizier writes a resume token under `.vizier/tmp/merge-conflicts/<plan>.json`; resolve the files (or rerun with `--auto-resolve-conflicts` to let Codex try first) and invoke `vizier merge <plan>` again to finish the merge. Successful merges now delete the draft branch automatically; pass `--keep-branch` to retain it locally (the legacy `--delete-branch` flag remains as a compatibility alias). Flags: `-y/--yes`, `--keep-branch`, `--target`, `--branch`, `--note`, `--auto-resolve-conflicts`. [Learn more](docs/workflows/draft-approve-merge.md#vizier-merge-land-the-plan-with-metadata)
 
-#### Documentation Prompts
-- `vizier docs prompt <scope>` — Emit or scaffold architecture templates described in `PROMPTING.md`
-  - `--write PATH` writes the template to a file (use `-` to force stdout)
-  - `--scaffold` materializes the template under `.vizier/docs/prompting/`
-  - `--force` overwrites existing files when used with `--write` or `--scaffold`
-  - Scopes: `architecture-overview`, `subsystem-detail`, `interface-summary`, `invariant-capture`, `operational-thread`
-
 #### Snapshot Management
-- `vizier snapshot init` — Bootstrap `.vizier/.snapshot` from repository analysis
+- `vizier init-snapshot` — Bootstrap `.vizier/.snapshot` from repository analysis
   - `--depth N` — Limit Git history scan
   - `--paths <glob>` — Restrict analysis scope
   - `--issues github` — Enrich with external issue tracking
+
+> Architecture docs will be scaffolded through the forthcoming compliance gate (see `.vizier/todo_architecture_doc_gate_and_commit_history.md`); until then copy the templates under `.vizier/docs/prompting/` or follow your org’s SOP.
 
 #### Commit Workflow
 - `vizier save [REV]` — The "save button" for your work:
@@ -115,11 +110,7 @@ vizier save HEAD~3..HEAD # commits specific range
   - `-m <note>` — Add developer note to commit
   - `--no-code` — Skip code commit
 
-#### TODO Maintenance
-- `vizier clean <filter>` — Revise/remove TODOs; use `"*"` for all
-  - Deduplicates threads
-  - Removes completed work
-  - Ensures evidence-based tasks
+_Default-Action Posture plus the TODO GC work tracked in `.vizier/todo_todo_todo_garbage_collection_on_save.md` now handle housekeeping; the retired `vizier clean` shim no longer exists._
 
 ### Configuration
 
@@ -178,7 +169,7 @@ The narrative engine and tool system:
 
 ### vizier-cli
 Command-line interface and workflow orchestration:
-- **Action Handlers**: Save flows, bootstrap logic, TODO cleaning
+- **Action Handlers**: Save flows, bootstrap logic, and the forthcoming TODO GC wiring
 - **Provider Management**: Multi-LLM support with runtime switching
 - **Config System**: Hierarchical settings (CLI > session > profile > default)
 
@@ -216,7 +207,7 @@ cargo install vizier
 
 # Initialize in your project
 cd your-project
-vizier snapshot init
+vizier init-snapshot
 ```
 
 **Requirements**: Rust toolchain, Git repository, OpenAI/Anthropic API access
