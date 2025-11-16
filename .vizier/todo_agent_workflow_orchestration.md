@@ -34,6 +34,7 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 - Architecture doc gate + Pending Commit gate threads
 - DRAFT.md and APPROVE.md (integrated draft→approve flow), `.vizier/implementation-plans/`
 - docs/workflows/draft-approve-merge.md (textual runbook for today’s manual process; keeps humans aligned while orchestration tooling is built)
+- Remote runner helper (`vm_commands.sh` in the agent harness: `send`/`list`/`interrupt`, `SSH_TARGET`/`SSH_PORT`/`SSH_EXTRA_OPTS`/`SSH_STRICT`, `/run/vizier/<RUN_ID>/{stdout,stderr}`) as the contract for orchestrating remote agent jobs
 
 ## Implementation notes
 - Reuse existing gates/outcome machinery; add workflow state as metadata rather than inventing parallel tracking. Ensure each transition is idempotent so multi-agent runs remain recoverable after interruptions.
