@@ -21,7 +21,7 @@ use vizier_core::{
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
     codex, config,
-    display::{self, LogLevel, Verbosity},
+    display::{self, LogLevel, ProgressEvent, Verbosity},
     file_tracking, prompting, tools, vcs,
 };
 
@@ -142,18 +142,18 @@ fn token_usage_suffix() -> String {
     }
 }
 
-fn spawn_plain_progress_logger(mut rx: mpsc::Receiver<String>) -> Option<JoinHandle<()>> {
-    if matches!(display::get_display_config().verbosity, Verbosity::Quiet) {
+fn spawn_plain_progress_logger(mut rx: mpsc::Receiver<ProgressEvent>) -> Option<JoinHandle<()>> {
+    let cfg = display::get_display_config();
+    if matches!(cfg.verbosity, Verbosity::Quiet) {
         return None;
     }
 
+    let verbosity = cfg.verbosity;
     Some(tokio::spawn(async move {
-        while let Some(line) = rx.recv().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
+        while let Some(event) = rx.recv().await {
+            for line in display::render_progress_event(&event, verbosity) {
+                eprintln!("{}", line);
             }
-            eprintln!("[codex] {trimmed}");
         }
     }))
 }
@@ -1445,7 +1445,7 @@ async fn try_auto_resolve_conflicts(
         bin: cfg.codex.binary_path.clone(),
         extra_args: cfg.codex.extra_args.clone(),
         model: codex::CodexModel::Gpt5Codex,
-        output_mode: codex::CodexOutputMode::PassthroughHuman,
+        output_mode: codex::CodexOutputMode::EventsJson,
     };
 
     let (progress_tx, progress_rx) = mpsc::channel(64);
@@ -1672,16 +1672,25 @@ async fn apply_plan_in_worktree(
     let system_prompt = codex::build_prompt_for_codex(&instruction)
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
+    let (event_tx, event_rx) = mpsc::channel(64);
+    let progress_handle = spawn_plain_progress_logger(event_rx);
+    let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
         None,
         system_prompt,
         instruction.clone(),
         tools::active_tooling(),
-        auditor::RequestStream::PassthroughStderr,
+        auditor::RequestStream::Status {
+            text: text_tx,
+            events: Some(event_tx),
+        },
         Some(codex::CodexModel::Gpt5Codex),
         Some(worktree_path.to_path_buf()),
     )
     .await?;
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
 
     let session_artifact = Auditor::commit_audit().await?;
     let session_path = session_artifact

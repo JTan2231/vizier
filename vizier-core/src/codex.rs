@@ -20,7 +20,7 @@ use crate::{
     IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
     auditor::TokenUsage,
     config::{self, SystemPrompt},
-    display::{self, Status},
+    display::{self, ProgressEvent, ProgressKind, Status},
     tools,
 };
 
@@ -88,20 +88,72 @@ pub struct CodexEvent {
     pub payload: Value,
 }
 
+impl CodexEvent {
+    /// Converts Codex events into the metadata that the CLI renderer relies on.
+    ///
+    /// Vizier currently renders `phase`, `label`, `message`, `detail`, `data.path`/`data.file`,
+    /// `progress`, `status`, and `timestamp`. Keep this list updated whenever the Codex event
+    /// schema grows to ensure CLI history stays stable.
+    fn to_progress_event(&self) -> ProgressEvent {
+        let payload = &self.payload;
+        let phase = value_from(payload, "phase").or_else(|| pointer_value(payload, "/data/phase"));
+        let label = value_from(payload, "label");
+        let message =
+            value_from(payload, "message").or_else(|| pointer_value(payload, "/data/message"));
+        let detail =
+            value_from(payload, "detail").or_else(|| pointer_value(payload, "/data/detail"));
+        let path = pointer_value(payload, "/data/path")
+            .or_else(|| pointer_value(payload, "/data/file"))
+            .or_else(|| pointer_value(payload, "/data/target"));
+        let progress = payload
+            .get("progress")
+            .and_then(Value::as_f64)
+            .or_else(|| payload.pointer("/data/progress").and_then(Value::as_f64));
+        let status =
+            value_from(payload, "status").or_else(|| pointer_value(payload, "/data/status"));
+        let timestamp = value_from(payload, "timestamp");
+
+        ProgressEvent {
+            kind: ProgressKind::Codex,
+            phase,
+            label,
+            message,
+            detail,
+            path,
+            progress,
+            status,
+            timestamp,
+            raw: Some(payload.to_string()),
+        }
+    }
+}
+
+fn value_from(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(|value| display::value_to_string(value))
+}
+
+fn pointer_value(payload: &Value, pointer: &str) -> Option<String> {
+    payload
+        .pointer(pointer)
+        .and_then(|value| display::value_to_string(value))
+}
+
 #[derive(Clone)]
 pub enum ProgressHook {
     Display(tokio::sync::mpsc::Sender<Status>),
-    Plain(tokio::sync::mpsc::Sender<String>),
+    Plain(tokio::sync::mpsc::Sender<ProgressEvent>),
 }
 
 impl ProgressHook {
-    async fn send(&self, message: String) {
+    async fn send_event(&self, event: ProgressEvent) {
         match self {
             ProgressHook::Display(tx) => {
-                let _ = tx.send(Status::Working(message)).await;
+                let _ = tx.send(Status::Event(event)).await;
             }
             ProgressHook::Plain(tx) => {
-                let _ = tx.send(message).await;
+                let _ = tx.send(event).await;
             }
         }
     }
@@ -403,8 +455,14 @@ pub async fn run_exec(
 ) -> Result<CodexResponse, CodexError> {
     #[cfg(feature = "mock_llm")]
     {
-        let _ = (req, progress);
-        return Ok(mock_codex_response());
+        let response = mock_codex_response();
+        if let Some(progress_hook) = progress {
+            for event in &response.events {
+                progress_hook.send_event(event.to_progress_event()).await;
+            }
+        }
+        let _ = req;
+        return Ok(response);
     }
 
     let _tempfile_guard = NamedTempFile::new()?;
@@ -495,8 +553,7 @@ pub async fn run_exec(
                     };
 
                     if let Some(ref hook) = progress {
-                        let status_line = summarize_event(&event);
-                        hook.send(status_line).await;
+                        hook.send_event(event.to_progress_event()).await;
                     }
 
                     if kind == "turn.completed" && usage.is_none() {
@@ -562,26 +619,6 @@ fn classify_profile_failure(lines: &[String]) -> Option<String> {
     None
 }
 
-fn summarize_event(event: &CodexEvent) -> String {
-    if let Some(message) = event
-        .payload
-        .get("message")
-        .and_then(Value::as_str)
-        .filter(|m| !m.is_empty())
-    {
-        format!("{}: {}", event.kind, message)
-    } else if let Some(label) = event
-        .payload
-        .get("label")
-        .and_then(Value::as_str)
-        .filter(|m| !m.is_empty())
-    {
-        format!("{}: {}", event.kind, label)
-    } else {
-        event.kind.clone()
-    }
-}
-
 fn extract_usage(value: &Value) -> Option<TokenUsage> {
     let usage = value.get("usage")?;
     let input = usage
@@ -609,13 +646,30 @@ fn mock_codex_response() -> CodexResponse {
             output_tokens: 20,
             known: true,
         }),
-        events: vec![CodexEvent {
-            kind: "turn.completed".to_string(),
-            payload: json!({
-                "type": "turn.completed",
-                "usage": { "input_tokens": 10, "output_tokens": 20 }
-            }),
-        }],
+        events: vec![
+            CodexEvent {
+                kind: "phase.update".to_string(),
+                payload: json!({
+                    "type": "phase.update",
+                    "phase": "apply plan",
+                    "message": "editing mock workspace",
+                    "detail": "mock change",
+                    "progress": 0.2,
+                    "status": "running",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "data": {
+                        "path": "README.md"
+                    }
+                }),
+            },
+            CodexEvent {
+                kind: "turn.completed".to_string(),
+                payload: json!({
+                    "type": "turn.completed",
+                    "usage": { "input_tokens": 10, "output_tokens": 20 }
+                }),
+            },
+        ],
     }
 }
 

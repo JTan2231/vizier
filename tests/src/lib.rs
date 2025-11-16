@@ -296,7 +296,9 @@ fn test_save() -> TestResult {
 
     let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
-        session_log.to_ascii_lowercase().contains("mock codex response"),
+        session_log
+            .to_ascii_lowercase()
+            .contains("mock codex response"),
         "session log missing Codex response"
     );
     Ok(())
@@ -344,7 +346,9 @@ fn test_save_without_code_changes() -> TestResult {
     );
     let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
-        session_log.to_ascii_lowercase().contains("mock codex response"),
+        session_log
+            .to_ascii_lowercase()
+            .contains("mock codex response"),
         "session log missing Codex response"
     );
 
@@ -451,6 +455,12 @@ fn test_approve_merges_plan() -> TestResult {
         approve.status.success(),
         "vizier approve failed: {}",
         String::from_utf8_lossy(&approve.stderr)
+    );
+    let approve_stderr = String::from_utf8_lossy(&approve.stderr);
+    assert!(
+        approve_stderr.contains("[codex] apply plan"),
+        "Codex progress log missing expected line: {}",
+        approve_stderr
     );
 
     let repo_handle = repo.repo();
