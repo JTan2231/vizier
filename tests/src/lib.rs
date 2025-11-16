@@ -181,21 +181,43 @@ fn count_commits_from_head(repo: &Repository) -> Result<usize, git2::Error> {
     Ok(walk.count())
 }
 
-fn find_conversation_commit(repo: &Repository) -> Result<String, Box<dyn std::error::Error>> {
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
-
-    for oid in revwalk {
-        let oid = oid?;
-        let commit = repo.find_commit(oid)?;
-        if let Some(message) = commit.message() {
-            if message.contains("VIZIER CONVERSATION") {
-                return Ok(message.to_string());
+fn find_save_field(output: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    for line in output.lines() {
+        for part in line.split(';') {
+            let trimmed = part.trim();
+            if let Some(value) = trimmed.strip_prefix(&prefix) {
+                return Some(value.trim().to_string());
             }
         }
     }
+    None
+}
 
-    Err("failed to find conversation commit".into())
+fn session_log_contents_from_output(
+    repo: &IntegrationRepo,
+    stdout: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let session_rel = find_save_field(stdout, "session")
+        .ok_or_else(|| "save output missing session field".to_string())?;
+    if session_rel == "none" {
+        return Err("save output did not report a session log path".into());
+    }
+
+    let session_path = repo.path().join(session_rel);
+    let contents = match fs::read_to_string(&session_path) {
+        Ok(data) => data,
+        Err(err) => {
+            return Err(format!(
+                "failed to read session log at {}: {}",
+                session_path.display(),
+                err
+            )
+            .into());
+        }
+    };
+
+    Ok(contents)
 }
 
 fn prepare_conflicting_plan(
@@ -242,6 +264,7 @@ fn ensure_gitignore(path: &Path) -> io::Result<()> {
     writeln!(file, "\n# Vizier test state")?;
     writeln!(file, ".vizier/tmp/")?;
     writeln!(file, ".vizier/tmp-worktrees/")?;
+    writeln!(file, ".vizier/sessions/")?;
     Ok(())
 }
 
@@ -250,11 +273,20 @@ fn test_save() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let before = count_commits_from_head(&repo.repo())?;
 
-    let status = repo.vizier_cmd().arg("save").status()?;
-    assert!(status.success(), "vizier save exited with {status:?}");
+    let output = repo.vizier_cmd().arg("save").output()?;
+    assert!(
+        output.status.success(),
+        "vizier save exited with {:?}",
+        output.status
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
     let after = count_commits_from_head(&repo.repo())?;
-    assert_eq!(after - before, 3, "save should create three commits");
+    assert_eq!(
+        after - before,
+        2,
+        "save should create narrative + code commits"
+    );
 
     let snapshot = repo.read(".vizier/.snapshot")?;
     assert!(
@@ -262,10 +294,10 @@ fn test_save() -> TestResult {
         "expected Codex mock snapshot update"
     );
 
-    let convo = find_conversation_commit(&repo.repo())?;
+    let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
-        convo.to_ascii_lowercase().contains("mock codex response"),
-        "conversation commit missing Codex response"
+        session_log.to_ascii_lowercase().contains("mock codex response"),
+        "session log missing Codex response"
     );
     Ok(())
 }
@@ -281,8 +313,10 @@ fn test_save_with_staged_files() -> TestResult {
 
     let repo_handle = repo.repo();
     assert_eq!(count_files_in_commit(&repo_handle, "HEAD")?, 2);
-    assert_eq!(count_files_in_commit(&repo_handle, "HEAD~1")?, 2);
-    assert_eq!(count_files_in_commit(&repo_handle, "HEAD~2")?, 0);
+    assert!(
+        count_files_in_commit(&repo_handle, "HEAD~1")? >= 1,
+        "expected narrative commit to touch at least one .vizier file"
+    );
     Ok(())
 }
 
@@ -308,15 +342,19 @@ fn test_save_without_code_changes() -> TestResult {
         "expected save output to skip code commit but saw: {}",
         stdout
     );
+    let session_log = session_log_contents_from_output(&repo, &stdout)?;
+    assert!(
+        session_log.to_ascii_lowercase().contains("mock codex response"),
+        "session log missing Codex response"
+    );
 
     let after = count_commits_from_head(&repo.repo())?;
     assert_eq!(
         after - before,
-        2,
-        "should only create conversation + narrative commits"
+        1,
+        "should only create a narrative commit when code changes are skipped"
     );
     assert_eq!(count_files_in_commit(&repo.repo(), "HEAD")?, 2);
-    assert_eq!(count_files_in_commit(&repo.repo(), "HEAD~1")?, 0);
     Ok(())
 }
 
@@ -324,6 +362,10 @@ fn test_save_without_code_changes() -> TestResult {
 fn test_draft_creates_branch_and_plan() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let before = count_commits_from_head(&repo.repo())?;
+    let sessions_dir = repo.path().join(".vizier/sessions");
+    if sessions_dir.exists() {
+        fs::remove_dir_all(&sessions_dir)?;
+    }
 
     let output = repo.vizier_output(&["draft", "--name", "smoke", "ship the draft flow"])?;
     assert!(
@@ -338,6 +380,16 @@ fn test_draft_creates_branch_and_plan() -> TestResult {
             .join(".vizier/implementation-plans/smoke.md")
             .exists(),
         "plan should not appear in the operator’s working tree"
+    );
+    let sessions_clean = if sessions_dir.exists() {
+        let mut entries = fs::read_dir(&sessions_dir)?;
+        entries.next().is_none()
+    } else {
+        true
+    };
+    assert!(
+        sessions_clean,
+        "session logs should not be created in the operator's working tree"
     );
 
     let repo_handle = repo.repo();

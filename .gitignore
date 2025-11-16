@@ -2,3 +2,4 @@
 Cargo.lock
 .vizier/tmp-worktrees/
 .vizier/tmp/
+.vizier/sessions/

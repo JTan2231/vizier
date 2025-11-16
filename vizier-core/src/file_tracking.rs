@@ -61,8 +61,39 @@ impl FileTracker {
             return Ok(());
         }
 
+        let repo_root = vcs::repo_root()?;
+        let repo_root_str = repo_root.to_string_lossy().to_string();
+
+        let staged_snapshot = vcs::snapshot_staged(&repo_root_str)?;
+        let mut staged_to_restore = Vec::new();
+        let mut paths_to_unstage: Vec<String> = Vec::new();
+
+        for item in staged_snapshot.iter() {
+            if is_vizier_path(&item.path) {
+                continue;
+            }
+
+            staged_to_restore.push(item.clone());
+            match &item.kind {
+                vcs::StagedKind::Renamed { from, to } => {
+                    paths_to_unstage.push(from.clone());
+                    paths_to_unstage.push(to.clone());
+                }
+                _ => paths_to_unstage.push(item.path.clone()),
+            }
+        }
+
+        if !paths_to_unstage.is_empty() {
+            let refs: Vec<&str> = paths_to_unstage.iter().map(|path| path.as_str()).collect();
+            vcs::unstage(Some(refs))?;
+        }
+
         // TODO: Commit message builder
         vcs::add_and_commit(Some(vec![&crate::tools::get_todo_dir()]), message, false)?;
+
+        if !staged_to_restore.is_empty() {
+            vcs::restore_staged(&repo_root_str, &staged_to_restore)?;
+        }
 
         Self::clear();
 
@@ -159,4 +190,8 @@ impl FileTracker {
             _ => input.to_string(),
         }
     }
+}
+
+fn is_vizier_path(path: &str) -> bool {
+    path.starts_with(".vizier/") || path.starts_with(".vizier\\")
 }
