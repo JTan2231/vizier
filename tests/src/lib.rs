@@ -296,7 +296,9 @@ fn test_save() -> TestResult {
 
     let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
-        session_log.to_ascii_lowercase().contains("mock codex response"),
+        session_log
+            .to_ascii_lowercase()
+            .contains("mock codex response"),
         "session log missing Codex response"
     );
     Ok(())
@@ -344,7 +346,9 @@ fn test_save_without_code_changes() -> TestResult {
     );
     let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
-        session_log.to_ascii_lowercase().contains("mock codex response"),
+        session_log
+            .to_ascii_lowercase()
+            .contains("mock codex response"),
         "session log missing Codex response"
     );
 
@@ -424,10 +428,10 @@ fn test_approve_merges_plan() -> TestResult {
         String::from_utf8_lossy(&draft.stderr)
     );
 
-    let list_before = repo.vizier_output(&["approve", "--list"])?;
+    let list_before = repo.vizier_output(&["list"])?;
     assert!(
         list_before.status.success(),
-        "vizier approve --list failed: {}",
+        "vizier list failed: {}",
         String::from_utf8_lossy(&list_before.stderr)
     );
     let stdout_before = String::from_utf8_lossy(&list_before.stdout);

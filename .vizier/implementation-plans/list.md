@@ -1,9 +1,10 @@
 ---
 plan: list
 branch: draft/list
-status: draft
+status: implemented
 created_at: 2025-11-16T01:21:16Z
 spec_source: inline
+implemented_at: 2025-11-16T01:36:14Z
 ---
 
 ## Operator Spec

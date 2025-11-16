@@ -38,3 +38,5 @@ Keep the configuration and flag surface for the `vizier draft → vizier approve
 - Workflow docs: `docs/workflows/draft-approve-merge.md`
 - Snapshot thread: Agent workflow orchestration (Running Snapshot — updated)
 
+## Status
+- Update (2025-11-16): Split the pending-plan listing flow into its own `vizier list [--target BRANCH]` command (hidden/deprecated `vizier approve --list` now just calls into it with a warning) and refreshed README + workflow docs/tests accordingly so operators don’t need to memorize an extra approve flag. Continue tightening the rest of the configuration story (target detection precedence, branch cleanup toggles, doc gates) in future iterations.
