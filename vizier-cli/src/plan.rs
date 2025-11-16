@@ -1,6 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
-use git2::{BranchType, Repository};
-use std::collections::HashMap;
+use git2::{BranchType, Oid, Repository};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
@@ -406,6 +406,156 @@ impl PlanMetadata {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PlanSlugEntry {
+    pub slug: String,
+    pub branch: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+pub struct PlanSlugInventory;
+
+impl PlanSlugInventory {
+    pub fn collect(
+        target_override: Option<&str>,
+    ) -> Result<Vec<PlanSlugEntry>, Box<dyn std::error::Error>> {
+        let repo_root = repo_root()
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+        let plan_dir = repo_root.join(PLAN_DIR);
+        let repo = Repository::discover(&repo_root)?;
+        let target_branch = Self::resolve_target_branch(target_override)?;
+        let target_oid = Self::target_oid(&repo, &target_branch)?;
+
+        let mut entries: Vec<PlanSlugEntry> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        if plan_dir.exists() {
+            let mut plan_paths: Vec<PathBuf> = fs::read_dir(&plan_dir)?
+                .filter_map(|res| res.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+                .collect();
+            plan_paths.sort();
+            for path in plan_paths {
+                if let Some(entry) = Self::entry_from_plan_path(&repo, target_oid, &path)? {
+                    seen.insert(entry.slug.clone());
+                    entries.push(entry);
+                }
+            }
+        }
+
+        let mut branches = repo.branches(Some(BranchType::Local))?;
+        while let Some(branch_res) = branches.next() {
+            let (branch, _) = branch_res?;
+            let Some(name) = branch.name()? else {
+                continue;
+            };
+            if !name.starts_with("draft/") {
+                continue;
+            }
+            let slug = name.trim_start_matches("draft/").to_string();
+            if seen.contains(&slug) {
+                continue;
+            }
+
+            let commit = branch.get().peel_to_commit()?;
+            if target_oid == commit.id()
+                || repo.graph_descendant_of(target_oid, commit.id())?
+            {
+                continue;
+            }
+
+            match load_plan_from_branch(&slug, name) {
+                Ok(meta) => {
+                    seen.insert(slug.clone());
+                    let summary = summarize_spec(&meta);
+                    let created_at = meta.created_at_display();
+                    entries.push(PlanSlugEntry {
+                        slug: meta.slug.clone(),
+                        branch: meta.branch.clone(),
+                        summary,
+                        created_at,
+                    });
+                }
+                Err(_) => continue,
+            }
+        }
+
+        entries.sort_by(|a, b| a.slug.cmp(&b.slug));
+        Ok(entries)
+    }
+
+    fn resolve_target_branch(
+        target_override: Option<&str>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if let Some(target) = target_override {
+            Ok(target.to_string())
+        } else {
+            detect_primary_branch().ok_or_else(|| {
+                Box::<dyn std::error::Error>::from(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "unable to detect primary branch; use --target",
+                ))
+            })
+        }
+    }
+
+    fn target_oid(repo: &Repository, branch: &str) -> Result<Oid, Box<dyn std::error::Error>> {
+        let target_ref = repo
+            .find_branch(branch, BranchType::Local)
+            .map_err(|_| -> Box<dyn std::error::Error> {
+                Box::new(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("target branch {branch} not found"),
+                ))
+            })?;
+        let commit = target_ref.into_reference().peel_to_commit()?;
+        Ok(commit.id())
+    }
+
+    fn entry_from_plan_path(
+        repo: &Repository,
+        target_oid: Oid,
+        path: &Path,
+    ) -> Result<Option<PlanSlugEntry>, Box<dyn std::error::Error>> {
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(_) => return Ok(None),
+        };
+
+        let meta = match PlanMetadata::from_document(&contents) {
+            Ok(meta) => meta,
+            Err(_) => return Ok(None),
+        };
+
+        if meta.slug.is_empty() || meta.branch.is_empty() || !meta.branch.starts_with("draft/") {
+            return Ok(None);
+        }
+
+        let branch = match repo.find_branch(&meta.branch, BranchType::Local) {
+            Ok(branch) => branch,
+            Err(_) => return Ok(None),
+        };
+        let commit = match branch.get().peel_to_commit() {
+            Ok(commit) => commit,
+            Err(_) => return Ok(None),
+        };
+        if target_oid == commit.id() || repo.graph_descendant_of(target_oid, commit.id())? {
+            return Ok(None);
+        }
+
+        let summary = summarize_spec(&meta);
+        let created_at = meta.created_at_display();
+
+        Ok(Some(PlanSlugEntry {
+            slug: meta.slug.clone(),
+            branch: meta.branch.clone(),
+            summary,
+            created_at,
+        }))
+    }
+}
+
 pub fn load_plan_from_branch(slug: &str, branch: &str) -> Result<PlanMetadata, PlanError> {
     let repo = Repository::discover(".")?;
     let plan_path = plan_rel_path(slug);
@@ -575,7 +725,12 @@ fn summarize_line(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::{build::CheckoutBuilder, IndexAddOption, Repository, Signature};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::tempdir;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn slug_from_spec_limits_to_six_words() {
@@ -689,5 +844,145 @@ Do a thing.
         assert!(updated.contains("status: implemented"));
         assert!(updated.contains("implemented_at: "));
         Ok(())
+    }
+
+    #[test]
+    fn slug_inventory_lists_pending_slugs_sorted() -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        checkout_branch(&repo, "master")?;
+        create_plan_branch(&repo, "beta", "Beta spec body")?;
+        checkout_branch(&repo, "master")?;
+        create_plan_branch(&repo, "alpha", "Alpha spec body")?;
+        checkout_branch(&repo, "master")?;
+
+        let entries = PlanSlugInventory::collect(None)?;
+        let slugs: Vec<_> = entries.iter().map(|entry| entry.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["alpha", "beta"]);
+        Ok(())
+    }
+
+    #[test]
+    fn slug_inventory_uses_plan_directory_when_available() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        checkout_branch(&repo, "master")?;
+        create_plan_branch(&repo, "alpha", "Alpha summary line")?;
+        checkout_branch(&repo, "draft/alpha")?;
+
+        let entries = PlanSlugInventory::collect(None)?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slug, "alpha");
+        assert_eq!(entries[0].summary, "Alpha summary line");
+        Ok(())
+    }
+
+    #[test]
+    fn slug_inventory_ignores_merged_branches() -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        checkout_branch(&repo, "master")?;
+        let commit_oid = create_plan_branch(&repo, "alpha", "Alpha spec body")?;
+        repo.reference(
+            "refs/heads/master",
+            commit_oid,
+            true,
+            "fast-forward master",
+        )?;
+        checkout_branch(&repo, "master")?;
+
+        let entries = PlanSlugInventory::collect(None)?;
+        assert!(entries.is_empty());
+        Ok(())
+    }
+
+    fn initialize_repo() -> Result<(tempfile::TempDir, DirGuard, Repository), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let repo = Repository::init(dir.path())?;
+        let guard = DirGuard::new(dir.path())?;
+        std::fs::write(dir.path().join("README.md"), "root\n")?;
+        commit_all(&repo, "init")?;
+        Ok((dir, guard, repo))
+    }
+
+    fn create_plan_branch(
+        repo: &Repository,
+        slug: &str,
+        spec: &str,
+    ) -> Result<git2::Oid, Box<dyn std::error::Error>> {
+        let head_commit = repo.head()?.peel_to_commit()?;
+        let branch_name = format!("draft/{slug}");
+        repo.branch(&branch_name, &head_commit, false)?;
+        checkout_branch(repo, &branch_name)?;
+        write_plan_file(slug, spec)?;
+        let oid = commit_all(repo, &format!("plan {slug}"))?;
+        Ok(oid)
+    }
+
+    fn write_plan_file(slug: &str, spec: &str) -> Result<(), std::io::Error> {
+        let path = Path::new(".vizier/implementation-plans").join(format!("{slug}.md"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents = format!(
+r#"---
+plan: {slug}
+branch: draft/{slug}
+created_at: 2024-01-01T00:00:00Z
+spec_source: inline
+---
+
+## Operator Spec
+{spec}
+
+## Implementation Plan
+- Step 1
+"#
+        );
+        std::fs::write(&path, contents)
+    }
+
+    fn commit_all(repo: &Repository, message: &str) -> Result<git2::Oid, git2::Error> {
+        let mut index = repo.index()?;
+        index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = Signature::now("Tester", "tester@example.com")?;
+        let parents: Vec<git2::Commit> = match repo.head() {
+            Ok(head) if head.is_branch() => vec![head.peel_to_commit()?],
+            _ => Vec::new(),
+        };
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+    }
+
+    fn checkout_branch(repo: &Repository, name: &str) -> Result<(), git2::Error> {
+        let mut checkout = CheckoutBuilder::new();
+        checkout.force();
+        repo.set_head(&format!("refs/heads/{name}"))?;
+        repo.checkout_head(Some(&mut checkout))
+    }
+
+    struct DirGuard {
+        previous: PathBuf,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl DirGuard {
+        fn new(path: &Path) -> Result<Self, std::io::Error> {
+            let lock = TEST_MUTEX.lock().unwrap();
+            let previous = std::env::current_dir()?;
+            std::env::set_current_dir(path)?;
+            Ok(Self {
+                previous,
+                _lock: lock,
+            })
+        }
+    }
+
+    impl Drop for DirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
     }
 }
