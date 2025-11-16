@@ -184,6 +184,12 @@ impl Auditor {
         conversation
     }
 
+    pub fn clear_messages() {
+        if let Ok(mut auditor) = AUDITOR.lock() {
+            auditor.messages.clear();
+        }
+    }
+
     pub fn get_total_usage() -> TokenUsage {
         let auditor = AUDITOR.lock().unwrap();
         let mut usage = TokenUsage {

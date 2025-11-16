@@ -928,6 +928,7 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
             ))
         })?;
         worktree_created = true;
+        let _cwd_guard = WorkdirGuard::enter(&worktree_path)?;
 
         let prompt = codex::build_implementation_plan_prompt(&slug, &branch_name, &spec_text)
             .map_err(|err| -> Box<dyn std::error::Error> {
@@ -940,7 +941,7 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
             spec_text.clone(),
             Vec::new(),
             Some(codex::CodexModel::Gpt5Codex),
-            None,
+            Some(worktree_path.clone()),
         )
         .await
         .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
@@ -973,6 +974,9 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
             Box::from(format!("commit_plan({}): {err}", worktree_path.display()))
         })?;
         plan_committed = true;
+        if Auditor::persist_session_log().is_some() {
+            Auditor::clear_messages();
+        }
 
         Ok(())
     }
