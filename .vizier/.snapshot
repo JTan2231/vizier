@@ -6,6 +6,7 @@ Narrative theme
 - Codex-integrated posture: Codex now handles the heavy agent work directly, so Vizier trims internal orchestration threads and focuses on snapshot accuracy plus CLI guardrails.
 - Lean backlog: Threads that do not protect Codex-era workflows were culled; the remaining arcs prioritize IO contracts, auditability, and documentation gates.
 - Bureaucratic enforcement: Treat Vizier as the compliance enforcer for large-organization processes (architecture docs per change, auditable histories, PR-ready artifacts).
+- Story-editor discipline: Convert conversations into focused snapshot/TODO deltas by default; each TODO advances a named thread at product-level granularity, cross-linking back to the Snapshot, and avoids bare “investigate X” items or duplicate threads.
  - Commit-style epilogues: Assistant-facing responses collapse to a single, commit-message-like Outcome line that reports what changed, while detailed snapshot/TODO deltas and outcome JSON stay machine-oriented and live in .vizier rather than being printed verbatim.
 
 Active threads
