@@ -119,11 +119,30 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
 }
 
 pub fn print_token_usage() {
+    if let Some(report) = Auditor::latest_usage_report() {
+        if report.known {
+            display::info(format!(
+                "Token usage: prompt={} (+{}) completion={} (+{}) total={} (+{})",
+                report.prompt_total,
+                report.prompt_delta,
+                report.completion_total,
+                report.completion_delta,
+                report.total(),
+                report.delta_total()
+            ));
+        } else {
+            display::info("Token usage: unknown");
+        }
+        return;
+    }
+
     let usage = Auditor::get_total_usage();
     if usage.known {
         display::info(format!(
-            "Token usage: prompt={} completion={}",
-            usage.input_tokens, usage.output_tokens
+            "Token usage: prompt={} completion={} total={}",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.input_tokens + usage.output_tokens
         ));
     } else {
         display::info("Token usage: unknown");
@@ -131,6 +150,22 @@ pub fn print_token_usage() {
 }
 
 fn token_usage_suffix() -> String {
+    if let Some(report) = Auditor::latest_usage_report() {
+        return if report.known {
+            format!(
+                " (tokens: prompt={} [+{}] completion={} [+{}] total={} [+{}])",
+                report.prompt_total,
+                report.prompt_delta,
+                report.completion_total,
+                report.completion_delta,
+                report.total(),
+                report.delta_total()
+            )
+        } else {
+            " (tokens: unknown)".to_string()
+        };
+    }
+
     let usage = Auditor::get_total_usage();
     if usage.known {
         format!(

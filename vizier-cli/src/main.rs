@@ -772,7 +772,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("could not find session file".into());
         };
 
-        auditor::Auditor::replace_messages(&messages);
+        let _ = auditor::Auditor::replace_messages(&messages);
     }
 
     cfg.no_session = cli.global.no_session;
