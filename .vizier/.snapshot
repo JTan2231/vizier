@@ -85,4 +85,4 @@ Cross-links
 - Commit isolation + gates ↔ Architecture doc compliance: pending commits and save gates must cite the architecture doc reference and surface it in outcomes/commits.
 - Session logging ↔ Auditor facts: assistant operations persist audited facts to session.json, and the Outcome epilogue points to the artifact for downstream tooling.
 - Agent workflows ↔ Commit/Doc gates: the same checkpoints that gate architecture docs and pending commits must be surfaced as workflow steps so multi-agent runs stay aligned and auditable.
-some snapshot changesome snapshot change
+some snapshot changesome snapshot changesome snapshot change
