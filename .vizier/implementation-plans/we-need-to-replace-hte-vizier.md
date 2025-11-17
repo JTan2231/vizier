@@ -1,9 +1,10 @@
 ---
 plan: we-need-to-replace-hte-vizier
 branch: draft/we-need-to-replace-hte-vizier
-status: draft
+status: implemented
 created_at: 2025-11-17T06:07:25Z
 spec_source: inline
+implemented_at: 2025-11-17T06:15:01Z
 ---
 
 ## Operator Spec
