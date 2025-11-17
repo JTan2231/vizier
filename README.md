@@ -161,6 +161,24 @@ review = "./prompts/review.md"
 merge_conflict = "./prompts/merge.md"
 ```
 
+Scoped overrides sit one level deeper: `[prompts.<command>]` lets you tune a single command (ask/save/draft/approve/review/merge) without affecting the others. Per-command entries take precedence over `.vizier/*.md`, which in turn outrank the global `[prompts]` table and finally the baked defaults. Example:
+
+```toml
+[prompts.ask]
+base = """
+You are the production assistant for interactive `vizier ask` runs.
+Keep answers terse and call out any follow-up commands the operator should run.
+"""
+
+[prompts.draft]
+implementation_plan = """
+You are drafting implementation plans from operator specs.
+Highlight risks, dependencies, and reviewer checkpoints.
+"""
+```
+
+When a scoped override is absent, Vizier falls back to the repo-local prompt file (if present), then the global `[prompts]` table, and finally the baked constant.
+
 Changes are picked up the next time you launch `vizier`; restart between edits if you are iterating on wording.
 
 #### Backend selection
