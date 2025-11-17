@@ -75,7 +75,34 @@ pub struct Config {
     pub backend: BackendKind,
     pub fallback_backend: Option<BackendKind>,
     pub codex: CodexOptions,
+    pub review: ReviewConfig,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
+}
+
+#[derive(Clone)]
+pub struct ReviewConfig {
+    pub checks: ReviewChecksConfig,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            checks: ReviewChecksConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ReviewChecksConfig {
+    pub commands: Vec<String>,
+}
+
+impl Default for ReviewChecksConfig {
+    fn default() -> Self {
+        Self {
+            commands: Vec::new(),
+        }
+    }
 }
 
 impl Config {
@@ -107,6 +134,7 @@ impl Config {
             backend: BackendKind::Codex,
             fallback_backend: Some(BackendKind::Wire),
             codex: CodexOptions::default(),
+            review: ReviewConfig::default(),
             prompt_store,
         }
     }
@@ -250,6 +278,17 @@ impl Config {
             }
         }
 
+        if let Some(commands) = parse_string_array(value_at_path(
+            &file_config,
+            &["review", "checks", "commands"],
+        )) {
+            config.review.checks.commands = commands;
+        } else if let Some(commands) =
+            parse_string_array(value_at_path(&file_config, &["review", "checks"]))
+        {
+            config.review.checks.commands = commands;
+        }
+
         if let Some(prompt) = find_string(&file_config, BASE_PROMPT_KEY_PATHS) {
             config.prompt_store.insert(SystemPrompt::Base, prompt);
         }
@@ -334,6 +373,21 @@ fn find_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
     }
 
     None
+}
+
+fn parse_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let array = value?.as_array()?;
+    let mut entries = Vec::new();
+    for entry in array {
+        if let Some(text) = entry.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            entries.push(text.to_string());
+        }
+    }
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
 }
 
 pub fn default_config_path() -> Option<PathBuf> {
@@ -527,5 +581,20 @@ commit = "toml commit override"
 
         assert_eq!(cfg.provider_model, DEFAULT_MODEL);
         assert_eq!(cfg.reasoning_effort, Some(ThinkingLevel::High));
+    }
+
+    #[test]
+    fn test_review_checks_table() {
+        let toml = r#"
+[review.checks]
+commands = ["npm test", "cargo fmt -- --check"]
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse review config");
+        assert_eq!(
+            cfg.review.checks.commands,
+            vec!["npm test", "cargo fmt -- --check"]
+        );
     }
 }
