@@ -931,7 +931,8 @@ mod tests {
         cfg.set_prompt(PromptKind::ImplementationPlan, "custom plan".to_string());
         config::set_config(cfg);
 
-        let prompt = build_implementation_plan_prompt("slug", "draft/slug", "spec").unwrap();
+        let prompt =
+            build_implementation_plan_prompt("slug", "draft/slug", "spec", None).unwrap();
 
         assert!(prompt.starts_with("custom plan"));
         assert!(prompt.contains("<codexBounds>"));
@@ -947,8 +948,16 @@ mod tests {
         cfg.set_prompt(PromptKind::Review, "custom review".to_string());
         config::set_config(cfg);
 
-        let prompt =
-            build_review_prompt("slug", "draft/slug", "main", "plan", "diff", &[]).unwrap();
+        let prompt = build_review_prompt(
+            "slug",
+            "draft/slug",
+            "main",
+            "plan",
+            "diff",
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert!(prompt.starts_with("custom review"));
         assert!(prompt.contains("<planDocument>"));
@@ -965,7 +974,7 @@ mod tests {
         config::set_config(cfg);
 
         let conflicts = vec!["src/lib.rs".to_string()];
-        let prompt = build_merge_conflict_prompt("main", "draft/slug", &conflicts).unwrap();
+        let prompt = build_merge_conflict_prompt("main", "draft/slug", &conflicts, None).unwrap();
 
         assert!(prompt.starts_with("custom merge"));
         assert!(prompt.contains("<mergeContext>"));
