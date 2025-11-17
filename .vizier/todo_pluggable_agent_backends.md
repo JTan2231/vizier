@@ -4,6 +4,7 @@ Thread: Agent backend abstraction + pluggable CLI agents
 
 Tension
 - Vizier currently treats `codex exec` as the only agent backend, so config, CLI flags, prompt orchestration, and progress reporting are all hard-wired to that binary (`vizier-core/src/codex.rs`, `vizier-core/src/lib.rs` prompts, `vizier-cli` actions). This makes it fragile and expensive to adopt new CLI agents like Claude or to run multiple agents side-by-side.
+- Agent configuration is underspecified: some options only apply to specific backends (for example, model selection for the wire backend vs Codex), and there is no clear story for where agent config lives (global vs per-command vs workflow-specific) or how unsupported options are handled. Operators can’t easily predict which knobs will be honored, ignored, or rejected for a given agent.
 
 Desired behavior (Product-level)
 - Operators can choose which agent backend Vizier uses (Codex today, additional agents next) via config and/or a small set of CLI flags, without changing the draft → approve → review → merge choreography.
@@ -22,6 +23,10 @@ Acceptance criteria
 - Configuration and selection
   - There is a single, documented way to select the active agent backend (config key + optional CLI override), and it applies consistently across `vizier draft`, `vizier approve`, `vizier review`, and other assistant-backed commands.
   - Codex remains the default backend where available; selecting an unknown or misconfigured agent produces a clear, Outcome-reported error without starting partial workflows.
+  - Agent configuration has a predictable scoping story: global config, per-command flags, and any workflow-specific defaults follow a documented precedence order (e.g., config < environment < CLI), and command-specific agent options stay small and coherent rather than exploding per-command flag sets.
+  - When an operator supplies a config or flag that the selected backend does not support (for example, a model or reasoning knob that backend cannot honor), Vizier either:
+    - Fails fast with an explicit Outcome reason that names the unsupported option and backend, or
+    - Clearly reports that the option is ignored for this backend, so behavior never silently diverges from expectations.
 - Agent interface and capabilities
   - Core exposes an agent interface that supports at least: implementation-plan generation, change-application for approve flows, review/critique for `vizier review`, and optional conflict auto-resolution for `vizier merge --auto-resolve-conflicts`.
   - Each backend can declare its supported capabilities; when a command depends on a missing capability (e.g., a review-only backend asked to apply fixes), Vizier either:
@@ -44,4 +49,3 @@ Pointers
 - Snapshot thread: Agent backend abstraction + pluggable CLI agents (Running Snapshot — updated; Pluggable agent posture).
 - Existing Codex wiring: `vizier-core/src/codex.rs`, `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE`, `vizier-core/src/lib.rs::IMPLEMENTATION_PLAN_PROMPT`, `vizier-cli/src/actions.rs`.
 - Related threads: Agent workflow orchestration, stdout/stderr contract + verbosity, Outcome summaries, Session logging JSON store.
-
