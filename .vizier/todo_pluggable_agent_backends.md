@@ -56,3 +56,22 @@ Update (2025-11-17)
 - Added scoped agent configuration with `[agents.default]` plus per-command tables (`ask`, `save`, `draft`, `approve`, `review`, `merge`) so operators can select wire vs Codex per workflow. CLI overrides now sit at the top of the precedence chain and produce warnings when `--model` is ignored because the resolved backend is Codex.
 - `vizier-core` exposes `AgentSettings`/`CommandScope` helpers, threads them through all assistant-backed commands, and records the resolved backend/scope inside session logs and token-usage summaries. Codex prompt builders accept per-scope bounds overrides, and `vizier approve/review/merge` fail fast when assigned a backend that lacks the required capabilities (tests cover `[agents.ask]` overrides and the `--backend wire` rejection on approve).
 - Docs (`README.md`, `AGENTS.md`, `docs/workflows/draft-approve-merge.md`) now describe the schema, precedence, and agent workflow tie-ins. AGENTS.md includes a concrete configuration example with `[agents.default]`, per-command overrides like `[agents.ask]`, and nested `[agents.<scope>.codex]` settings so the precedence story is explicit for humans and downstream agents. Remaining work: capability discovery for third-party backends, backend-neutral progress events, and full Outcome JSON reporting across all commands.
+
+## Repo-local config precedence (Snapshot: Code state — configuration precedence is still global-only)
+
+Tension
+- Operators cannot pin `[agents.*]`, gates, or prompt overrides to a repository because the CLI only honors `--config-file` or the env/global paths; per the Snapshot, there is no `.vizier/config.{toml,json}` fallback, so automation must keep exporting `VIZIER_CONFIG_FILE` and loses reproducibility when multiple repos need different defaults.
+
+Desired behavior (Product-level)
+- After CLI flag resolution, Vizier probes `.vizier/config.toml` (falling back to `.vizier/config.json`) inside the detected project root and loads it when present; this repo-level config outranks user-global defaults but still yields to explicit CLI flags.
+- The global config under `$XDG_CONFIG_HOME/vizier/config.toml` (or platform equivalent) remains the next fallback, while `VIZIER_CONFIG_FILE` moves to the end of the chain so repo defaults are not silently replaced by stale env overrides.
+- Docs (README + AGENTS.md) and `example-config.toml` describe the new precedence so agents, humans, and CI runners know where to place repo-scoped settings.
+
+Acceptance criteria
+- `vizier-core/src/config.rs` exposes helpers such as `project_config_path(root: &Path)`, `global_config_path()`, and `env_config_path()` so discovery order is explicit and unit-tested (TOML preferred over JSON, blank env vars ignored).
+- `vizier-cli/src/main.rs` (config bootstrap) reuses the existing `project_root` to load `.vizier/config.*` whenever `--config-file` is absent, logs the chosen path at Info/Debug, and only consults user-global paths or `VIZIER_CONFIG_FILE` afterward.
+- README.md, AGENTS.md, and `example-config.toml` document the repo-level config affordance plus the final order: CLI flag → `.vizier/config.toml`/`.json` → global config dir → `VIZIER_CONFIG_FILE`.
+- Tests: integration coverage proves repo config wins over env/global values when both exist, env path is used when no repo config is present, and helpers properly skip missing files. (`tests/src/lib.rs`, new unit tests in `vizier-core/src/config.rs`)
+
+Status
+- Shipped via `.vizier/implementation-plans/we-need-to-allow-project-level-c.md` (2025-11-17). `vizier-core::config` gained `project_config_path`/`global_config_path`/`env_config_path`, the CLI now logs and loads `.vizier/config.toml` (or `.json`) before falling back to `~/.config/vizier/config.toml` and finally `VIZIER_CONFIG_FILE`, README/AGENTS/example-config.md describe the precedence, and unit + integration tests cover repo-vs-env behavior.

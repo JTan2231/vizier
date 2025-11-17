@@ -863,14 +863,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cfg = if let Some(ref config_file) = cli.global.config_file {
         config::Config::from_path(std::path::PathBuf::from(config_file))?
-    } else if let Some(default_path) = config::default_config_path() {
-        if default_path.exists() {
-            config::Config::from_path(default_path)?
-        } else {
-            config::get_config()
-        }
     } else {
-        config::get_config()
+        let repo_config = config::project_config_path(&project_root);
+        if let Some(path) = repo_config {
+            display::emit(
+                LogLevel::Info,
+                format!("Loading repo config from {}", path.display()),
+            );
+            config::Config::from_path(path)?
+        } else {
+            let mut resolved = None;
+            for (path, source) in [
+                (config::global_config_path(), "global"),
+                (config::env_config_path(), "env"),
+            ] {
+                if let Some(path) = path {
+                    if path.exists() {
+                        resolved = Some((path, source));
+                        break;
+                    }
+                }
+            }
+
+            if let Some((path, source)) = resolved {
+                display::emit(
+                    LogLevel::Info,
+                    format!("Loading {source} config from {}", path.display()),
+                );
+                config::Config::from_path(path)?
+            } else {
+                config::get_config()
+            }
+        }
     };
 
     if let Some(session_id) = &cli.global.load_session {
