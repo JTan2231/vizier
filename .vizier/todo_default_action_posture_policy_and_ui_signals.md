@@ -88,3 +88,7 @@ TODO authoring discipline (policy extension 2025-11-16)
 - Treat conversations as authorization to evolve the Snapshot and TODO set by default; every TODO must cite its thread and snapshot moment so downstream agents can follow the arc.
 - Default abstraction level is product behavior and acceptance criteria; pointer-level anchors (files, commands) are allowed for orientation, while implementation-level prescriptions are reserved for safety/correctness constraints or explicit operator requests.
 - Avoid bare “investigate X” items; each TODO should resolve a concrete, observable tension in current behavior, and duplicated TODOs should be merged into a single canonical artifact per thread.
+
+Prompt + agent alignment (2025-11-17)
+- The core DAP and TODO authoring policy are now baked into `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE`, so Codex-backed agents (including external Codex runs wired through AGENTS.md/codex-bounds) inherit the same default-action posture and narrative discipline without bespoke per-tool prompts.
+- This file remains the product-level source of truth for behavior and acceptance criteria; the prompt encodes the policy in operator-facing prose, while CLI wiring and Outcome epilogues are still responsible for surfacing concrete A/M/D/R facts and opt-out affordances.
