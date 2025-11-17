@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     codex,
-    config::{self, SystemPrompt},
+    config::{self, PromptKind},
     display::{self, Verbosity},
     file_tracking, tools, vcs,
 };
@@ -563,7 +563,7 @@ impl Auditor {
     fn prompt_info(project_root: &Path, cfg: &config::Config) -> SessionPromptInfo {
         let prompt_path = project_root.join(".vizier").join("BASE_SYSTEM_PROMPT.md");
         let prompt_hash = {
-            let prompt = cfg.get_prompt(config::SystemPrompt::Base);
+            let prompt = cfg.get_prompt(config::PromptKind::Base);
             let digest = Sha256::digest(prompt.as_bytes());
             format!("{:x}", digest)
         };
@@ -661,7 +661,7 @@ impl Auditor {
     /// Basic LLM request with tool usage
     /// NOTE: Returns the _entire_ conversation, up to date with the LLM's responses
     pub async fn llm_request_with_tools(
-        prompt_variant: Option<SystemPrompt>,
+        prompt_variant: Option<PromptKind>,
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
@@ -774,7 +774,7 @@ impl Auditor {
 
     // TODO: Rectify this with the function above
     pub async fn llm_request_with_tools_no_display(
-        prompt_variant: Option<SystemPrompt>,
+        prompt_variant: Option<PromptKind>,
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
@@ -1082,7 +1082,7 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::{AUDITOR, Auditor, find_project_root};
+    use super::{Auditor, find_project_root};
     use std::fs;
     use tempfile::tempdir;
     use wire::{
@@ -1118,14 +1118,14 @@ mod tests {
 
     #[test]
     fn usage_reports_accumulate_and_suppress_duplicates() {
-        reset_auditor_state();
+        let mut auditor = Auditor::new();
 
         assert!(
-            Auditor::add_message(user_message("hello")).is_none(),
+            add_message_for_test(&mut auditor, user_message("hello")).is_none(),
             "user messages should not emit usage reports"
         );
 
-        let first = Auditor::add_message(assistant_message("one", 10, 5))
+        let first = add_message_for_test(&mut auditor, assistant_message("one", 10, 5))
             .expect("first assistant message should produce a report");
         assert_eq!(first.prompt_total, 10);
         assert_eq!(first.prompt_delta, 10);
@@ -1133,28 +1133,26 @@ mod tests {
         assert_eq!(first.completion_delta, 5);
         assert!(first.known, "first report should mark usage as known");
 
-        let second = Auditor::add_message(assistant_message("two", 3, 7))
+        let second = add_message_for_test(&mut auditor, assistant_message("two", 3, 7))
             .expect("second assistant message should produce a report");
         assert_eq!(second.prompt_total, 13);
         assert_eq!(second.prompt_delta, 3);
         assert_eq!(second.completion_total, 12);
         assert_eq!(second.completion_delta, 7);
 
-        let history = Auditor::get_messages();
+        let history = auditor.messages.clone();
         assert!(
-            Auditor::replace_messages(&history).is_none(),
+            replay_messages(&mut auditor, &history).is_none(),
             "replaying the same messages should not emit duplicate reports"
         );
-
-        reset_auditor_state();
     }
 
     #[test]
     fn usage_reports_mark_unknown_usage() {
-        reset_auditor_state();
-        Auditor::mark_usage_unknown();
+        let mut auditor = Auditor::new();
+        auditor.usage_unknown = true;
 
-        let report = Auditor::add_message(assistant_message("unknown", 0, 0))
+        let report = add_message_for_test(&mut auditor, assistant_message("unknown", 0, 0))
             .expect("unknown usage should still create a report");
         assert!(
             !report.known,
@@ -1163,20 +1161,11 @@ mod tests {
         assert_eq!(report.prompt_total, 0);
         assert_eq!(report.completion_total, 0);
 
-        let history = Auditor::get_messages();
+        let history = auditor.messages.clone();
         assert!(
-            Auditor::replace_messages(&history).is_none(),
+            replay_messages(&mut auditor, &history).is_none(),
             "duplicate unknown-usage snapshots should be suppressed"
         );
-
-        reset_auditor_state();
-    }
-
-    fn reset_auditor_state() {
-        let mut auditor = AUDITOR.lock().unwrap();
-        auditor.messages.clear();
-        auditor.last_usage_report = None;
-        auditor.usage_unknown = false;
     }
 
     fn assistant_message(content: &str, input: usize, output: usize) -> wire::types::Message {
@@ -1191,6 +1180,27 @@ mod tests {
             .as_user()
             .with_usage(0, 0)
             .build()
+    }
+
+    fn add_message_for_test(
+        auditor: &mut Auditor,
+        message: wire::types::Message,
+    ) -> Option<super::TokenUsageReport> {
+        let should_emit = message.message_type == wire::types::MessageType::Assistant;
+        auditor.messages.push(message);
+        if should_emit {
+            Auditor::capture_usage_report_locked(auditor)
+        } else {
+            None
+        }
+    }
+
+    fn replay_messages(
+        auditor: &mut Auditor,
+        messages: &[wire::types::Message],
+    ) -> Option<super::TokenUsageReport> {
+        auditor.messages = messages.to_vec();
+        Auditor::capture_usage_report_locked(auditor)
     }
 }
 

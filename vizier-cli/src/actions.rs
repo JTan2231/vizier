@@ -581,7 +581,7 @@ async fn save(
 
     if has_code_changes {
         let commit_body = Auditor::llm_request(
-            config::get_config().get_prompt(config::SystemPrompt::Commit),
+            config::get_config().get_prompt(config::PromptKind::Commit),
             post_tool_diff.clone(),
         )
         .await?

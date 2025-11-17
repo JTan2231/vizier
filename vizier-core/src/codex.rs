@@ -17,9 +17,8 @@ use tokio::{
 };
 
 use crate::{
-    IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT, REVIEW_PROMPT,
     auditor::TokenUsage,
-    config::{self, SystemPrompt},
+    config::{self, PromptKind},
     display::{self, ProgressEvent, ProgressKind, Status},
     tools,
 };
@@ -305,7 +304,7 @@ pub fn build_prompt(
     threads: &[ThreadArtifact],
     user_input: &str,
 ) -> Result<String, CodexError> {
-    let base_prompt = config::get_config().get_prompt(SystemPrompt::Base);
+    let base_prompt = config::get_config().get_prompt(PromptKind::Base);
     let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
@@ -354,7 +353,7 @@ pub fn build_implementation_plan_prompt(
     let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
-    prompt.push_str(IMPLEMENTATION_PLAN_PROMPT);
+    prompt.push_str(&config::get_config().get_prompt(PromptKind::ImplementationPlan));
     prompt.push_str("\n\n<codexBounds>\n");
     prompt.push_str(&bounds);
     prompt.push_str("\n</codexBounds>\n\n");
@@ -404,7 +403,7 @@ pub fn build_review_prompt(
     let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
-    prompt.push_str(REVIEW_PROMPT);
+    prompt.push_str(&config::get_config().get_prompt(PromptKind::Review));
     prompt.push_str("\n\n<codexBounds>\n");
     prompt.push_str(&bounds);
     prompt.push_str("\n</codexBounds>\n\n");
@@ -487,7 +486,7 @@ pub fn build_merge_conflict_prompt(
     let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
-    prompt.push_str(MERGE_CONFLICT_PROMPT);
+    prompt.push_str(&config::get_config().get_prompt(PromptKind::MergeConflict));
     prompt.push_str("\n\n<codexBounds>\n");
     prompt.push_str(&bounds);
     prompt.push_str("\n</codexBounds>\n\n");
@@ -814,6 +813,8 @@ fn mock_codex_response() -> CodexResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{self, PromptKind};
+    use std::sync::Mutex;
 
     fn base_request(mode: CodexOutputMode) -> CodexRequest {
         CodexRequest {
@@ -900,5 +901,57 @@ mod tests {
             "missing message in progress line: {}",
             lines[0]
         );
+    }
+
+    static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn implementation_plan_prompt_respects_override() {
+        let _guard = CONFIG_LOCK.lock().unwrap();
+        let original = config::get_config();
+        let mut cfg = original.clone();
+        cfg.set_prompt(PromptKind::ImplementationPlan, "custom plan".to_string());
+        config::set_config(cfg);
+
+        let prompt = build_implementation_plan_prompt("slug", "draft/slug", "spec").unwrap();
+
+        assert!(prompt.starts_with("custom plan"));
+        assert!(prompt.contains("<codexBounds>"));
+
+        config::set_config(original);
+    }
+
+    #[test]
+    fn review_prompt_respects_override() {
+        let _guard = CONFIG_LOCK.lock().unwrap();
+        let original = config::get_config();
+        let mut cfg = original.clone();
+        cfg.set_prompt(PromptKind::Review, "custom review".to_string());
+        config::set_config(cfg);
+
+        let prompt =
+            build_review_prompt("slug", "draft/slug", "main", "plan", "diff", &[]).unwrap();
+
+        assert!(prompt.starts_with("custom review"));
+        assert!(prompt.contains("<planDocument>"));
+
+        config::set_config(original);
+    }
+
+    #[test]
+    fn merge_conflict_prompt_respects_override() {
+        let _guard = CONFIG_LOCK.lock().unwrap();
+        let original = config::get_config();
+        let mut cfg = original.clone();
+        cfg.set_prompt(PromptKind::MergeConflict, "custom merge".to_string());
+        config::set_config(cfg);
+
+        let conflicts = vec!["src/lib.rs".to_string()];
+        let prompt = build_merge_conflict_prompt("main", "draft/slug", &conflicts).unwrap();
+
+        assert!(prompt.starts_with("custom merge"));
+        assert!(prompt.contains("<mergeContext>"));
+
+        config::set_config(original);
     }
 }

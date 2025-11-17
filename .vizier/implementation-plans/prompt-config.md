@@ -1,9 +1,10 @@
 ---
 plan: prompt-config
 branch: draft/prompt-config
-status: draft
+status: implemented
 created_at: 2025-11-17T05:52:21Z
 spec_source: inline
+implemented_at: 2025-11-17T06:11:49Z
 ---
 
 ## Operator Spec

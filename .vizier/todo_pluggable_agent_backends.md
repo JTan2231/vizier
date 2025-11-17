@@ -40,8 +40,9 @@ Acceptance criteria
   - Integration tests cover at least: default Codex backend behavior, selecting an alternate test/dummy backend, capability-based failure/degrade paths, and Outcome/session logging that correctly attribute the backend used.
   - Non-TTY/protocol-mode behavior honors the existing stdout/stderr contract for all supported backends; no backend leaks ANSI into non-TTY contexts or bypasses the Outcome epilogue.
 
+Update (2025-11-17): Prompt orchestration already flows through the shared config store for every phase (base, commit, implementation-plan, review, merge-conflict), so future backends automatically inherit repo-specific instructions. The transport/capability abstraction, backend-selection knobs, and telemetry adapters remain outstanding.
+
 Pointers
 - Snapshot thread: Agent backend abstraction + pluggable CLI agents (Running Snapshot — updated; Pluggable agent posture).
 - Existing Codex wiring: `vizier-core/src/codex.rs`, `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE`, `vizier-core/src/lib.rs::IMPLEMENTATION_PLAN_PROMPT`, `vizier-cli/src/actions.rs`.
 - Related threads: Agent workflow orchestration, stdout/stderr contract + verbosity, Outcome summaries, Session logging JSON store.
-
