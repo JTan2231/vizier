@@ -1,9 +1,10 @@
 ---
 plan: we-need-a-configuration-setup-to
 branch: draft/we-need-a-configuration-setup-to
-status: draft
+status: implemented
 created_at: 2025-11-17T05:55:59Z
 spec_source: inline
+implemented_at: 2025-11-17T06:24:33Z
 ---
 
 ## Operator Spec

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -47,6 +49,100 @@ impl std::fmt::Display for BackendKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommandScope {
+    Ask,
+    Save,
+    Draft,
+    Approve,
+    Review,
+    Merge,
+}
+
+impl CommandScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CommandScope::Ask => "ask",
+            CommandScope::Save => "save",
+            CommandScope::Draft => "draft",
+            CommandScope::Approve => "approve",
+            CommandScope::Review => "review",
+            CommandScope::Merge => "merge",
+        }
+    }
+
+    pub fn all() -> &'static [CommandScope] {
+        &[
+            CommandScope::Ask,
+            CommandScope::Save,
+            CommandScope::Draft,
+            CommandScope::Approve,
+            CommandScope::Review,
+            CommandScope::Merge,
+        ]
+    }
+}
+
+impl std::str::FromStr for CommandScope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "ask" => Ok(CommandScope::Ask),
+            "save" => Ok(CommandScope::Save),
+            "draft" => Ok(CommandScope::Draft),
+            "approve" => Ok(CommandScope::Approve),
+            "review" => Ok(CommandScope::Review),
+            "merge" => Ok(CommandScope::Merge),
+            other => Err(format!("unknown command scope `{other}`")),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodexOverride {
+    pub binary_path: Option<PathBuf>,
+    pub profile: Option<Option<String>>,
+    pub bounds_prompt_path: Option<PathBuf>,
+    pub extra_args: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentOverrides {
+    pub backend: Option<BackendKind>,
+    pub fallback_backend: Option<BackendKind>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<ThinkingLevel>,
+    pub codex: Option<CodexOverride>,
+}
+
+impl AgentOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.backend.is_none()
+            && self.fallback_backend.is_none()
+            && self.model.is_none()
+            && self.reasoning_effort.is_none()
+            && self.codex.is_none()
+    }
+}
+
+#[derive(Clone)]
+pub struct AgentSettings {
+    pub scope: CommandScope,
+    pub backend: BackendKind,
+    pub fallback_backend: Option<BackendKind>,
+    pub provider: Arc<dyn Prompt>,
+    pub provider_model: String,
+    pub reasoning_effort: Option<ThinkingLevel>,
+    pub codex: CodexOptions,
+}
+
 #[derive(Clone, Debug)]
 pub struct CodexOptions {
     pub binary_path: PathBuf,
@@ -76,6 +172,8 @@ pub struct Config {
     pub fallback_backend: Option<BackendKind>,
     pub codex: CodexOptions,
     pub review: ReviewConfig,
+    pub agent_defaults: AgentOverrides,
+    pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
 }
 
@@ -135,6 +233,8 @@ impl Config {
             fallback_backend: Some(BackendKind::Wire),
             codex: CodexOptions::default(),
             review: ReviewConfig::default(),
+            agent_defaults: AgentOverrides::default(),
+            agent_scopes: HashMap::new(),
             prompt_store,
         }
     }
@@ -297,11 +397,85 @@ impl Config {
             config.prompt_store.insert(SystemPrompt::Commit, prompt);
         }
 
+        if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
+            config.parse_agent_sections(agent_value)?;
+        }
+
         Ok(config)
+    }
+
+    fn parse_agent_sections(
+        &mut self,
+        agents_value: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let table = agents_value.as_object().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "[agents] must be a table")
+        })?;
+
+        for (key, value) in table.iter() {
+            let Some(overrides) = parse_agent_overrides(value)? else {
+                continue;
+            };
+
+            if key.eq_ignore_ascii_case("default") {
+                self.agent_defaults = overrides;
+                continue;
+            }
+
+            let scope = key.parse::<CommandScope>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown [agents.{key}] section: {err}"),
+                )
+            })?;
+            self.agent_scopes.insert(scope, overrides);
+        }
+
+        Ok(())
     }
 
     pub fn get_prompt(&self, prompt: SystemPrompt) -> String {
         self.prompt_store.get(&prompt).unwrap().to_string()
+    }
+
+    pub fn resolve_agent_settings(
+        &self,
+        scope: CommandScope,
+        cli_override: Option<&AgentOverrides>,
+    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+        let mut builder = AgentSettingsBuilder::new(self);
+
+        if !self.agent_defaults.is_empty() {
+            builder.apply(&self.agent_defaults);
+        }
+
+        if let Some(overrides) = self.agent_scopes.get(&scope) {
+            builder.apply(overrides);
+        }
+
+        if let Some(overrides) = cli_override {
+            if !overrides.is_empty() {
+                builder.apply(overrides);
+            }
+        }
+
+        let provider = if builder.provider_model == self.provider_model
+            && builder.reasoning_effort == self.reasoning_effort
+        {
+            self.provider.clone()
+        } else {
+            Self::provider_from_settings(&builder.provider_model, builder.reasoning_effort)?
+        };
+
+        Ok(AgentSettings {
+            scope,
+            backend: builder.backend,
+            fallback_backend: builder.fallback_backend,
+            provider,
+            provider_model: builder.provider_model,
+            reasoning_effort: builder.reasoning_effort,
+            codex: builder.codex,
+        })
     }
 }
 
@@ -348,6 +522,63 @@ const COMMIT_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["prompts", "commit_prompt"],
 ];
 
+#[derive(Clone)]
+struct AgentSettingsBuilder {
+    backend: BackendKind,
+    fallback_backend: Option<BackendKind>,
+    provider_model: String,
+    reasoning_effort: Option<ThinkingLevel>,
+    codex: CodexOptions,
+}
+
+impl AgentSettingsBuilder {
+    fn new(cfg: &Config) -> Self {
+        Self {
+            backend: cfg.backend,
+            fallback_backend: cfg.fallback_backend,
+            provider_model: cfg.provider_model.clone(),
+            reasoning_effort: cfg.reasoning_effort,
+            codex: cfg.codex.clone(),
+        }
+    }
+
+    fn apply(&mut self, overrides: &AgentOverrides) {
+        if let Some(backend) = overrides.backend {
+            self.backend = backend;
+        }
+
+        if let Some(fallback) = overrides.fallback_backend {
+            self.fallback_backend = Some(fallback);
+        }
+
+        if let Some(model) = overrides.model.as_ref() {
+            self.provider_model = model.clone();
+        }
+
+        if let Some(level) = overrides.reasoning_effort {
+            self.reasoning_effort = Some(level);
+        }
+
+        if let Some(codex) = overrides.codex.as_ref() {
+            if let Some(path) = codex.binary_path.as_ref() {
+                self.codex.binary_path = path.clone();
+            }
+
+            if let Some(profile) = codex.profile.as_ref() {
+                self.codex.profile = profile.clone();
+            }
+
+            if let Some(bounds) = codex.bounds_prompt_path.as_ref() {
+                self.codex.bounds_prompt_path = Some(bounds.clone());
+            }
+
+            if let Some(extra) = codex.extra_args.as_ref() {
+                self.codex.extra_args = extra.clone();
+            }
+        }
+    }
+}
+
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
     let mut current = value;
 
@@ -373,6 +604,124 @@ fn find_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
     }
 
     None
+}
+
+fn parse_agent_overrides(
+    value: &serde_json::Value,
+) -> Result<Option<AgentOverrides>, Box<dyn std::error::Error>> {
+    if !value.is_object() {
+        return Ok(None);
+    }
+
+    let mut overrides = AgentOverrides::default();
+
+    if let Some(backend) =
+        find_string(value, BACKEND_KEY_PATHS).and_then(|text| BackendKind::from_str(text.trim()))
+    {
+        overrides.backend = Some(backend);
+    }
+
+    if let Some(fallback) = find_string(value, FALLBACK_BACKEND_KEY_PATHS)
+        .and_then(|text| BackendKind::from_str(text.trim()))
+    {
+        overrides.fallback_backend = Some(fallback);
+    }
+
+    if let Some(model) = find_string(value, MODEL_KEY_PATHS) {
+        let trimmed = model.trim();
+        if !trimmed.is_empty() {
+            overrides.model = Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(level) = find_string(value, REASONING_EFFORT_KEY_PATHS) {
+        let trimmed = level.trim();
+        if !trimmed.is_empty() {
+            overrides.reasoning_effort = Some(ThinkingLevel::from_string(trimmed)?);
+        }
+    }
+
+    if let Some(codex_value) = value_at_path(value, &["codex"]) {
+        if let Some(parsed) = parse_codex_override(codex_value)? {
+            overrides.codex = Some(parsed);
+        }
+    }
+
+    if overrides.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(overrides))
+    }
+}
+
+fn parse_codex_override(
+    value: &serde_json::Value,
+) -> Result<Option<CodexOverride>, Box<dyn std::error::Error>> {
+    let object = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(None),
+    };
+
+    let mut overrides = CodexOverride::default();
+
+    if let Some(path_val) = object.get("binary").or_else(|| object.get("binary_path")) {
+        if let Some(path) = path_val
+            .as_str()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            overrides.binary_path = Some(PathBuf::from(path));
+        }
+    }
+
+    if let Some(profile_val) = object.get("profile") {
+        if profile_val.is_null() {
+            overrides.profile = Some(None);
+        } else if let Some(profile) = profile_val.as_str() {
+            let trimmed = profile.trim();
+            overrides.profile = Some(if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            });
+        }
+    }
+
+    if let Some(bounds_val) = object
+        .get("bounds_prompt_path")
+        .or_else(|| object.get("bounds_prompt"))
+    {
+        if let Some(path) = bounds_val
+            .as_str()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            overrides.bounds_prompt_path = Some(PathBuf::from(path));
+        }
+    }
+
+    if let Some(extra_val) = object.get("extra_args") {
+        if let Some(array) = extra_val.as_array() {
+            let mut args = Vec::new();
+            for entry in array {
+                if let Some(arg) = entry.as_str() {
+                    let trimmed = arg.trim();
+                    if !trimmed.is_empty() {
+                        args.push(trimmed.to_string());
+                    }
+                }
+            }
+            if !args.is_empty() {
+                overrides.extra_args = Some(args);
+            }
+        }
+    }
+
+    if overrides == CodexOverride::default() {
+        Ok(None)
+    } else {
+        Ok(Some(overrides))
+    }
 }
 
 fn parse_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {

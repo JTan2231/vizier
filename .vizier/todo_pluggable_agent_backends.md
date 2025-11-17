@@ -49,3 +49,8 @@ Pointers
 - Snapshot thread: Agent backend abstraction + pluggable CLI agents (Running Snapshot — updated; Pluggable agent posture).
 - Existing Codex wiring: `vizier-core/src/codex.rs`, `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE`, `vizier-core/src/lib.rs::IMPLEMENTATION_PLAN_PROMPT`, `vizier-cli/src/actions.rs`.
 - Related threads: Agent workflow orchestration, stdout/stderr contract + verbosity, Outcome summaries, Session logging JSON store.
+
+Update (2025-11-17)
+- Added scoped agent configuration with `[agents.default]` plus per-command tables (`ask`, `save`, `draft`, `approve`, `review`, `merge`) so operators can select wire vs Codex per workflow. CLI overrides now sit at the top of the precedence chain and produce warnings when `--model` is ignored because the resolved backend is Codex.
+- `vizier-core` exposes `AgentSettings`/`CommandScope` helpers, threads them through all assistant-backed commands, and records the resolved backend/scope inside session logs and token-usage summaries. Codex prompt builders accept per-scope bounds overrides, and `vizier approve/review/merge` fail fast when assigned a backend that lacks the required capabilities (tests cover `[agents.ask]` overrides and the `--backend wire` rejection on approve).
+- Docs (`README.md`, `AGENTS.md`, `docs/workflows/draft-approve-merge.md`) now describe the schema, precedence, and agent workflow tie-ins. Remaining work: capability discovery for third-party backends, backend-neutral progress events, and full Outcome JSON reporting across all commands.

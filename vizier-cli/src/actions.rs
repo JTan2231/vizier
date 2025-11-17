@@ -120,8 +120,9 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
 
 pub fn print_token_usage() {
     if let Some(report) = Auditor::latest_usage_report() {
+        let agent_note = format_agent_annotation();
         if report.known {
-            display::info(format!(
+            let mut message = format!(
                 "Token usage: prompt={} (+{}) completion={} (+{}) total={} (+{})",
                 report.prompt_total,
                 report.prompt_delta,
@@ -129,31 +130,48 @@ pub fn print_token_usage() {
                 report.completion_delta,
                 report.total(),
                 report.delta_total()
-            ));
+            );
+            if let Some(annotation) = agent_note {
+                message.push_str(&format!("; {}", annotation));
+            }
+            display::info(message);
         } else {
-            display::info("Token usage: unknown");
+            let mut message = "Token usage: unknown".to_string();
+            if let Some(annotation) = agent_note {
+                message.push_str(&format!("; {}", annotation));
+            }
+            display::info(message);
         }
         return;
     }
 
     let usage = Auditor::get_total_usage();
     if usage.known {
-        display::info(format!(
+        let mut message = format!(
             "Token usage: prompt={} completion={} total={}",
             usage.input_tokens,
             usage.output_tokens,
             usage.input_tokens + usage.output_tokens
-        ));
+        );
+        if let Some(annotation) = format_agent_annotation() {
+            message.push_str(&format!("; {}", annotation));
+        }
+        display::info(message);
     } else {
-        display::info("Token usage: unknown");
+        let mut message = "Token usage: unknown".to_string();
+        if let Some(annotation) = format_agent_annotation() {
+            message.push_str(&format!("; {}", annotation));
+        }
+        display::info(message);
     }
 }
 
 fn token_usage_suffix() -> String {
+    let agent_note = format_agent_annotation();
     if let Some(report) = Auditor::latest_usage_report() {
-        return if report.known {
+        let mut detail = if report.known {
             format!(
-                " (tokens: prompt={} [+{}] completion={} [+{}] total={} [+{}])",
+                "prompt={} [+{}] completion={} [+{}] total={} [+{}]",
                 report.prompt_total,
                 report.prompt_delta,
                 report.completion_total,
@@ -162,21 +180,47 @@ fn token_usage_suffix() -> String {
                 report.delta_total()
             )
         } else {
-            " (tokens: unknown)".to_string()
+            "unknown".to_string()
         };
+        if let Some(annotation) = agent_note {
+            detail.push_str(&format!("; {}", annotation));
+        }
+        return format!(" (tokens: {})", detail);
     }
 
     let usage = Auditor::get_total_usage();
     if usage.known {
-        format!(
-            " (tokens: prompt={} completion={} total={})",
+        let mut detail = format!(
+            "prompt={} completion={} total={}",
             usage.input_tokens,
             usage.output_tokens,
             usage.input_tokens + usage.output_tokens
-        )
+        );
+        if let Some(annotation) = format_agent_annotation() {
+            detail.push_str(&format!("; {}", annotation));
+        }
+        format!(" (tokens: {})", detail)
     } else {
-        " (tokens: unknown)".to_string()
+        let mut detail = "unknown".to_string();
+        if let Some(annotation) = format_agent_annotation() {
+            detail.push_str(&format!("; {}", annotation));
+        }
+        format!(" (tokens: {})", detail)
     }
+}
+
+fn format_agent_annotation() -> Option<String> {
+    auditor::Auditor::latest_agent_context().map(|context| {
+        let mut parts = vec![format!("agent={}", context.backend)];
+        parts.push(format!("scope={}", context.scope.as_str()));
+        if context.backend == config::BackendKind::Wire {
+            parts.push(format!("model={}", context.model));
+            if let Some(reasoning) = context.reasoning_effort {
+                parts.push(format!("reasoning={reasoning:?}"));
+            }
+        }
+        parts.join(" ")
+    })
 }
 
 fn spawn_plain_progress_logger(mut rx: mpsc::Receiver<ProgressEvent>) -> Option<JoinHandle<()>> {
@@ -453,9 +497,10 @@ pub async fn run_save(
     commit_message: Option<String>,
     use_editor: bool,
     push_after_commit: bool,
+    agent: &config::AgentSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match vcs::get_diff(".", Some(commit_ref), Some(exclude)) {
-        Ok(diff) => match save(diff, commit_message, use_editor, push_after_commit).await {
+        Ok(diff) => match save(diff, commit_message, use_editor, push_after_commit, agent).await {
             Ok(outcome) => {
                 println!("{}", format_save_outcome(&outcome));
                 Ok(())
@@ -531,6 +576,7 @@ async fn save(
     user_message: Option<String>,
     use_message_editor: bool,
     push_after_commit: bool,
+    agent: &config::AgentSettings,
 ) -> Result<SaveOutcome, Box<dyn std::error::Error>> {
     let provided_note = if let Some(message) = user_message {
         Some(message)
@@ -546,18 +592,19 @@ async fn save(
 
     let save_instruction = build_save_instruction(provided_note.as_deref());
 
-    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
-        codex::build_prompt_for_codex(&save_instruction)
+    let system_prompt = if agent.backend == config::BackendKind::Codex {
+        codex::build_prompt_for_codex(&save_instruction, agent.codex.bounds_prompt_path.as_deref())
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
     } else {
         crate::config::get_system_prompt_with_meta(None)?
     };
 
     let response = Auditor::llm_request_with_tools(
+        agent,
         None,
         system_prompt,
         save_instruction,
-        tools::active_tooling(),
+        tools::active_tooling_for(agent),
         None,
         None,
     )
@@ -731,9 +778,13 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
 pub async fn inline_command(
     user_message: String,
     push_after_commit: bool,
+    agent: &config::AgentSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
-        match codex::build_prompt_for_codex(&user_message) {
+    let system_prompt = if agent.backend == config::BackendKind::Codex {
+        match codex::build_prompt_for_codex(
+            &user_message,
+            agent.codex.bounds_prompt_path.as_deref(),
+        ) {
             Ok(prompt) => prompt,
             Err(e) => {
                 display::emit(
@@ -754,10 +805,11 @@ pub async fn inline_command(
     };
 
     let response = match Auditor::llm_request_with_tools(
+        agent,
         None,
         system_prompt,
         user_message,
-        tools::active_tooling(),
+        tools::active_tooling_for(agent),
         None,
         None,
     )
@@ -783,9 +835,12 @@ pub async fn inline_command(
     Ok(())
 }
 
-pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>> {
-    if config::get_config().backend != config::BackendKind::Codex {
-        return Err("vizier draft requires the Codex backend; rerun with --backend codex".into());
+pub async fn run_draft(
+    args: DraftArgs,
+    agent: &config::AgentSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if agent.backend != config::BackendKind::Codex {
+        return Err("vizier draft requires the Codex backend; update [agents.draft] or pass --backend codex".into());
     }
 
     let DraftArgs {
@@ -855,12 +910,18 @@ pub async fn run_draft(args: DraftArgs) -> Result<(), Box<dyn std::error::Error>
         worktree_created = true;
         let _cwd_guard = WorkdirGuard::enter(&worktree_path)?;
 
-        let prompt = codex::build_implementation_plan_prompt(&slug, &branch_name, &spec_text)
-            .map_err(|err| -> Box<dyn std::error::Error> {
-                Box::from(format!("build_prompt: {err}"))
-            })?;
+        let prompt = codex::build_implementation_plan_prompt(
+            &slug,
+            &branch_name,
+            &spec_text,
+            agent.codex.bounds_prompt_path.as_deref(),
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> {
+            Box::from(format!("build_prompt: {err}"))
+        })?;
 
         let llm_response = Auditor::llm_request_with_tools(
+            agent,
             None,
             prompt,
             spec_text.clone(),
@@ -959,14 +1020,17 @@ pub fn run_list(opts: ListOptions) -> Result<(), Box<dyn std::error::Error>> {
     list_pending_plans(opts.target)
 }
 
-pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_approve(
+    opts: ApproveOptions,
+    agent: &config::AgentSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
     if opts.list_only {
         display::warn("`vizier approve --list` is deprecated; use `vizier list` instead.");
         return list_pending_plans(opts.target.clone());
     }
 
-    if config::get_config().backend != config::BackendKind::Codex {
-        return Err("vizier approve requires the Codex backend; rerun with --backend codex".into());
+    if agent.backend != config::BackendKind::Codex {
+        return Err("vizier approve requires the Codex backend; update [agents.approve] or pass --backend codex".into());
     }
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1036,6 +1100,7 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
         &worktree_path,
         &plan_path,
         opts.push_after,
+        agent,
     )
     .await;
 
@@ -1073,9 +1138,12 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
     }
 }
 
-pub async fn run_review(opts: ReviewOptions) -> Result<(), Box<dyn std::error::Error>> {
-    if config::get_config().backend != config::BackendKind::Codex {
-        return Err("vizier review requires the Codex backend; rerun with --backend codex".into());
+pub async fn run_review(
+    opts: ReviewOptions,
+    agent: &config::AgentSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if agent.backend != config::BackendKind::Codex {
+        return Err("vizier review requires the Codex backend; update [agents.review] or pass --backend codex".into());
     }
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1134,6 +1202,7 @@ pub async fn run_review(opts: ReviewOptions) -> Result<(), Box<dyn std::error::E
             review_only: opts.review_only,
             skip_checks: opts.skip_checks,
         },
+        agent,
     )
     .await;
 
@@ -1189,12 +1258,24 @@ pub async fn run_review(opts: ReviewOptions) -> Result<(), Box<dyn std::error::E
     }
 }
 
-pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_merge(
+    opts: MergeOptions,
+    agent: &config::AgentSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
     let spec = plan::PlanBranchSpec::resolve(
         Some(opts.plan.as_str()),
         opts.branch_override.as_deref(),
         opts.target.as_deref(),
     )?;
+
+    if matches!(opts.conflict_strategy, MergeConflictStrategy::Codex)
+        && agent.backend != config::BackendKind::Codex
+    {
+        return Err(
+            "Codex-based conflict resolution requires the Codex backend; update [agents.merge] or rerun with --backend codex"
+                .into(),
+        );
+    }
 
     let repo = Repository::discover(".")?;
     let source_ref = repo
@@ -1280,7 +1361,8 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    if let Err(err) = refresh_plan_branch(&spec, &plan_meta, &worktree_path, opts.push_after).await
+    if let Err(err) =
+        refresh_plan_branch(&spec, &plan_meta, &worktree_path, opts.push_after, agent).await
     {
         display::warn(format!(
             "Plan worktree preserved at {}; inspect {} for unresolved narrative changes.",
@@ -1322,7 +1404,14 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
             (oid, source_tip)
         }
         MergePreparation::Conflicted(conflict) => {
-            handle_merge_conflict(&spec, &merge_message, conflict, opts.conflict_strategy).await?
+            handle_merge_conflict(
+                &spec,
+                &merge_message,
+                conflict,
+                opts.conflict_strategy,
+                agent,
+            )
+            .await?
         }
     };
 
@@ -1449,6 +1538,7 @@ async fn handle_merge_conflict(
     merge_message: &str,
     conflict: vcs::MergeConflict,
     strategy: MergeConflictStrategy,
+    agent: &config::AgentSettings,
 ) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
     let files = conflict.files.clone();
     let state = MergeConflictState {
@@ -1467,7 +1557,7 @@ async fn handle_merge_conflict(
             Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
         }
         MergeConflictStrategy::Codex => {
-            match try_auto_resolve_conflicts(spec, &state, &files).await {
+            match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
                 Ok((merge_oid, source_oid)) => Ok((merge_oid, source_oid)),
                 Err(err) => {
                     display::warn(format!(
@@ -1504,17 +1594,22 @@ async fn try_auto_resolve_conflicts(
     spec: &plan::PlanBranchSpec,
     state: &MergeConflictState,
     files: &[String],
+    agent: &config::AgentSettings,
 ) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
     display::info("Attempting to resolve conflicts with Codex...");
-    let prompt = codex::build_merge_conflict_prompt(&spec.target_branch, &spec.branch, files)?;
+    let prompt = codex::build_merge_conflict_prompt(
+        &spec.target_branch,
+        &spec.branch,
+        files,
+        agent.codex.bounds_prompt_path.as_deref(),
+    )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-    let cfg = config::get_config();
     let request = codex::CodexRequest {
         prompt,
         repo_root,
-        profile: cfg.codex.profile.clone(),
-        bin: cfg.codex.binary_path.clone(),
-        extra_args: cfg.codex.extra_args.clone(),
+        profile: agent.codex.profile.clone(),
+        bin: agent.codex.binary_path.clone(),
+        extra_args: agent.codex.extra_args.clone(),
         model: codex::CodexModel::Gpt5Codex,
         output_mode: codex::CodexOutputMode::EventsJson,
     };
@@ -1706,6 +1801,7 @@ async fn perform_review_workflow(
     worktree_path: &Path,
     plan_path: &Path,
     exec: ReviewExecution,
+    agent: &config::AgentSettings,
 ) -> Result<ReviewOutcome, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
     let review_rel = Path::new(".vizier")
@@ -1735,6 +1831,7 @@ async fn perform_review_workflow(
         &plan_document,
         &diff_summary,
         &check_contexts,
+        agent.codex.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -1747,6 +1844,7 @@ async fn perform_review_workflow(
     let (text_tx, _text_rx) = mpsc::channel(1);
 
     let response = Auditor::llm_request_with_tools_no_display(
+        agent,
         None,
         prompt,
         user_message,
@@ -1803,7 +1901,7 @@ async fn perform_review_workflow(
 
         if apply_fixes {
             plan::set_plan_status(plan_path, "review-fixes-in-progress", None)?;
-            match apply_review_fixes(spec, plan_meta, worktree_path, &review_rel).await? {
+            match apply_review_fixes(spec, plan_meta, worktree_path, &review_rel, agent).await? {
                 Some(commit) => {
                     fix_commit = Some(commit);
                     plan::set_plan_status(
@@ -2004,6 +2102,7 @@ async fn apply_review_fixes(
     plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
     review_rel: &Path,
+    agent: &config::AgentSettings,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let plan_rel = spec.plan_rel_path();
     let mut instruction = format!(
@@ -2019,17 +2118,19 @@ async fn apply_review_fixes(
         "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
     );
 
-    let system_prompt = codex::build_prompt_for_codex(&instruction)
-        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let system_prompt =
+        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let (event_tx, event_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(event_rx);
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
+        agent,
         None,
         system_prompt,
         instruction.clone(),
-        tools::active_tooling(),
+        tools::active_tooling_for(agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
@@ -2116,6 +2217,7 @@ async fn apply_plan_in_worktree(
     worktree_path: &Path,
     plan_path: &Path,
     push_after: bool,
+    agent: &config::AgentSettings,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
 
@@ -2129,17 +2231,19 @@ async fn apply_plan_in_worktree(
         plan::summarize_spec(plan_meta)
     ));
 
-    let system_prompt = codex::build_prompt_for_codex(&instruction)
-        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let system_prompt =
+        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let (event_tx, event_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(event_rx);
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
+        agent,
         None,
         system_prompt,
         instruction.clone(),
-        tools::active_tooling(),
+        tools::active_tooling_for(agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
@@ -2195,22 +2299,24 @@ async fn refresh_plan_branch(
     plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
     push_after: bool,
+    agent: &config::AgentSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
 
     let instruction = build_save_instruction(None);
-    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
-        codex::build_prompt_for_codex(&instruction)
+    let system_prompt = if agent.backend == config::BackendKind::Codex {
+        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())
             .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
     } else {
         crate::config::get_system_prompt_with_meta(None)?
     };
 
     let response = Auditor::llm_request_with_tools(
+        agent,
         None,
         system_prompt,
         instruction,
-        tools::active_tooling(),
+        tools::active_tooling_for(agent),
         None,
         Some(worktree_path.to_path_buf()),
     )

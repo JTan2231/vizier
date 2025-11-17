@@ -90,6 +90,12 @@ impl IntegrationRepo {
         cmd
     }
 
+    fn vizier_cmd_with_config(&self, config: &Path) -> Command {
+        let mut cmd = self.vizier_cmd();
+        cmd.env("VIZIER_CONFIG_FILE", config);
+        cmd
+    }
+
     fn vizier_output(&self, args: &[&str]) -> io::Result<Output> {
         let mut cmd = self.vizier_cmd();
         cmd.args(args);
@@ -489,6 +495,88 @@ fn test_save_without_code_changes() -> TestResult {
 }
 
 #[test]
+fn test_agent_scope_resolution() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let config_path = repo.path().join("agents.toml");
+    fs::write(
+        &config_path,
+        r#"
+[agents.default]
+backend = "codex"
+fallback_backend = "wire"
+
+[agents.ask]
+backend = "wire"
+model = "gpt-5"
+reasoning_effort = "low"
+"#,
+    )?;
+
+    let before_logs = gather_session_logs(&repo)?;
+    let ask_output = repo
+        .vizier_cmd_with_config(&config_path)
+        .args(["ask", "refresh snapshot context"])
+        .output()?;
+    assert!(
+        ask_output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&ask_output.stderr)
+    );
+    let after_logs = gather_session_logs(&repo)?;
+    let new_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier ask to write a session log")?;
+    let ask_contents = fs::read_to_string(new_log)?;
+    let ask_json: Value = serde_json::from_str(&ask_contents)?;
+    assert_eq!(
+        ask_json
+            .get("model")
+            .and_then(|model| model.get("provider"))
+            .and_then(Value::as_str),
+        Some("wire"),
+        "ask session log should report the wire backend"
+    );
+    assert_eq!(
+        ask_json
+            .get("model")
+            .and_then(|model| model.get("scope"))
+            .and_then(Value::as_str),
+        Some("ask"),
+        "ask session log should report scope=ask"
+    );
+
+    let save_output = repo
+        .vizier_cmd_with_config(&config_path)
+        .arg("save")
+        .output()?;
+    assert!(
+        save_output.status.success(),
+        "vizier save failed: {}",
+        String::from_utf8_lossy(&save_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&save_output.stdout);
+    let save_contents = session_log_contents_from_output(&repo, &stdout)?;
+    let save_json: Value = serde_json::from_str(&save_contents)?;
+    assert_eq!(
+        save_json
+            .get("model")
+            .and_then(|model| model.get("provider"))
+            .and_then(Value::as_str),
+        Some("codex"),
+        "save should fall back to the default Codex backend"
+    );
+    assert_eq!(
+        save_json
+            .get("model")
+            .and_then(|model| model.get("scope"))
+            .and_then(Value::as_str),
+        Some("save"),
+        "save session log should include scope"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_ask_reports_token_usage_progress() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let output = repo.vizier_output(&["ask", "token usage integration smoke"])?;
@@ -700,6 +788,47 @@ fn test_approve_merges_plan() -> TestResult {
     assert!(
         contents.contains("approve-smoke"),
         "plan document missing slug content"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_backend_override_rejected_for_approve() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let config_path = repo.path().join("agents.toml");
+    fs::write(
+        &config_path,
+        r#"
+[agents.default]
+backend = "codex"
+fallback_backend = "wire"
+"#,
+    )?;
+
+    let draft = repo
+        .vizier_cmd_with_config(&config_path)
+        .args(["draft", "--name", "agent-scope", "scope smoke test"])
+        .output()?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    let approve = repo
+        .vizier_cmd_with_config(&config_path)
+        .args(["--backend", "wire", "approve", "agent-scope", "--yes"])
+        .output()?;
+    assert!(
+        !approve.status.success(),
+        "approve unexpectedly succeeded with --backend wire"
+    );
+    let stderr = String::from_utf8_lossy(&approve.stderr);
+    assert!(
+        stderr.contains("requires the Codex backend"),
+        "stderr missing backend warning: {}",
+        stderr
     );
 
     Ok(())
