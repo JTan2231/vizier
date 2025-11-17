@@ -8,7 +8,7 @@ use clap_complete::Shell;
 use vizier_core::{
     auditor, config,
     display::{self, LogLevel},
-    tools,
+    tools, vcs,
 };
 
 mod actions;
@@ -321,6 +321,22 @@ struct MergeCmd {
     /// Only finalize a previously conflicted merge; fail if no pending Vizier merge exists
     #[arg(long = "complete-conflict")]
     complete_conflict: bool,
+
+    /// Path to a CI/CD gate script (defaults to merge.cicd_gate.script)
+    #[arg(long = "cicd-script", value_name = "PATH")]
+    cicd_script: Option<PathBuf>,
+
+    /// Force-enable Codex remediation when the CI/CD script fails
+    #[arg(long = "auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "no_auto_cicd_fix")]
+    auto_cicd_fix: bool,
+
+    /// Disable Codex remediation even if configured
+    #[arg(long = "no-auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "auto_cicd_fix")]
+    no_auto_cicd_fix: bool,
+
+    /// Number of remediation attempts before aborting (`merge.cicd_gate.retries` by default)
+    #[arg(long = "cicd-retries", value_name = "COUNT")]
+    cicd_retries: Option<u32>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -516,6 +532,31 @@ fn resolve_merge_options(
         );
     }
 
+    let repo_root = vcs::repo_root().ok();
+    let mut cicd_gate = CicdGateOptions::from_config(&config::get_config().merge.cicd_gate);
+    if let Some(script) = cicd_gate.script.clone() {
+        cicd_gate.script = Some(resolve_cicd_script_path(&script, repo_root.as_deref()));
+    }
+    if let Some(script) = cmd.cicd_script.as_ref() {
+        cicd_gate.script = Some(resolve_cicd_script_path(script, repo_root.as_deref()));
+    }
+    if cmd.auto_cicd_fix {
+        cicd_gate.auto_resolve = true;
+    }
+    if cmd.no_auto_cicd_fix {
+        cicd_gate.auto_resolve = false;
+    }
+    if let Some(retries) = cmd.cicd_retries {
+        cicd_gate.retries = retries;
+    }
+    if let Some(script) = cicd_gate.script.as_ref() {
+        let metadata = std::fs::metadata(script)
+            .map_err(|err| format!("unable to read CI/CD script {}: {err}", script.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("CI/CD script {} must be a file", script.display()).into());
+        }
+    }
+
     Ok(MergeOptions {
         plan,
         target: cmd.target.clone(),
@@ -526,7 +567,18 @@ fn resolve_merge_options(
         push_after,
         conflict_strategy,
         complete_conflict: cmd.complete_conflict,
+        cicd_gate,
     })
+}
+
+fn resolve_cicd_script_path(script: &Path, repo_root: Option<&Path>) -> PathBuf {
+    if script.is_absolute() {
+        return script.to_path_buf();
+    }
+    if let Some(root) = repo_root {
+        return root.join(script);
+    }
+    script.to_path_buf()
 }
 
 fn build_cli_agent_overrides(

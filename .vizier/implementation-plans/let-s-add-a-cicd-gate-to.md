@@ -1,9 +1,10 @@
 ---
 plan: let-s-add-a-cicd-gate-to
 branch: draft/let-s-add-a-cicd-gate-to
-status: draft
+status: implemented
 created_at: 2025-11-17T16:06:06Z
 spec_source: inline
+implemented_at: 2025-11-17T16:38:58Z
 ---
 
 ## Operator Spec

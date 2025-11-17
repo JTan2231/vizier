@@ -387,6 +387,14 @@ fn reset_workdir(repo: &IntegrationRepo) -> TestResult {
     Ok(())
 }
 
+fn write_cicd_script(repo: &IntegrationRepo, name: &str, contents: &str) -> io::Result<PathBuf> {
+    let scripts_dir = repo.path().join(".vizier/tmp/cicd-scripts");
+    fs::create_dir_all(&scripts_dir)?;
+    let path = scripts_dir.join(name);
+    fs::write(&path, contents)?;
+    Ok(path)
+}
+
 fn ensure_gitignore(path: &Path) -> io::Result<()> {
     let ignore_path = path.join(".gitignore");
     let mut file = fs::OpenOptions::new()
@@ -859,6 +867,116 @@ fn test_merge_removes_plan_document() -> TestResult {
     assert!(
         message.contains("Implementation Plan:"),
         "merge commit should inline plan metadata"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_cicd_gate_executes_script() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "cicd-pass", "cicd gate spec"])?;
+    repo.vizier_output(&["approve", "cicd-pass", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let script_path = write_cicd_script(
+        &repo,
+        "gate-pass.sh",
+        "#!/bin/sh\nset -eu\nprintf \"gate ok\" > cicd-pass.log\n",
+    )?;
+
+    let script_flag = script_path.to_string_lossy().to_string();
+    let merge =
+        repo.vizier_output(&["merge", "cicd-pass", "--yes", "--cicd-script", &script_flag])?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed with CI/CD script: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    let log = repo.read("cicd-pass.log")?;
+    assert!(
+        log.contains("gate ok"),
+        "CI/CD script output missing expected line: {log}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_cicd_gate_failure_blocks_merge() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "cicd-fail", "cicd fail spec"])?;
+    repo.vizier_output(&["approve", "cicd-fail", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let script_path = write_cicd_script(
+        &repo,
+        "gate-fail.sh",
+        "#!/bin/sh\necho \"gate failure\" >&2\nexit 1\n",
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+    let merge =
+        repo.vizier_output(&["merge", "cicd-fail", "--yes", "--cicd-script", &script_flag])?;
+    assert!(
+        !merge.status.success(),
+        "merge should fail when CI/CD gate exits non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        stderr.contains("CI/CD gate"),
+        "stderr should mention CI/CD gate failure: {stderr}"
+    );
+    assert!(
+        stderr.contains("gate failure"),
+        "stderr should include script output: {stderr}"
+    );
+    let repo_handle = repo.repo();
+    assert!(
+        repo_handle
+            .find_branch("draft/cicd-fail", BranchType::Local)
+            .is_ok(),
+        "draft branch should remain after CI/CD failure"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "cicd-auto", "auto ci gate spec"])?;
+    repo.vizier_output(&["approve", "cicd-auto", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    repo.write(".vizier/tmp/mock_cicd_fix_path", "ci/fixed.txt\n")?;
+    let script_path = write_cicd_script(
+        &repo,
+        "gate-auto.sh",
+        "#!/bin/sh\nif [ -f \"ci/fixed.txt\" ]; then\n  exit 0\nfi\necho \"ci gate still failing\" >&2\nexit 1\n",
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+    let merge = repo.vizier_output(&[
+        "merge",
+        "cicd-auto",
+        "--yes",
+        "--cicd-script",
+        &script_flag,
+        "--auto-cicd-fix",
+        "--cicd-retries",
+        "2",
+    ])?;
+    assert!(
+        merge.status.success(),
+        "merge with auto CI/CD remediation should succeed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    assert!(
+        repo.path().join("ci/fixed.txt").exists(),
+        "auto remediation should create the expected fix file"
+    );
+    let repo_handle = repo.repo();
+    let head = repo_handle.head()?.peel_to_commit()?;
+    let message = head.message().unwrap_or_default().to_string();
+    assert!(
+        message.contains("CI/CD script:"),
+        "head commit should document CI/CD remediation: {message}"
     );
     Ok(())
 }
