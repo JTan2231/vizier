@@ -539,6 +539,84 @@ pub fn build_merge_conflict_prompt(
     Ok(prompt)
 }
 
+pub fn build_cicd_failure_prompt(
+    plan_slug: &str,
+    plan_branch: &str,
+    target_branch: &str,
+    script_path: &Path,
+    attempt: u32,
+    max_attempts: u32,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    bounds_override: Option<&Path>,
+) -> Result<String, CodexError> {
+    let context = gather_prompt_context()?;
+    let bounds = load_bounds_prompt(bounds_override)?;
+
+    let mut prompt = String::new();
+    prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/.snapshot` plus TODO threads when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
+
+    prompt.push_str("<codexBounds>\n");
+    prompt.push_str(&bounds);
+    prompt.push_str("\n</codexBounds>\n\n");
+
+    prompt.push_str("<planMetadata>\n");
+    prompt.push_str(&format!(
+        "plan_slug: {plan_slug}\nplan_branch: {plan_branch}\ntarget_branch: {target_branch}\n"
+    ));
+    prompt.push_str("</planMetadata>\n\n");
+
+    prompt.push_str("<cicdContext>\n");
+    prompt.push_str(&format!(
+        "script_path: {}\nattempt: {}\nmax_attempts: {}\nexit_code: {}\n",
+        script_path.display(),
+        attempt,
+        max_attempts,
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".to_string())
+    ));
+    prompt.push_str("</cicdContext>\n\n");
+
+    prompt.push_str("<gateOutput>\nstdout:\n");
+    if stdout.trim().is_empty() {
+        prompt.push_str("(stdout was empty)\n");
+    } else {
+        prompt.push_str(stdout.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("\nstderr:\n");
+    if stderr.trim().is_empty() {
+        prompt.push_str("(stderr was empty)\n");
+    } else {
+        prompt.push_str(stderr.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</gateOutput>\n\n");
+
+    prompt.push_str("<snapshot>\n");
+    if context.snapshot.trim().is_empty() {
+        prompt.push_str("(snapshot is currently empty)\n");
+    } else {
+        prompt.push_str(context.snapshot.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</snapshot>\n\n");
+
+    prompt.push_str("<todoThreads>\n");
+    if context.threads.is_empty() {
+        prompt.push_str("(no active TODO threads)\n");
+    } else {
+        for thread in &context.threads {
+            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
+        }
+    }
+    prompt.push_str("</todoThreads>\n\n");
+
+    Ok(prompt)
+}
+
 fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, CodexError> {
     if let Some(path) = bounds_override {
         let contents = std::fs::read_to_string(path)
@@ -931,8 +1009,7 @@ mod tests {
         cfg.set_prompt(PromptKind::ImplementationPlan, "custom plan".to_string());
         config::set_config(cfg);
 
-        let prompt =
-            build_implementation_plan_prompt("slug", "draft/slug", "spec", None).unwrap();
+        let prompt = build_implementation_plan_prompt("slug", "draft/slug", "spec", None).unwrap();
 
         assert!(prompt.starts_with("custom plan"));
         assert!(prompt.contains("<codexBounds>"));
@@ -948,16 +1025,8 @@ mod tests {
         cfg.set_prompt(PromptKind::Review, "custom review".to_string());
         config::set_config(cfg);
 
-        let prompt = build_review_prompt(
-            "slug",
-            "draft/slug",
-            "main",
-            "plan",
-            "diff",
-            &[],
-            None,
-        )
-        .unwrap();
+        let prompt =
+            build_review_prompt("slug", "draft/slug", "main", "plan", "diff", &[], None).unwrap();
 
         assert!(prompt.starts_with("custom review"));
         assert!(prompt.contains("<planDocument>"));

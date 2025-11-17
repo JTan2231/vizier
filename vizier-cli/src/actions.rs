@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
@@ -309,12 +309,66 @@ pub struct MergeOptions {
     pub push_after: bool,
     pub conflict_strategy: MergeConflictStrategy,
     pub complete_conflict: bool,
+    pub cicd_gate: CicdGateOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeConflictStrategy {
     Manual,
     Codex,
+}
+
+#[derive(Debug, Clone)]
+pub struct CicdGateOptions {
+    pub script: Option<PathBuf>,
+    pub auto_resolve: bool,
+    pub retries: u32,
+}
+
+impl CicdGateOptions {
+    pub fn from_config(config: &config::MergeCicdGateConfig) -> Self {
+        Self {
+            script: config.script.clone(),
+            auto_resolve: config.auto_resolve,
+            retries: config.retries,
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            script: None,
+            auto_resolve: false,
+            retries: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CicdGateOutcome {
+    script: PathBuf,
+    attempts: u32,
+    fixes: Vec<String>,
+}
+
+#[derive(Debug)]
+struct CicdScriptResult {
+    status: std::process::ExitStatus,
+    duration: Duration,
+    stdout: String,
+    stderr: String,
+}
+
+impl CicdScriptResult {
+    fn success(&self) -> bool {
+        self.status.success()
+    }
+
+    fn status_label(&self) -> String {
+        match self.status.code() {
+            Some(code) => format!("exit={code}"),
+            None => "terminated".to_string(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1277,6 +1331,15 @@ pub async fn run_merge(
         );
     }
 
+    if opts.cicd_gate.auto_resolve
+        && opts.cicd_gate.script.is_some()
+        && agent.backend != config::BackendKind::Codex
+    {
+        display::warn(
+            "CI/CD auto-remediation requested but [agents.merge] is not set to Codex; gate failures will abort without auto fixes.",
+        );
+    }
+
     let repo = Repository::discover(".")?;
     let source_ref = repo
         .find_branch(&spec.branch, BranchType::Local)
@@ -1303,12 +1366,14 @@ pub async fn run_merge(
             merge_oid,
             source_oid,
         } => {
+            let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
             finalize_merge(
                 &spec,
                 merge_oid,
                 source_oid,
                 opts.delete_branch,
                 opts.push_after,
+                gate_summary,
             )?;
             return Ok(());
         }
@@ -1415,14 +1480,181 @@ pub async fn run_merge(
         }
     };
 
+    let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
     finalize_merge(
         &spec,
         merge_oid,
         source_oid,
         opts.delete_branch,
         opts.push_after,
+        gate_summary,
     )?;
     Ok(())
+}
+
+async fn run_cicd_gate_for_merge(
+    spec: &plan::PlanBranchSpec,
+    opts: &MergeOptions,
+    agent: &config::AgentSettings,
+) -> Result<Option<CicdGateOutcome>, Box<dyn std::error::Error>> {
+    let Some(script) = opts.cicd_gate.script.as_ref() else {
+        return Ok(None);
+    };
+
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let mut attempts: u32 = 0;
+    let mut fix_attempts: u32 = 0;
+    let mut fix_commits = Vec::new();
+
+    loop {
+        attempts += 1;
+        let result = run_cicd_script(script, &repo_root)?;
+        log_cicd_result(script, &result, attempts);
+
+        if result.success() {
+            return Ok(Some(CicdGateOutcome {
+                script: script.clone(),
+                attempts,
+                fixes: fix_commits,
+            }));
+        }
+
+        if !opts.cicd_gate.auto_resolve {
+            return Err(cicd_gate_failure_error(script, &result));
+        }
+
+        if agent.backend != config::BackendKind::Codex {
+            display::warn(
+                "CI/CD gate auto-remediation requires the Codex backend; skipping automatic fixes.",
+            );
+            return Err(cicd_gate_failure_error(script, &result));
+        }
+
+        if fix_attempts >= opts.cicd_gate.retries {
+            display::warn(format!(
+                "CI/CD auto-remediation exhausted its retry budget ({} attempt(s)).",
+                opts.cicd_gate.retries
+            ));
+            return Err(cicd_gate_failure_error(script, &result));
+        }
+
+        fix_attempts += 1;
+        display::info(format!(
+            "CI/CD gate failed; attempting Codex remediation ({}/{})...",
+            fix_attempts, opts.cicd_gate.retries
+        ));
+        let truncated_stdout = clip_log(result.stdout.as_bytes());
+        let truncated_stderr = clip_log(result.stderr.as_bytes());
+        if let Some(commit) = attempt_cicd_auto_fix(
+            spec,
+            script,
+            fix_attempts,
+            opts.cicd_gate.retries,
+            result.status.code(),
+            &truncated_stdout,
+            &truncated_stderr,
+            agent,
+        )
+        .await?
+        {
+            display::info(format!("Remediation attempt committed at {}.", commit));
+            fix_commits.push(commit);
+        } else {
+            display::info("Codex remediation reported no file changes.");
+        }
+    }
+}
+
+async fn attempt_cicd_auto_fix(
+    spec: &plan::PlanBranchSpec,
+    script: &Path,
+    attempt: u32,
+    max_attempts: u32,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    agent: &config::AgentSettings,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let prompt = codex::build_cicd_failure_prompt(
+        &spec.slug,
+        &spec.branch,
+        &spec.target_branch,
+        script,
+        attempt,
+        max_attempts,
+        exit_code,
+        stdout,
+        stderr,
+        agent.codex.bounds_prompt_path.as_deref(),
+    )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let instruction = format!(
+        "CI/CD gate script {} failed while merging plan {} (attempt {attempt}/{max_attempts}). Apply fixes so the script succeeds.",
+        script.display(),
+        spec.slug
+    );
+
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let request_root = repo_root.clone();
+    let (event_tx, event_rx) = mpsc::channel(64);
+    let progress_handle = spawn_plain_progress_logger(event_rx);
+    let (text_tx, _text_rx) = mpsc::channel(1);
+    let response = Auditor::llm_request_with_tools_no_display(
+        agent,
+        None,
+        prompt,
+        instruction,
+        tools::active_tooling_for(agent),
+        auditor::RequestStream::Status {
+            text: text_tx,
+            events: Some(event_tx),
+        },
+        Some(codex::CodexModel::Gpt5Codex),
+        Some(request_root),
+    )
+    .await?;
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
+
+    #[cfg(feature = "mock_llm")]
+    {
+        mock_cicd_remediation(&repo_root)?;
+    }
+
+    let session_artifact = Auditor::commit_audit().await?;
+    let session_path = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path());
+
+    let diff = vcs::get_diff(".", Some("HEAD"), None)?;
+    if diff.trim().is_empty() {
+        return Ok(None);
+    }
+
+    vcs::stage(Some(vec!["."]))?;
+    let mut summary = response.content.trim().to_string();
+    if summary.is_empty() {
+        summary = format!(
+            "Fix CI/CD gate failure for plan {} (attempt {attempt}/{max_attempts})",
+            spec.slug
+        );
+    }
+    let exit_label = exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let mut builder = CommitMessageBuilder::new(summary);
+    builder
+        .set_header(CommitMessageType::CodeChange)
+        .with_session_log_path(session_path.clone())
+        .with_author_note(format!(
+            "CI/CD script: {} (exit={})",
+            script.display(),
+            exit_label
+        ));
+    let message = builder.build();
+    let commit_oid = vcs::add_and_commit(None, &message, false)?;
+    Ok(Some(commit_oid.to_string()))
 }
 
 fn finalize_merge(
@@ -1431,6 +1663,7 @@ fn finalize_merge(
     source_oid: Oid,
     delete_branch: bool,
     push_after: bool,
+    gate: Option<CicdGateOutcome>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if delete_branch {
         let repo = Repository::discover(".")?;
@@ -1451,10 +1684,47 @@ fn finalize_merge(
     }
 
     push_origin_if_requested(push_after)?;
-    println!(
-        "Merged plan {} into {}; merge_commit={}",
-        spec.slug, spec.target_branch, merge_oid
-    );
+    if let Some(summary) = gate.as_ref() {
+        let fix_count = summary.fixes.len();
+        let fix_detail = if summary.fixes.is_empty() {
+            String::new()
+        } else {
+            format!(" fixes=[{}]", summary.fixes.join(","))
+        };
+        let script_label = repo_root()
+            .ok()
+            .and_then(|root| {
+                summary
+                    .script
+                    .strip_prefix(&root)
+                    .ok()
+                    .map(|p| p.display().to_string())
+            })
+            .unwrap_or_else(|| summary.script.display().to_string());
+        println!(
+            "Merged plan {} into {}; merge_commit={} cicd_script={} attempts={}{}{}{}",
+            spec.slug,
+            spec.target_branch,
+            merge_oid,
+            script_label,
+            summary.attempts,
+            if summary.fixes.is_empty() {
+                String::new()
+            } else {
+                format!(" fix_commits={}", fix_count)
+            },
+            fix_detail,
+            token_usage_suffix()
+        );
+    } else {
+        println!(
+            "Merged plan {} into {}; merge_commit={}{}",
+            spec.slug,
+            spec.target_branch,
+            merge_oid,
+            token_usage_suffix()
+        );
+    }
     print_token_usage();
     Ok(())
 }
@@ -1691,6 +1961,27 @@ fn strip_conflict_markers(input: &str) -> Option<String> {
 
     output.push_str(remainder);
     Some(output)
+}
+
+#[cfg(feature = "mock_llm")]
+fn mock_cicd_remediation(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let instructions = repo_root.join(".vizier/tmp/mock_cicd_fix_path");
+    if !instructions.exists() {
+        return Ok(());
+    }
+    let rel = std::fs::read_to_string(&instructions)?;
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        let _ = std::fs::remove_file(&instructions);
+        return Ok(());
+    }
+    let target = repo_root.join(trimmed);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&target, "mock ci fix applied\n")?;
+    let _ = std::fs::remove_file(&instructions);
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2029,6 +2320,64 @@ fn clip_log(bytes: &[u8]) -> String {
         clipped.push_str("\n… output truncated …");
         clipped
     }
+}
+
+fn log_cicd_stream(label: &str, content: &str) {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let snippet: String = trimmed
+        .lines()
+        .take(12)
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    display::warn(format!("  {label}:\n{snippet}"));
+}
+
+fn run_cicd_script(
+    script: &Path,
+    repo_root: &Path,
+) -> Result<CicdScriptResult, Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let output = Command::new("sh")
+        .arg(script)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| format!("failed to run CI/CD script {}: {err}", script.display()))?;
+    Ok(CicdScriptResult {
+        status: output.status,
+        duration: start.elapsed(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+fn log_cicd_result(script: &Path, result: &CicdScriptResult, attempt: u32) {
+    let label = if result.success() { "passed" } else { "failed" };
+    let status = result.status_label();
+    let duration = format!("{:.2}s", result.duration.as_secs_f64());
+    let message = format!(
+        "CI/CD gate `{}` {label} ({status}; {duration}) [attempt {attempt}]",
+        script.display()
+    );
+    if result.success() {
+        display::info(message);
+    } else {
+        display::warn(message);
+        log_cicd_stream("stdout", &result.stdout);
+        log_cicd_stream("stderr", &result.stderr);
+    }
+}
+
+fn cicd_gate_failure_error(script: &Path, result: &CicdScriptResult) -> Box<dyn std::error::Error> {
+    let status = result.status_label();
+    let message = format!(
+        "CI/CD gate `{}` failed ({status}); inspect the output above and rerun `vizier merge` once resolved.",
+        script.display()
+    );
+    Box::<dyn std::error::Error>::from(message)
 }
 
 fn collect_diff_summary(
