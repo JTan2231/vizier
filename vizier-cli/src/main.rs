@@ -529,6 +529,77 @@ fn resolve_merge_options(
     })
 }
 
+fn build_cli_agent_overrides(
+    opts: &GlobalOpts,
+) -> Result<Option<config::AgentOverrides>, Box<dyn std::error::Error>> {
+    let mut overrides = config::AgentOverrides::default();
+
+    if let Some(backend) = opts.backend {
+        overrides.backend = Some(backend.into());
+    }
+
+    if let Some(model) = opts.model.as_ref() {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return Err("model name cannot be empty".into());
+        }
+        overrides.model = Some(trimmed.to_string());
+    }
+
+    if let Some(reasoning) = opts.reasoning_effort.as_ref() {
+        let trimmed = reasoning.trim();
+        if trimmed.is_empty() {
+            return Err("reasoning effort cannot be empty".into());
+        }
+        overrides.reasoning_effort = Some(wire::config::ThinkingLevel::from_string(trimmed)?);
+    }
+
+    if let Some(bin) = opts.codex_bin.as_ref() {
+        overrides
+            .codex
+            .get_or_insert_with(Default::default)
+            .binary_path = Some(bin.clone());
+    }
+
+    if let Some(profile) = opts.codex_profile.as_ref() {
+        let trimmed = profile.trim();
+        let value = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        overrides.codex.get_or_insert_with(Default::default).profile = Some(value);
+    }
+
+    if let Some(bounds) = opts.codex_bounds_prompt.as_ref() {
+        overrides
+            .codex
+            .get_or_insert_with(Default::default)
+            .bounds_prompt_path = Some(bounds.clone());
+    }
+
+    if overrides.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(overrides))
+    }
+}
+
+fn warn_if_model_override_ignored(
+    model_override_requested: bool,
+    scope: config::CommandScope,
+    agent: &config::AgentSettings,
+) {
+    if model_override_requested && agent.backend != config::BackendKind::Wire {
+        display::warn(format!(
+            "--model override ignored for `{}` because the {} backend is active; update [agents.{}] or rerun with --backend wire.",
+            scope.as_str(),
+            agent.backend,
+            scope.as_str()
+        ));
+    }
+}
+
 fn resolve_prompt_input(
     positional: Option<&str>,
     file: Option<&Path>,
@@ -738,7 +809,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
-    let mut cfg = if let Some(config_file) = cli.global.config_file {
+    let mut cfg = if let Some(ref config_file) = cli.global.config_file {
         config::Config::from_path(std::path::PathBuf::from(config_file))?
     } else if let Some(default_path) = config::default_config_path() {
         if default_path.exists() {
@@ -781,8 +852,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.backend = backend_arg.into();
     }
 
-    if let Some(bin_override) = cli.global.codex_bin {
-        cfg.codex.binary_path = bin_override;
+    if let Some(ref bin_override) = cli.global.codex_bin {
+        cfg.codex.binary_path = bin_override.clone();
     }
 
     if let Some(profile_override) = &cli.global.codex_profile {
@@ -794,8 +865,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if let Some(bounds_override) = cli.global.codex_bounds_prompt.clone() {
-        cfg.codex.bounds_prompt_path = Some(bounds_override);
+    if let Some(ref bounds_override) = cli.global.codex_bounds_prompt {
+        cfg.codex.bounds_prompt_path = Some(bounds_override.clone());
     }
 
     let mut provider_needs_rebuild =
@@ -809,11 +880,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if cfg.backend == config::BackendKind::Wire {
             cfg.provider_model = trimmed.to_owned();
             provider_needs_rebuild = true;
-        } else {
-            display::warn(
-                "--model is ignored when Codex is the active backend; rerun with --backend wire \
-                 if you need to force the HTTP provider stack.",
-            );
         }
     }
 
@@ -834,6 +900,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     config::set_config(cfg);
 
+    let cli_agent_override = build_cli_agent_overrides(&cli.global)?;
+    let model_override_requested = cli
+        .global
+        .model
+        .as_ref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
     let push_after = cli.global.push;
 
     match cli.command {
@@ -849,35 +923,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             commit_message,
             commit_message_editor,
         }) => {
+            let agent = config::get_config()
+                .resolve_agent_settings(config::CommandScope::Save, cli_agent_override.as_ref())?;
+            warn_if_model_override_ignored(
+                model_override_requested,
+                config::CommandScope::Save,
+                &agent,
+            );
             run_save(
                 &rev_or_range,
                 &[".vizier/"],
                 commit_message,
                 commit_message_editor,
                 push_after,
+                &agent,
             )
             .await
         }
 
         Commands::Ask(cmd) => {
             let message = resolve_ask_message(&cmd)?;
-            inline_command(message, push_after).await
+            let agent = config::get_config()
+                .resolve_agent_settings(config::CommandScope::Ask, cli_agent_override.as_ref())?;
+            warn_if_model_override_ignored(
+                model_override_requested,
+                config::CommandScope::Ask,
+                &agent,
+            );
+            inline_command(message, push_after, &agent).await
         }
 
         Commands::Draft(cmd) => {
             let resolved = resolve_draft_spec(&cmd)?;
-            run_draft(DraftArgs {
-                spec_text: resolved.text,
-                spec_source: resolved.origin.into(),
-                name_override: cmd.name.clone(),
-            })
+            let agent = config::get_config()
+                .resolve_agent_settings(config::CommandScope::Draft, cli_agent_override.as_ref())?;
+            warn_if_model_override_ignored(
+                model_override_requested,
+                config::CommandScope::Draft,
+                &agent,
+            );
+            run_draft(
+                DraftArgs {
+                    spec_text: resolved.text,
+                    spec_source: resolved.origin.into(),
+                    name_override: cmd.name.clone(),
+                },
+                &agent,
+            )
             .await
         }
 
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
 
-        Commands::Approve(cmd) => run_approve(resolve_approve_options(&cmd, push_after)?).await,
-        Commands::Review(cmd) => run_review(resolve_review_options(&cmd, push_after)?).await,
-        Commands::Merge(cmd) => run_merge(resolve_merge_options(&cmd, push_after)?).await,
+        Commands::Approve(cmd) => {
+            let opts = resolve_approve_options(&cmd, push_after)?;
+            let agent = config::get_config().resolve_agent_settings(
+                config::CommandScope::Approve,
+                cli_agent_override.as_ref(),
+            )?;
+            warn_if_model_override_ignored(
+                model_override_requested,
+                config::CommandScope::Approve,
+                &agent,
+            );
+            run_approve(opts, &agent).await
+        }
+        Commands::Review(cmd) => {
+            let opts = resolve_review_options(&cmd, push_after)?;
+            let agent = config::get_config().resolve_agent_settings(
+                config::CommandScope::Review,
+                cli_agent_override.as_ref(),
+            )?;
+            warn_if_model_override_ignored(
+                model_override_requested,
+                config::CommandScope::Review,
+                &agent,
+            );
+            run_review(opts, &agent).await
+        }
+        Commands::Merge(cmd) => {
+            let opts = resolve_merge_options(&cmd, push_after)?;
+            let agent = config::get_config()
+                .resolve_agent_settings(config::CommandScope::Merge, cli_agent_override.as_ref())?;
+            warn_if_model_override_ignored(
+                model_override_requested,
+                config::CommandScope::Merge,
+                &agent,
+            );
+            run_merge(opts, &agent).await
+        }
     }
 }

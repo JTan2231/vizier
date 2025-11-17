@@ -2,6 +2,29 @@
 
 This guide explains how Vizier’s plan workflow turns a high-level spec into audited code without disturbing your working tree. Use it whenever you want Vizier (or an external agent) to implement a scoped change on a dedicated branch and then merge it back with a metadata-rich commit.
 
+### Agent configuration
+
+The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix Codex and wire backends as needed:
+
+```toml
+[agents.default]
+backend = "codex"
+fallback_backend = "wire"
+
+[agents.approve]
+backend = "codex"      # enforce Codex-backed implementation
+
+[agents.review]
+backend = "codex"
+[agents.review.codex]
+profile = "compliance"
+
+[agents.merge]
+backend = "wire"       # keep merge cleanup on the wire stack
+```
+
+CLI overrides (`--backend`, `--codex-*`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. Vizier warns when a model override is ignored because Codex is active, so operators know when to adjust the per-command config instead of expecting wire-only flags to work everywhere.
+
 ## High-Level Timeline
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.

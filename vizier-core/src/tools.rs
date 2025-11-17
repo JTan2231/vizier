@@ -410,8 +410,8 @@ pub fn get_snapshot_tools() -> Vec<Tool> {
     ]
 }
 
-pub fn active_tooling() -> Vec<Tool> {
-    match config::get_config().backend {
+pub fn active_tooling_for(agent: &config::AgentSettings) -> Vec<Tool> {
+    match agent.backend {
         config::BackendKind::Codex => Vec::new(),
         config::BackendKind::Wire => get_tools(),
     }
