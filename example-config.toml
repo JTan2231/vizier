@@ -1,0 +1,79 @@
+# Global defaults (apply unless overridden below)
+model = "gpt-4.1"
+reasoning_effort = "medium"
+backend = "codex"
+fallback_backend = "wire"
+
+# Base Codex wiring shared by Codex-backed commands unless a scoped override says otherwise
+[codex]
+binary = "/usr/local/bin/codex"
+profile = "default"
+bounds_prompt_path = "/etc/vizier/codex_bounds.md"
+extra_args = ["--log-json"]
+
+# Where each prompt should be loaded from on disk (omit entries to fall back to baked defaults)
+[prompts]
+base = "./prompts/base.md"
+commit = "./prompts/commit.md"
+implementation_plan = "./prompts/plan.md"
+review = "./prompts/review.md"
+merge_conflict = "./prompts/merge.md"
+
+# Order of operations Codex will run during `vizier review` unless `--skip-checks` is passed
+[review.checks]
+commands = [
+  "cargo fmt -- --check",
+  "cargo clippy -- -D warnings",
+  "cargo test --all --all-targets"
+]
+
+# Default agent stack inherited by every command before CLI flags are processed
+[agents.default]
+backend = "codex"
+fallback_backend = "wire"
+model = "gpt-4.1"
+reasoning_effort = "medium"
+
+# Fine-tune how the default Codex backend runs (binary/profile/bounds prompt/extra args)
+[agents.default.codex]
+binary_path = "/usr/local/bin/codex"
+profile = "maintainers"
+bounds_prompt_path = "/etc/vizier/codex_bounds.md"
+extra_args = ["--log-json"]
+
+# Force conversational asks onto the wire backend with a higher-effort reasoning profile
+[agents.ask]
+backend = "wire"
+model = "gpt-4.1-preview"
+reasoning_effort = "high"
+
+# Keep save flows on Codex but allow a wire fallback when Codex exits early
+[agents.save]
+backend = "codex"
+fallback_backend = "wire"
+
+# Give save flows a stricter Codex profile and extra arguments when editing the repo
+[agents.save.codex]
+profile = "auditor"
+extra_args = ["--max-edits", "200"]
+
+# The remaining plan workflow commands stay on Codex and inherit the defaults
+[agents.draft]
+backend = "codex"
+
+[agents.approve]
+backend = "codex"
+
+[agents.review]
+backend = "codex"
+
+# Review runs Codex with a compliance profile and custom bounds prompt
+[agents.review.codex]
+profile = "compliance"
+bounds_prompt_path = "./prompts/review-bounds.md"
+
+# Merge cleanup runs on wire to avoid editing worktrees directly
+[agents.merge]
+backend = "wire"
+model = "gpt-4o-mini"
+reasoning_effort = "low"

@@ -124,6 +124,8 @@ Configure via CLI flags or config file:
 
 If no path is provided, Vizier will look for `~/.config/vizier/config.toml` (TOML or JSON) and fall back to its built-in defaults when that file is missing.
 
+For a complete reference of every configuration knob, keep `example-config.toml` in this repo handy; it documents each section and serves as the authoritative sample for what Vizier understands today.
+
 ```bash
 # Use specific model
 vizier ask "..." -p anthropic
