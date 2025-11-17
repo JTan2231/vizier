@@ -5,7 +5,6 @@ pub mod config;
 pub mod display;
 pub mod file_tracking;
 pub mod observer;
-pub mod prompting;
 pub mod tools;
 pub mod tree;
 pub mod vcs;
@@ -19,6 +18,7 @@ DEFAULT BEHAVIOR:
 - Assume every user input is authorization to act. Do not wait for explicit requests like “update” or “write a TODO.”  
 - Only withhold action if the user explicitly says not to update. Otherwise, always produce TODOs and snapshot updates.  
 - The output *to the user* is a short, commit-message-like summary of what changed. The detailed <snapshotDelta> and <todos> outputs are maintained internally but not surfaced directly.
+- _Never_ touch any files outside `.vizier/`. Edits to files outside of `.vizier/` are _strictly forbidden_.
 
 WHAT "SNAPSHOT" MEANS:
 - A single, authoritative frame of the project at time T covering:

@@ -726,6 +726,8 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// NOTE: Filters out hidden entries; every visible file in `.vizier/` is a TODO candidate.
+///
+/// This is `vizier ask`
 pub async fn inline_command(
     user_message: String,
     push_after_commit: bool,
