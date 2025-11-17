@@ -1,19 +1,17 @@
 use std::io::{self, Write};
 
-use clap::builder::StyledStr;
 use clap::Command;
-use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
-use clap_complete::env::Shells;
+use clap::builder::StyledStr;
 use clap_complete::CompleteEnv;
 use clap_complete::Shell;
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
+use clap_complete::env::Shells;
 
 use crate::plan::{PlanSlugEntry, PlanSlugInventory};
 
 const COMPLETION_ENV_VAR: &str = "COMPLETE";
 
-pub fn try_handle_completion(
-    factory: impl Fn() -> Command,
-) -> clap::error::Result<bool> {
+pub fn try_handle_completion(factory: impl Fn() -> Command) -> clap::error::Result<bool> {
     CompleteEnv::with_factory(factory)
         .try_complete(std::env::args_os(), std::env::current_dir().ok().as_deref())
 }
@@ -46,9 +44,7 @@ pub fn write_registration(
         .unwrap_or_else(|| cmd.get_name())
         .to_string();
 
-    let completer_path = std::env::args()
-        .next()
-        .unwrap_or_else(|| bin.clone());
+    let completer_path = std::env::args().next().unwrap_or_else(|| bin.clone());
 
     let mut buf = Vec::new();
     completer.write_registration(

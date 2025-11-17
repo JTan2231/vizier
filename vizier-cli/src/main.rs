@@ -178,6 +178,9 @@ enum Commands {
     /// Approve plan branches created by `vizier draft`
     Approve(ApproveCmd),
 
+    /// Review a plan branch, run checks, and optionally apply fixes
+    Review(ReviewCmd),
+
     /// Merge approved plan branches back into the primary branch
     Merge(MergeCmd),
 
@@ -252,6 +255,33 @@ struct ApproveCmd {
     /// Skip confirmation prompt
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+struct ReviewCmd {
+    /// Plan slug to review
+    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
+    plan: Option<String>,
+
+    /// Destination branch for diff context (defaults to detected primary)
+    #[arg(long = "target", value_name = "BRANCH")]
+    target: Option<String>,
+
+    /// Draft branch name when it deviates from draft/<plan>
+    #[arg(long = "branch", value_name = "BRANCH")]
+    branch: Option<String>,
+
+    /// Skip the fix-up prompt and apply Codex fixes automatically
+    #[arg(long = "yes", short = 'y')]
+    assume_yes: bool,
+
+    /// Produce the critique without attempting fixes
+    #[arg(long = "review-only")]
+    review_only: bool,
+
+    /// Skip running configured review checks (e.g., cargo test)
+    #[arg(long = "skip-checks")]
+    skip_checks: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -437,6 +467,26 @@ fn resolve_approve_options(
         target: cmd.target.clone(),
         branch_override: cmd.branch.clone(),
         assume_yes: cmd.assume_yes,
+        push_after,
+    })
+}
+
+fn resolve_review_options(
+    cmd: &ReviewCmd,
+    push_after: bool,
+) -> Result<ReviewOptions, Box<dyn std::error::Error>> {
+    let plan = cmd
+        .plan
+        .clone()
+        .ok_or_else(|| "plan argument is required for vizier review")?;
+
+    Ok(ReviewOptions {
+        plan,
+        target: cmd.target.clone(),
+        branch_override: cmd.branch.clone(),
+        assume_yes: cmd.assume_yes,
+        review_only: cmd.review_only,
+        skip_checks: cmd.skip_checks,
         push_after,
     })
 }
@@ -822,7 +872,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
 
         Commands::Approve(cmd) => run_approve(resolve_approve_options(&cmd, push_after)?).await,
-
+        Commands::Review(cmd) => run_review(resolve_review_options(&cmd, push_after)?).await,
         Commands::Merge(cmd) => run_merge(resolve_merge_options(&cmd, push_after)?).await,
     }
 }

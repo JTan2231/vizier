@@ -1,4 +1,4 @@
-# Draft → Approve → Merge Workflow
+# Draft → Approve → Review → Merge Workflow
 
 This guide explains how Vizier’s plan workflow turns a high-level spec into audited code without disturbing your working tree. Use it whenever you want Vizier (or an external agent) to implement a scoped change on a dedicated branch and then merge it back with a metadata-rich commit.
 
@@ -6,7 +6,8 @@ This guide explains how Vizier’s plan workflow turns a high-level spec into au
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.
 2. **`vizier approve <slug>`** — Applies the plan on `draft/<slug>` from within another temporary worktree, staging and committing the resulting edits on that branch only.
-3. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, and performs a non–fast-forward merge into the target branch with the stored plan embedded under an `Implementation Plan:` block in the merge commit.
+3. **`vizier review <slug>`** — Runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists), captures the diff summary, generates a Codex critique at `.vizier/reviews/<slug>.md`, updates the plan status (e.g., `review-ready`), and optionally applies fixes on the plan branch.
+4. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, and performs a non–fast-forward merge into the target branch with the stored plan embedded under an `Implementation Plan:` block in the merge commit.
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
@@ -63,6 +64,41 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Only `draft/<slug>` receives commits. The target branch and your working tree never change.
 - Vizier prints `review with "git diff <target>...<draft/<slug>>"` so you can inspect the diff immediately.
 - If Codex makes no changes, the command aborts with `Codex completed without modifying files` to avoid empty commits.
+
+## `vizier review`: critique the plan branch
+
+**Prerequisites**
+- Clean working tree (same guardrail as `approve`/`merge`)
+- Codex backend enabled
+- Plan branch (`draft/<slug>` or `--branch`) is up to date enough that you can run the configured checks locally
+
+**What it does**
+- Creates another disposable worktree on `draft/<slug>`, gathers the diff against the target branch, and runs the configured review checks (defaults to `cargo check --all --all-targets` and `cargo test --all --all-targets` when a `Cargo.toml` is present or the `[review.checks]` commands in your config).
+- Streams each check result to stderr so you see passes/failures before Codex speaks. Failures are captured verbatim and wired into the prompt.
+- Builds a Codex prompt that includes the snapshot, TODO threads, plan document, diff summary, and the check logs, then writes Codex’s Markdown critique to `.vizier/reviews/<slug>.md` with front-matter `{plan, branch, target, reviewed_at, reviewer}`.
+- Updates `.vizier/implementation-plans/<slug>.md` to `status: review-ready`, stages the review + plan refresh, and commits on the plan branch so reviewers have an auditable artifact.
+- Prompts `Apply suggested fixes on draft/<slug>? [y/N]` unless you passed `--review-only` or `-y/--yes`. When accepted, Vizier feeds Codex both the plan document and the saved review file, applies the fixes on `draft/<slug>`, and stages/commits the result with a `review-addressed` status.
+
+**Flags to remember**
+- `vizier review <slug>` — default flow
+- `--review-only` — skip the fix-up prompt; only emit the critique/check results
+- `--skip-checks` — jump straight to the critique when your test suite is too heavy for disposable worktrees
+- `-y/--yes` — apply fixes automatically after generating the critique
+- `--target` / `--branch` — override the diff base or plan branch name when needed
+
+**Checks & configuration**
+- By default, Vizier tries `cargo check --all --all-targets` and `cargo test --all --all-targets` when `Cargo.toml` exists. Override this via:
+  ```toml
+  [review.checks]
+  commands = ["npm test", "cargo fmt -- --check", "cargo clippy -- -D warnings"]
+  ```
+- Failed commands do not abort the review; the stderr/stdout are preserved and surfaced in both the CLI output and Codex prompt so reviewers can see exactly what broke.
+- Use `--skip-checks` when your repo relies on external services or long-running suites. The critique still includes the diff summary, plan metadata, and TODO threads.
+
+**Outputs to watch**
+- CLI prints the review file path, diff command, check counts, and session log path in the Outcome line.
+- `draft/<slug>` gains `.vizier/reviews/<slug>.md` plus the updated plan document (status + timestamps).
+- `git log draft/<slug>` shows a narrative commit for the critique and (optionally) a code commit for the auto-applied fixes.
 
 ## `vizier merge`: land the plan with metadata
 

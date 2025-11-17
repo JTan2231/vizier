@@ -356,6 +356,7 @@ pub struct PlanMetadata {
     pub spec_source: Option<String>,
     pub spec_excerpt: Option<String>,
     pub spec_summary: Option<String>,
+    pub reviewed_at: Option<String>,
 }
 
 impl PlanMetadata {
@@ -379,6 +380,7 @@ impl PlanMetadata {
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
             .map(|dt| dt.with_timezone(&Utc));
         let spec_source = fields.get("spec_source").cloned();
+        let reviewed_at = fields.get("reviewed_at").cloned();
 
         let spec_excerpt = extract_section(body, "Operator Spec");
         let spec_summary = spec_excerpt.as_ref().and_then(|text| summarize_line(text));
@@ -392,6 +394,7 @@ impl PlanMetadata {
             spec_source,
             spec_excerpt,
             spec_summary,
+            reviewed_at,
         })
     }
 
@@ -412,6 +415,8 @@ pub struct PlanSlugEntry {
     pub branch: String,
     pub summary: String,
     pub created_at: String,
+    pub status: Option<String>,
+    pub reviewed_at: Option<String>,
 }
 
 pub struct PlanSlugInventory;
@@ -420,8 +425,8 @@ impl PlanSlugInventory {
     pub fn collect(
         target_override: Option<&str>,
     ) -> Result<Vec<PlanSlugEntry>, Box<dyn std::error::Error>> {
-        let repo_root = repo_root()
-            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+        let repo_root =
+            repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
         let plan_dir = repo_root.join(PLAN_DIR);
         let repo = Repository::discover(&repo_root)?;
         let target_branch = Self::resolve_target_branch(target_override)?;
@@ -459,9 +464,7 @@ impl PlanSlugInventory {
             }
 
             let commit = branch.get().peel_to_commit()?;
-            if target_oid == commit.id()
-                || repo.graph_descendant_of(target_oid, commit.id())?
-            {
+            if target_oid == commit.id() || repo.graph_descendant_of(target_oid, commit.id())? {
                 continue;
             }
 
@@ -475,6 +478,8 @@ impl PlanSlugInventory {
                         branch: meta.branch.clone(),
                         summary,
                         created_at,
+                        status: meta.status.clone(),
+                        reviewed_at: meta.reviewed_at.clone(),
                     });
                 }
                 Err(_) => continue,
@@ -501,14 +506,14 @@ impl PlanSlugInventory {
     }
 
     fn target_oid(repo: &Repository, branch: &str) -> Result<Oid, Box<dyn std::error::Error>> {
-        let target_ref = repo
-            .find_branch(branch, BranchType::Local)
-            .map_err(|_| -> Box<dyn std::error::Error> {
+        let target_ref = repo.find_branch(branch, BranchType::Local).map_err(
+            |_| -> Box<dyn std::error::Error> {
                 Box::new(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("target branch {branch} not found"),
                 ))
-            })?;
+            },
+        )?;
         let commit = target_ref.into_reference().peel_to_commit()?;
         Ok(commit.id())
     }
@@ -552,6 +557,8 @@ impl PlanSlugInventory {
             branch: meta.branch.clone(),
             summary,
             created_at,
+            status: meta.status.clone(),
+            reviewed_at: meta.reviewed_at.clone(),
         }))
     }
 }
@@ -725,7 +732,7 @@ fn summarize_line(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git2::{build::CheckoutBuilder, IndexAddOption, Repository, Signature};
+    use git2::{IndexAddOption, Repository, Signature, build::CheckoutBuilder};
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
     use tempfile::tempdir;
@@ -813,6 +820,7 @@ Add streaming UI with guard rails.
             spec_source: None,
             spec_excerpt: Some("Line one\nLine two".into()),
             spec_summary: None,
+            reviewed_at: None,
         };
 
         assert_eq!(summarize_spec(&meta), "Line one\nLine two".to_string());
@@ -881,12 +889,7 @@ Do a thing.
         let (_tmp, _guard, repo) = initialize_repo()?;
         checkout_branch(&repo, "master")?;
         let commit_oid = create_plan_branch(&repo, "alpha", "Alpha spec body")?;
-        repo.reference(
-            "refs/heads/master",
-            commit_oid,
-            true,
-            "fast-forward master",
-        )?;
+        repo.reference("refs/heads/master", commit_oid, true, "fast-forward master")?;
         checkout_branch(&repo, "master")?;
 
         let entries = PlanSlugInventory::collect(None)?;
@@ -894,8 +897,8 @@ Do a thing.
         Ok(())
     }
 
-    fn initialize_repo() -> Result<(tempfile::TempDir, DirGuard, Repository), Box<dyn std::error::Error>>
-    {
+    fn initialize_repo()
+    -> Result<(tempfile::TempDir, DirGuard, Repository), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let repo = Repository::init(dir.path())?;
         let guard = DirGuard::new(dir.path())?;
@@ -924,7 +927,7 @@ Do a thing.
             std::fs::create_dir_all(parent)?;
         }
         let contents = format!(
-r#"---
+            r#"---
 plan: {slug}
 branch: draft/{slug}
 created_at: 2024-01-01T00:00:00Z
