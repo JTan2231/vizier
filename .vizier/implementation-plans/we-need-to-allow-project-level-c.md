@@ -4,7 +4,7 @@ branch: draft/we-need-to-allow-project-level-c
 status: implemented
 created_at: 2025-11-17T17:15:28Z
 spec_source: inline
-implemented_at: 2025-11-17T17:19:58Z
+implemented_at: 2025-11-17T17:40:02Z
 ---
 
 ## Operator Spec

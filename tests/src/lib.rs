@@ -585,6 +585,107 @@ reasoning_effort = "low"
 }
 
 #[test]
+fn test_repo_config_overrides_env_config() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let repo_config = repo.path().join(".vizier").join("config.toml");
+    fs::write(
+        &repo_config,
+        r#"
+[agents.default]
+backend = "wire"
+model = "gpt-5"
+"#,
+    )?;
+
+    let env_config = repo.path().join("env-config.toml");
+    fs::write(
+        &env_config,
+        r#"
+[agents.default]
+backend = "codex"
+"#,
+    )?;
+
+    let before_logs = gather_session_logs(&repo)?;
+    let isolated_config = TempDir::new()?;
+    let mut cmd = repo.vizier_cmd();
+    cmd.env("VIZIER_CONFIG_FILE", env_config.as_os_str());
+    cmd.env("VIZIER_CONFIG_DIR", isolated_config.path());
+    cmd.env("XDG_CONFIG_HOME", isolated_config.path());
+    cmd.args(["ask", "repo config should win over env"]);
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    let new_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier ask to produce a new session log")?;
+    let contents = fs::read_to_string(new_log)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    assert_eq!(
+        json.get("model")
+            .and_then(|model| model.get("provider"))
+            .and_then(Value::as_str),
+        Some("wire"),
+        "repo config should force ask onto the wire backend despite env overrides"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_env_config_used_when_repo_config_missing() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let repo_toml = repo.path().join(".vizier").join("config.toml");
+    if repo_toml.exists() {
+        fs::remove_file(&repo_toml)?;
+    }
+    let repo_json = repo.path().join(".vizier").join("config.json");
+    if repo_json.exists() {
+        fs::remove_file(&repo_json)?;
+    }
+
+    let env_config = repo.path().join("env-config.toml");
+    fs::write(
+        &env_config,
+        r#"
+[agents.default]
+backend = "wire"
+"#,
+    )?;
+
+    let before_logs = gather_session_logs(&repo)?;
+    let isolated_config = TempDir::new()?;
+    let mut cmd = repo.vizier_cmd();
+    cmd.env("VIZIER_CONFIG_FILE", env_config.as_os_str());
+    cmd.env("VIZIER_CONFIG_DIR", isolated_config.path());
+    cmd.env("XDG_CONFIG_HOME", isolated_config.path());
+    cmd.args(["ask", "env config fallback"]);
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    let new_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier ask to create a session log")?;
+    let contents = fs::read_to_string(new_log)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    assert_eq!(
+        json.get("model")
+            .and_then(|model| model.get("provider"))
+            .and_then(Value::as_str),
+        Some("wire"),
+        "env config should take effect when no repo config exists"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_ask_reports_token_usage_progress() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let output = repo.vizier_output(&["ask", "token usage integration smoke"])?;
