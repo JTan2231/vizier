@@ -8,15 +8,16 @@ use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::{
     sync::mpsc::{Sender, channel},
     task::JoinHandle,
 };
+use wire::config::ThinkingLevel;
 
 use crate::{
     codex,
-    config::{self, PromptKind},
+    config::{self, PromptKind, SystemPrompt},
     display::{self, Verbosity},
     file_tracking, tools, vcs,
 };
@@ -118,6 +119,14 @@ pub struct AuditorCleanup {
     pub print_json: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct AgentInvocationContext {
+    pub backend: config::BackendKind,
+    pub scope: config::CommandScope,
+    pub model: String,
+    pub reasoning_effort: Option<ThinkingLevel>,
+}
+
 impl Drop for AuditorCleanup {
     fn drop(&mut self) {
         if let Some(artifact) = Auditor::persist_session_log() {
@@ -216,6 +225,8 @@ pub struct Auditor {
     last_session_artifact: Option<SessionArtifact>,
     #[serde(skip)]
     last_usage_report: Option<TokenUsageReport>,
+    #[serde(skip)]
+    last_agent: Option<AgentInvocationContext>,
 }
 
 impl Auditor {
@@ -229,6 +240,7 @@ impl Auditor {
             usage_unknown: false,
             last_session_artifact: None,
             last_usage_report: None,
+            last_agent: None,
         }
     }
 
@@ -252,6 +264,24 @@ impl Auditor {
         let mut auditor = AUDITOR.lock().unwrap();
         auditor.messages = messages.clone();
         Auditor::capture_usage_report_locked(&mut auditor)
+    }
+
+    fn record_agent(settings: &config::AgentSettings) {
+        if let Ok(mut auditor) = AUDITOR.lock() {
+            auditor.last_agent = Some(AgentInvocationContext {
+                backend: settings.backend,
+                scope: settings.scope,
+                model: settings.provider_model.clone(),
+                reasoning_effort: settings.reasoning_effort,
+            });
+        }
+    }
+
+    pub fn latest_agent_context() -> Option<AgentInvocationContext> {
+        AUDITOR
+            .lock()
+            .ok()
+            .and_then(|auditor| auditor.last_agent.clone())
     }
 
     fn capture_usage_report_locked(auditor: &mut Auditor) -> Option<TokenUsageReport> {
@@ -468,18 +498,7 @@ impl Auditor {
             repo: Self::repo_snapshot(project_root),
             config_effective: Self::config_snapshot(&cfg),
             system_prompt: Self::prompt_info(project_root, &cfg),
-            model: SessionModelInfo {
-                provider: if cfg.backend == config::BackendKind::Codex {
-                    "codex".to_string()
-                } else {
-                    "wire".to_string()
-                },
-                name: cfg.provider_model.clone(),
-                reasoning_effort: cfg
-                    .reasoning_effort
-                    .as_ref()
-                    .map(|level| format!("{level:?}")),
-            },
+            model: Self::model_snapshot(self.last_agent.as_ref(), &cfg),
             messages: self.messages.clone(),
             operations: Vec::new(),
             artifacts: Vec::new(),
@@ -489,6 +508,29 @@ impl Auditor {
                 token_usage: self.last_usage_report.as_ref().map(SessionTokenUsage::from),
             },
         })
+    }
+
+    fn model_snapshot(
+        agent: Option<&AgentInvocationContext>,
+        cfg: &config::Config,
+    ) -> SessionModelInfo {
+        match agent {
+            Some(ctx) => SessionModelInfo {
+                provider: ctx.backend.to_string(),
+                name: ctx.model.clone(),
+                reasoning_effort: ctx.reasoning_effort.map(|level| format!("{level:?}")),
+                scope: Some(ctx.scope.as_str().to_string()),
+            },
+            None => SessionModelInfo {
+                provider: cfg.backend.to_string(),
+                name: cfg.provider_model.clone(),
+                reasoning_effort: cfg
+                    .reasoning_effort
+                    .as_ref()
+                    .map(|level| format!("{level:?}")),
+                scope: None,
+            },
+        }
     }
 
     fn workflow_label() -> String {
@@ -661,18 +703,20 @@ impl Auditor {
     /// Basic LLM request with tool usage
     /// NOTE: Returns the _entire_ conversation, up to date with the LLM's responses
     pub async fn llm_request_with_tools(
-        prompt_variant: Option<PromptKind>,
+        agent: &config::AgentSettings,
+        prompt_variant: Option<SystemPrompt>,
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
         codex_model: Option<codex::CodexModel>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        let cfg = crate::config::get_config();
-        let backend = cfg.backend;
-        let fallback_backend = cfg.fallback_backend;
-        let provider = cfg.provider.clone();
-        let codex_opts = cfg.codex.clone();
+        Self::record_agent(agent);
+
+        let backend = agent.backend;
+        let fallback_backend = agent.fallback_backend;
+        let provider = agent.provider.clone();
+        let codex_opts = agent.codex.clone();
         let resolved_codex_model = codex_model.unwrap_or_default();
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
@@ -681,11 +725,14 @@ impl Auditor {
 
         match backend {
             config::BackendKind::Wire => {
-                let response =
-                    run_wire_with_status(system_prompt, messages.clone(), tools.clone(), |resp| {
-                        Self::replace_messages(resp)
-                    })
-                    .await?;
+                let response = run_wire_with_status(
+                    provider.clone(),
+                    system_prompt,
+                    messages.clone(),
+                    tools.clone(),
+                    |resp| Self::replace_messages(resp),
+                )
+                .await?;
                 Ok(response.last().unwrap().clone())
             }
             config::BackendKind::Codex => {
@@ -756,6 +803,7 @@ impl Auditor {
                                 tools.clone()
                             };
                             let response = run_wire_with_status(
+                                provider.clone(),
                                 fallback_prompt,
                                 messages.clone(),
                                 fallback_tools,
@@ -774,7 +822,8 @@ impl Auditor {
 
     // TODO: Rectify this with the function above
     pub async fn llm_request_with_tools_no_display(
-        prompt_variant: Option<PromptKind>,
+        agent: &config::AgentSettings,
+        prompt_variant: Option<SystemPrompt>,
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
@@ -782,11 +831,12 @@ impl Auditor {
         codex_model: Option<codex::CodexModel>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        let cfg = crate::config::get_config();
-        let backend = cfg.backend;
-        let fallback_backend = cfg.fallback_backend;
-        let provider = cfg.provider.clone();
-        let codex_opts = cfg.codex.clone();
+        Self::record_agent(agent);
+
+        let backend = agent.backend;
+        let fallback_backend = agent.fallback_backend;
+        let provider = agent.provider.clone();
+        let codex_opts = agent.codex.clone();
         let resolved_codex_model = codex_model.unwrap_or_default();
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
@@ -897,6 +947,7 @@ impl Auditor {
 }
 
 async fn run_wire_with_status<F>(
+    provider: Arc<dyn wire::api::Prompt>,
     system_prompt: String,
     messages: Vec<wire::types::Message>,
     tools: Vec<wire::types::Tool>,
@@ -920,7 +971,7 @@ where
         simulate_integration_changes()?;
 
         let response = prompt_wire_with_tools(
-            &*crate::config::get_config().provider,
+            &*provider,
             request_tx.clone(),
             &system_prompt,
             messages.clone(),
@@ -994,6 +1045,7 @@ struct SessionModelInfo {
     provider: String,
     name: String,
     reasoning_effort: Option<String>,
+    scope: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
