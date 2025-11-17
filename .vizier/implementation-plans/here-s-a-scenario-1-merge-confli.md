@@ -1,10 +1,11 @@
 ---
 plan: here-s-a-scenario-1-merge-confli
 branch: draft/here-s-a-scenario-1-merge-confli
-status: implemented
+status: review-ready
 created_at: 2025-11-16T19:37:45Z
 spec_source: inline
 implemented_at: 2025-11-17T01:46:30Z
+reviewed_at: 2025-11-17T01:51:20Z
 ---
 
 ## Operator Spec
