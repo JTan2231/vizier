@@ -21,6 +21,10 @@ Acceptance criteria
 - Gate execution honors stdout/stderr and mode-split contracts: no ANSI in non-TTY contexts; structured gate results are available via outcome.v1 JSON and align with human epilogues; gate logs remain distinguishable from agent-progress history.
 - Integration tests cover at least: a passing gate, a failing gate that blocks success while preserving artifacts, and a command with no gate configured; tests assert consistent Outcome/session recording and exit codes across TTY vs non-TTY and `--json`/protocol-style modes.
 
+Status
+- Merge-time CI/CD gate shipped for `vizier merge` via `[merge.cicd_gate]` plus per-run overrides; README, workflow docs, and integration tests (`test_merge_cicd_gate_executes_script`, `test_merge_cicd_gate_failure_blocks_merge`, `test_merge_cicd_gate_auto_fix_applies_changes`) are in place.
+- Remaining work focuses on generalizing the gate abstraction beyond merge (ask/save/draft/approve/review), emitting structured gate facts into Outcome/session logs, and allowing repositories to define reusable named gate profiles instead of merge-only wiring.
+
 Pointers
 - Agent workflow orchestration thread in `.vizier/.snapshot` (Active threads: Agent workflow orchestration).
 - `vizier review` checks and `[review.checks]` configuration as the initial gate surface.
