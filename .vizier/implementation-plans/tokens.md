@@ -1,9 +1,10 @@
 ---
 plan: tokens
 branch: draft/tokens
-status: draft
+status: implemented
 created_at: 2025-11-17T01:53:13Z
 spec_source: inline
+implemented_at: 2025-11-17T02:13:08Z
 ---
 
 ## Operator Spec
