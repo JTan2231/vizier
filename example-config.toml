@@ -1,3 +1,4 @@
+# Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults.
 # Global defaults (apply unless overridden below)
 model = "gpt-4.1"
 reasoning_effort = "medium"
