@@ -1,9 +1,10 @@
 ---
 plan: prompt-scoping
 branch: draft/prompt-scoping
-status: draft
+status: implemented
 created_at: 2025-11-17T17:33:06Z
 spec_source: inline
+implemented_at: 2025-11-17T18:12:11Z
 ---
 
 ## Operator Spec

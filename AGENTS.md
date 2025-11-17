@@ -23,3 +23,5 @@ profile = "compliance"
 ```
 
 Precedence is deterministic: `CLI flags → [agents.<command>] → [agents.default] → legacy top-level keys`. CLI overrides apply only to the command being executed, so `vizier ask --backend wire` leaves other commands untouched. When the resolved backend is Codex, `-p/--model` is ignored and Vizier emits a warning so operators know to adjust `[agents.<scope>]` if they want the wire stack.
+
+Prompt templates use the same scope names: `[prompts]` establishes repo-wide defaults, while `[prompts.ask]`, `[prompts.save]`, etc. pin overrides for one command. Resolution order runs `scoped config → .vizier/<PROMPT>.md → [prompts] → baked default`, so repo instructions continue to win unless you explicitly scope an override.

@@ -18,7 +18,7 @@ use tokio::{
 
 use crate::{
     auditor::TokenUsage,
-    config::{self, PromptKind, SystemPrompt},
+    config::{self, CommandScope, PromptKind, SystemPrompt},
     display::{self, ProgressEvent, ProgressKind, Status},
     tools,
 };
@@ -300,12 +300,15 @@ fn read_thread_files(dir: &Path) -> Result<Vec<ThreadArtifact>, CodexError> {
 }
 
 pub fn build_prompt(
+    scope: CommandScope,
     snapshot: &str,
     threads: &[ThreadArtifact],
     user_input: &str,
     bounds_override: Option<&Path>,
 ) -> Result<String, CodexError> {
-    let base_prompt = config::get_config().get_prompt(SystemPrompt::Base);
+    let base_prompt = config::get_config()
+        .prompt_for(scope, SystemPrompt::Base)
+        .text;
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
@@ -341,11 +344,13 @@ pub fn build_prompt(
 }
 
 pub fn build_prompt_for_codex(
+    scope: CommandScope,
     user_input: &str,
     bounds_override: Option<&Path>,
 ) -> Result<String, CodexError> {
     let context = gather_prompt_context()?;
     build_prompt(
+        scope,
         &context.snapshot,
         &context.threads,
         user_input,
@@ -354,6 +359,7 @@ pub fn build_prompt_for_codex(
 }
 
 pub fn build_implementation_plan_prompt(
+    scope: CommandScope,
     plan_slug: &str,
     branch_name: &str,
     operator_spec: &str,
@@ -363,7 +369,11 @@ pub fn build_implementation_plan_prompt(
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
-    prompt.push_str(&config::get_config().get_prompt(PromptKind::ImplementationPlan));
+    prompt.push_str(
+        &config::get_config()
+            .prompt_for(scope, PromptKind::ImplementationPlan)
+            .text,
+    );
     prompt.push_str("\n\n<codexBounds>\n");
     prompt.push_str(&bounds);
     prompt.push_str("\n</codexBounds>\n\n");
@@ -402,6 +412,7 @@ pub fn build_implementation_plan_prompt(
 }
 
 pub fn build_review_prompt(
+    scope: CommandScope,
     plan_slug: &str,
     branch_name: &str,
     target_branch: &str,
@@ -414,7 +425,11 @@ pub fn build_review_prompt(
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
-    prompt.push_str(&config::get_config().get_prompt(PromptKind::Review));
+    prompt.push_str(
+        &config::get_config()
+            .prompt_for(scope, PromptKind::Review)
+            .text,
+    );
     prompt.push_str("\n\n<codexBounds>\n");
     prompt.push_str(&bounds);
     prompt.push_str("\n</codexBounds>\n\n");
@@ -489,6 +504,7 @@ pub fn build_review_prompt(
 }
 
 pub fn build_merge_conflict_prompt(
+    scope: CommandScope,
     target_branch: &str,
     source_branch: &str,
     conflicts: &[String],
@@ -498,7 +514,11 @@ pub fn build_merge_conflict_prompt(
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
-    prompt.push_str(&config::get_config().get_prompt(PromptKind::MergeConflict));
+    prompt.push_str(
+        &config::get_config()
+            .prompt_for(scope, PromptKind::MergeConflict)
+            .text,
+    );
     prompt.push_str("\n\n<codexBounds>\n");
     prompt.push_str(&bounds);
     prompt.push_str("\n</codexBounds>\n\n");
@@ -1009,7 +1029,14 @@ mod tests {
         cfg.set_prompt(PromptKind::ImplementationPlan, "custom plan".to_string());
         config::set_config(cfg);
 
-        let prompt = build_implementation_plan_prompt("slug", "draft/slug", "spec", None).unwrap();
+        let prompt = build_implementation_plan_prompt(
+            CommandScope::Draft,
+            "slug",
+            "draft/slug",
+            "spec",
+            None,
+        )
+        .unwrap();
 
         assert!(prompt.starts_with("custom plan"));
         assert!(prompt.contains("<codexBounds>"));
@@ -1025,8 +1052,17 @@ mod tests {
         cfg.set_prompt(PromptKind::Review, "custom review".to_string());
         config::set_config(cfg);
 
-        let prompt =
-            build_review_prompt("slug", "draft/slug", "main", "plan", "diff", &[], None).unwrap();
+        let prompt = build_review_prompt(
+            CommandScope::Review,
+            "slug",
+            "draft/slug",
+            "main",
+            "plan",
+            "diff",
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert!(prompt.starts_with("custom review"));
         assert!(prompt.contains("<planDocument>"));
@@ -1043,7 +1079,14 @@ mod tests {
         config::set_config(cfg);
 
         let conflicts = vec!["src/lib.rs".to_string()];
-        let prompt = build_merge_conflict_prompt("main", "draft/slug", &conflicts, None).unwrap();
+        let prompt = build_merge_conflict_prompt(
+            CommandScope::Merge,
+            "main",
+            "draft/slug",
+            &conflicts,
+            None,
+        )
+        .unwrap();
 
         assert!(prompt.starts_with("custom merge"));
         assert!(prompt.contains("<mergeContext>"));

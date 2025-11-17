@@ -19,6 +19,12 @@ implementation_plan = "./prompts/plan.md"
 review = "./prompts/review.md"
 merge_conflict = "./prompts/merge.md"
 
+[prompts.ask]
+base = "./prompts/ask_base.md"
+
+[prompts.draft]
+implementation_plan = "./prompts/plan_draft.md"
+
 # Order of operations Codex will run during `vizier review` unless `--skip-checks` is passed
 [review.checks]
 commands = [
