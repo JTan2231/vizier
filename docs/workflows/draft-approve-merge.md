@@ -151,6 +151,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
   - Otherwise, instructs you to resolve conflicts manually, stage the files, and rerun `vizier merge <slug> --complete-conflict`; Vizier will detect the sentinel JSON and finish the merge once the index is clean, failing fast if no pending merge exists.
 - Successful merges delete `draft/<slug>` automatically as long as the merge commit contains the branch tip; pass `--keep-branch` to retain the branch locally (legacy `--delete-branch` remains as a compatibility alias but is no longer required).
 - `--yes` skips the confirmation prompt, `--complete-conflict` finalizes *only* an existing Vizier-managed merge (and errors when no sentinel is present), and `--target/--branch` behave like they do for `approve`.
+- **CI/CD gate:** When `[merge.cicd_gate]` configures a script, Vizier executes it from the repo root after staging the merge commit but before deleting the draft branch or pushing. A zero exit code finalizes the merge; a non-zero exit surfaces the script’s stdout/stderr and aborts so you can investigate (the merge commit and draft branch are left intact). Set `auto_resolve = true` plus `retries = <n>` to let Codex attempt fixes when the gate fails, and override the behavior per run with `--cicd-script PATH`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, and `--cicd-retries N`. Gate checks also run when resuming merges via `--complete-conflict`, so even manual conflict resolutions must pass the script before landing.
 
 > **Manual completion tip:** After you resolve conflicts yourself, make sure you are checked out to the recorded target branch, stage the fixes, and then run `vizier merge <slug> --complete-conflict`. The flag refuses to run if Git is not in the middle of the stored merge or if no sentinel JSON exists, which protects history from accidental merges.
 
@@ -167,6 +168,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 | `vizier approve` fails mid-run | Temp worktree path is printed; inspect it to salvage partially staged files, then rerun once corrected. The plan branch remains intact. |
 | Merge conflicts | Resolve conflicts on the target branch, stage the files, rerun `vizier merge <slug> --complete-conflict`. Vizier reuses `.vizier/tmp/merge-conflicts/<slug>.json` to finalize and fails fast if no pending merge exists. |
 | Need to resume after aborting Git’s merge | As long as the sentinel JSON still exists and `git status` is clean, rerunning `vizier merge <slug>` finishes the in-progress merge without repeating refresh/removal steps. |
+| CI/CD gate failure | The merge commit and draft branch remain untouched. Inspect the printed script output, apply fixes manually or rerun with `--auto-cicd-fix` (Codex backend required), and retry `vizier merge <slug>` once the gate script exits 0. |
 | Codex auto-resolution fails | Vizier warns and falls back to manual instructions. Resolve/stage/retry just like a normal Git merge. |
 
 ## End-to-end walkthrough
