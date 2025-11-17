@@ -62,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     test!(test_merge_keep_branch_opt_out);
     test!(test_merge_conflict_manual_resume);
     test!(test_merge_conflict_auto_resolve);
+    test!(test_merge_complete_conflict_without_pending_state);
 
     Ok(())
 }
@@ -733,7 +734,7 @@ fn test_merge_conflict_manual_resume() -> Result<(), Box<dyn std::error::Error>>
     run_git(&["add", "a"])?;
 
     let rerun = std::process::Command::new("../target/release/vizier")
-        .args(["merge", "conflict-manual", "--yes"])
+        .args(["merge", "conflict-manual", "--yes", "--complete-conflict"])
         .current_dir("test-repo-active")
         .output()?;
     assert!(
@@ -806,6 +807,37 @@ fn test_merge_conflict_auto_resolve() -> Result<(), Box<dyn std::error::Error>> 
     assert!(
         String::from_utf8_lossy(&status.stdout).trim().is_empty(),
         "working tree should be clean after auto resolution"
+    );
+
+    Ok(())
+}
+
+fn test_merge_complete_conflict_without_pending_state() -> Result<(), Box<dyn std::error::Error>> {
+    prepare_conflicting_plan(
+        "conflict-missing",
+        "master has no conflicts yet\n",
+        "plan branch prep work\n",
+    )?;
+
+    let attempt = std::process::Command::new("../target/release/vizier")
+        .args(["merge", "conflict-missing", "--yes", "--complete-conflict"])
+        .current_dir("test-repo-active")
+        .output()?;
+    assert!(
+        !attempt.status.success(),
+        "expected --complete-conflict to fail when no merge is pending"
+    );
+    let stderr = String::from_utf8_lossy(&attempt.stderr);
+    assert!(
+        stderr.contains("No Vizier-managed merge is awaiting completion"),
+        "stderr missing helpful message: {}",
+        stderr
+    );
+
+    let sentinel = Path::new("test-repo-active/.vizier/tmp/merge-conflicts/conflict-missing.json");
+    assert!(
+        !sentinel.exists(),
+        "sentinel should not exist when the merge never started"
     );
 
     Ok(())

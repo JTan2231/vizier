@@ -99,8 +99,7 @@ impl CodexEvent {
         let phase = value_from(payload, "phase")
             .or_else(|| pointer_value(payload, "/data/phase"))
             .or_else(|| Some(humanize_event_type(&self.kind)));
-        let label = value_from(payload, "label")
-            .or_else(|| pointer_value(payload, "/item/type"));
+        let label = value_from(payload, "label").or_else(|| pointer_value(payload, "/item/type"));
         let message = value_from(payload, "message")
             .or_else(|| pointer_value(payload, "/data/message"))
             .or_else(|| pointer_value(payload, "/item/text"));
@@ -747,10 +746,8 @@ mod tests {
         };
 
         let progress = event.to_progress_event();
-        let lines = crate::display::render_progress_event(
-            &progress,
-            crate::display::Verbosity::Normal,
-        );
+        let lines =
+            crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
             lines[0].contains("[codex] thread started"),
@@ -775,10 +772,8 @@ mod tests {
         };
 
         let progress = event.to_progress_event();
-        let lines = crate::display::render_progress_event(
-            &progress,
-            crate::display::Verbosity::Normal,
-        );
+        let lines =
+            crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
             lines[0].contains("[codex] item completed"),
