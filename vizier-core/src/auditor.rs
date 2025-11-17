@@ -969,7 +969,7 @@ pub enum CommitMessageType {
 }
 
 pub struct CommitMessageBuilder {
-    header: String,
+    message_type: Option<CommitMessageType>,
     session_id: String,
     session_log_path: Option<String>,
     author_note: Option<String>,
@@ -1082,7 +1082,9 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::{Auditor, find_project_root};
+    use super::{
+        AUDITOR, Auditor, CommitMessageBuilder, CommitMessageType, find_project_root,
+    };
     use std::fs;
     use tempfile::tempdir;
     use wire::{
@@ -1166,6 +1168,50 @@ mod tests {
             replay_messages(&mut auditor, &history).is_none(),
             "duplicate unknown-usage snapshots should be suppressed"
         );
+
+        reset_auditor_state();
+    }
+
+    #[test]
+    fn commit_builder_uses_summary_as_header() {
+        let mut builder = CommitMessageBuilder::new(
+            "feat: tighten CLI epilogue\n\n- ensure Outcome lines match Auditor facts".to_string(),
+        );
+        builder.set_header(CommitMessageType::CodeChange);
+
+        let message = builder.build();
+        assert!(
+            message.starts_with("feat: tighten CLI epilogue"),
+            "expected descriptive header, got '{}'",
+            message
+        );
+        assert!(
+            !message.contains("VIZIER CODE CHANGE"),
+            "should not fall back to generic header when summary exists"
+        );
+        assert!(
+            message.contains("\n\n- ensure Outcome lines match Auditor facts"),
+            "original body should remain after metadata"
+        );
+    }
+
+    #[test]
+    fn commit_builder_falls_back_when_summary_missing() {
+        let mut builder = CommitMessageBuilder::new("\n".to_string());
+        builder.set_header(CommitMessageType::NarrativeChange);
+
+        let message = builder.build();
+        assert!(
+            message.starts_with("VIZIER NARRATIVE CHANGE"),
+            "missing summary should keep generic header"
+        );
+    }
+
+    fn reset_auditor_state() {
+        let mut auditor = AUDITOR.lock().unwrap();
+        auditor.messages.clear();
+        auditor.last_usage_report = None;
+        auditor.usage_unknown = false;
     }
 
     fn assistant_message(content: &str, input: usize, output: usize) -> wire::types::Message {
@@ -1207,7 +1253,7 @@ mod tests {
 impl CommitMessageBuilder {
     pub fn new(body: String) -> Self {
         Self {
-            header: "VIZIER".to_string(),
+            message_type: None,
             session_id: AUDITOR.lock().unwrap().session_id.clone(),
             session_log_path: None,
             author_note: None,
@@ -1216,14 +1262,7 @@ impl CommitMessageBuilder {
     }
 
     pub fn set_header(&mut self, message_type: CommitMessageType) -> &mut Self {
-        match message_type {
-            CommitMessageType::CodeChange => self.header = "VIZIER CODE CHANGE".to_string(),
-            CommitMessageType::Conversation => self.header = "VIZIER CONVERSATION".to_string(),
-            CommitMessageType::NarrativeChange => {
-                self.header = "VIZIER NARRATIVE CHANGE".to_string()
-            }
-        };
-
+        self.message_type = Some(message_type);
         self
     }
 
@@ -1240,7 +1279,18 @@ impl CommitMessageBuilder {
     }
 
     pub fn build(&self) -> String {
-        let mut message = format!("{}\nSession ID: {}", self.header.clone(), self.session_id);
+        let (derived_subject, remainder) = Self::split_subject_from_body(&self.body);
+        let use_subject = derived_subject.is_some();
+        let header = derived_subject
+            .clone()
+            .or_else(|| {
+                self.message_type
+                    .as_ref()
+                    .map(|ty| ty.fallback_subject().to_string())
+            })
+            .unwrap_or_else(|| "VIZIER".to_string());
+
+        let mut message = format!("{}\nSession ID: {}", header, self.session_id);
 
         if let Some(path) = &self.session_log_path {
             message = format!("{}\nSession Log: {}", message, path);
@@ -1250,6 +1300,51 @@ impl CommitMessageBuilder {
             message = format!("{}\nAuthor note: {}", message, an);
         }
 
-        format!("{}\n\n{}", message, self.body)
+        let body = if use_subject {
+            remainder
+        } else {
+            self.body.clone()
+        };
+
+        if body.trim().is_empty() {
+            message
+        } else {
+            format!("{}\n\n{}", message, body)
+        }
+    }
+
+    fn split_subject_from_body(body: &str) -> (Option<String>, String) {
+        let mut subject = None;
+        let mut seen_subject = false;
+        let mut remainder: Vec<&str> = Vec::new();
+
+        for line in body.lines() {
+            if !seen_subject {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                subject = Some(line.trim().to_string());
+                seen_subject = true;
+                continue;
+            }
+
+            remainder.push(line);
+        }
+
+        if subject.is_none() {
+            return (None, body.to_string());
+        }
+
+        (subject, remainder.join("\n"))
+    }
+}
+
+impl CommitMessageType {
+    fn fallback_subject(&self) -> &'static str {
+        match self {
+            CommitMessageType::CodeChange => "VIZIER CODE CHANGE",
+            CommitMessageType::Conversation => "VIZIER CONVERSATION",
+            CommitMessageType::NarrativeChange => "VIZIER NARRATIVE CHANGE",
+        }
     }
 }
