@@ -1,9 +1,10 @@
 ---
 plan: we-need-to-allow-project-level-c
 branch: draft/we-need-to-allow-project-level-c
-status: draft
+status: implemented
 created_at: 2025-11-17T17:15:28Z
 spec_source: inline
+implemented_at: 2025-11-17T17:19:58Z
 ---
 
 ## Operator Spec
