@@ -758,13 +758,35 @@ fn extract_usage(value: &Value) -> Option<TokenUsage> {
 
 #[cfg(feature = "mock_llm")]
 fn mock_codex_response() -> CodexResponse {
+    let suppress_usage = std::env::var("VIZIER_SUPPRESS_TOKEN_USAGE")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false);
+
+    let usage = (!suppress_usage).then_some(TokenUsage {
+        input_tokens: 10,
+        output_tokens: 20,
+        known: true,
+    });
+
+    let turn_payload = if suppress_usage {
+        json!({
+            "type": "turn.completed",
+        })
+    } else {
+        json!({
+            "type": "turn.completed",
+            "usage": { "input_tokens": 10, "output_tokens": 20 }
+        })
+    };
+
     CodexResponse {
         assistant_text: "mock codex response".to_string(),
-        usage: Some(TokenUsage {
-            input_tokens: 10,
-            output_tokens: 20,
-            known: true,
-        }),
+        usage,
         events: vec![
             CodexEvent {
                 kind: "phase.update".to_string(),
@@ -783,10 +805,7 @@ fn mock_codex_response() -> CodexResponse {
             },
             CodexEvent {
                 kind: "turn.completed".to_string(),
-                payload: json!({
-                    "type": "turn.completed",
-                    "usage": { "input_tokens": 10, "output_tokens": 20 }
-                }),
+                payload: turn_payload,
             },
         ],
     }

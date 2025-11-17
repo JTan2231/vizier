@@ -17,7 +17,8 @@ use tokio::{
 use crate::{
     codex,
     config::{self, SystemPrompt},
-    display, file_tracking, tools, vcs,
+    display::{self, Verbosity},
+    file_tracking, tools, vcs,
 };
 
 lazy_static! {
@@ -29,6 +30,78 @@ pub struct TokenUsage {
     pub input_tokens: usize,
     pub output_tokens: usize,
     pub known: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TokenUsageReport {
+    pub prompt_total: usize,
+    pub completion_total: usize,
+    pub prompt_delta: usize,
+    pub completion_delta: usize,
+    pub known: bool,
+    pub timestamp: String,
+}
+
+impl TokenUsageReport {
+    pub fn total(&self) -> usize {
+        self.prompt_total + self.completion_total
+    }
+
+    pub fn delta_total(&self) -> usize {
+        self.prompt_delta + self.completion_delta
+    }
+
+    fn to_progress_event(&self) -> display::ProgressEvent {
+        let summary = if self.known {
+            format!(
+                "prompt={} (+{}) completion={} (+{}) total={} (+{})",
+                self.prompt_total,
+                self.prompt_delta,
+                self.completion_total,
+                self.completion_delta,
+                self.total(),
+                self.delta_total()
+            )
+        } else {
+            "unknown usage (backend omitted token counts)".to_string()
+        };
+
+        display::ProgressEvent {
+            kind: display::ProgressKind::TokenUsage,
+            phase: None,
+            label: Some("token-usage".to_string()),
+            message: Some(summary),
+            detail: None,
+            path: None,
+            progress: None,
+            status: None,
+            timestamp: Some(self.timestamp.clone()),
+            raw: None,
+        }
+    }
+}
+
+fn emit_token_usage_line(report: &TokenUsageReport) {
+    let cfg = display::get_display_config();
+    if matches!(cfg.verbosity, Verbosity::Quiet) {
+        return;
+    }
+
+    for line in display::render_progress_event(&report.to_progress_event(), cfg.verbosity) {
+        eprintln!("{}", line);
+    }
+}
+
+async fn forward_usage_report(report: &TokenUsageReport, stream: &RequestStream) {
+    match stream {
+        RequestStream::Status {
+            events: Some(events),
+            ..
+        } => {
+            let _ = events.send(report.to_progress_event()).await;
+        }
+        _ => emit_token_usage_line(report),
+    }
 }
 
 #[derive(Clone)]
@@ -141,6 +214,8 @@ pub struct Auditor {
     usage_unknown: bool,
     #[serde(skip)]
     last_session_artifact: Option<SessionArtifact>,
+    #[serde(skip)]
+    last_usage_report: Option<TokenUsageReport>,
 }
 
 impl Auditor {
@@ -153,6 +228,7 @@ impl Auditor {
             session_id: uuid::Uuid::new_v4().to_string(),
             usage_unknown: false,
             last_session_artifact: None,
+            last_usage_report: None,
         }
     }
 
@@ -161,12 +237,60 @@ impl Auditor {
         AUDITOR.lock().unwrap().messages.clone()
     }
 
-    pub fn add_message(message: wire::types::Message) {
-        AUDITOR.lock().unwrap().messages.push(message);
+    pub fn add_message(message: wire::types::Message) -> Option<TokenUsageReport> {
+        let mut auditor = AUDITOR.lock().unwrap();
+        let should_emit = message.message_type == wire::types::MessageType::Assistant;
+        auditor.messages.push(message);
+        if should_emit {
+            return Auditor::capture_usage_report_locked(&mut auditor);
+        }
+
+        None
     }
 
-    pub fn replace_messages(messages: &Vec<wire::types::Message>) {
-        AUDITOR.lock().unwrap().messages = messages.clone();
+    pub fn replace_messages(messages: &Vec<wire::types::Message>) -> Option<TokenUsageReport> {
+        let mut auditor = AUDITOR.lock().unwrap();
+        auditor.messages = messages.clone();
+        Auditor::capture_usage_report_locked(&mut auditor)
+    }
+
+    fn capture_usage_report_locked(auditor: &mut Auditor) -> Option<TokenUsageReport> {
+        let mut totals = TokenUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            known: !auditor.usage_unknown,
+        };
+
+        for message in auditor.messages.iter() {
+            totals.input_tokens += message.input_tokens;
+            totals.output_tokens += message.output_tokens;
+        }
+
+        let (prev_prompt, prev_completion, prev_known) = auditor
+            .last_usage_report
+            .as_ref()
+            .map(|report| (report.prompt_total, report.completion_total, report.known))
+            .unwrap_or((0, 0, true));
+
+        if totals.input_tokens == prev_prompt
+            && totals.output_tokens == prev_completion
+            && totals.known == prev_known
+        {
+            return None;
+        }
+
+        let report = TokenUsageReport {
+            prompt_total: totals.input_tokens,
+            completion_total: totals.output_tokens,
+            prompt_delta: totals.input_tokens.saturating_sub(prev_prompt),
+            completion_delta: totals.output_tokens.saturating_sub(prev_completion),
+            known: totals.known,
+            timestamp: Utc::now().to_rfc3339(),
+        };
+
+        auditor.last_usage_report = Some(report.clone());
+
+        Some(report)
     }
 
     pub fn conversation_to_string() -> String {
@@ -207,6 +331,13 @@ impl Auditor {
         }
 
         usage
+    }
+
+    pub fn latest_usage_report() -> Option<TokenUsageReport> {
+        AUDITOR
+            .lock()
+            .ok()
+            .and_then(|auditor| auditor.last_usage_report.clone())
     }
 
     fn mark_usage_unknown() {
@@ -355,6 +486,7 @@ impl Auditor {
             outcome: SessionOutcome {
                 status: "completed".to_string(),
                 summary: Self::summarize_assistant(&self.messages),
+                token_usage: self.last_usage_report.as_ref().map(SessionTokenUsage::from),
             },
         })
     }
@@ -480,7 +612,7 @@ impl Auditor {
         system_prompt: String,
         user_message: String,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        Self::add_message(
+        let _ = Self::add_message(
             crate::config::get_config()
                 .provider
                 .new_message(user_message)
@@ -495,26 +627,33 @@ impl Auditor {
                 .await?;
 
             let (request_tx, mut request_rx) = channel(10);
+            let status_tx = tx.clone();
 
             tokio::spawn(async move {
                 while let Some(msg) = request_rx.recv().await {
-                    tx.send(display::Status::Working(msg)).await.unwrap();
+                    status_tx.send(display::Status::Working(msg)).await.unwrap();
                 }
             });
 
-            Ok(prompt_wire_with_tools(
+            let response = prompt_wire_with_tools(
                 &*crate::config::get_config().provider,
                 request_tx.clone(),
                 &system_prompt,
                 messages.clone(),
                 vec![],
             )
-            .await?)
+            .await?;
+
+            if let Some(report) = Self::replace_messages(&response) {
+                let _ = tx
+                    .send(display::Status::Event(report.to_progress_event()))
+                    .await;
+            }
+
+            Ok(response)
         })
         .await
         .map_err(|e| e as Box<dyn std::error::Error>)?;
-
-        Self::replace_messages(&response);
 
         Ok(response.last().unwrap().clone())
     }
@@ -536,15 +675,17 @@ impl Auditor {
         let codex_opts = cfg.codex.clone();
         let resolved_codex_model = codex_model.unwrap_or_default();
 
-        Self::add_message(provider.new_message(user_message).as_user().build());
+        let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
         match backend {
             config::BackendKind::Wire => {
                 let response =
-                    run_wire_with_status(system_prompt, messages.clone(), tools.clone()).await?;
-                Self::replace_messages(&response);
+                    run_wire_with_status(system_prompt, messages.clone(), tools.clone(), |resp| {
+                        Self::replace_messages(resp)
+                    })
+                    .await?;
                 Ok(response.last().unwrap().clone())
             }
             config::BackendKind::Codex => {
@@ -586,15 +727,17 @@ impl Auditor {
                         Auditor::mark_usage_unknown();
                     }
                     updated.push(assistant_message);
+                    if let Some(report) = Self::replace_messages(&updated) {
+                        let _ = tx
+                            .send(display::Status::Event(report.to_progress_event()))
+                            .await;
+                    }
                     Ok(updated)
                 })
                 .await;
 
                 match codex_run {
-                    Ok(response) => {
-                        Self::replace_messages(&response);
-                        Ok(response.last().unwrap().clone())
-                    }
+                    Ok(response) => Ok(response.last().unwrap().clone()),
                     Err(err) => {
                         if fallback_backend == Some(config::BackendKind::Wire) {
                             let codex_error = match err.downcast::<codex::CodexError>() {
@@ -616,9 +759,9 @@ impl Auditor {
                                 fallback_prompt,
                                 messages.clone(),
                                 fallback_tools,
+                                |resp| Self::replace_messages(resp),
                             )
                             .await?;
-                            Self::replace_messages(&response);
                             Ok(response.last().unwrap().clone())
                         } else {
                             Err(err as Box<dyn std::error::Error>)
@@ -646,7 +789,7 @@ impl Auditor {
         let codex_opts = cfg.codex.clone();
         let resolved_codex_model = codex_model.unwrap_or_default();
 
-        Self::add_message(provider.new_message(user_message).as_user().build());
+        let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
@@ -666,7 +809,9 @@ impl Auditor {
                 }
 
                 let last = response.last().unwrap().clone();
-                Self::add_message(last.clone());
+                if let Some(report) = Self::add_message(last.clone()) {
+                    forward_usage_report(&report, &stream).await;
+                }
                 Ok(last)
             }
             config::BackendKind::Codex => {
@@ -706,7 +851,9 @@ impl Auditor {
                         } else {
                             Auditor::mark_usage_unknown();
                         }
-                        Self::add_message(assistant_message.clone());
+                        if let Some(report) = Self::add_message(assistant_message.clone()) {
+                            forward_usage_report(&report, &stream).await;
+                        }
                         Ok(assistant_message)
                     }
                     Err(err) => {
@@ -735,7 +882,9 @@ impl Auditor {
                                 let _ = handle.await;
                             }
                             let last = response.last().unwrap().clone();
-                            Self::add_message(last.clone());
+                            if let Some(report) = Self::add_message(last.clone()) {
+                                forward_usage_report(&report, &stream).await;
+                            }
                             Ok(last)
                         } else {
                             Err(Box::new(err))
@@ -747,32 +896,45 @@ impl Auditor {
     }
 }
 
-async fn run_wire_with_status(
+async fn run_wire_with_status<F>(
     system_prompt: String,
     messages: Vec<wire::types::Message>,
     tools: Vec<wire::types::Tool>,
-) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+    mut on_response: F,
+) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>
+where
+    F: FnMut(&Vec<wire::types::Message>) -> Option<TokenUsageReport> + Send + 'static,
+{
     display::call_with_status(async move |tx| {
         tx.send(display::Status::Working("Thinking...".into()))
             .await?;
 
         let (request_tx, mut request_rx) = channel(10);
+        let status_tx = tx.clone();
         tokio::spawn(async move {
             while let Some(msg) = request_rx.recv().await {
-                tx.send(display::Status::Working(msg)).await.unwrap();
+                status_tx.send(display::Status::Working(msg)).await.unwrap();
             }
         });
 
         simulate_integration_changes()?;
 
-        Ok(prompt_wire_with_tools(
+        let response = prompt_wire_with_tools(
             &*crate::config::get_config().provider,
             request_tx.clone(),
             &system_prompt,
             messages.clone(),
             tools.clone(),
         )
-        .await?)
+        .await?;
+
+        if let Some(report) = on_response(&response) {
+            let _ = tx
+                .send(display::Status::Event(report.to_progress_event()))
+                .await;
+        }
+
+        Ok(response)
     })
     .await
     .map_err(|e| e as Box<dyn std::error::Error>)
@@ -835,9 +997,35 @@ struct SessionModelInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+struct SessionTokenUsage {
+    prompt_total: usize,
+    completion_total: usize,
+    total: usize,
+    prompt_delta: usize,
+    completion_delta: usize,
+    delta_total: usize,
+    known: bool,
+}
+
+impl From<&TokenUsageReport> for SessionTokenUsage {
+    fn from(report: &TokenUsageReport) -> Self {
+        SessionTokenUsage {
+            prompt_total: report.prompt_total,
+            completion_total: report.completion_total,
+            total: report.total(),
+            prompt_delta: report.prompt_delta,
+            completion_delta: report.completion_delta,
+            delta_total: report.delta_total(),
+            known: report.known,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct SessionOutcome {
     status: String,
     summary: Option<String>,
+    token_usage: Option<SessionTokenUsage>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -894,9 +1082,13 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::find_project_root;
+    use super::{AUDITOR, Auditor, find_project_root};
     use std::fs;
     use tempfile::tempdir;
+    use wire::{
+        api::{API, OpenAIModel},
+        types::MessageBuilder,
+    };
 
     #[test]
     fn detects_worktree_root_with_git_file() {
@@ -922,6 +1114,83 @@ mod tests {
             worktree.canonicalize().unwrap()
         );
         std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn usage_reports_accumulate_and_suppress_duplicates() {
+        reset_auditor_state();
+
+        assert!(
+            Auditor::add_message(user_message("hello")).is_none(),
+            "user messages should not emit usage reports"
+        );
+
+        let first = Auditor::add_message(assistant_message("one", 10, 5))
+            .expect("first assistant message should produce a report");
+        assert_eq!(first.prompt_total, 10);
+        assert_eq!(first.prompt_delta, 10);
+        assert_eq!(first.completion_total, 5);
+        assert_eq!(first.completion_delta, 5);
+        assert!(first.known, "first report should mark usage as known");
+
+        let second = Auditor::add_message(assistant_message("two", 3, 7))
+            .expect("second assistant message should produce a report");
+        assert_eq!(second.prompt_total, 13);
+        assert_eq!(second.prompt_delta, 3);
+        assert_eq!(second.completion_total, 12);
+        assert_eq!(second.completion_delta, 7);
+
+        let history = Auditor::get_messages();
+        assert!(
+            Auditor::replace_messages(&history).is_none(),
+            "replaying the same messages should not emit duplicate reports"
+        );
+
+        reset_auditor_state();
+    }
+
+    #[test]
+    fn usage_reports_mark_unknown_usage() {
+        reset_auditor_state();
+        Auditor::mark_usage_unknown();
+
+        let report = Auditor::add_message(assistant_message("unknown", 0, 0))
+            .expect("unknown usage should still create a report");
+        assert!(
+            !report.known,
+            "report should mark usage as unknown when backend omits counts"
+        );
+        assert_eq!(report.prompt_total, 0);
+        assert_eq!(report.completion_total, 0);
+
+        let history = Auditor::get_messages();
+        assert!(
+            Auditor::replace_messages(&history).is_none(),
+            "duplicate unknown-usage snapshots should be suppressed"
+        );
+
+        reset_auditor_state();
+    }
+
+    fn reset_auditor_state() {
+        let mut auditor = AUDITOR.lock().unwrap();
+        auditor.messages.clear();
+        auditor.last_usage_report = None;
+        auditor.usage_unknown = false;
+    }
+
+    fn assistant_message(content: &str, input: usize, output: usize) -> wire::types::Message {
+        MessageBuilder::new(API::OpenAI(OpenAIModel::GPT5), content)
+            .as_assistant()
+            .with_usage(input, output)
+            .build()
+    }
+
+    fn user_message(content: &str) -> wire::types::Message {
+        MessageBuilder::new(API::OpenAI(OpenAIModel::GPT5), content)
+            .as_user()
+            .with_usage(0, 0)
+            .build()
     }
 }
 

@@ -113,18 +113,21 @@ pub enum Status {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProgressKind {
     Codex,
+    TokenUsage,
 }
 
 impl ProgressKind {
     fn prefix(self) -> &'static str {
         match self {
             ProgressKind::Codex => "[codex]",
+            ProgressKind::TokenUsage => "[usage]",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             ProgressKind::Codex => "codex",
+            ProgressKind::TokenUsage => "token-usage",
         }
     }
 }
