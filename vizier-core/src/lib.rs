@@ -201,6 +201,7 @@ Guardrails:
 - Treat `.vizier/.snapshot` and TODO threads as the canonical truth. If a request contradicts them, note the tension and describe how to reconcile it.
 - Reference relevant crates/modules/tests for orientation, but avoid prescribing code-level diffs unless safety or correctness demands it.
 - Highlight sequencing, dependencies, and observable acceptance signals so humans know exactly what work will happen.
+- The Markdown you emit *is* the plan. Never point readers to `.vizier/implementation-plans/<slug>.md` (or any other file) as “the plan,” and do not include meta-steps about writing or storing the plan document—focus on the execution work itself.
 
 Output format (Markdown):
 1. `## Overview` — summarize the change, users impacted, and why the work is needed now.
