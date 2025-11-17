@@ -62,6 +62,7 @@ pub async fn bootstrap_snapshot(
     options: BootstrapOptions,
 ) -> Result<BootstrapReport, Box<dyn std::error::Error>> {
     let repo = Repository::discover(".")?;
+    let agent = config::get_config().resolve_agent_settings(config::CommandScope::Ask, None)?;
 
     let todo_dir = resolve_todo_dir()?;
     let snapshot_path = todo_dir.join(".snapshot");
@@ -98,13 +99,14 @@ pub async fn bootstrap_snapshot(
         options.issues_provider.clone(),
     );
 
-    let system_prompt = if config::get_config().backend == config::BackendKind::Codex {
-        codex::build_prompt_for_codex(&instruction)?
+    let system_prompt = if agent.backend == config::BackendKind::Codex {
+        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())?
     } else {
         config::get_system_prompt_with_meta(None)?
     };
 
     let response = Auditor::llm_request_with_tools(
+        &agent,
         None,
         system_prompt,
         instruction,

@@ -304,9 +304,10 @@ pub fn build_prompt(
     snapshot: &str,
     threads: &[ThreadArtifact],
     user_input: &str,
+    bounds_override: Option<&Path>,
 ) -> Result<String, CodexError> {
     let base_prompt = config::get_config().get_prompt(SystemPrompt::Base);
-    let bounds = load_bounds_prompt()?;
+    let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(&base_prompt);
@@ -340,18 +341,27 @@ pub fn build_prompt(
     Ok(prompt)
 }
 
-pub fn build_prompt_for_codex(user_input: &str) -> Result<String, CodexError> {
+pub fn build_prompt_for_codex(
+    user_input: &str,
+    bounds_override: Option<&Path>,
+) -> Result<String, CodexError> {
     let context = gather_prompt_context()?;
-    build_prompt(&context.snapshot, &context.threads, user_input)
+    build_prompt(
+        &context.snapshot,
+        &context.threads,
+        user_input,
+        bounds_override,
+    )
 }
 
 pub fn build_implementation_plan_prompt(
     plan_slug: &str,
     branch_name: &str,
     operator_spec: &str,
+    bounds_override: Option<&Path>,
 ) -> Result<String, CodexError> {
     let context = gather_prompt_context()?;
-    let bounds = load_bounds_prompt()?;
+    let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(IMPLEMENTATION_PLAN_PROMPT);
@@ -399,9 +409,10 @@ pub fn build_review_prompt(
     plan_document: &str,
     diff_summary: &str,
     check_results: &[ReviewCheckContext],
+    bounds_override: Option<&Path>,
 ) -> Result<String, CodexError> {
     let context = gather_prompt_context()?;
-    let bounds = load_bounds_prompt()?;
+    let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(REVIEW_PROMPT);
@@ -482,9 +493,10 @@ pub fn build_merge_conflict_prompt(
     target_branch: &str,
     source_branch: &str,
     conflicts: &[String],
+    bounds_override: Option<&Path>,
 ) -> Result<String, CodexError> {
     let context = gather_prompt_context()?;
-    let bounds = load_bounds_prompt()?;
+    let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(MERGE_CONFLICT_PROMPT);
@@ -528,7 +540,13 @@ pub fn build_merge_conflict_prompt(
     Ok(prompt)
 }
 
-fn load_bounds_prompt() -> Result<String, CodexError> {
+fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, CodexError> {
+    if let Some(path) = bounds_override {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|err| CodexError::BoundsRead(path.to_path_buf(), err))?;
+        return Ok(contents);
+    }
+
     if let Some(path) = &config::get_config().codex.bounds_prompt_path {
         let contents = std::fs::read_to_string(path)
             .map_err(|err| CodexError::BoundsRead(path.clone(), err))?;
