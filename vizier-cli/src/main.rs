@@ -317,6 +317,10 @@ struct MergeCmd {
     /// Attempt Codex-backed auto-resolution when conflicts arise
     #[arg(long = "auto-resolve-conflicts")]
     auto_resolve_conflicts: bool,
+
+    /// Only finalize a previously conflicted merge; fail if no pending Vizier merge exists
+    #[arg(long = "complete-conflict")]
+    complete_conflict: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -521,6 +525,7 @@ fn resolve_merge_options(
         note: cmd.note.clone(),
         push_after,
         conflict_strategy,
+        complete_conflict: cmd.complete_conflict,
     })
 }
 
