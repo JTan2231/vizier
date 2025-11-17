@@ -181,6 +181,7 @@ pub struct Config {
     pub fallback_backend: Option<BackendKind>,
     pub codex: CodexOptions,
     pub review: ReviewConfig,
+    pub merge: MergeConfig,
     pub agent_defaults: AgentOverrides,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
     prompt_store: std::collections::HashMap<SystemPrompt, String>,
@@ -208,6 +209,36 @@ impl Default for ReviewChecksConfig {
     fn default() -> Self {
         Self {
             commands: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct MergeConfig {
+    pub cicd_gate: MergeCicdGateConfig,
+}
+
+impl Default for MergeConfig {
+    fn default() -> Self {
+        Self {
+            cicd_gate: MergeCicdGateConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeCicdGateConfig {
+    pub script: Option<PathBuf>,
+    pub auto_resolve: bool,
+    pub retries: u32,
+}
+
+impl Default for MergeCicdGateConfig {
+    fn default() -> Self {
+        Self {
+            script: None,
+            auto_resolve: false,
+            retries: 1,
         }
     }
 }
@@ -254,6 +285,7 @@ impl Config {
             fallback_backend: Some(BackendKind::Wire),
             codex: CodexOptions::default(),
             review: ReviewConfig::default(),
+            merge: MergeConfig::default(),
             agent_defaults: AgentOverrides::default(),
             agent_scopes: HashMap::new(),
             prompt_store,
@@ -408,6 +440,31 @@ impl Config {
             parse_string_array(value_at_path(&file_config, &["review", "checks"]))
         {
             config.review.checks.commands = commands;
+        }
+
+        if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"]) {
+            if let Some(gate_object) = cicd_gate.as_object() {
+                if let Some(script_value) = gate_object
+                    .get("script")
+                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+                {
+                    config.merge.cicd_gate.script = Some(PathBuf::from(script_value));
+                }
+
+                if let Some(auto_value) = parse_bool(gate_object.get("auto_resolve")) {
+                    config.merge.cicd_gate.auto_resolve = auto_value;
+                } else if let Some(auto_value) = parse_bool(gate_object.get("auto-fix")) {
+                    config.merge.cicd_gate.auto_resolve = auto_value;
+                }
+
+                if let Some(retries) = parse_u32(gate_object.get("retries")) {
+                    config.merge.cicd_gate.retries = retries;
+                } else if let Some(retries) = parse_u32(gate_object.get("max_retries")) {
+                    config.merge.cicd_gate.retries = retries;
+                } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
+                    config.merge.cicd_gate.retries = retries;
+                }
+            }
         }
 
         if let Some(prompt) = find_string(&file_config, BASE_PROMPT_KEY_PATHS) {
@@ -797,6 +854,41 @@ fn parse_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> 
     }
 }
 
+fn parse_bool(value: Option<&serde_json::Value>) -> Option<bool> {
+    let raw = value?;
+    match raw {
+        serde_json::Value::Bool(inner) => Some(*inner),
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.eq_ignore_ascii_case("true") {
+                Some(true)
+            } else if trimmed.eq_ignore_ascii_case("false") {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_u32(value: Option<&serde_json::Value>) -> Option<u32> {
+    let raw = value?;
+    if let Some(num) = raw.as_u64() {
+        return u32::try_from(num).ok();
+    }
+    if let Some(text) = raw.as_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Ok(parsed) = trimmed.parse::<u32>() {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
 pub fn default_config_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("VIZIER_CONFIG_FILE") {
         let trimmed = path.trim();
@@ -1024,5 +1116,47 @@ commands = ["npm test", "cargo fmt -- --check"]
             cfg.review.checks.commands,
             vec!["npm test", "cargo fmt -- --check"]
         );
+    }
+
+    #[test]
+    fn test_merge_cicd_gate_config_from_toml() {
+        let toml = r#"
+[merge.cicd_gate]
+script = "./scripts/run-ci.sh"
+auto_resolve = true
+retries = 3
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse merge config");
+        assert_eq!(
+            cfg.merge.cicd_gate.script,
+            Some(PathBuf::from("./scripts/run-ci.sh"))
+        );
+        assert!(cfg.merge.cicd_gate.auto_resolve);
+        assert_eq!(cfg.merge.cicd_gate.retries, 3);
+    }
+
+    #[test]
+    fn test_merge_cicd_gate_config_from_json_aliases() {
+        let json = r#"
+        {
+            "merge": {
+                "cicd_gate": {
+                    "script": "./ci/run.sh",
+                    "auto-fix": "false",
+                    "max_attempts": "5"
+                }
+            }
+        }
+        "#;
+        let file = write_json_file(json);
+        let cfg = Config::from_json(file.path().to_path_buf()).expect("parse merge config");
+        assert_eq!(
+            cfg.merge.cicd_gate.script,
+            Some(PathBuf::from("./ci/run.sh"))
+        );
+        assert!(!cfg.merge.cicd_gate.auto_resolve);
+        assert_eq!(cfg.merge.cicd_gate.retries, 5);
     }
 }
