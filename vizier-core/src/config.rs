@@ -8,7 +8,10 @@ use wire::{
     new_client_with_options, openai,
 };
 
-use crate::{COMMIT_PROMPT, SYSTEM_PROMPT_BASE, tools, tree};
+use crate::{
+    COMMIT_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT, REVIEW_PROMPT,
+    SYSTEM_PROMPT_BASE, tools, tree,
+};
 
 pub const DEFAULT_MODEL: &str = "gpt-5";
 
@@ -16,10 +19,13 @@ lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::default());
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Deserialize)]
-pub enum SystemPrompt {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
+pub enum PromptKind {
     Base,
     Commit,
+    ImplementationPlan,
+    Review,
+    MergeConflict,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +82,7 @@ pub struct Config {
     pub fallback_backend: Option<BackendKind>,
     pub codex: CodexOptions,
     pub review: ReviewConfig,
-    prompt_store: std::collections::HashMap<SystemPrompt, String>,
+    prompt_store: std::collections::HashMap<PromptKind, String>,
 }
 
 #[derive(Clone)]
@@ -118,12 +124,24 @@ impl Config {
         };
 
         prompt_store.insert(
-            SystemPrompt::Base,
+            PromptKind::Base,
             load_prompt("BASE_SYSTEM_PROMPT.md", SYSTEM_PROMPT_BASE),
         );
         prompt_store.insert(
-            SystemPrompt::Commit,
+            PromptKind::Commit,
             load_prompt("COMMIT_PROMPT.md", COMMIT_PROMPT),
+        );
+        prompt_store.insert(
+            PromptKind::ImplementationPlan,
+            load_prompt("IMPLEMENTATION_PLAN_PROMPT.md", IMPLEMENTATION_PLAN_PROMPT),
+        );
+        prompt_store.insert(
+            PromptKind::Review,
+            load_prompt("REVIEW_PROMPT.md", REVIEW_PROMPT),
+        );
+        prompt_store.insert(
+            PromptKind::MergeConflict,
+            load_prompt("MERGE_CONFLICT_PROMPT.md", MERGE_CONFLICT_PROMPT),
         );
 
         Self {
@@ -290,17 +308,33 @@ impl Config {
         }
 
         if let Some(prompt) = find_string(&file_config, BASE_PROMPT_KEY_PATHS) {
-            config.prompt_store.insert(SystemPrompt::Base, prompt);
+            config.set_prompt(PromptKind::Base, prompt);
         }
 
         if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
-            config.prompt_store.insert(SystemPrompt::Commit, prompt);
+            config.set_prompt(PromptKind::Commit, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS) {
+            config.set_prompt(PromptKind::ImplementationPlan, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, REVIEW_PROMPT_KEY_PATHS) {
+            config.set_prompt(PromptKind::Review, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, MERGE_CONFLICT_PROMPT_KEY_PATHS) {
+            config.set_prompt(PromptKind::MergeConflict, prompt);
         }
 
         Ok(config)
     }
 
-    pub fn get_prompt(&self, prompt: SystemPrompt) -> String {
+    pub fn set_prompt<S: Into<String>>(&mut self, prompt: PromptKind, value: S) {
+        self.prompt_store.insert(prompt, value.into());
+    }
+
+    pub fn get_prompt(&self, prompt: PromptKind) -> String {
         self.prompt_store.get(&prompt).unwrap().to_string()
     }
 }
@@ -346,6 +380,27 @@ const COMMIT_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["prompts", "COMMIT_PROMPT"],
     &["prompts", "commit"],
     &["prompts", "commit_prompt"],
+];
+const IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["IMPLEMENTATION_PLAN_PROMPT"],
+    &["implementation_plan_prompt"],
+    &["prompts", "IMPLEMENTATION_PLAN_PROMPT"],
+    &["prompts", "implementation_plan"],
+    &["prompts", "implementation_plan_prompt"],
+];
+const REVIEW_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["REVIEW_PROMPT"],
+    &["review_prompt"],
+    &["prompts", "REVIEW_PROMPT"],
+    &["prompts", "review"],
+    &["prompts", "review_prompt"],
+];
+const MERGE_CONFLICT_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["MERGE_CONFLICT_PROMPT"],
+    &["merge_conflict_prompt"],
+    &["prompts", "MERGE_CONFLICT_PROMPT"],
+    &["prompts", "merge_conflict"],
+    &["prompts", "merge_conflict_prompt"],
 ];
 
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -450,12 +505,12 @@ pub fn get_config() -> Config {
 }
 
 pub fn get_system_prompt_with_meta(
-    base_prompt: Option<SystemPrompt>,
+    prompt_kind: Option<PromptKind>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = if let Some(prompt) = base_prompt {
+    let mut prompt = if let Some(prompt) = prompt_kind {
         get_config().get_prompt(prompt)
     } else {
-        get_config().get_prompt(SystemPrompt::Base)
+        get_config().get_prompt(PromptKind::Base)
     };
 
     prompt.push_str("<meta>");
@@ -498,15 +553,24 @@ mod tests {
         let json = r#"
         {
             "BASE_SYSTEM_PROMPT": "base override",
-            "COMMIT_PROMPT": "commit override"
+            "COMMIT_PROMPT": "commit override",
+            "IMPLEMENTATION_PLAN_PROMPT": "plan override",
+            "REVIEW_PROMPT": "review override",
+            "MERGE_CONFLICT_PROMPT": "merge override"
         }
         "#;
         let file = write_json_file(json);
 
         let cfg = Config::from_json(file.path().to_path_buf()).expect("should parse JSON config");
 
-        assert_eq!(cfg.get_prompt(SystemPrompt::Base), "base override");
-        assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "commit override");
+        assert_eq!(cfg.get_prompt(PromptKind::Base), "base override");
+        assert_eq!(cfg.get_prompt(PromptKind::Commit), "commit override");
+        assert_eq!(
+            cfg.get_prompt(PromptKind::ImplementationPlan),
+            "plan override"
+        );
+        assert_eq!(cfg.get_prompt(PromptKind::Review), "review override");
+        assert_eq!(cfg.get_prompt(PromptKind::MergeConflict), "merge override");
     }
 
     #[test]
@@ -518,10 +582,10 @@ mod tests {
 
         let default_cfg = Config::default();
 
-        assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "only commit override");
+        assert_eq!(cfg.get_prompt(PromptKind::Commit), "only commit override");
         assert_eq!(
-            cfg.get_prompt(SystemPrompt::Base),
-            default_cfg.get_prompt(SystemPrompt::Base)
+            cfg.get_prompt(PromptKind::Base),
+            default_cfg.get_prompt(PromptKind::Base)
         );
     }
 
@@ -533,6 +597,9 @@ model = "gpt-5"
 [prompts]
 base = "toml base override"
 commit = "toml commit override"
+implementation_plan = "toml plan override"
+review = "toml review override"
+merge_conflict = "toml merge override"
 "#;
 
         let mut file = NamedTempFile::new().expect("failed to create temp toml file");
@@ -541,8 +608,17 @@ commit = "toml commit override"
 
         let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
 
-        assert_eq!(cfg.get_prompt(SystemPrompt::Base), "toml base override");
-        assert_eq!(cfg.get_prompt(SystemPrompt::Commit), "toml commit override");
+        assert_eq!(cfg.get_prompt(PromptKind::Base), "toml base override");
+        assert_eq!(cfg.get_prompt(PromptKind::Commit), "toml commit override");
+        assert_eq!(
+            cfg.get_prompt(PromptKind::ImplementationPlan),
+            "toml plan override"
+        );
+        assert_eq!(cfg.get_prompt(PromptKind::Review), "toml review override");
+        assert_eq!(
+            cfg.get_prompt(PromptKind::MergeConflict),
+            "toml merge override"
+        );
     }
 
     #[test]

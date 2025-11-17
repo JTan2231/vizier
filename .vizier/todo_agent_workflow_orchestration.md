@@ -40,3 +40,5 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 - Reuse existing gates/outcome machinery; add workflow state as metadata rather than inventing parallel tracking. Ensure each transition is idempotent so multi-agent runs remain recoverable after interruptions.
 
 Update (2025-11-15): Authored docs/workflows/draft-approve-merge.md so operators/agents have a documented draft→approve→merge checklist today. Workflow orchestration remains CLI-first work (stage tracker, approvals, gates) beyond this documentation boost.
+
+Update (2025-11-17): Plan/review/merge prompts now ride through the prompt store, so repositories can customize each stage via `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, `.vizier/MERGE_CONFLICT_PROMPT.md`, or `[prompts.*]` without recompiling. The conductor UX, gate wiring, and workflow tracker still need to land.

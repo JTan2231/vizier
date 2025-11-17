@@ -63,7 +63,7 @@ Ideas evolve. Requirements shift. Decisions cascade. Vizier doesn't scatter thes
 ### Operational Tools
 - **File-Aware Context**: Ignore-aware tree walking, behavioral diff analysis, cross-repository TODO management
 - **Audit Trail**: Token counting plus repo-local session logs whose IDs are referenced from every narrative/code commit
-- **Extensible Prompts**: System prompt customization via drop-in files or CLI flags; visible in meta
+- **Extensible Prompts**: Drop-in `.vizier/BASE_SYSTEM_PROMPT.md`, `.vizier/COMMIT_PROMPT.md`, `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, or `.vizier/MERGE_CONFLICT_PROMPT.md` (or set `[prompts.base|commit|implementation_plan|review|merge_conflict]` in config) to steer CLI editing plus the draft/approve/review/merge choreography.
 - **Issue Bridge**: Connect to GitHub Issues for task tracking while preserving narrative focus
 
 ## Usage
@@ -137,6 +137,29 @@ vizier ask "..." --reasoning-effort high
 # Non-interactive commit message
 vizier save -m "feat: add retry logic"
 ```
+
+#### Prompt overrides
+
+Vizier loads its instructions from a prompt store. On startup it looks for the following drop-in files inside `.vizier/` and falls back to the baked-in defaults when a file is missing:
+
+- `.vizier/BASE_SYSTEM_PROMPT.md`
+- `.vizier/COMMIT_PROMPT.md`
+- `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`
+- `.vizier/REVIEW_PROMPT.md`
+- `.vizier/MERGE_CONFLICT_PROMPT.md`
+
+Each template corresponds to the CLI flows that use it (ask/save, commit message drafting, plan generation, review critiques, and merge-conflict auto-resolution). You can also pin overrides via the config file:
+
+```toml
+[prompts]
+base = "./prompts/base.md"
+commit = "./prompts/commit.md"
+implementation_plan = "./prompts/plan.md"
+review = "./prompts/review.md"
+merge_conflict = "./prompts/merge.md"
+```
+
+Changes are picked up the next time you launch `vizier`; restart between edits if you are iterating on wording.
 
 #### Backend selection
 
