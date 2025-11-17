@@ -1,20 +1,18 @@
 use std::io::{self, Write};
 
-use clap::builder::StyledStr;
 use clap::Command;
-use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
-use clap_complete::env::Shells;
+use clap::builder::StyledStr;
 use clap_complete::CompleteEnv;
 use clap_complete::Shell;
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
+use clap_complete::env::Shells;
 
 use crate::plan::{PlanSlugEntry, PlanSlugInventory};
 
 const COMPLETION_ENV_VAR: &str = "COMPLETE";
 pub const RUNTIME_SUBCOMMAND: &str = "__complete";
 
-pub fn try_handle_completion(
-    factory: impl Fn() -> Command,
-) -> clap::error::Result<bool> {
+pub fn try_handle_completion(factory: impl Fn() -> Command) -> clap::error::Result<bool> {
     let completer = runtime_invocation();
     CompleteEnv::with_factory(factory)
         .completer(completer)

@@ -1,9 +1,10 @@
 ---
 plan: we-re-missing-a-review-functiona
 branch: draft/we-re-missing-a-review-functiona
-status: draft
+status: implemented
 created_at: 2025-11-16T23:16:53Z
 spec_source: inline
+implemented_at: 2025-11-17T00:31:08Z
 ---
 
 ## Operator Spec

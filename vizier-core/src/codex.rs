@@ -17,7 +17,7 @@ use tokio::{
 };
 
 use crate::{
-    IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
+    IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT, REVIEW_PROMPT,
     auditor::TokenUsage,
     config::{self, SystemPrompt},
     display::{self, ProgressEvent, ProgressKind, Status},
@@ -83,6 +83,16 @@ pub struct CodexResponse {
 }
 
 #[derive(Debug, Clone)]
+pub struct ReviewCheckContext {
+    pub command: String,
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub duration_ms: u128,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct CodexEvent {
     pub kind: String,
     pub payload: Value,
@@ -99,8 +109,7 @@ impl CodexEvent {
         let phase = value_from(payload, "phase")
             .or_else(|| pointer_value(payload, "/data/phase"))
             .or_else(|| Some(humanize_event_type(&self.kind)));
-        let label = value_from(payload, "label")
-            .or_else(|| pointer_value(payload, "/item/type"));
+        let label = value_from(payload, "label").or_else(|| pointer_value(payload, "/item/type"));
         let message = value_from(payload, "message")
             .or_else(|| pointer_value(payload, "/data/message"))
             .or_else(|| pointer_value(payload, "/item/text"));
@@ -379,6 +388,92 @@ pub fn build_implementation_plan_prompt(
     prompt.push_str(operator_spec.trim());
     prompt.push('\n');
     prompt.push_str("</operatorSpec>\n");
+
+    Ok(prompt)
+}
+
+pub fn build_review_prompt(
+    plan_slug: &str,
+    branch_name: &str,
+    target_branch: &str,
+    plan_document: &str,
+    diff_summary: &str,
+    check_results: &[ReviewCheckContext],
+) -> Result<String, CodexError> {
+    let context = gather_prompt_context()?;
+    let bounds = load_bounds_prompt()?;
+
+    let mut prompt = String::new();
+    prompt.push_str(REVIEW_PROMPT);
+    prompt.push_str("\n\n<codexBounds>\n");
+    prompt.push_str(&bounds);
+    prompt.push_str("\n</codexBounds>\n\n");
+
+    prompt.push_str("<planMetadata>\n");
+    prompt.push_str(&format!(
+        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\nreview_file: .vizier/reviews/{plan_slug}.md\n"
+    ));
+    prompt.push_str("</planMetadata>\n\n");
+
+    prompt.push_str("<snapshot>\n");
+    if context.snapshot.trim().is_empty() {
+        prompt.push_str("(snapshot is currently empty)\n");
+    } else {
+        prompt.push_str(context.snapshot.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</snapshot>\n\n");
+
+    prompt.push_str("<todoThreads>\n");
+    if context.threads.is_empty() {
+        prompt.push_str("(no active TODO threads)\n");
+    } else {
+        for thread in &context.threads {
+            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
+        }
+    }
+    prompt.push_str("</todoThreads>\n\n");
+
+    prompt.push_str("<planDocument>\n");
+    if plan_document.trim().is_empty() {
+        prompt.push_str("(plan document appears empty)\n");
+    } else {
+        prompt.push_str(plan_document.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</planDocument>\n\n");
+
+    prompt.push_str("<diffSummary>\n");
+    if diff_summary.trim().is_empty() {
+        prompt.push_str("(diff between plan branch and target branch was empty or unavailable)\n");
+    } else {
+        prompt.push_str(diff_summary.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</diffSummary>\n\n");
+
+    prompt.push_str("<checkResults>\n");
+    if check_results.is_empty() {
+        prompt.push_str("No review checks were executed before this critique.\n");
+    } else {
+        for check in check_results {
+            let status_label = if check.success { "success" } else { "failure" };
+            let status_code = check
+                .status_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            prompt.push_str(&format!(
+                "### Command: {}\nstatus: {} (code={})\nduration_ms: {}\nstdout:\n{}\n\nstderr:\n{}\n\n",
+                check.command.trim(),
+                status_label,
+                status_code,
+                check.duration_ms,
+                check.stdout.trim(),
+                check.stderr.trim(),
+            ));
+        }
+    }
+    prompt.push_str("</checkResults>\n");
 
     Ok(prompt)
 }
@@ -747,10 +842,8 @@ mod tests {
         };
 
         let progress = event.to_progress_event();
-        let lines = crate::display::render_progress_event(
-            &progress,
-            crate::display::Verbosity::Normal,
-        );
+        let lines =
+            crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
             lines[0].contains("[codex] thread started"),
@@ -775,10 +868,8 @@ mod tests {
         };
 
         let progress = event.to_progress_event();
-        let lines = crate::display::render_progress_event(
-            &progress,
-            crate::display::Verbosity::Normal,
-        );
+        let lines =
+            crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
             lines[0].contains("[codex] item completed"),

@@ -510,6 +510,58 @@ fn test_merge_removes_plan_document() -> TestResult {
 }
 
 #[test]
+fn test_review_produces_artifacts() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft = repo.vizier_output(&["draft", "--name", "review-smoke", "review smoke spec"])?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    clean_workdir(&repo)?;
+
+    let approve = repo.vizier_output(&["approve", "review-smoke", "--yes"])?;
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    clean_workdir(&repo)?;
+
+    let review =
+        repo.vizier_output(&["review", "review-smoke", "--review-only", "--skip-checks"])?;
+    assert!(
+        review.status.success(),
+        "vizier review failed: {}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let branch = repo_handle.find_branch("draft/review-smoke", BranchType::Local)?;
+    let commit = branch.get().peel_to_commit()?;
+    let tree = commit.tree()?;
+    let review_entry = tree.get_path(Path::new(".vizier/reviews/review-smoke.md"))?;
+    let review_blob = repo_handle.find_blob(review_entry.id())?;
+    let review_contents = std::str::from_utf8(review_blob.content())?;
+    assert!(
+        review_contents.contains("plan: review-smoke"),
+        "review artifact missing front matter: {review_contents}"
+    );
+
+    let plan_entry = tree.get_path(Path::new(".vizier/implementation-plans/review-smoke.md"))?;
+    let plan_blob = repo_handle.find_blob(plan_entry.id())?;
+    let plan_contents = std::str::from_utf8(plan_blob.content())?;
+    assert!(
+        plan_contents.contains("status: review-ready"),
+        "plan status should be marked review-ready after review: {plan_contents}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_merge_conflict_auto_resolve() -> TestResult {
     let repo = IntegrationRepo::new()?;
     prepare_conflicting_plan(

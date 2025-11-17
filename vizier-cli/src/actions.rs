@@ -3,7 +3,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
+use chrono::{SecondsFormat, Utc};
 use git2::{BranchType, Oid, Repository, RepositoryState};
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
@@ -22,7 +24,7 @@ use vizier_core::{
     bootstrap::{BootstrapOptions, IssuesProvider},
     codex, config,
     display::{self, LogLevel, ProgressEvent, Verbosity},
-    file_tracking, prompting, tools, vcs,
+    tools, vcs,
 };
 
 use crate::plan;
@@ -203,6 +205,17 @@ pub struct ApproveOptions {
     pub target: Option<String>,
     pub branch_override: Option<String>,
     pub assume_yes: bool,
+    pub push_after: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewOptions {
+    pub plan: String,
+    pub target: Option<String>,
+    pub branch_override: Option<String>,
+    pub assume_yes: bool,
+    pub review_only: bool,
+    pub skip_checks: bool,
     pub push_after: bool,
 }
 
@@ -953,6 +966,122 @@ pub async fn run_approve(opts: ApproveOptions) -> Result<(), Box<dyn std::error:
     }
 }
 
+pub async fn run_review(opts: ReviewOptions) -> Result<(), Box<dyn std::error::Error>> {
+    if config::get_config().backend != config::BackendKind::Codex {
+        return Err("vizier review requires the Codex backend; rerun with --backend codex".into());
+    }
+
+    let spec = plan::PlanBranchSpec::resolve(
+        Some(opts.plan.as_str()),
+        opts.branch_override.as_deref(),
+        opts.target.as_deref(),
+    )?;
+
+    vcs::ensure_clean_worktree().map_err(|err| {
+        Box::<dyn std::error::Error>::from(format!(
+            "clean working tree required before review: {err}"
+        ))
+    })?;
+
+    let repo = Repository::discover(".")?;
+    let source_ref = repo
+        .find_branch(&spec.branch, BranchType::Local)
+        .map_err(|_| format!("draft branch {} not found", spec.branch))?;
+    let source_commit = source_ref.get().peel_to_commit()?;
+    let source_oid = source_commit.id();
+
+    let target_ref = repo
+        .find_branch(&spec.target_branch, BranchType::Local)
+        .map_err(|_| format!("target branch {} not found", spec.target_branch))?;
+    let target_commit = target_ref.into_reference().peel_to_commit()?;
+    let target_oid = target_commit.id();
+
+    if repo.graph_descendant_of(target_oid, source_oid)? {
+        println!(
+            "Plan {} already merged into {}; latest commit={}",
+            spec.slug, spec.target_branch, source_oid
+        );
+        return Ok(());
+    }
+
+    if !repo.graph_descendant_of(source_oid, target_oid)? {
+        display::warn(format!(
+            "{} does not include the latest {} commits; review may miss upstream changes.",
+            spec.branch, spec.target_branch
+        ));
+    }
+
+    let plan_meta = spec.load_metadata()?;
+    let worktree = plan::PlanWorktree::create(&spec.slug, &spec.branch, "review")?;
+    let plan_path = worktree.plan_path(&spec.slug);
+    let worktree_path = worktree.path().to_path_buf();
+    let mut worktree = Some(worktree);
+
+    let review_result = perform_review_workflow(
+        &spec,
+        &plan_meta,
+        &worktree_path,
+        &plan_path,
+        ReviewExecution {
+            assume_yes: opts.assume_yes,
+            review_only: opts.review_only,
+            skip_checks: opts.skip_checks,
+        },
+    )
+    .await;
+
+    match review_result {
+        Ok(outcome) => {
+            if let Some(tree) = worktree.take() {
+                if let Err(err) = tree.cleanup() {
+                    display::warn(format!(
+                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                        err
+                    ));
+                }
+            }
+
+            if outcome.branch_mutated && opts.push_after {
+                push_origin_if_requested(true)?;
+            }
+
+            if let Some(commit) = outcome.fix_commit.as_ref() {
+                display::info(format!(
+                    "Fixes addressing review feedback committed at {} on {}",
+                    commit, spec.branch
+                ));
+            }
+
+            println!(
+                "Review complete; plan={} branch={} review={} checks={}/{} diff=\"{}\" session={}{}",
+                spec.slug,
+                spec.branch,
+                outcome.review_rel,
+                outcome.checks_passed,
+                outcome.checks_total,
+                outcome.diff_command,
+                outcome
+                    .session_path
+                    .clone()
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                token_usage_suffix()
+            );
+            print_token_usage();
+            Ok(())
+        }
+        Err(err) => {
+            if let Some(tree) = worktree.take() {
+                display::warn(format!(
+                    "Plan worktree preserved at {}; inspect branch {} for partial changes.",
+                    tree.path().display(),
+                    spec.branch
+                ));
+            }
+            Err(err)
+        }
+    }
+}
+
 pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Error>> {
     vcs::ensure_clean_worktree().map_err(|err| {
         Box::<dyn std::error::Error>::from(format!(
@@ -1390,6 +1519,430 @@ fn clear_conflict_state(slug: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+struct ReviewExecution {
+    assume_yes: bool,
+    review_only: bool,
+    skip_checks: bool,
+}
+
+struct ReviewOutcome {
+    review_rel: String,
+    session_path: Option<String>,
+    checks_passed: usize,
+    checks_total: usize,
+    diff_command: String,
+    branch_mutated: bool,
+    fix_commit: Option<String>,
+}
+
+struct ReviewCheckResult {
+    command: String,
+    status_code: Option<i32>,
+    success: bool,
+    duration: Duration,
+    stdout: String,
+    stderr: String,
+}
+
+impl ReviewCheckResult {
+    fn duration_label(&self) -> String {
+        format!("{:.2}s", self.duration.as_secs_f64())
+    }
+
+    fn status_label(&self) -> String {
+        match self.status_code {
+            Some(code) => format!("exit={code}"),
+            None => "terminated".to_string(),
+        }
+    }
+
+    fn to_context(&self) -> codex::ReviewCheckContext {
+        codex::ReviewCheckContext {
+            command: self.command.clone(),
+            status_code: self.status_code,
+            success: self.success,
+            duration_ms: self.duration.as_millis(),
+            stdout: self.stdout.clone(),
+            stderr: self.stderr.clone(),
+        }
+    }
+}
+
+async fn perform_review_workflow(
+    spec: &plan::PlanBranchSpec,
+    plan_meta: &plan::PlanMetadata,
+    worktree_path: &Path,
+    plan_path: &Path,
+    exec: ReviewExecution,
+) -> Result<ReviewOutcome, Box<dyn std::error::Error>> {
+    let _cwd = WorkdirGuard::enter(worktree_path)?;
+    let review_rel = Path::new(".vizier")
+        .join("reviews")
+        .join(format!("{}.md", spec.slug));
+
+    let commands = resolve_review_commands(worktree_path, exec.skip_checks);
+    if commands.is_empty() && !exec.skip_checks {
+        display::info("Review checks: none configured for this repository.");
+    }
+
+    let check_results = run_review_checks(&commands, worktree_path);
+    let checks_passed = check_results.iter().filter(|res| res.success).count();
+    let checks_total = check_results.len();
+
+    let diff_summary = collect_diff_summary(spec, worktree_path)?;
+    let plan_document = fs::read_to_string(plan_path)?;
+    let check_contexts: Vec<_> = check_results
+        .iter()
+        .map(ReviewCheckResult::to_context)
+        .collect();
+
+    let prompt = codex::build_review_prompt(
+        &spec.slug,
+        &spec.branch,
+        &spec.target_branch,
+        &plan_document,
+        &diff_summary,
+        &check_contexts,
+    )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+    let user_message = format!(
+        "Review plan {} ({}) against {}",
+        spec.slug, spec.branch, spec.target_branch
+    );
+    let (event_tx, event_rx) = mpsc::channel(64);
+    let progress_handle = spawn_plain_progress_logger(event_rx);
+    let (text_tx, _text_rx) = mpsc::channel(1);
+
+    let response = Auditor::llm_request_with_tools_no_display(
+        None,
+        prompt,
+        user_message,
+        Vec::new(),
+        auditor::RequestStream::Status {
+            text: text_tx,
+            events: Some(event_tx),
+        },
+        Some(codex::CodexModel::Gpt5),
+        Some(worktree_path.to_path_buf()),
+    )
+    .await?;
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
+
+    let session_artifact = Auditor::commit_audit().await?;
+    let session_path = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path());
+
+    write_review_file(&review_rel, spec, response.content.trim())?;
+    plan::set_plan_status(plan_path, "review-ready", Some("reviewed_at"))?;
+
+    vcs::stage(Some(vec!["."]))?;
+
+    let mut summary = format!(
+        "Recorded Codex critique for plan {} (checks {}/{} passed).",
+        spec.slug, checks_passed, checks_total
+    );
+    summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
+
+    let mut builder = CommitMessageBuilder::new(summary);
+    builder
+        .set_header(CommitMessageType::NarrativeChange)
+        .with_session_log_path(session_path.clone())
+        .with_author_note(format!("Review file: {}", review_rel.to_string_lossy()));
+    let commit_message = builder.build();
+    let _review_commit = vcs::add_and_commit(None, &commit_message, false)?;
+
+    let mut fix_commit: Option<String> = None;
+    let diff_command = spec.diff_command();
+
+    if exec.review_only {
+        display::info("Review-only mode: skipped automatic fix prompt.");
+    } else {
+        let mut apply_fixes = exec.assume_yes;
+        if !exec.assume_yes {
+            apply_fixes = prompt_for_confirmation(&format!(
+                "Apply suggested fixes on {}? [y/N] ",
+                spec.branch
+            ))?;
+        }
+
+        if apply_fixes {
+            plan::set_plan_status(plan_path, "review-fixes-in-progress", None)?;
+            match apply_review_fixes(spec, plan_meta, worktree_path, &review_rel).await? {
+                Some(commit) => {
+                    fix_commit = Some(commit);
+                    plan::set_plan_status(
+                        plan_path,
+                        "review-addressed",
+                        Some("review_addressed_at"),
+                    )?;
+                }
+                None => {
+                    display::info("Codex reported no changes while addressing review feedback.");
+                    plan::set_plan_status(plan_path, "review-ready", None)?;
+                }
+            }
+        } else {
+            display::info("Skipped automatic fixes; branch left untouched.");
+        }
+    }
+
+    Ok(ReviewOutcome {
+        review_rel: review_rel.to_string_lossy().to_string(),
+        session_path,
+        checks_passed,
+        checks_total,
+        diff_command,
+        branch_mutated: true,
+        fix_commit,
+    })
+}
+
+fn resolve_review_commands(worktree_path: &Path, skip_checks: bool) -> Vec<String> {
+    if skip_checks {
+        return Vec::new();
+    }
+
+    let cfg = config::get_config();
+    if !cfg.review.checks.commands.is_empty() {
+        return cfg.review.checks.commands.clone();
+    }
+
+    if worktree_path.join("Cargo.toml").exists() {
+        return vec![
+            "cargo check --all --all-targets".to_string(),
+            "cargo test --all --all-targets".to_string(),
+        ];
+    }
+
+    Vec::new()
+}
+
+fn run_review_checks(commands: &[String], worktree_path: &Path) -> Vec<ReviewCheckResult> {
+    let mut results = Vec::new();
+    for command in commands {
+        display::info(format!("Running review check: `{}`", command));
+        let start = Instant::now();
+        match Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(worktree_path)
+            .output()
+        {
+            Ok(output) => {
+                let result = ReviewCheckResult {
+                    command: command.clone(),
+                    status_code: output.status.code(),
+                    success: output.status.success(),
+                    duration: start.elapsed(),
+                    stdout: clip_log(&output.stdout),
+                    stderr: clip_log(&output.stderr),
+                };
+                log_check_result(&result);
+                results.push(result);
+            }
+            Err(err) => {
+                let result = ReviewCheckResult {
+                    command: command.clone(),
+                    status_code: None,
+                    success: false,
+                    duration: start.elapsed(),
+                    stdout: String::new(),
+                    stderr: format!("failed to run command: {err}"),
+                };
+                log_check_result(&result);
+                results.push(result);
+            }
+        }
+    }
+    results
+}
+
+fn log_check_result(result: &ReviewCheckResult) {
+    let status_label = if result.success { "passed" } else { "failed" };
+    let message = format!(
+        "Review check `{}` {status_label} ({}; {})",
+        result.command,
+        result.status_label(),
+        result.duration_label()
+    );
+    if result.success {
+        display::info(message);
+    } else {
+        display::warn(message);
+        let trimmed = result.stderr.trim();
+        if !trimmed.is_empty() {
+            let snippet: String = trimmed
+                .lines()
+                .take(6)
+                .map(|line| format!("    {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            display::warn(format!("  stderr:\n{}", snippet));
+        }
+    }
+}
+
+fn clip_log(bytes: &[u8]) -> String {
+    const LIMIT: usize = 8_192;
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(bytes);
+    if text.len() <= LIMIT {
+        text.to_string()
+    } else {
+        let mut clipped = text[..LIMIT].to_string();
+        clipped.push_str("\n… output truncated …");
+        clipped
+    }
+}
+
+fn collect_diff_summary(
+    spec: &plan::PlanBranchSpec,
+    worktree_path: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let range = format!("{}...HEAD", spec.target_branch);
+    let stat = run_git_capture(
+        worktree_path,
+        &["--no-pager", "diff", "--stat=2000", &range],
+    )
+    .unwrap_or_else(|err| format!("Unable to compute diff stats: {err}"));
+    let names = run_git_capture(
+        worktree_path,
+        &["--no-pager", "diff", "--name-status", &range],
+    )
+    .unwrap_or_else(|err| format!("Unable to list changed files: {err}"));
+
+    Ok(format!(
+        "Diff command: {}\n\n{}\n\n{}",
+        spec.diff_command(),
+        stat.trim(),
+        names.trim()
+    ))
+}
+
+fn run_git_capture(
+    worktree_path: &Path,
+    args: &[&str],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git {:?} exited with {:?}", args, output.status.code()).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn write_review_file(
+    rel_path: &Path,
+    spec: &plan::PlanBranchSpec,
+    critique: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = rel_path
+        .parent()
+        .ok_or_else(|| "invalid review path: missing parent directory".to_string())?;
+    fs::create_dir_all(parent)?;
+    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let mut document = String::new();
+    document.push_str("---\n");
+    document.push_str(&format!("plan: {}\n", spec.slug));
+    document.push_str(&format!("branch: {}\n", spec.branch));
+    document.push_str(&format!("target: {}\n", spec.target_branch));
+    document.push_str(&format!("reviewed_at: {}\n", timestamp));
+    document.push_str("reviewer: codex\n");
+    document.push_str("---\n\n");
+    if critique.trim().is_empty() {
+        document.push_str("(Codex returned an empty critique.)\n");
+    } else {
+        document.push_str(critique.trim());
+        document.push('\n');
+    }
+    fs::write(rel_path, document)?;
+    Ok(())
+}
+
+async fn apply_review_fixes(
+    spec: &plan::PlanBranchSpec,
+    plan_meta: &plan::PlanMetadata,
+    worktree_path: &Path,
+    review_rel: &Path,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let plan_rel = spec.plan_rel_path();
+    let mut instruction = format!(
+        "<instruction>Read the implementation plan at {} and the review critique at {}. Address every Action Item without changing unrelated code.</instruction>",
+        plan_rel.display(),
+        review_rel.display()
+    );
+    instruction.push_str(&format!(
+        "<planSummary>{}</planSummary>",
+        plan::summarize_spec(plan_meta)
+    ));
+    instruction.push_str(
+        "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
+    );
+
+    let system_prompt = codex::build_prompt_for_codex(&instruction)
+        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+
+    let (event_tx, event_rx) = mpsc::channel(64);
+    let progress_handle = spawn_plain_progress_logger(event_rx);
+    let (text_tx, _text_rx) = mpsc::channel(1);
+    let response = Auditor::llm_request_with_tools_no_display(
+        None,
+        system_prompt,
+        instruction.clone(),
+        tools::active_tooling(),
+        auditor::RequestStream::Status {
+            text: text_tx,
+            events: Some(event_tx),
+        },
+        Some(codex::CodexModel::Gpt5Codex),
+        Some(worktree_path.to_path_buf()),
+    )
+    .await?;
+    if let Some(handle) = progress_handle {
+        let _ = handle.await;
+    }
+
+    let session_artifact = Auditor::commit_audit().await?;
+    let session_path = session_artifact
+        .as_ref()
+        .map(|artifact| artifact.display_path());
+
+    let diff = vcs::get_diff(".", Some("HEAD"), None)?;
+    if diff.trim().is_empty() {
+        display::info("Codex reported no file modifications during fix-up.");
+        return Ok(None);
+    }
+
+    vcs::stage(Some(vec!["."]))?;
+    let mut summary = response.content.trim().to_string();
+    if summary.is_empty() {
+        summary = format!(
+            "Addressed review feedback for plan {} using {}",
+            spec.slug,
+            review_rel.to_string_lossy()
+        );
+    }
+    let mut builder = CommitMessageBuilder::new(summary);
+    builder
+        .set_header(CommitMessageType::CodeChange)
+        .with_session_log_path(session_path.clone())
+        .with_author_note(format!(
+            "Review reference: {}",
+            review_rel.to_string_lossy()
+        ));
+    let commit_message = builder.build();
+    let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+    Ok(Some(commit_oid.to_string()))
+}
+
 fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
     use std::io::{self, Write};
 
@@ -1401,15 +1954,6 @@ fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Err
     Ok(matches!(normalized.as_str(), "y" | "yes"))
 }
 
-fn resolve_target_branch(
-    target_override: Option<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(target) = target_override {
-        return Ok(target);
-    }
-    detect_primary_branch().ok_or_else(|| "unable to detect primary branch; use --target".into())
-}
-
 fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let entries = plan::PlanSlugInventory::collect(target_override.as_deref())?;
     if entries.is_empty() {
@@ -1419,9 +1963,15 @@ fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std
 
     for entry in entries {
         let summary = entry.summary.replace('"', "'");
+        let status = entry.status.as_deref().unwrap_or("unknown");
+        let reviewed = entry
+            .reviewed_at
+            .as_ref()
+            .map(|value| format!(" reviewed_at={}", value))
+            .unwrap_or_else(|| "".to_string());
         println!(
-            "plan={} branch={} created={} summary=\"{}\"",
-            entry.slug, entry.branch, entry.created_at, summary
+            "plan={} branch={} created={} status={}{} summary=\"{}\"",
+            entry.slug, entry.branch, entry.created_at, status, reviewed, summary
         );
     }
 
@@ -1673,6 +2223,7 @@ mod tests {
             spec_source: Some("inline".to_string()),
             spec_excerpt: None,
             spec_summary: Some("Trim redundant headers".to_string()),
+            reviewed_at: None,
         }
     }
 
