@@ -10,14 +10,11 @@ use clap_complete::Shell;
 use crate::plan::{PlanSlugEntry, PlanSlugInventory};
 
 const COMPLETION_ENV_VAR: &str = "COMPLETE";
-pub const RUNTIME_SUBCOMMAND: &str = "__complete";
 
 pub fn try_handle_completion(
     factory: impl Fn() -> Command,
 ) -> clap::error::Result<bool> {
-    let completer = runtime_invocation();
     CompleteEnv::with_factory(factory)
-        .completer(completer)
         .try_complete(std::env::args_os(), std::env::current_dir().ok().as_deref())
 }
 
@@ -49,12 +46,16 @@ pub fn write_registration(
         .unwrap_or_else(|| cmd.get_name())
         .to_string();
 
+    let completer_path = std::env::args()
+        .next()
+        .unwrap_or_else(|| bin.clone());
+
     let mut buf = Vec::new();
     completer.write_registration(
         COMPLETION_ENV_VAR,
         cmd.get_name(),
         &bin,
-        &runtime_invocation(),
+        &completer_path,
         &mut buf,
     )?;
     io::stdout().write_all(&buf)?;
@@ -75,11 +76,4 @@ pub fn plan_slug_completer() -> ArgValueCompleter {
 
 fn candidate_for_entry(entry: PlanSlugEntry) -> CompletionCandidate {
     CompletionCandidate::new(entry.slug).help(Some(StyledStr::from(entry.summary)))
-}
-
-fn runtime_invocation() -> String {
-    let bin = std::env::args()
-        .next()
-        .unwrap_or_else(|| "vizier".to_string());
-    format!("{bin} {RUNTIME_SUBCOMMAND}")
 }
