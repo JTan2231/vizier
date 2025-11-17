@@ -4,6 +4,8 @@ use git2::{
     BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
     build::CheckoutBuilder,
 };
+use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -220,6 +222,130 @@ fn session_log_contents_from_output(
     Ok(contents)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct UsageSnapshot {
+    prompt_total: usize,
+    completion_total: usize,
+    total: usize,
+    prompt_delta: usize,
+    completion_delta: usize,
+    total_delta: usize,
+    known: bool,
+}
+
+fn parse_usage_line(line: &str) -> Option<UsageSnapshot> {
+    if !line.contains("[usage] token-usage") {
+        return None;
+    }
+
+    if line.contains("unknown usage") {
+        return Some(UsageSnapshot {
+            known: false,
+            ..UsageSnapshot::default()
+        });
+    }
+
+    let mut snapshot = UsageSnapshot {
+        known: true,
+        ..UsageSnapshot::default()
+    };
+    let mut last_key: Option<&str> = None;
+
+    for token in line.split_whitespace() {
+        if let Some(value) = token.strip_prefix("prompt=") {
+            snapshot.prompt_total = value.parse().ok()?;
+            last_key = Some("prompt");
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("completion=") {
+            snapshot.completion_total = value.parse().ok()?;
+            last_key = Some("completion");
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("total=") {
+            snapshot.total = value.parse().ok()?;
+            last_key = Some("total");
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("(+") {
+            let number = value.trim_end_matches(')').parse().ok()?;
+            match last_key {
+                Some("prompt") => snapshot.prompt_delta = number,
+                Some("completion") => snapshot.completion_delta = number,
+                Some("total") => snapshot.total_delta = number,
+                _ => return None,
+            }
+        }
+    }
+
+    Some(snapshot)
+}
+
+fn parse_session_usage(contents: &str) -> Result<UsageSnapshot, Box<dyn std::error::Error>> {
+    let value: Value = serde_json::from_str(contents)?;
+    let usage = value
+        .get("outcome")
+        .and_then(|outcome| outcome.get("token_usage"))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "session outcome missing token usage")
+        })?;
+
+    let mut snapshot = UsageSnapshot::default();
+    snapshot.prompt_total = usage_value(usage, "prompt_total")?;
+    snapshot.completion_total = usage_value(usage, "completion_total")?;
+    snapshot.total = usage_value(usage, "total")?;
+    snapshot.prompt_delta = usage_value(usage, "prompt_delta")?;
+    snapshot.completion_delta = usage_value(usage, "completion_delta")?;
+    snapshot.total_delta = usage_value(usage, "delta_total")?;
+    snapshot.known = usage
+        .get("known")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "token_usage.known missing"))?;
+    Ok(snapshot)
+}
+
+fn usage_value(usage: &Value, key: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    usage
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("token_usage.{key} missing")))
+        .map(|value| value as usize)
+        .map_err(|err| err.into())
+}
+
+fn gather_session_logs(repo: &IntegrationRepo) -> io::Result<Vec<PathBuf>> {
+    let sessions_root = repo.path().join(".vizier").join("sessions");
+    let mut files = Vec::new();
+    if !sessions_root.exists() {
+        return Ok(files);
+    }
+
+    for entry in fs::read_dir(&sessions_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let session_path = entry.path().join("session.json");
+        if session_path.exists() {
+            files.push(session_path);
+        }
+    }
+
+    Ok(files)
+}
+
+fn new_session_log<'a>(before: &'a [PathBuf], after: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    let before_set: HashSet<_> = before.iter().collect();
+    after.iter().find(|path| !before_set.contains(path))
+}
+
+fn last_usage_line(stderr: &str) -> Option<&str> {
+    stderr
+        .lines()
+        .rev()
+        .find(|line| line.contains("[usage] token-usage"))
+}
+
 fn prepare_conflicting_plan(
     repo: &IntegrationRepo,
     slug: &str,
@@ -359,6 +485,105 @@ fn test_save_without_code_changes() -> TestResult {
         "should only create a narrative commit when code changes are skipped"
     );
     assert_eq!(count_files_in_commit(&repo.repo(), "HEAD")?, 2);
+    Ok(())
+}
+
+#[test]
+fn test_ask_reports_token_usage_progress() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_output(&["ask", "token usage integration smoke"])?;
+    assert!(
+        output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[usage] token-usage"),
+        "expected usage progress line, stderr was:\n{}",
+        stderr
+    );
+
+    let quiet_repo = IntegrationRepo::new()?;
+    let quiet = quiet_repo.vizier_output(&["-q", "ask", "quiet usage check"])?;
+    assert!(
+        quiet.status.success(),
+        "quiet vizier ask failed: {}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        !quiet_stderr.contains("[usage] token-usage"),
+        "quiet mode should suppress usage events but printed:\n{}",
+        quiet_stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn test_session_log_captures_token_usage_totals() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_cmd().arg("save").output()?;
+    assert!(
+        output.status.success(),
+        "vizier save failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let usage_line = last_usage_line(&stderr)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "stderr missing usage line"))?;
+    let cli_usage = parse_usage_line(usage_line)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to parse CLI usage line"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let contents = session_log_contents_from_output(&repo, &stdout)?;
+    let session_usage = parse_session_usage(&contents)?;
+
+    assert_eq!(
+        session_usage, cli_usage,
+        "session log usage should match CLI usage"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_session_log_handles_unknown_token_usage() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before = gather_session_logs(&repo)?;
+
+    let mut cmd = repo.vizier_cmd();
+    cmd.args(["ask", "suppress usage event"]);
+    cmd.env("VIZIER_SUPPRESS_TOKEN_USAGE", "1");
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let usage_line = last_usage_line(&stderr)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "usage line missing in stderr"))?;
+    assert!(
+        usage_line.contains("unknown usage"),
+        "usage line should note unknown counts but was:\n{}",
+        usage_line
+    );
+
+    let after = gather_session_logs(&repo)?;
+    let session_path = new_session_log(&before, &after)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing new session log"))?
+        .clone();
+    let contents = fs::read_to_string(&session_path)?;
+    let usage = parse_session_usage(&contents)?;
+    assert!(
+        !usage.known,
+        "session log should mark token usage unknown when backend omits counts"
+    );
+    assert_eq!(usage.prompt_total, 0);
+    assert_eq!(usage.completion_total, 0);
+    assert_eq!(usage.total, 0);
     Ok(())
 }
 
@@ -558,6 +783,42 @@ fn test_review_produces_artifacts() -> TestResult {
         "plan status should be marked review-ready after review: {plan_contents}"
     );
 
+    Ok(())
+}
+
+#[test]
+fn test_review_summary_includes_token_suffix() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft = repo.vizier_output(&["draft", "--name", "token-suffix", "suffix spec"])?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    clean_workdir(&repo)?;
+    let approve = repo.vizier_output(&["approve", "token-suffix", "--yes"])?;
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    clean_workdir(&repo)?;
+    let review =
+        repo.vizier_output(&["review", "token-suffix", "--review-only", "--skip-checks"])?;
+    assert!(
+        review.status.success(),
+        "vizier review failed: {}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&review.stdout);
+    assert!(
+        stdout.contains(" (tokens: prompt="),
+        "review summary should include token suffix but was:\n{}",
+        stdout
+    );
     Ok(())
 }
 

@@ -631,10 +631,7 @@ impl Auditor {
 
             tokio::spawn(async move {
                 while let Some(msg) = request_rx.recv().await {
-                    status_tx
-                        .send(display::Status::Working(msg))
-                        .await
-                        .unwrap();
+                    status_tx.send(display::Status::Working(msg)).await.unwrap();
                 }
             });
 
@@ -916,10 +913,7 @@ where
         let status_tx = tx.clone();
         tokio::spawn(async move {
             while let Some(msg) = request_rx.recv().await {
-                status_tx
-                    .send(display::Status::Working(msg))
-                    .await
-                    .unwrap();
+                status_tx.send(display::Status::Working(msg)).await.unwrap();
             }
         });
 
@@ -1088,9 +1082,13 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::find_project_root;
+    use super::{AUDITOR, Auditor, find_project_root};
     use std::fs;
     use tempfile::tempdir;
+    use wire::{
+        api::{API, OpenAIModel},
+        types::MessageBuilder,
+    };
 
     #[test]
     fn detects_worktree_root_with_git_file() {
@@ -1116,6 +1114,83 @@ mod tests {
             worktree.canonicalize().unwrap()
         );
         std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn usage_reports_accumulate_and_suppress_duplicates() {
+        reset_auditor_state();
+
+        assert!(
+            Auditor::add_message(user_message("hello")).is_none(),
+            "user messages should not emit usage reports"
+        );
+
+        let first = Auditor::add_message(assistant_message("one", 10, 5))
+            .expect("first assistant message should produce a report");
+        assert_eq!(first.prompt_total, 10);
+        assert_eq!(first.prompt_delta, 10);
+        assert_eq!(first.completion_total, 5);
+        assert_eq!(first.completion_delta, 5);
+        assert!(first.known, "first report should mark usage as known");
+
+        let second = Auditor::add_message(assistant_message("two", 3, 7))
+            .expect("second assistant message should produce a report");
+        assert_eq!(second.prompt_total, 13);
+        assert_eq!(second.prompt_delta, 3);
+        assert_eq!(second.completion_total, 12);
+        assert_eq!(second.completion_delta, 7);
+
+        let history = Auditor::get_messages();
+        assert!(
+            Auditor::replace_messages(&history).is_none(),
+            "replaying the same messages should not emit duplicate reports"
+        );
+
+        reset_auditor_state();
+    }
+
+    #[test]
+    fn usage_reports_mark_unknown_usage() {
+        reset_auditor_state();
+        Auditor::mark_usage_unknown();
+
+        let report = Auditor::add_message(assistant_message("unknown", 0, 0))
+            .expect("unknown usage should still create a report");
+        assert!(
+            !report.known,
+            "report should mark usage as unknown when backend omits counts"
+        );
+        assert_eq!(report.prompt_total, 0);
+        assert_eq!(report.completion_total, 0);
+
+        let history = Auditor::get_messages();
+        assert!(
+            Auditor::replace_messages(&history).is_none(),
+            "duplicate unknown-usage snapshots should be suppressed"
+        );
+
+        reset_auditor_state();
+    }
+
+    fn reset_auditor_state() {
+        let mut auditor = AUDITOR.lock().unwrap();
+        auditor.messages.clear();
+        auditor.last_usage_report = None;
+        auditor.usage_unknown = false;
+    }
+
+    fn assistant_message(content: &str, input: usize, output: usize) -> wire::types::Message {
+        MessageBuilder::new(API::OpenAI(OpenAIModel::GPT5), content)
+            .as_assistant()
+            .with_usage(input, output)
+            .build()
+    }
+
+    fn user_message(content: &str) -> wire::types::Message {
+        MessageBuilder::new(API::OpenAI(OpenAIModel::GPT5), content)
+            .as_user()
+            .with_usage(0, 0)
+            .build()
     }
 }
 
