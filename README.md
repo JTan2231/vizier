@@ -122,7 +122,13 @@ _Default-Action Posture plus the TODO GC work tracked in `.vizier/todo_todo_todo
 
 Configure via CLI flags or config file:
 
-If no path is provided, Vizier will look for `~/.config/vizier/config.toml` (TOML or JSON) and fall back to its built-in defaults when that file is missing.
+Order of precedence:
+1. `--config-file PATH`
+2. Repo-local `.vizier/config.toml` (fallback to `.vizier/config.json`)
+3. Global `~/.config/vizier/config.toml` (or platform equivalent)
+4. `VIZIER_CONFIG_FILE` (lowest precedence; useful for CI overrides)
+
+If none of those files exist, Vizier falls back to its built-in defaults. Copy `example-config.toml` to `.vizier/config.toml` inside your repo to pin agent defaults that travel with the tree.
 
 For a complete reference of every configuration knob, keep `example-config.toml` in this repo handy; it documents each section and serves as the authoritative sample for what Vizier understands today.
 

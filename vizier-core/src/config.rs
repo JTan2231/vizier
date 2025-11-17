@@ -889,16 +889,42 @@ fn parse_u32(value: Option<&serde_json::Value>) -> Option<u32> {
     None
 }
 
-pub fn default_config_path() -> Option<PathBuf> {
+/// Returns the repo-local config path if `.vizier/config.toml` or `.vizier/config.json` exists.
+///
+/// Canonical search order (highest precedence first):
+/// 1. CLI `--config-file` flag (handled in the CLI entrypoint)
+/// 2. Repo-local `.vizier/config.toml` (falling back to `.vizier/config.json`)
+/// 3. Global config under `$XDG_CONFIG_HOME`/platform default (`~/.config/vizier/config.toml`)
+/// 4. `VIZIER_CONFIG_FILE` environment variable (lowest precedence)
+pub fn project_config_path(project_root: &Path) -> Option<PathBuf> {
+    let vizier_dir = project_root.join(".vizier");
+    let toml_path = vizier_dir.join("config.toml");
+    if toml_path.is_file() {
+        return Some(toml_path);
+    }
+    let json_path = vizier_dir.join("config.json");
+    if json_path.is_file() {
+        Some(json_path)
+    } else {
+        None
+    }
+}
+
+/// Returns the user-global config path (`~/.config/vizier/config.toml` on Unix).
+pub fn global_config_path() -> Option<PathBuf> {
+    let base_dir = base_config_dir()?;
+    Some(base_dir.join("vizier").join("config.toml"))
+}
+
+/// Returns the config path provided via `VIZIER_CONFIG_FILE`, ignoring blank values.
+pub fn env_config_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("VIZIER_CONFIG_FILE") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return Some(PathBuf::from(trimmed));
         }
     }
-
-    let base_dir = base_config_dir()?;
-    Some(base_dir.join("vizier").join("config.toml"))
+    None
 }
 
 pub fn base_config_dir() -> Option<PathBuf> {
@@ -981,6 +1007,7 @@ pub fn get_system_prompt_with_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::Write;
     use tempfile::NamedTempFile;
     use wire::config::ThinkingLevel;
@@ -1158,5 +1185,62 @@ retries = 3
         );
         assert!(!cfg.merge.cicd_gate.auto_resolve);
         assert_eq!(cfg.merge.cicd_gate.retries, 5);
+    }
+
+    #[test]
+    fn test_project_config_path_prefers_toml_over_json() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        assert!(
+            project_config_path(temp_dir.path()).is_none(),
+            "no config files should return None"
+        );
+
+        let vizier_dir = temp_dir.path().join(".vizier");
+        fs::create_dir_all(&vizier_dir).expect("make .vizier dir");
+        let json_path = vizier_dir.join("config.json");
+        fs::write(&json_path, "{}").expect("write json config");
+        assert_eq!(
+            project_config_path(temp_dir.path()).expect("json config should be detected"),
+            json_path
+        );
+
+        let toml_path = vizier_dir.join("config.toml");
+        fs::write(&toml_path, "backend = \"wire\"").expect("write toml config");
+        assert_eq!(
+            project_config_path(temp_dir.path()).expect("toml config should override json"),
+            toml_path
+        );
+    }
+
+    #[test]
+    fn test_env_config_path_trims_blank_values() {
+        const KEY: &str = "VIZIER_CONFIG_FILE";
+        let original = std::env::var(KEY).ok();
+
+        unsafe {
+            std::env::set_var(KEY, "   ");
+        }
+        assert!(
+            env_config_path().is_none(),
+            "blank env var should be ignored"
+        );
+
+        unsafe {
+            std::env::set_var(KEY, "/tmp/custom-config.toml");
+        }
+        assert_eq!(
+            env_config_path(),
+            Some(PathBuf::from("/tmp/custom-config.toml")),
+            "non-blank env var should be returned"
+        );
+
+        match original {
+            Some(value) => unsafe {
+                std::env::set_var(KEY, value);
+            },
+            None => unsafe {
+                std::env::remove_var(KEY);
+            },
+        }
     }
 }

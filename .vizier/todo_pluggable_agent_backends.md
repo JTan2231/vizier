@@ -74,4 +74,4 @@ Acceptance criteria
 - Tests: integration coverage proves repo config wins over env/global values when both exist, env path is used when no repo config is present, and helpers properly skip missing files. (`tests/src/lib.rs`, new unit tests in `vizier-core/src/config.rs`)
 
 Status
-- Not started; tracked via `.vizier/implementation-plans/we-need-to-allow-project-level-c.md`.
+- Shipped via `.vizier/implementation-plans/we-need-to-allow-project-level-c.md` (2025-11-17). `vizier-core::config` gained `project_config_path`/`global_config_path`/`env_config_path`, the CLI now logs and loads `.vizier/config.toml` (or `.json`) before falling back to `~/.config/vizier/config.toml` and finally `VIZIER_CONFIG_FILE`, README/AGENTS/example-config.md describe the precedence, and unit + integration tests cover repo-vs-env behavior.
