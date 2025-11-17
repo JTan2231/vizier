@@ -48,7 +48,7 @@ We need to add a CI/CD gate to `vizier merge` so that operators can wire a repo-
    - Update inline CLI help strings in `vizier-cli/src/main.rs` to describe the new flags, and add release-note style messaging in `display::info` lines when the gate runs or auto-resolution kicks in.
 
 5. **Testing + validation harness**
-   - Extend integration tests in `tests/src/main.rs` or `tests/src/lib.rs` to cover:
+   - Extend integration tests in `tests/src/lib.rs` to cover:
      - Happy path: configure a script that writes a marker file and exits 0; assert the marker exists after `vizier merge --yes --cicd-script ...` and the command still succeeds (branch deletion + plan removal still happen).
      - Failure path without auto resolution: configure a script that exits 1; assert `vizier merge` exits non-zero, prints clipped output, does **not** delete the draft branch, and leaves the merge commit (so `git log` shows it) — document this expectation in assertions.
      - Auto-resolution path: configure a script that fails until a sentinel file exists, and use the `mock_llm` hook to create that file during the first remediation attempt so the gate passes on retry; assert the final output shows the number of attempts and that an extra commit was created with the generated message.
@@ -65,8 +65,6 @@ We need to add a CI/CD gate to `vizier merge` so that operators can wire a repo-
 ## Testing & Verification
 - `cargo test -p vizier-core config::tests::test_merge_cicd_gate_*` to confirm config parsing/new defaults.
 - `cargo test -p vizier-cli merge_cicd_gate_*` (unit tests around the helper loop, script output clipping, auto-resolution gating).
-- Repository-level integration tests (`cargo test --release --features mock_llm merge_cicd_gate` via `tests/src/main.rs` harness) covering success, failure, and auto-fix flows; verify draft branch deletion behavior and commit counts.
-- Manual sanity pass: run `vizier merge <plan> --cicd-script ./scripts/pass.sh` and `--cicd-script ./scripts/fail.sh --auto-cicd-fix --cicd-retries 2` inside `test-repo-active` to observe the CLI epilogue, session logs, and branch state.
 
 ## Notes
 - Coordinate with documentation reviewers to ensure README + workflow doc copy stays within the “first screenful” guidance and references `AGENTS.md` only where relevant.
