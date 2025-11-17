@@ -632,3 +632,75 @@ fn test_merge_conflict_creates_sentinel() -> TestResult {
     assert!(sentinel.exists(), "conflict sentinel missing after failure");
     Ok(())
 }
+
+#[test]
+fn test_merge_conflict_complete_flag() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_conflicting_plan(
+        &repo,
+        "conflict-complete",
+        "master branch keeps its version\n",
+        "plan branch prefers this text\n",
+    )?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&["merge", "conflict-complete", "--yes"])?;
+    assert!(
+        !merge.status.success(),
+        "expected merge to fail on conflicts"
+    );
+
+    repo.write("a", "manual resolution wins\n")?;
+    repo.git(&["add", "a"])?;
+
+    let resume =
+        repo.vizier_output(&["merge", "conflict-complete", "--yes", "--complete-conflict"])?;
+    assert!(
+        resume.status.success(),
+        "vizier merge --complete-conflict failed after manual resolution: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/conflict-complete.json");
+    assert!(
+        !sentinel.exists(),
+        "sentinel should be removed after --complete-conflict succeeds"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_complete_conflict_without_pending_state() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_conflicting_plan(
+        &repo,
+        "conflict-missing",
+        "master has no conflicts yet\n",
+        "plan branch prep work\n",
+    )?;
+    clean_workdir(&repo)?;
+
+    let attempt =
+        repo.vizier_output(&["merge", "conflict-missing", "--yes", "--complete-conflict"])?;
+    assert!(
+        !attempt.status.success(),
+        "expected --complete-conflict to fail when no merge is pending"
+    );
+    let stderr = String::from_utf8_lossy(&attempt.stderr);
+    assert!(
+        stderr.contains("No Vizier-managed merge is awaiting completion"),
+        "stderr missing helpful message: {}",
+        stderr
+    );
+
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/conflict-missing.json");
+    assert!(
+        !sentinel.exists(),
+        "sentinel should not exist when the merge was never started"
+    );
+    Ok(())
+}

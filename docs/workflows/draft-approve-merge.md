@@ -121,9 +121,11 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Calls `vcs::prepare_merge` for a non–fast-forward merge. If there are no conflicts, `vizier merge` immediately commits the merge with parents `[target, draft/<slug>]` and prints the resulting SHA.
 - When conflicts occur, Vizier writes `.vizier/tmp/merge-conflicts/<slug>.json` with the HEAD/source commit IDs and conflict list, then:
   - With `--auto-resolve-conflicts`, runs Codex inside the repo to try resolving and, if successful, finalizes the merge automatically.
-  - Otherwise, instructs you to resolve conflicts manually, stage the files, and rerun `vizier merge <slug>`; Vizier will detect the sentinel JSON and finish the merge once the index is clean.
+  - Otherwise, instructs you to resolve conflicts manually, stage the files, and rerun `vizier merge <slug> --complete-conflict`; Vizier will detect the sentinel JSON and finish the merge once the index is clean, failing fast if no pending merge exists.
 - Successful merges delete `draft/<slug>` automatically as long as the merge commit contains the branch tip; pass `--keep-branch` to retain the branch locally (legacy `--delete-branch` remains as a compatibility alias but is no longer required).
-- `--yes` skips the confirmation prompt, and `--target/--branch` behave like they do for `approve`.
+- `--yes` skips the confirmation prompt, `--complete-conflict` finalizes *only* an existing Vizier-managed merge (and errors when no sentinel is present), and `--target/--branch` behave like they do for `approve`.
+
+> **Manual completion tip:** After you resolve conflicts yourself, make sure you are checked out to the recorded target branch, stage the fixes, and then run `vizier merge <slug> --complete-conflict`. The flag refuses to run if Git is not in the middle of the stored merge or if no sentinel JSON exists, which protects history from accidental merges.
 
 **Post-merge artifacts**
 - Merge commit on the target branch titled `feat: merge plan <slug>` with the plan document embedded under `Implementation Plan:` (plus any optional operator note).
@@ -136,7 +138,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 | --- | --- |
 | Draft worktree creation fails | Vizier deletes the stub branch unless the plan file was already committed. Re-run `vizier draft` once the error is fixed. |
 | `vizier approve` fails mid-run | Temp worktree path is printed; inspect it to salvage partially staged files, then rerun once corrected. The plan branch remains intact. |
-| Merge conflicts | Resolve conflicts on the target branch, stage the files, rerun `vizier merge <slug>`. Vizier reuses `.vizier/tmp/merge-conflicts/<slug>.json` to finalize. |
+| Merge conflicts | Resolve conflicts on the target branch, stage the files, rerun `vizier merge <slug> --complete-conflict`. Vizier reuses `.vizier/tmp/merge-conflicts/<slug>.json` to finalize and fails fast if no pending merge exists. |
 | Need to resume after aborting Git’s merge | As long as the sentinel JSON still exists and `git status` is clean, rerunning `vizier merge <slug>` finishes the in-progress merge without repeating refresh/removal steps. |
 | Codex auto-resolution fails | Vizier warns and falls back to manual instructions. Resolve/stage/retry just like a normal Git merge. |
 
@@ -162,6 +164,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
    - Vizier refreshes `.vizier/.snapshot`, removes the plan doc, and merges into the detected primary branch (e.g., `main`).
    - Final output looks like `Merged plan ingest-backpressure into main; merge_commit=<sha>`.
    - Need the branch for a follow-up? Append `--keep-branch` to suppress the default deletion step.
+   - Hit a conflict? Resolve it on `main`, stage the changes, and rerun `vizier merge ingest-backpressure --complete-conflict` to finish the stored merge without creating ad-hoc commits.
 
 Throughout the process, Outcome lines and Auditor records cite the plan slug, affected files, and any pending commit gates so auditors can trace who approved what. Tie this workflow into the broader agent-orchestration story by referencing this document in `AGENTS.md` or external SOPs when onboarding third-party agents.
 
@@ -171,7 +174,7 @@ Throughout the process, Outcome lines and Auditor records cite the plan slug, af
 Yes. If you manually edit `.vizier/implementation-plans/<slug>.md` on the draft branch, rerun `vizier approve <slug>` to reapply the plan. Vizier refuses to commit if Codex makes no changes so you can iterate safely.
 
 **What if the draft branch lags far behind the target branch?**  
-`vizier approve` prints a warning when `draft/<slug>` is missing commits from the target. You can merge or rebase the draft branch manually before running `vizier merge`, or accept that `vizier merge` may surface conflicts which you’ll resolve with the sentinel workflow described above.
+`vizier approve` prints a warning when `draft/<slug>` is missing commits from the target. You can merge or rebase the draft branch manually before running `vizier merge`, or accept that `vizier merge` may surface conflicts which you’ll resolve with the sentinel + `--complete-conflict` workflow described above.
 
 **Does `vizier merge` push to origin?**  
 Not automatically. Pass `--push` (global CLI flag) after `approve` or `merge` if you want Vizier to push once the command succeeds, or push manually when you’re ready.

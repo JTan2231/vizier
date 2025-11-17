@@ -229,6 +229,7 @@ pub struct MergeOptions {
     pub note: Option<String>,
     pub push_after: bool,
     pub conflict_strategy: MergeConflictStrategy,
+    pub complete_conflict: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +237,75 @@ pub enum MergeConflictStrategy {
     Manual,
     Codex,
 }
+
+#[derive(Debug)]
+enum PendingMergeStatus {
+    None,
+    Ready { merge_oid: Oid, source_oid: Oid },
+    Blocked(PendingMergeBlocker),
+}
+
+#[derive(Debug)]
+enum PendingMergeBlocker {
+    WrongCheckout { expected_branch: String },
+    NotInMerge { target_branch: String },
+    Conflicts { files: Vec<String> },
+}
+
+#[derive(Debug)]
+struct PendingMergeError {
+    slug: String,
+    detail: PendingMergeBlocker,
+}
+
+impl PendingMergeError {
+    fn new(slug: impl Into<String>, detail: PendingMergeBlocker) -> Self {
+        PendingMergeError {
+            slug: slug.into(),
+            detail,
+        }
+    }
+}
+
+impl std::fmt::Display for PendingMergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.detail {
+            PendingMergeBlocker::WrongCheckout { expected_branch } => write!(
+                f,
+                "Pending Vizier merge for plan {} is tied to {}; checkout that branch and rerun `vizier merge {} --complete-conflict` to finalize the conflict resolution.",
+                self.slug, expected_branch, self.slug
+            ),
+            PendingMergeBlocker::NotInMerge { target_branch } => write!(
+                f,
+                "Vizier has merge metadata for plan {} but Git is no longer merging on {}; rerun `vizier merge {}` (without --complete-conflict) to start a new merge if needed.",
+                self.slug, target_branch, self.slug
+            ),
+            PendingMergeBlocker::Conflicts { files } => {
+                if files.is_empty() {
+                    write!(
+                        f,
+                        "Merge conflicts for plan {} are still unresolved; fix them, stage the results, then rerun `vizier merge {} --complete-conflict`.",
+                        self.slug, self.slug
+                    )
+                } else {
+                    let preview = files.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                    let more = if files.len() > 3 {
+                        format!(" (+{} more)", files.len() - 3)
+                    } else {
+                        String::new()
+                    };
+                    write!(
+                        f,
+                        "Merge conflicts for plan {} remain ({preview}{more}); resolve and stage them, then rerun `vizier merge {} --complete-conflict`.",
+                        self.slug, self.slug
+                    )
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for PendingMergeError {}
 
 pub async fn run_snapshot_init(
     opts: SnapshotInitOptions,
@@ -1083,12 +1153,6 @@ pub async fn run_review(opts: ReviewOptions) -> Result<(), Box<dyn std::error::E
 }
 
 pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Error>> {
-    vcs::ensure_clean_worktree().map_err(|err| {
-        Box::<dyn std::error::Error>::from(format!(
-            "clean working tree required before merge: {err}"
-        ))
-    })?;
-
     let spec = plan::PlanBranchSpec::resolve(
         Some(opts.plan.as_str()),
         opts.branch_override.as_deref(),
@@ -1116,18 +1180,40 @@ pub async fn run_merge(opts: MergeOptions) -> Result<(), Box<dyn std::error::Err
         return Ok(());
     }
 
-    let plan_meta = spec.load_metadata()?;
-
-    if let Some((merge_oid, source_oid)) = try_complete_pending_merge(&spec)? {
-        finalize_merge(
-            &spec,
+    match try_complete_pending_merge(&spec)? {
+        PendingMergeStatus::Ready {
             merge_oid,
             source_oid,
-            opts.delete_branch,
-            opts.push_after,
-        )?;
-        return Ok(());
+        } => {
+            finalize_merge(
+                &spec,
+                merge_oid,
+                source_oid,
+                opts.delete_branch,
+                opts.push_after,
+            )?;
+            return Ok(());
+        }
+        PendingMergeStatus::Blocked(blocker) => {
+            return Err(Box::new(PendingMergeError::new(spec.slug.clone(), blocker)));
+        }
+        PendingMergeStatus::None => {
+            if opts.complete_conflict {
+                return Err(Box::<dyn std::error::Error>::from(format!(
+                    "No Vizier-managed merge is awaiting completion for plan {}; rerun `vizier merge {}` without --complete-conflict to start a merge.",
+                    spec.slug, spec.slug
+                )));
+            }
+        }
     }
+
+    vcs::ensure_clean_worktree().map_err(|err| {
+        Box::<dyn std::error::Error>::from(format!(
+            "clean working tree required before merge: {err}"
+        ))
+    })?;
+
+    let plan_meta = spec.load_metadata()?;
 
     if !opts.assume_yes {
         spec.show_preview(&plan_meta);
@@ -1249,9 +1335,9 @@ fn finalize_merge(
 
 fn try_complete_pending_merge(
     spec: &plan::PlanBranchSpec,
-) -> Result<Option<(Oid, Oid)>, Box<dyn std::error::Error>> {
+) -> Result<PendingMergeStatus, Box<dyn std::error::Error>> {
     let Some(state) = read_conflict_state(&spec.slug)? else {
-        return Ok(None);
+        return Ok(PendingMergeStatus::None);
     };
 
     if state.source_branch != spec.branch {
@@ -1260,7 +1346,7 @@ fn try_complete_pending_merge(
             spec.slug, state.source_branch, spec.branch
         ));
         let _ = clear_conflict_state(&spec.slug);
-        return Ok(None);
+        return Ok(PendingMergeStatus::None);
     }
 
     if state.target_branch != spec.target_branch {
@@ -1269,17 +1355,17 @@ fn try_complete_pending_merge(
             spec.slug, state.target_branch, spec.target_branch
         ));
         let _ = clear_conflict_state(&spec.slug);
-        return Ok(None);
+        return Ok(PendingMergeStatus::None);
     }
 
     let repo = Repository::discover(".")?;
     let current_branch = current_branch_name(&repo)?;
     if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
-        return Err(format!(
-            "merge for plan {} is still in progress; checkout {} to continue resolution",
-            spec.slug, spec.target_branch
-        )
-        .into());
+        return Ok(PendingMergeStatus::Blocked(
+            PendingMergeBlocker::WrongCheckout {
+                expected_branch: spec.target_branch.clone(),
+            },
+        ));
     }
 
     if repo.state() != RepositoryState::Merge {
@@ -1288,20 +1374,26 @@ fn try_complete_pending_merge(
             spec.slug
         ));
         let _ = clear_conflict_state(&spec.slug);
-        return Ok(None);
+        return Ok(PendingMergeStatus::Blocked(
+            PendingMergeBlocker::NotInMerge {
+                target_branch: spec.target_branch.clone(),
+            },
+        ));
     }
 
     let outstanding = list_conflicted_paths()?;
     if !outstanding.is_empty() {
         display::warn("Merge conflicts remain:");
-        for path in outstanding {
+        for path in &outstanding {
             display::warn(format!("  - {path}"));
         }
         display::info(format!(
-            "Resolve the conflicts above, stage the files, then rerun `vizier merge {}`.",
+            "Resolve the conflicts above, stage the files, then rerun `vizier merge {} --complete-conflict`.",
             spec.slug
         ));
-        return Err("merge blocked until conflicts are resolved".into());
+        return Ok(PendingMergeStatus::Blocked(
+            PendingMergeBlocker::Conflicts { files: outstanding },
+        ));
     }
 
     let head_oid = Oid::from_str(&state.head_oid)?;
@@ -1309,7 +1401,10 @@ fn try_complete_pending_merge(
     let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
     let _ = clear_conflict_state(&spec.slug);
     display::info("Conflicts resolved; finalizing merge now.");
-    Ok(Some((merge_oid, source_oid)))
+    Ok(PendingMergeStatus::Ready {
+        merge_oid,
+        source_oid,
+    })
 }
 
 async fn handle_merge_conflict(
@@ -1360,7 +1455,7 @@ fn emit_conflict_instructions(slug: &str, files: &[String], state_path: &Path) {
     }
 
     display::info(format!(
-        "Resolve the conflicts, stage the results, then rerun `vizier merge {slug}` to finish the merge."
+        "Resolve the conflicts, stage the results, then rerun `vizier merge {slug} --complete-conflict` to finish the merge."
     ));
     display::info(format!(
         "Vizier stored merge metadata at {}; keep it until the merge completes.",
