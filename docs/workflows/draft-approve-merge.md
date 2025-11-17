@@ -15,6 +15,10 @@ Need to see what’s pending before approving or merging? Run `vizier list [--ta
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
+### Customizing the plan/review/merge prompts
+
+Repositories can tune every Codex instruction involved in this workflow without recompiling Vizier. Drop Markdown files under `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` (or set `[prompts.implementation_plan|review|merge_conflict]` in your config) to change how draft plans are generated, how reviews critique a branch, and how Codex handles merge conflicts. The CLI reads these templates when it starts, so restart `vizier` after editing them to ensure new instructions take effect.
+
 ## `vizier draft`: create the plan branch
 
 **Prerequisites**
