@@ -1,0 +1,4 @@
+[merge.cicd_gate]
+script = "./cicd.sh"
+auto_resolve = true
+retries = 2

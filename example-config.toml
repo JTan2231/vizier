@@ -28,6 +28,12 @@ commands = [
   "cargo test --all --all-targets"
 ]
 
+# Optional CI/CD gate script run during `vizier merge`
+[merge.cicd_gate]
+script = "./cicd.sh"
+auto_resolve = true
+retries = 2
+
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
 backend = "codex"
