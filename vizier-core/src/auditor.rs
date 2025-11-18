@@ -169,6 +169,41 @@ pub fn find_project_root() -> std::io::Result<Option<PathBuf>> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitDisposition {
+    Auto,
+    Hold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditState {
+    Clean,
+    Committed,
+    Pending,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditResult {
+    pub session_artifact: Option<SessionArtifact>,
+    pub state: AuditState,
+}
+
+impl AuditResult {
+    pub fn session_display(&self) -> Option<String> {
+        self.session_artifact
+            .as_ref()
+            .map(|artifact| artifact.display_path())
+    }
+
+    pub fn committed(&self) -> bool {
+        matches!(self.state, AuditState::Committed)
+    }
+
+    pub fn pending(&self) -> bool {
+        matches!(self.state, AuditState::Pending)
+    }
+}
+
 async fn prompt_wire_with_tools(
     client: &dyn wire::api::Prompt,
     tx: tokio::sync::mpsc::Sender<String>,
@@ -381,6 +416,13 @@ impl Auditor {
     /// Persist the session log + commit narrative changes (if any).
     /// Returns the session artifact that now owns the transcript for downstream plumbing.
     pub async fn commit_audit() -> Result<Option<SessionArtifact>, Box<dyn std::error::Error>> {
+        let outcome = Self::finalize(CommitDisposition::Auto).await?;
+        Ok(outcome.session_artifact)
+    }
+
+    pub async fn finalize(
+        disposition: CommitDisposition,
+    ) -> Result<AuditResult, Box<dyn std::error::Error>> {
         let session_artifact = Self::persist_session_log();
         let project_root = match find_project_root()? {
             Some(p) => p,
@@ -395,7 +437,10 @@ impl Auditor {
         }
 
         if !file_tracking::FileTracker::has_pending_changes() {
-            return Ok(session_artifact);
+            return Ok(AuditResult {
+                session_artifact,
+                state: AuditState::Clean,
+            });
         }
 
         let root = project_root.to_str().unwrap();
@@ -412,6 +457,13 @@ impl Auditor {
                 .await?
                 .content,
             );
+        }
+
+        if matches!(disposition, CommitDisposition::Hold) {
+            return Ok(AuditResult {
+                session_artifact,
+                state: AuditState::Pending,
+            });
         }
 
         if let Some(commit_message) = diff_message {
@@ -431,7 +483,10 @@ impl Auditor {
             display::info("Committed TODO changes");
         }
 
-        Ok(session_artifact)
+        Ok(AuditResult {
+            session_artifact,
+            state: AuditState::Committed,
+        })
     }
 
     pub fn load_session_messages_from_path(

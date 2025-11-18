@@ -1,9 +1,10 @@
 ---
 plan: commit-flag
 branch: draft/commit-flag
-status: draft
+status: implemented
 created_at: 2025-11-18T00:55:58Z
 spec_source: inline
+implemented_at: 2025-11-18T02:31:38Z
 ---
 
 ## Operator Spec

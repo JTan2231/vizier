@@ -36,6 +36,9 @@ Threads are narrative arcs; TODOs are the Chekhov's guns that resolve each tensi
 - Tasks stay product-level by default; reach for implementation detail only when safety or explicit requests demand it.
 - No "investigate X" placeholders — each TODO commits to an observable outcome with acceptance criteria.
 
+### Manual commit hold (--no-commit)
+Assistant-backed commands normally commit immediately. Pass the global `--no-commit` flag (or set `[workflow] no_commit_default = true` in `.vizier/config.toml`) to leave `.vizier` and code edits staged/dirty instead. This lets you inspect draft/approve/review changes inside their worktrees before writing history. `vizier merge` still requires normal commits; rerun without the flag once you are ready to finalize the merge.
+
 ### Agent Control Plane
 Vizier is the mediator between agents and Git.
 
@@ -110,4 +113,3 @@ Vizier treats software development as story editing, not just diff management.
 - Evidence beats speculation; ground changes in observable behavior and tests.
 - Evolve existing threads instead of spawning duplicates; continuity beats churn.
 - Operators stay in control; agents amplify maintainer intent but never free-drive.
-

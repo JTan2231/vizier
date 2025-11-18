@@ -265,6 +265,32 @@ impl SpecSource {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitMode {
+    AutoCommit,
+    HoldForReview,
+}
+
+impl CommitMode {
+    pub fn should_commit(self) -> bool {
+        matches!(self, CommitMode::AutoCommit)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CommitMode::AutoCommit => "auto",
+            CommitMode::HoldForReview => "manual",
+        }
+    }
+}
+
+fn audit_disposition(mode: CommitMode) -> auditor::CommitDisposition {
+    match mode {
+        CommitMode::AutoCommit => auditor::CommitDisposition::Auto,
+        CommitMode::HoldForReview => auditor::CommitDisposition::Hold,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DraftArgs {
     pub spec_text: String,
@@ -334,6 +360,7 @@ impl CicdGateOptions {
         }
     }
 
+    #[allow(dead_code)]
     pub fn disabled() -> Self {
         Self {
             script: None,
@@ -352,7 +379,7 @@ struct CicdGateOutcome {
 
 #[derive(Debug)]
 struct CicdScriptResult {
-    status: std::process::ExitStatus,
+    status: ExitStatus,
     duration: Duration,
     stdout: String,
     stderr: String,
@@ -550,11 +577,21 @@ pub async fn run_save(
     exclude: &[&str],
     commit_message: Option<String>,
     use_editor: bool,
+    commit_mode: CommitMode,
     push_after_commit: bool,
     agent: &config::AgentSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match vcs::get_diff(".", Some(commit_ref), Some(exclude)) {
-        Ok(diff) => match save(diff, commit_message, use_editor, push_after_commit, agent).await {
+        Ok(diff) => match save(
+            diff,
+            commit_message,
+            use_editor,
+            commit_mode,
+            push_after_commit,
+            agent,
+        )
+        .await
+        {
             Ok(outcome) => {
                 println!("{}", format_save_outcome(&outcome));
                 Ok(())
@@ -579,6 +616,8 @@ pub struct SaveOutcome {
     pub session_log: Option<String>,
     pub code_commit: Option<String>,
     pub pushed: bool,
+    pub audit_state: auditor::AuditState,
+    pub commit_mode: CommitMode,
 }
 
 fn format_save_outcome(outcome: &SaveOutcome) -> String {
@@ -593,6 +632,16 @@ fn format_save_outcome(outcome: &SaveOutcome) -> String {
         Some(hash) if !hash.is_empty() => parts.push(format!("code_commit={}", short_hash(hash))),
         _ => parts.push("code_commit=none".to_string()),
     }
+
+    parts.push(format!("mode={}", outcome.commit_mode.label()));
+    parts.push(format!(
+        "narrative={}",
+        match outcome.audit_state {
+            auditor::AuditState::Committed => "committed",
+            auditor::AuditState::Pending => "pending",
+            auditor::AuditState::Clean => "clean",
+        }
+    ));
 
     if outcome.pushed {
         parts.push("pushed=true".to_string());
@@ -629,6 +678,7 @@ async fn save(
     // NOTE: These two should never be Some(...) && true
     user_message: Option<String>,
     use_message_editor: bool,
+    commit_mode: CommitMode,
     push_after_commit: bool,
     agent: &config::AgentSettings,
 ) -> Result<SaveOutcome, Box<dyn std::error::Error>> {
@@ -668,10 +718,13 @@ async fn save(
     )
     .await?;
 
-    let session_artifact = auditor::Auditor::commit_audit().await?;
-    let session_display = session_artifact
-        .as_ref()
-        .map(|artifact| artifact.display_path());
+    let audit_result = auditor::Auditor::finalize(audit_disposition(commit_mode)).await?;
+    let session_display = audit_result.session_display();
+    if audit_result.pending() {
+        display::info(
+            "Snapshot/TODO updates left pending (--no-commit); review and commit when ready.",
+        );
+    }
 
     display::info(format!(
         "Assistant summary: {}{}",
@@ -685,32 +738,38 @@ async fn save(
     let mut code_commit = None;
 
     if has_code_changes {
-        let commit_body = Auditor::llm_request(
-            config::get_config().get_prompt(config::PromptKind::Commit),
-            post_tool_diff.clone(),
-        )
-        .await?
-        .content;
+        if commit_mode.should_commit() {
+            let commit_body = Auditor::llm_request(
+                config::get_config().get_prompt(config::PromptKind::Commit),
+                post_tool_diff.clone(),
+            )
+            .await?
+            .content;
 
-        let mut message_builder = CommitMessageBuilder::new(commit_body);
-        message_builder
-            .set_header(CommitMessageType::CodeChange)
-            .with_session_log_path(session_display.clone());
+            let mut message_builder = CommitMessageBuilder::new(commit_body);
+            message_builder
+                .set_header(CommitMessageType::CodeChange)
+                .with_session_log_path(session_display.clone());
 
-        if let Some(note) = provided_note.as_ref() {
-            message_builder.with_author_note(note.clone());
+            if let Some(note) = provided_note.as_ref() {
+                message_builder.with_author_note(note.clone());
+            }
+
+            let commit_message = message_builder.build();
+
+            display::info("Committing remaining code changes...");
+            let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+            display::info(format!(
+                "Changes committed with message: {}",
+                commit_message
+            ));
+
+            code_commit = Some(commit_oid.to_string());
+        } else {
+            display::info(
+                "Code changes detected but --no-commit is active; leaving them staged/dirty.",
+            );
         }
-
-        let commit_message = message_builder.build();
-
-        display::info("Committing remaining code changes...");
-        let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
-        display::info(format!(
-            "Changes committed with message: {}",
-            commit_message
-        ));
-
-        code_commit = Some(commit_oid.to_string());
     } else {
         if provided_note.is_some() {
             display::info(
@@ -721,12 +780,20 @@ async fn save(
         }
     }
 
-    push_origin_if_requested(push_after_commit)?;
+    let mut pushed = false;
+    if commit_mode.should_commit() && push_after_commit {
+        push_origin_if_requested(true)?;
+        pushed = true;
+    } else if push_after_commit {
+        display::info("Push skipped because no commit was created (--no-commit).");
+    }
 
     Ok(SaveOutcome {
         session_log: session_display,
         code_commit,
-        pushed: push_after_commit,
+        pushed,
+        audit_state: audit_result.state,
+        commit_mode,
     })
 }
 
@@ -837,6 +904,7 @@ pub async fn inline_command(
     user_message: String,
     push_after_commit: bool,
     agent: &config::AgentSettings,
+    commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let system_prompt = if agent.backend == config::BackendKind::Codex {
         match codex::build_prompt_for_codex(
@@ -881,12 +949,25 @@ pub async fn inline_command(
         }
     };
 
-    if let Err(e) = auditor::Auditor::commit_audit().await {
-        display::emit(LogLevel::Error, format!("Error committing audit: {e}"));
-        return Err(Box::<dyn std::error::Error>::from(e));
+    match auditor::Auditor::finalize(audit_disposition(commit_mode)).await {
+        Ok(outcome) => {
+            if outcome.pending() {
+                display::info(
+                    "Held .vizier changes for manual review (--no-commit active); commit them when ready.",
+                );
+            }
+        }
+        Err(e) => {
+            display::emit(LogLevel::Error, format!("Error finalizing audit: {e}"));
+            return Err(Box::<dyn std::error::Error>::from(e));
+        }
     }
 
-    push_origin_if_requested(push_after_commit)?;
+    if commit_mode.should_commit() {
+        push_origin_if_requested(push_after_commit)?;
+    } else if push_after_commit {
+        display::info("Push skipped because --no-commit left changes pending.");
+    }
 
     println!("{}", response.content.trim_end());
     print_token_usage();
@@ -897,6 +978,7 @@ pub async fn inline_command(
 pub async fn run_draft(
     args: DraftArgs,
     agent: &config::AgentSettings,
+    commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if agent.backend != config::BackendKind::Codex {
         return Err("vizier draft requires the Codex backend; update [agents.draft] or pass --backend codex".into());
@@ -1010,18 +1092,24 @@ pub async fn run_draft(
             },
         )?;
 
-        let plan_rel = plan_rel_path.as_path();
-        commit_paths_in_repo(
-            &worktree_path,
-            &[plan_rel],
-            &format!("docs: add implementation plan {}", slug),
-        )
-        .map_err(|err| -> Box<dyn std::error::Error> {
-            Box::from(format!("commit_plan({}): {err}", worktree_path.display()))
-        })?;
-        plan_committed = true;
-        if Auditor::persist_session_log().is_some() {
-            Auditor::clear_messages();
+        if commit_mode.should_commit() {
+            let plan_rel = plan_rel_path.as_path();
+            commit_paths_in_repo(
+                &worktree_path,
+                &[plan_rel],
+                &format!("docs: add implementation plan {}", slug),
+            )
+            .map_err(|err| -> Box<dyn std::error::Error> {
+                Box::from(format!("commit_plan({}): {err}", worktree_path.display()))
+            })?;
+            plan_committed = true;
+            if Auditor::persist_session_log().is_some() {
+                Auditor::clear_messages();
+            }
+        } else {
+            display::info(
+                "Plan document generated with --no-commit; leaving worktree dirty for manual review.",
+            );
         }
 
         Ok(())
@@ -1034,7 +1122,7 @@ pub async fn run_draft(
                 .clone()
                 .or_else(|| fs::read_to_string(&plan_in_worktree).ok());
 
-            if worktree_created {
+            if worktree_created && commit_mode.should_commit() {
                 if let Err(err) = remove_worktree(&worktree_name, true) {
                     display::warn(format!(
                         "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
@@ -1046,10 +1134,22 @@ pub async fn run_draft(
                 }
             }
 
-            display::info(format!(
-                "View with: git checkout {branch_name} && $EDITOR {plan_display}"
-            ));
-            println!("Draft ready; plan={plan_display}; branch={branch_name}");
+            if commit_mode.should_commit() {
+                display::info(format!(
+                    "View with: git checkout {branch_name} && $EDITOR {plan_display}"
+                ));
+                println!("Draft ready; plan={plan_display}; branch={branch_name}");
+            } else {
+                println!(
+                    "Draft pending (manual commit); branch={branch_name}; worktree={}; plan={plan_display}",
+                    worktree_path.display()
+                );
+                display::info(format!(
+                    "Review and commit manually: git -C {} status",
+                    worktree_path.display()
+                ));
+            }
+
             if let Some(plan_text) = plan_to_print {
                 println!();
                 println!("{plan_text}");
@@ -1083,6 +1183,7 @@ pub fn run_list(opts: ListOptions) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn run_approve(
     opts: ApproveOptions,
     agent: &config::AgentSettings,
+    commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if opts.list_only {
         display::warn("`vizier approve --list` is deprecated; use `vizier list` instead.");
@@ -1160,28 +1261,53 @@ pub async fn run_approve(
         &worktree_path,
         &plan_path,
         opts.push_after,
+        commit_mode,
         agent,
     )
     .await;
 
     match approval {
-        Ok(commit_oid) => {
-            if let Some(tree) = worktree.take() {
-                if let Err(err) = tree.cleanup() {
-                    display::warn(format!(
-                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
-                        err
-                    ));
+        Ok(result) => {
+            if commit_mode.should_commit() {
+                if let Some(tree) = worktree.take() {
+                    if let Err(err) = tree.cleanup() {
+                        display::warn(format!(
+                            "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                            err
+                        ));
+                    }
                 }
-            }
 
-            println!(
-                "Plan {} implemented on {}; latest commit={}; review with `{}`",
-                spec.slug,
-                spec.branch,
-                commit_oid,
-                spec.diff_command()
-            );
+                if let Some(commit_oid) = result.commit_oid.as_ref() {
+                    println!(
+                        "Plan {} implemented on {}; latest commit={}; review with `{}`",
+                        spec.slug,
+                        spec.branch,
+                        commit_oid,
+                        spec.diff_command()
+                    );
+                } else {
+                    println!(
+                        "Plan {} implemented on {}; review with `{}`",
+                        spec.slug,
+                        spec.branch,
+                        spec.diff_command()
+                    );
+                }
+            } else {
+                display::info(format!(
+                    "Plan worktree preserved at {}; inspect branch {} for pending changes.",
+                    worktree_path.display(),
+                    spec.branch
+                ));
+                println!(
+                    "Plan {} pending manual commit; branch={} worktree={} diff=\"{}\"",
+                    spec.slug,
+                    spec.branch,
+                    worktree_path.display(),
+                    spec.diff_command()
+                );
+            }
             print_token_usage();
             Ok(())
         }
@@ -1201,6 +1327,7 @@ pub async fn run_approve(
 pub async fn run_review(
     opts: ReviewOptions,
     agent: &config::AgentSettings,
+    commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if agent.backend != config::BackendKind::Codex {
         return Err("vizier review requires the Codex backend; update [agents.review] or pass --backend codex".into());
@@ -1262,23 +1389,34 @@ pub async fn run_review(
             review_only: opts.review_only,
             skip_checks: opts.skip_checks,
         },
+        commit_mode,
         agent,
     )
     .await;
 
     match review_result {
         Ok(outcome) => {
-            if let Some(tree) = worktree.take() {
-                if let Err(err) = tree.cleanup() {
-                    display::warn(format!(
-                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
-                        err
-                    ));
+            if commit_mode.should_commit() {
+                if let Some(tree) = worktree.take() {
+                    if let Err(err) = tree.cleanup() {
+                        display::warn(format!(
+                            "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                            err
+                        ));
+                    }
                 }
+            } else if let Some(tree) = worktree.take() {
+                display::info(format!(
+                    "Review worktree preserved at {}; inspect branch {} for pending critique/fix artifacts.",
+                    tree.path().display(),
+                    spec.branch
+                ));
             }
 
-            if outcome.branch_mutated && opts.push_after {
+            if outcome.branch_mutated && opts.push_after && commit_mode.should_commit() {
                 push_origin_if_requested(true)?;
+            } else if outcome.branch_mutated && opts.push_after {
+                display::info("Push skipped because --no-commit left review changes pending.");
             }
 
             if let Some(commit) = outcome.fix_commit.as_ref() {
@@ -1321,7 +1459,12 @@ pub async fn run_review(
 pub async fn run_merge(
     opts: MergeOptions,
     agent: &config::AgentSettings,
+    commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if !commit_mode.should_commit() {
+        return Err("--no-commit is not supported for vizier merge; rerun without the flag once you are ready to finalize the merge."
+            .into());
+    }
     let spec = plan::PlanBranchSpec::resolve(
         Some(opts.plan.as_str()),
         opts.branch_override.as_deref(),
@@ -2060,6 +2203,10 @@ struct ReviewOutcome {
     fix_commit: Option<String>,
 }
 
+struct PlanApplyResult {
+    commit_oid: Option<String>,
+}
+
 struct ReviewCheckResult {
     command: String,
     status_code: Option<i32>,
@@ -2099,6 +2246,7 @@ async fn perform_review_workflow(
     worktree_path: &Path,
     plan_path: &Path,
     exec: ReviewExecution,
+    commit_mode: CommitMode,
     agent: &config::AgentSettings,
 ) -> Result<ReviewOutcome, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
@@ -2160,29 +2308,36 @@ async fn perform_review_workflow(
         let _ = handle.await;
     }
 
-    let session_artifact = Auditor::commit_audit().await?;
-    let session_path = session_artifact
-        .as_ref()
-        .map(|artifact| artifact.display_path());
+    let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
+    let session_path = audit_result.session_display();
+    if audit_result.pending() {
+        display::info("Review critique artifacts held for manual review (--no-commit active).");
+    }
 
     write_review_file(&review_rel, spec, response.content.trim())?;
     plan::set_plan_status(plan_path, "review-ready", Some("reviewed_at"))?;
 
-    vcs::stage(Some(vec!["."]))?;
+    if commit_mode.should_commit() {
+        vcs::stage(Some(vec!["."]))?;
 
-    let mut summary = format!(
-        "Recorded Codex critique for plan {} (checks {}/{} passed).",
-        spec.slug, checks_passed, checks_total
-    );
-    summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
+        let mut summary = format!(
+            "Recorded Codex critique for plan {} (checks {}/{} passed).",
+            spec.slug, checks_passed, checks_total
+        );
+        summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
 
-    let mut builder = CommitMessageBuilder::new(summary);
-    builder
-        .set_header(CommitMessageType::NarrativeChange)
-        .with_session_log_path(session_path.clone())
-        .with_author_note(format!("Review file: {}", review_rel.to_string_lossy()));
-    let commit_message = builder.build();
-    let _review_commit = vcs::add_and_commit(None, &commit_message, false)?;
+        let mut builder = CommitMessageBuilder::new(summary);
+        builder
+            .set_header(CommitMessageType::NarrativeChange)
+            .with_session_log_path(session_path.clone())
+            .with_author_note(format!("Review file: {}", review_rel.to_string_lossy()));
+        let commit_message = builder.build();
+        let _review_commit = vcs::add_and_commit(None, &commit_message, false)?;
+    } else {
+        display::info(
+            "Review critique not committed (--no-commit); inspect .vizier/reviews before committing manually.",
+        );
+    }
 
     let mut fix_commit: Option<String> = None;
     let diff_command = spec.diff_command();
@@ -2200,7 +2355,16 @@ async fn perform_review_workflow(
 
         if apply_fixes {
             plan::set_plan_status(plan_path, "review-fixes-in-progress", None)?;
-            match apply_review_fixes(spec, plan_meta, worktree_path, &review_rel, agent).await? {
+            match apply_review_fixes(
+                spec,
+                plan_meta,
+                worktree_path,
+                &review_rel,
+                commit_mode,
+                agent,
+            )
+            .await?
+            {
                 Some(commit) => {
                     fix_commit = Some(commit);
                     plan::set_plan_status(
@@ -2459,6 +2623,7 @@ async fn apply_review_fixes(
     plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
     review_rel: &Path,
+    commit_mode: CommitMode,
     agent: &config::AgentSettings,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let plan_rel = spec.plan_rel_path();
@@ -2503,10 +2668,11 @@ async fn apply_review_fixes(
         let _ = handle.await;
     }
 
-    let session_artifact = Auditor::commit_audit().await?;
-    let session_path = session_artifact
-        .as_ref()
-        .map(|artifact| artifact.display_path());
+    let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
+    let session_path = audit_result.session_display();
+    if audit_result.pending() {
+        display::info("Fix-up edits held for manual review (--no-commit active).");
+    }
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -2514,26 +2680,31 @@ async fn apply_review_fixes(
         return Ok(None);
     }
 
-    vcs::stage(Some(vec!["."]))?;
-    let mut summary = response.content.trim().to_string();
-    if summary.is_empty() {
-        summary = format!(
-            "Addressed review feedback for plan {} using {}",
-            spec.slug,
-            review_rel.to_string_lossy()
-        );
+    if commit_mode.should_commit() {
+        vcs::stage(Some(vec!["."]))?;
+        let mut summary = response.content.trim().to_string();
+        if summary.is_empty() {
+            summary = format!(
+                "Addressed review feedback for plan {} using {}",
+                spec.slug,
+                review_rel.to_string_lossy()
+            );
+        }
+        let mut builder = CommitMessageBuilder::new(summary);
+        builder
+            .set_header(CommitMessageType::CodeChange)
+            .with_session_log_path(session_path.clone())
+            .with_author_note(format!(
+                "Review reference: {}",
+                review_rel.to_string_lossy()
+            ));
+        let commit_message = builder.build();
+        let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+        Ok(Some(commit_oid.to_string()))
+    } else {
+        display::info("Fixes left pending; commit manually once satisfied.");
+        Ok(None)
     }
-    let mut builder = CommitMessageBuilder::new(summary);
-    builder
-        .set_header(CommitMessageType::CodeChange)
-        .with_session_log_path(session_path.clone())
-        .with_author_note(format!(
-            "Review reference: {}",
-            review_rel.to_string_lossy()
-        ));
-    let commit_message = builder.build();
-    let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
-    Ok(Some(commit_oid.to_string()))
 }
 
 fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -2577,8 +2748,9 @@ async fn apply_plan_in_worktree(
     worktree_path: &Path,
     plan_path: &Path,
     push_after: bool,
+    commit_mode: CommitMode,
     agent: &config::AgentSettings,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<PlanApplyResult, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
 
     let plan_rel = spec.plan_rel_path();
@@ -2619,10 +2791,13 @@ async fn apply_plan_in_worktree(
         let _ = handle.await;
     }
 
-    let session_artifact = Auditor::commit_audit().await?;
-    let session_path = session_artifact
-        .as_ref()
-        .map(|artifact| artifact.display_path());
+    let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
+    let session_path = audit_result.session_display();
+    if audit_result.pending() {
+        display::info(
+            "Narrative assets updated with --no-commit; changes left pending in the plan worktree.",
+        );
+    }
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -2647,14 +2822,21 @@ async fn apply_plan_in_worktree(
         .with_session_log_path(session_path.clone());
 
     let commit_message = builder.build();
-    vcs::stage(Some(vec!["."]))?;
-    let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+    let mut commit_oid: Option<String> = None;
 
-    if push_after {
-        push_origin_if_requested(true)?;
+    if commit_mode.should_commit() {
+        vcs::stage(Some(vec!["."]))?;
+        let oid = vcs::add_and_commit(None, &commit_message, false)?;
+        commit_oid = Some(oid.to_string());
+
+        if push_after {
+            push_origin_if_requested(true)?;
+        }
+    } else if push_after {
+        display::info("Push skipped because --no-commit left changes pending.");
     }
 
-    Ok(commit_oid.to_string())
+    Ok(PlanApplyResult { commit_oid })
 }
 
 async fn refresh_plan_branch(
