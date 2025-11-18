@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
@@ -72,6 +74,7 @@ impl IntegrationRepo {
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
         ensure_gitignore(dir.path())?;
+        write_default_cicd_script(dir.path())?;
         init_repo_at(dir.path())?;
         Ok(Self { dir })
     }
@@ -93,6 +96,8 @@ impl IntegrationRepo {
     fn vizier_cmd_with_config(&self, config: &Path) -> Command {
         let mut cmd = self.vizier_cmd();
         cmd.env("VIZIER_CONFIG_FILE", config);
+        cmd.arg("--config-file");
+        cmd.arg(config);
         cmd
     }
 
@@ -393,6 +398,19 @@ fn write_cicd_script(repo: &IntegrationRepo, name: &str, contents: &str) -> io::
     let path = scripts_dir.join(name);
     fs::write(&path, contents)?;
     Ok(path)
+}
+
+fn write_default_cicd_script(repo_root: &Path) -> io::Result<()> {
+    let script_path = repo_root.join("cicd.sh");
+    let contents = "#!/bin/sh\nset -eu\nprintf \"default ci gate ok\"\n";
+    fs::write(&script_path, contents)?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)?;
+    }
+    Ok(())
 }
 
 fn ensure_gitignore(path: &Path) -> io::Result<()> {
