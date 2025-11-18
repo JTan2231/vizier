@@ -326,10 +326,8 @@ fn parse_session_usage(contents: &str) -> Result<UsageSnapshot, Box<dyn std::err
     snapshot.total_delta = usage_value(usage, "delta_total")?;
     snapshot.cached_input_total = usage_value_optional(usage, "cached_input_total")?;
     snapshot.cached_input_delta = usage_value_optional(usage, "cached_input_delta")?;
-    snapshot.reasoning_output_total =
-        usage_value_optional(usage, "reasoning_output_total")?;
-    snapshot.reasoning_output_delta =
-        usage_value_optional(usage, "reasoning_output_delta")?;
+    snapshot.reasoning_output_total = usage_value_optional(usage, "reasoning_output_total")?;
+    snapshot.reasoning_output_delta = usage_value_optional(usage, "reasoning_output_delta")?;
     snapshot.known = usage
         .get("known")
         .and_then(Value::as_bool)
@@ -346,14 +344,8 @@ fn usage_value(usage: &Value, key: &str) -> Result<usize, Box<dyn std::error::Er
         .map_err(|err| err.into())
 }
 
-fn usage_value_optional(
-    usage: &Value,
-    key: &str,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    Ok(usage
-        .get(key)
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize)
+fn usage_value_optional(usage: &Value, key: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    Ok(usage.get(key).and_then(Value::as_u64).unwrap_or(0) as usize)
 }
 
 fn gather_session_logs(repo: &IntegrationRepo) -> io::Result<Vec<PathBuf>> {
@@ -1188,7 +1180,7 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
 }
 
 #[test]
-fn test_review_produces_artifacts() -> TestResult {
+fn test_review_streams_critique() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let draft = repo.vizier_output(&["draft", "--name", "review-smoke", "review smoke spec"])?;
     assert!(
@@ -1216,16 +1208,21 @@ fn test_review_produces_artifacts() -> TestResult {
         String::from_utf8_lossy(&review.stderr)
     );
 
+    let stdout = String::from_utf8_lossy(&review.stdout);
+    assert!(
+        stdout.contains("--- Review critique for plan review-smoke ---"),
+        "review output should stream the critique header but was:\n{}",
+        stdout
+    );
+
     let repo_handle = repo.repo();
     let branch = repo_handle.find_branch("draft/review-smoke", BranchType::Local)?;
     let commit = branch.get().peel_to_commit()?;
     let tree = commit.tree()?;
-    let review_entry = tree.get_path(Path::new(".vizier/reviews/review-smoke.md"))?;
-    let review_blob = repo_handle.find_blob(review_entry.id())?;
-    let review_contents = std::str::from_utf8(review_blob.content())?;
     assert!(
-        review_contents.contains("plan: review-smoke"),
-        "review artifact missing front matter: {review_contents}"
+        tree.get_path(Path::new(".vizier/reviews/review-smoke.md"))
+            .is_err(),
+        "review artifacts should not be committed to the plan branch"
     );
 
     let plan_entry = tree.get_path(Path::new(".vizier/implementation-plans/review-smoke.md"))?;
@@ -1233,7 +1230,13 @@ fn test_review_produces_artifacts() -> TestResult {
     let plan_contents = std::str::from_utf8(plan_blob.content())?;
     assert!(
         plan_contents.contains("status: review-ready"),
-        "plan status should be marked review-ready after review: {plan_contents}"
+        "plan status should be marked review-ready after review: {}",
+        plan_contents
+    );
+
+    assert!(
+        !repo.path().join(".vizier/reviews/review-smoke.md").exists(),
+        "review directory should not exist after streaming critiques"
     );
 
     Ok(())

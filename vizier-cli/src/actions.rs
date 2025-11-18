@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-use chrono::{SecondsFormat, Utc};
 use git2::{BranchType, Oid, Repository, RepositoryState};
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
@@ -1439,10 +1438,10 @@ pub async fn run_review(
             }
 
             println!(
-                "Review complete; plan={} branch={} review={} checks={}/{} diff=\"{}\" session={}{}",
+                "Review complete; plan={} branch={} critique={} checks={}/{} diff=\"{}\" session={}{}",
                 spec.slug,
                 spec.branch,
-                outcome.review_rel,
+                outcome.critique_label,
                 outcome.checks_passed,
                 outcome.checks_total,
                 outcome.diff_command,
@@ -2206,7 +2205,7 @@ struct ReviewExecution {
 }
 
 struct ReviewOutcome {
-    review_rel: String,
+    critique_label: &'static str,
     session_path: Option<String>,
     checks_passed: usize,
     checks_total: usize,
@@ -2262,9 +2261,6 @@ async fn perform_review_workflow(
     agent: &config::AgentSettings,
 ) -> Result<ReviewOutcome, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
-    let review_rel = Path::new(".vizier")
-        .join("reviews")
-        .join(format!("{}.md", spec.slug));
 
     let commands = resolve_review_commands(worktree_path, exec.skip_checks);
     if commands.is_empty() && !exec.skip_checks {
@@ -2326,7 +2322,8 @@ async fn perform_review_workflow(
         display::info("Review critique artifacts held for manual review (--no-commit active).");
     }
 
-    write_review_file(&review_rel, spec, response.content.trim())?;
+    let critique_text = response.content.trim().to_string();
+    emit_review_critique(&spec.slug, &critique_text);
     plan::set_plan_status(plan_path, "review-ready", Some("reviewed_at"))?;
 
     if commit_mode.should_commit() {
@@ -2342,13 +2339,21 @@ async fn perform_review_workflow(
         builder
             .set_header(CommitMessageType::NarrativeChange)
             .with_session_log_path(session_path.clone())
-            .with_author_note(format!("Review file: {}", review_rel.to_string_lossy()));
+            .with_author_note(format!(
+                "Review critique streamed to terminal; session: {}",
+                session_path.as_deref().unwrap_or("<session unavailable>")
+            ));
         let commit_message = builder.build();
         let _review_commit = vcs::add_and_commit(None, &commit_message, false)?;
     } else {
-        display::info(
-            "Review critique not committed (--no-commit); inspect .vizier/reviews before committing manually.",
-        );
+        let session_hint = session_path
+            .as_deref()
+            .unwrap_or("<session unavailable>")
+            .to_string();
+        display::info(format!(
+            "Review critique not committed (--no-commit); consult the terminal output or session log {} before committing manually.",
+            session_hint
+        ));
     }
 
     let mut fix_commit: Option<String> = None;
@@ -2371,7 +2376,7 @@ async fn perform_review_workflow(
                 spec,
                 plan_meta,
                 worktree_path,
-                &review_rel,
+                &critique_text,
                 commit_mode,
                 agent,
             )
@@ -2396,7 +2401,7 @@ async fn perform_review_workflow(
     }
 
     Ok(ReviewOutcome {
-        review_rel: review_rel.to_string_lossy().to_string(),
+        critique_label: "terminal",
         session_path,
         checks_passed,
         checks_total,
@@ -2602,52 +2607,42 @@ fn run_git_capture(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn write_review_file(
-    rel_path: &Path,
-    spec: &plan::PlanBranchSpec,
-    critique: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = rel_path
-        .parent()
-        .ok_or_else(|| "invalid review path: missing parent directory".to_string())?;
-    fs::create_dir_all(parent)?;
-    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let mut document = String::new();
-    document.push_str("---\n");
-    document.push_str(&format!("plan: {}\n", spec.slug));
-    document.push_str(&format!("branch: {}\n", spec.branch));
-    document.push_str(&format!("target: {}\n", spec.target_branch));
-    document.push_str(&format!("reviewed_at: {}\n", timestamp));
-    document.push_str("reviewer: codex\n");
-    document.push_str("---\n\n");
+fn emit_review_critique(plan_slug: &str, critique: &str) {
+    println!("--- Review critique for plan {plan_slug} ---");
     if critique.trim().is_empty() {
-        document.push_str("(Codex returned an empty critique.)\n");
+        println!("(Codex returned an empty critique.)");
     } else {
-        document.push_str(critique.trim());
-        document.push('\n');
+        println!("{}", critique.trim());
     }
-    fs::write(rel_path, document)?;
-    Ok(())
+    println!("--- End review critique ---");
 }
 
 async fn apply_review_fixes(
     spec: &plan::PlanBranchSpec,
     plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
-    review_rel: &Path,
+    critique_text: &str,
     commit_mode: CommitMode,
     agent: &config::AgentSettings,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let plan_rel = spec.plan_rel_path();
     let mut instruction = format!(
-        "<instruction>Read the implementation plan at {} and the review critique at {}. Address every Action Item without changing unrelated code.</instruction>",
-        plan_rel.display(),
-        review_rel.display()
+        "<instruction>Read the implementation plan at {} and the review critique below. Address every Action Item without changing unrelated code.</instruction>",
+        plan_rel.display()
     );
     instruction.push_str(&format!(
         "<planSummary>{}</planSummary>",
         plan::summarize_spec(plan_meta)
     ));
+    instruction.push_str("<reviewCritique>\n");
+    if critique_text.trim().is_empty() {
+        instruction
+            .push_str("(Review critique was empty; explain whether any fixes are necessary.)\n");
+    } else {
+        instruction.push_str(critique_text.trim());
+        instruction.push('\n');
+    }
+    instruction.push_str("</reviewCritique>");
     instruction.push_str(
         "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
     );
@@ -2697,9 +2692,8 @@ async fn apply_review_fixes(
         let mut summary = response.content.trim().to_string();
         if summary.is_empty() {
             summary = format!(
-                "Addressed review feedback for plan {} using {}",
-                spec.slug,
-                review_rel.to_string_lossy()
+                "Addressed review feedback for plan {} based on the latest critique",
+                spec.slug
             );
         }
         let mut builder = CommitMessageBuilder::new(summary);
@@ -2707,8 +2701,8 @@ async fn apply_review_fixes(
             .set_header(CommitMessageType::CodeChange)
             .with_session_log_path(session_path.clone())
             .with_author_note(format!(
-                "Review reference: {}",
-                review_rel.to_string_lossy()
+                "Review critique streamed to terminal; session: {}",
+                session_path.as_deref().unwrap_or("<session unavailable>")
             ));
         let commit_message = builder.build();
         let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
