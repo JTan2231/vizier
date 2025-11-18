@@ -38,6 +38,16 @@ Need to see what’s pending before approving or merging? Run `vizier list [--ta
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
+### Holding commits with `--no-commit`
+
+All plan workflow commands except `vizier merge` honor the global `--no-commit` flag (or `[workflow] no_commit_default = true` in `.vizier/config.toml`). When active, Vizier still runs Codex and writes artifacts, but it leaves the plan worktree dirty instead of committing or pushing:
+
+- `vizier draft --no-commit` leaves the generated plan Markdown uncommitted under `.vizier/tmp-worktrees/.../`.
+- `vizier approve --no-commit` applies the plan but preserves the worktree so you can diff and hand-edit before committing.
+- `vizier review --no-commit` records the critique and (optionally) Codex fixes without committing the review file or fixes.
+
+Use this when you want to inspect Codex output locally before history changes. Once satisfied, either commit inside the preserved worktree or rerun the same command without `--no-commit`. `vizier merge` still requires an actual merge commit, so finalize the draft branch (either manually or by rerunning `approve`/`review` without the flag) before merging.
+
 ### Customizing the plan/review/merge prompts
 
 Repositories can tune every Codex instruction involved in this workflow without recompiling Vizier. Drop Markdown files under `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` (or set `[prompts.implementation_plan|review|merge_conflict]` in your config) to change how draft plans are generated, how reviews critique a branch, and how Codex handles merge conflicts. The CLI reads these templates when it starts, so restart `vizier` after editing them to ensure new instructions take effect.

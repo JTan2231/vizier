@@ -100,6 +100,10 @@ struct GlobalOpts {
     /// Push the current branch to origin after mutating git history
     #[arg(short = 'P', long, global = true)]
     push: bool,
+
+    /// Leave changes staged/dirty instead of committing automatically
+    #[arg(long = "no-commit", action = ArgAction::SetTrue, global = true)]
+    no_commit: bool,
 }
 
 impl Default for GlobalOpts {
@@ -121,6 +125,7 @@ impl Default for GlobalOpts {
             config_file: None,
             reasoning_effort: None,
             push: false,
+            no_commit: false,
         }
     }
 }
@@ -974,6 +979,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config::Config::provider_from_settings(&cfg.provider_model, cfg.reasoning_effort)?;
     }
 
+    let workflow_defaults = cfg.workflow.clone();
+
     config::set_config(cfg);
 
     let cli_agent_override = build_cli_agent_overrides(&cli.global)?;
@@ -985,6 +992,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(false);
 
     let push_after = cli.global.push;
+    let commit_mode = if cli.global.no_commit {
+        CommitMode::HoldForReview
+    } else if workflow_defaults.no_commit_default {
+        CommitMode::HoldForReview
+    } else {
+        CommitMode::AutoCommit
+    };
 
     match cli.command {
         Commands::Completions(cmd) => {
@@ -1011,6 +1025,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &[".vizier/"],
                 commit_message,
                 commit_message_editor,
+                commit_mode,
                 push_after,
                 &agent,
             )
@@ -1026,7 +1041,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config::CommandScope::Ask,
                 &agent,
             );
-            inline_command(message, push_after, &agent).await
+            inline_command(message, push_after, &agent, commit_mode).await
         }
 
         Commands::Draft(cmd) => {
@@ -1045,6 +1060,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     name_override: cmd.name.clone(),
                 },
                 &agent,
+                commit_mode,
             )
             .await
         }
@@ -1062,7 +1078,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config::CommandScope::Approve,
                 &agent,
             );
-            run_approve(opts, &agent).await
+            run_approve(opts, &agent, commit_mode).await
         }
         Commands::Review(cmd) => {
             let opts = resolve_review_options(&cmd, push_after)?;
@@ -1075,7 +1091,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config::CommandScope::Review,
                 &agent,
             );
-            run_review(opts, &agent).await
+            run_review(opts, &agent, commit_mode).await
         }
         Commands::Merge(cmd) => {
             let opts = resolve_merge_options(&cmd, push_after)?;
@@ -1086,7 +1102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config::CommandScope::Merge,
                 &agent,
             );
-            run_merge(opts, &agent).await
+            run_merge(opts, &agent, commit_mode).await
         }
     }
 }
