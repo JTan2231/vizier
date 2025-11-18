@@ -241,6 +241,10 @@ struct UsageSnapshot {
     prompt_delta: usize,
     completion_delta: usize,
     total_delta: usize,
+    cached_input_total: usize,
+    cached_input_delta: usize,
+    reasoning_output_total: usize,
+    reasoning_output_delta: usize,
     known: bool,
 }
 
@@ -278,12 +282,24 @@ fn parse_usage_line(line: &str) -> Option<UsageSnapshot> {
             last_key = Some("total");
             continue;
         }
+        if let Some(value) = token.strip_prefix("cached_input=") {
+            snapshot.cached_input_total = value.parse().ok()?;
+            last_key = Some("cached_input");
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("reasoning_output=") {
+            snapshot.reasoning_output_total = value.parse().ok()?;
+            last_key = Some("reasoning_output");
+            continue;
+        }
         if let Some(value) = token.strip_prefix("(+") {
             let number = value.trim_end_matches(')').parse().ok()?;
             match last_key {
                 Some("prompt") => snapshot.prompt_delta = number,
                 Some("completion") => snapshot.completion_delta = number,
                 Some("total") => snapshot.total_delta = number,
+                Some("cached_input") => snapshot.cached_input_delta = number,
+                Some("reasoning_output") => snapshot.reasoning_output_delta = number,
                 _ => return None,
             }
         }
@@ -308,6 +324,12 @@ fn parse_session_usage(contents: &str) -> Result<UsageSnapshot, Box<dyn std::err
     snapshot.prompt_delta = usage_value(usage, "prompt_delta")?;
     snapshot.completion_delta = usage_value(usage, "completion_delta")?;
     snapshot.total_delta = usage_value(usage, "delta_total")?;
+    snapshot.cached_input_total = usage_value_optional(usage, "cached_input_total")?;
+    snapshot.cached_input_delta = usage_value_optional(usage, "cached_input_delta")?;
+    snapshot.reasoning_output_total =
+        usage_value_optional(usage, "reasoning_output_total")?;
+    snapshot.reasoning_output_delta =
+        usage_value_optional(usage, "reasoning_output_delta")?;
     snapshot.known = usage
         .get("known")
         .and_then(Value::as_bool)
@@ -322,6 +344,16 @@ fn usage_value(usage: &Value, key: &str) -> Result<usize, Box<dyn std::error::Er
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("token_usage.{key} missing")))
         .map(|value| value as usize)
         .map_err(|err| err.into())
+}
+
+fn usage_value_optional(
+    usage: &Value,
+    key: &str,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    Ok(usage
+        .get(key)
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize)
 }
 
 fn gather_session_logs(repo: &IntegrationRepo) -> io::Result<Vec<PathBuf>> {
@@ -718,6 +750,16 @@ fn test_ask_reports_token_usage_progress() -> TestResult {
         "expected usage progress line, stderr was:\n{}",
         stderr
     );
+    assert!(
+        stderr.contains("cached_input="),
+        "usage line should include cached input counts:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("reasoning_output="),
+        "usage line should include reasoning output counts:\n{}",
+        stderr
+    );
 
     let quiet_repo = IntegrationRepo::new()?;
     let quiet = quiet_repo.vizier_output(&["-q", "ask", "quiet usage check"])?;
@@ -799,6 +841,10 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
     assert_eq!(usage.prompt_total, 0);
     assert_eq!(usage.completion_total, 0);
     assert_eq!(usage.total, 0);
+    assert_eq!(usage.cached_input_total, 0);
+    assert_eq!(usage.cached_input_delta, 0);
+    assert_eq!(usage.reasoning_output_total, 0);
+    assert_eq!(usage.reasoning_output_delta, 0);
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
@@ -122,15 +122,8 @@ pub fn print_token_usage() {
     if let Some(report) = Auditor::latest_usage_report() {
         let agent_note = format_agent_annotation();
         if report.known {
-            let mut message = format!(
-                "Token usage: prompt={} (+{}) completion={} (+{}) total={} (+{})",
-                report.prompt_total,
-                report.prompt_delta,
-                report.completion_total,
-                report.completion_delta,
-                report.total(),
-                report.delta_total()
-            );
+            let mut message =
+                format!("Token usage: {}", describe_usage_report(&report));
             if let Some(annotation) = agent_note {
                 message.push_str(&format!("; {}", annotation));
             }
@@ -147,12 +140,8 @@ pub fn print_token_usage() {
 
     let usage = Auditor::get_total_usage();
     if usage.known {
-        let mut message = format!(
-            "Token usage: prompt={} completion={} total={}",
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.input_tokens + usage.output_tokens
-        );
+        let mut message =
+            format!("Token usage: {}", describe_usage_totals(&usage));
         if let Some(annotation) = format_agent_annotation() {
             message.push_str(&format!("; {}", annotation));
         }
@@ -168,45 +157,24 @@ pub fn print_token_usage() {
 
 fn token_usage_suffix() -> String {
     let agent_note = format_agent_annotation();
-    if let Some(report) = Auditor::latest_usage_report() {
-        let mut detail = if report.known {
-            format!(
-                "prompt={} [+{}] completion={} [+{}] total={} [+{}]",
-                report.prompt_total,
-                report.prompt_delta,
-                report.completion_total,
-                report.completion_delta,
-                report.total(),
-                report.delta_total()
-            )
+    let mut detail = if let Some(report) = Auditor::latest_usage_report() {
+        if report.known {
+            describe_usage_report(&report)
         } else {
             "unknown".to_string()
-        };
-        if let Some(annotation) = agent_note {
-            detail.push_str(&format!("; {}", annotation));
         }
-        return format!(" (tokens: {})", detail);
-    }
-
-    let usage = Auditor::get_total_usage();
-    if usage.known {
-        let mut detail = format!(
-            "prompt={} completion={} total={}",
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.input_tokens + usage.output_tokens
-        );
-        if let Some(annotation) = format_agent_annotation() {
-            detail.push_str(&format!("; {}", annotation));
-        }
-        format!(" (tokens: {})", detail)
     } else {
-        let mut detail = "unknown".to_string();
-        if let Some(annotation) = format_agent_annotation() {
-            detail.push_str(&format!("; {}", annotation));
+        let usage = Auditor::get_total_usage();
+        if usage.known {
+            describe_usage_totals(&usage)
+        } else {
+            "unknown".to_string()
         }
-        format!(" (tokens: {})", detail)
+    };
+    if let Some(annotation) = agent_note {
+        detail.push_str(&format!("; {}", annotation));
     }
+    format!(" (tokens: {})", detail)
 }
 
 fn format_agent_annotation() -> Option<String> {
@@ -221,6 +189,58 @@ fn format_agent_annotation() -> Option<String> {
         }
         parts.join(" ")
     })
+}
+
+fn describe_usage_report(report: &auditor::TokenUsageReport) -> String {
+    let mut sections = Vec::new();
+    sections.push(format!(
+        "total={} (+{})",
+        report.total(),
+        report.delta_total()
+    ));
+    let mut input_section =
+        format!("input={} (+{}", report.prompt_total, report.prompt_delta);
+    if let Some(cached_delta) = report.cached_input_delta {
+        input_section.push_str(&format!(", +{} cached", cached_delta));
+    } else if let Some(cached_total) = report.cached_input_total {
+        input_section.push_str(&format!(", {} cached", cached_total));
+    }
+    input_section.push(')');
+    sections.push(input_section);
+    let mut output_section = format!(
+        "output={} (+{}",
+        report.completion_total, report.completion_delta
+    );
+    if report.reasoning_output_total.is_some()
+        || report.reasoning_output_delta.is_some()
+    {
+        let reasoning_value = report
+            .reasoning_output_delta
+            .or(report.reasoning_output_total)
+            .unwrap_or(0);
+        output_section.push_str(&format!(", reasoning {}", reasoning_value));
+    }
+    output_section.push(')');
+    sections.join(" ")
+}
+
+fn describe_usage_totals(usage: &auditor::TokenUsage) -> String {
+    let mut sections = Vec::new();
+    sections.push(format!("total={}", usage.total_tokens));
+    let mut input_section = format!("input={}", usage.input_tokens);
+    if usage.cached_input_tokens > 0 {
+        input_section.push_str(&format!(" (+{} cached)", usage.cached_input_tokens));
+    }
+    sections.push(input_section);
+    let mut output_section = format!("output={}", usage.output_tokens);
+    if usage.reasoning_output_tokens > 0 {
+        output_section.push_str(&format!(
+            " (reasoning {})",
+            usage.reasoning_output_tokens
+        ));
+    }
+    sections.push(output_section);
+    sections.join(" ")
 }
 
 fn spawn_plain_progress_logger(mut rx: mpsc::Receiver<ProgressEvent>) -> Option<JoinHandle<()>> {
