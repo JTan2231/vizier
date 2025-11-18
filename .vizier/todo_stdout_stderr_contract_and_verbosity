@@ -4,6 +4,10 @@ Canonicalization note (2025-10-06): This is the canonical TODO for the stdout/st
 
 Thread: Stdout/stderr contract + verbosity (cross: Outcome summaries)
 
+Snapshot anchor
+- Active threads — Stdout/stderr contract + verbosity (Running Snapshot — updated).
+- Code state — Display/verbosity and stdout usage bullets (Running Snapshot — updated).
+
 Problem/Tension
 - Prior behavior leaked ANSI spinner/status to logs and non-TTY contexts and lacked consistent verbosity controls; stdout carried no stable, scriptable outcome.
 - Current state (partial): CLI ships -q/-v/-vv, --no-ansi, and progress gating (Auto/Never/Always) via vizier-core::display with TTY detection. Some commands print ad-hoc outcomes to stdout, but there’s no standardized outcome.v1 JSON or uniform human epilogue across actions.

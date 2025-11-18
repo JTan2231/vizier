@@ -69,7 +69,7 @@ Codex-backed workflows stay isolated on draft branches so you can review work be
 
 1. `vizier draft "add retry logic to the API client"` → creates `draft/<slug>` with `.vizier/implementation-plans/<slug>.md` committed on that branch via a disposable worktree.
 2. `vizier approve <slug>` → replays the plan on the draft branch, staging commits without touching your checkout.
-3. `vizier review <slug>` → runs configured checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when Cargo exists), produces `.vizier/reviews/<slug>.md`, and can apply targeted fixes.
+3. `vizier review <slug>` → runs the configured checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when Cargo exists), streams Codex’s critique to the terminal/session log (no `.vizier/reviews` artifacts), updates the plan status, and can apply targeted fixes.
 4. `vizier merge <slug>` → performs a non-fast-forward merge into the target branch, embedding the stored plan under an `Implementation Plan:` section of the merge commit and running any configured CI gate.
 
 Worktrees keep the primary checkout clean throughout. See `docs/workflows/draft-approve-merge.md` for the full choreography, including completions, gating, and troubleshooting tips.
