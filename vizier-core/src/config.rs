@@ -615,12 +615,11 @@ impl Config {
                 continue;
             };
 
-            let scope_table = value.as_object().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("[prompts.{key}] must be a table of prompt overrides"),
-                )
-            })?;
+            let Some(scope_table) = value.as_object() else {
+                // Global prompt overrides (like `review = "..."`) share the same keys as
+                // command scopes. Skip them here; they are handled by the global prompt parser.
+                continue;
+            };
 
             for (prompt_key, prompt_value) in scope_table {
                 let Some(kind) = prompt_kind_from_key(prompt_key) else {
