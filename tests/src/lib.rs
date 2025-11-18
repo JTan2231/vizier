@@ -1227,7 +1227,7 @@ fn test_review_summary_includes_token_suffix() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&review.stdout);
     assert!(
-        stdout.contains(" (tokens: prompt="),
+        stdout.contains(" (tokens: total="),
         "review summary should include token suffix but was:\n{}",
         stdout
     );
