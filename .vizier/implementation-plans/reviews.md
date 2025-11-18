@@ -1,9 +1,10 @@
 ---
 plan: reviews
 branch: draft/reviews
-status: draft
+status: implemented
 created_at: 2025-11-18T06:01:22Z
 spec_source: inline
+implemented_at: 2025-11-18T06:18:23Z
 ---
 
 ## Operator Spec

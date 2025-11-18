@@ -436,7 +436,7 @@ pub fn build_review_prompt(
 
     prompt.push_str("<planMetadata>\n");
     prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\nreview_file: .vizier/reviews/{plan_slug}.md\n"
+        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
     ));
     prompt.push_str("</planMetadata>\n\n");
 
