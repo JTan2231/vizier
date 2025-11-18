@@ -29,8 +29,38 @@ lazy_static! {
 #[derive(Clone, Debug)]
 pub struct TokenUsage {
     pub input_tokens: usize,
+    pub cached_input_tokens: usize,
     pub output_tokens: usize,
+    pub reasoning_output_tokens: usize,
+    pub total_tokens: usize,
     pub known: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BackendUsageTotals {
+    cached_input_total: usize,
+    reasoning_output_total: usize,
+    billed_total: usize,
+    has_data: bool,
+}
+
+impl BackendUsageTotals {
+    fn record(&mut self, usage: &TokenUsage) {
+        self.cached_input_total = self
+            .cached_input_total
+            .saturating_add(usage.cached_input_tokens);
+        self.reasoning_output_total = self
+            .reasoning_output_total
+            .saturating_add(usage.reasoning_output_tokens);
+        self.billed_total = self
+            .billed_total
+            .saturating_add(usage.total_tokens.max(usage.input_tokens + usage.output_tokens));
+        self.has_data = true;
+    }
+
+    fn clear(&mut self) {
+        *self = BackendUsageTotals::default();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -39,30 +69,54 @@ pub struct TokenUsageReport {
     pub completion_total: usize,
     pub prompt_delta: usize,
     pub completion_delta: usize,
+    pub cached_input_total: Option<usize>,
+    pub cached_input_delta: Option<usize>,
+    pub reasoning_output_total: Option<usize>,
+    pub reasoning_output_delta: Option<usize>,
+    pub backend_total: Option<usize>,
+    pub backend_delta: Option<usize>,
     pub known: bool,
     pub timestamp: String,
 }
 
 impl TokenUsageReport {
     pub fn total(&self) -> usize {
-        self.prompt_total + self.completion_total
+        self.backend_total
+            .or_else(|| Some(self.prompt_total + self.completion_total))
+            .unwrap_or(0)
     }
 
     pub fn delta_total(&self) -> usize {
-        self.prompt_delta + self.completion_delta
+        self.backend_delta
+            .or_else(|| Some(self.prompt_delta + self.completion_delta))
+            .unwrap_or(0)
     }
 
     fn to_progress_event(&self) -> display::ProgressEvent {
         let summary = if self.known {
-            format!(
-                "prompt={} (+{}) completion={} (+{}) total={} (+{})",
-                self.prompt_total,
-                self.prompt_delta,
-                self.completion_total,
-                self.completion_delta,
-                self.total(),
-                self.delta_total()
-            )
+            let mut parts = vec![
+                format!(
+                    "prompt={} (+{})",
+                    self.prompt_total, self.prompt_delta
+                ),
+                format!(
+                    "completion={} (+{})",
+                    self.completion_total, self.completion_delta
+                ),
+                format!("total={} (+{})", self.total(), self.delta_total()),
+            ];
+            if let Some(cached_total) = self.cached_input_total {
+                let delta = self.cached_input_delta.unwrap_or(0);
+                parts.push(format!("cached_input={} (+{})", cached_total, delta));
+            }
+            if let Some(reasoning_total) = self.reasoning_output_total {
+                let delta = self.reasoning_output_delta.unwrap_or(0);
+                parts.push(format!(
+                    "reasoning_output={} (+{})",
+                    reasoning_total, delta
+                ));
+            }
+            parts.join(" ")
         } else {
             "unknown usage (backend omitted token counts)".to_string()
         };
@@ -263,6 +317,8 @@ pub struct Auditor {
     last_usage_report: Option<TokenUsageReport>,
     #[serde(skip)]
     last_agent: Option<AgentInvocationContext>,
+    #[serde(skip)]
+    backend_usage_totals: BackendUsageTotals,
 }
 
 impl Auditor {
@@ -277,6 +333,7 @@ impl Auditor {
             last_session_artifact: None,
             last_usage_report: None,
             last_agent: None,
+            backend_usage_totals: BackendUsageTotals::default(),
         }
     }
 
@@ -314,6 +371,12 @@ impl Auditor {
         }
     }
 
+    fn record_backend_usage(usage: &TokenUsage) {
+        if let Ok(mut auditor) = AUDITOR.lock() {
+            auditor.backend_usage_totals.record(usage);
+        }
+    }
+
     pub fn latest_agent_context() -> Option<AgentInvocationContext> {
         AUDITOR
             .lock()
@@ -324,7 +387,10 @@ impl Auditor {
     fn capture_usage_report_locked(auditor: &mut Auditor) -> Option<TokenUsageReport> {
         let mut totals = TokenUsage {
             input_tokens: 0,
+            cached_input_tokens: 0,
             output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
             known: !auditor.usage_unknown,
         };
 
@@ -332,12 +398,23 @@ impl Auditor {
             totals.input_tokens += message.input_tokens;
             totals.output_tokens += message.output_tokens;
         }
+        totals.total_tokens = totals.input_tokens + totals.output_tokens;
 
-        let (prev_prompt, prev_completion, prev_known) = auditor
-            .last_usage_report
-            .as_ref()
-            .map(|report| (report.prompt_total, report.completion_total, report.known))
-            .unwrap_or((0, 0, true));
+        let (prev_prompt, prev_completion, prev_known, prev_cached, prev_reasoning, prev_billed) =
+            auditor
+                .last_usage_report
+                .as_ref()
+                .map(|report| {
+                    (
+                        report.prompt_total,
+                        report.completion_total,
+                        report.known,
+                        report.cached_input_total.unwrap_or(0),
+                        report.reasoning_output_total.unwrap_or(0),
+                        report.total(),
+                    )
+                })
+                .unwrap_or((0, 0, true, 0, 0, 0));
 
         if totals.input_tokens == prev_prompt
             && totals.output_tokens == prev_completion
@@ -346,11 +423,35 @@ impl Auditor {
             return None;
         }
 
+        let backend_totals = auditor.backend_usage_totals.clone();
+        let cached_total = backend_totals
+            .has_data
+            .then_some(backend_totals.cached_input_total);
+        let cached_delta = cached_total.map(|value| value.saturating_sub(prev_cached));
+        let reasoning_total = backend_totals
+            .has_data
+            .then_some(backend_totals.reasoning_output_total);
+        let reasoning_delta = reasoning_total.map(|value| value.saturating_sub(prev_reasoning));
+        let billed_total = backend_totals
+            .has_data
+            .then_some(
+                backend_totals
+                    .billed_total
+                    .max(totals.total_tokens),
+            );
+        let billed_delta = billed_total.map(|value| value.saturating_sub(prev_billed));
+
         let report = TokenUsageReport {
             prompt_total: totals.input_tokens,
             completion_total: totals.output_tokens,
             prompt_delta: totals.input_tokens.saturating_sub(prev_prompt),
             completion_delta: totals.output_tokens.saturating_sub(prev_completion),
+            cached_input_total: cached_total,
+            cached_input_delta: cached_delta,
+            reasoning_output_total: reasoning_total,
+            reasoning_output_delta: reasoning_delta,
+            backend_total: billed_total,
+            backend_delta: billed_delta,
             known: totals.known,
             timestamp: Utc::now().to_rfc3339(),
         };
@@ -381,6 +482,9 @@ impl Auditor {
     pub fn clear_messages() {
         if let Ok(mut auditor) = AUDITOR.lock() {
             auditor.messages.clear();
+            auditor.last_usage_report = None;
+            auditor.backend_usage_totals.clear();
+            auditor.usage_unknown = false;
         }
     }
 
@@ -388,13 +492,26 @@ impl Auditor {
         let auditor = AUDITOR.lock().unwrap();
         let mut usage = TokenUsage {
             input_tokens: 0,
+            cached_input_tokens: 0,
             output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
             known: !auditor.usage_unknown,
         };
 
         for message in auditor.messages.iter() {
             usage.input_tokens += message.input_tokens;
             usage.output_tokens += message.output_tokens;
+        }
+
+        usage.total_tokens = usage.input_tokens + usage.output_tokens;
+        if auditor.backend_usage_totals.has_data {
+            usage.cached_input_tokens = auditor.backend_usage_totals.cached_input_total;
+            usage.reasoning_output_tokens = auditor.backend_usage_totals.reasoning_output_total;
+            usage.total_tokens = auditor
+                .backend_usage_totals
+                .billed_total
+                .max(usage.total_tokens);
         }
 
         usage
@@ -842,6 +959,7 @@ impl Auditor {
                     if let Some(usage) = response.usage {
                         assistant_message.input_tokens = usage.input_tokens;
                         assistant_message.output_tokens = usage.output_tokens;
+                        Auditor::record_backend_usage(&usage);
                     } else {
                         Auditor::mark_usage_unknown();
                     }
@@ -970,6 +1088,7 @@ impl Auditor {
                         if let Some(usage) = response.usage {
                             assistant_message.input_tokens = usage.input_tokens;
                             assistant_message.output_tokens = usage.output_tokens;
+                            Auditor::record_backend_usage(&usage);
                         } else {
                             Auditor::mark_usage_unknown();
                         }
@@ -1131,6 +1250,14 @@ struct SessionTokenUsage {
     prompt_delta: usize,
     completion_delta: usize,
     delta_total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_input_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_input_delta: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_output_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_output_delta: Option<usize>,
     known: bool,
 }
 
@@ -1143,6 +1270,10 @@ impl From<&TokenUsageReport> for SessionTokenUsage {
             prompt_delta: report.prompt_delta,
             completion_delta: report.completion_delta,
             delta_total: report.delta_total(),
+            cached_input_total: report.cached_input_total,
+            cached_input_delta: report.cached_input_delta,
+            reasoning_output_total: report.reasoning_output_total,
+            reasoning_output_delta: report.reasoning_output_delta,
             known: report.known,
         }
     }
@@ -1337,6 +1468,7 @@ mod tests {
         auditor.messages.clear();
         auditor.last_usage_report = None;
         auditor.usage_unknown = false;
+        auditor.backend_usage_totals.clear();
     }
 
     fn assistant_message(content: &str, input: usize, output: usize) -> wire::types::Message {
