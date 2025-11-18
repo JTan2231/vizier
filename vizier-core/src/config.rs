@@ -258,6 +258,7 @@ pub struct Config {
     pub codex: CodexOptions,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
+    pub workflow: WorkflowConfig,
     pub agent_defaults: AgentOverrides,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
     repo_prompts: HashMap<SystemPrompt, RepoPrompt>,
@@ -304,6 +305,19 @@ impl Default for MergeConfig {
     }
 }
 
+#[derive(Clone)]
+pub struct WorkflowConfig {
+    pub no_commit_default: bool,
+}
+
+impl Default for WorkflowConfig {
+    fn default() -> Self {
+        Self {
+            no_commit_default: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MergeCicdGateConfig {
     pub script: Option<PathBuf>,
@@ -345,6 +359,7 @@ impl Config {
             codex: CodexOptions::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
+            workflow: WorkflowConfig::default(),
             agent_defaults: AgentOverrides::default(),
             agent_scopes: HashMap::new(),
             repo_prompts,
@@ -524,6 +539,16 @@ impl Config {
                     config.merge.cicd_gate.retries = retries;
                 } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
                     config.merge.cicd_gate.retries = retries;
+                }
+            }
+        }
+
+        if let Some(workflow_value) = value_at_path(&file_config, &["workflow"]) {
+            if let Some(workflow_table) = workflow_value.as_object() {
+                if let Some(no_commit) = parse_bool(workflow_table.get("no_commit_default"))
+                    .or_else(|| parse_bool(workflow_table.get("no-commit-default")))
+                {
+                    config.workflow.no_commit_default = no_commit;
                 }
             }
         }

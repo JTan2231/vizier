@@ -40,6 +40,11 @@ script = "./cicd.sh"
 auto_resolve = true
 retries = 2
 
+# Global workflow defaults (apply unless CLI overrides them)
+[workflow]
+# When true, assistant-backed commands hold their edits for manual commits until you rerun without --no-commit.
+no_commit_default = false
+
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
 backend = "codex"
