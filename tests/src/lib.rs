@@ -553,6 +553,47 @@ fn test_save_without_code_changes() -> TestResult {
 }
 
 #[test]
+fn test_save_no_commit_leaves_pending_changes() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before = count_commits_from_head(&repo.repo())?;
+
+    let output = repo.vizier_cmd().args(["--no-commit", "save"]).output()?;
+    assert!(
+        output.status.success(),
+        "vizier save --no-commit failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = count_commits_from_head(&repo.repo())?;
+    assert_eq!(
+        after, before,
+        "no-commit save should not create new commits"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("mode=manual"),
+        "expected manual mode indicator in output but saw: {stdout}"
+    );
+
+    let status = Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "status",
+            "--short",
+            ".vizier/.snapshot",
+        ])
+        .output()?;
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status_stdout.contains(".vizier/.snapshot"),
+        "expected .vizier/.snapshot to be dirty after --no-commit save, git status was: {status_stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_agent_scope_resolution() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let config_path = repo.path().join("agents.toml");
