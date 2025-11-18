@@ -17,7 +17,7 @@ use wire::config::ThinkingLevel;
 
 use crate::{
     codex,
-    config::{self, PromptKind, SystemPrompt},
+    config::{self, PromptOrigin, SystemPrompt},
     display::{self, Verbosity},
     file_tracking, tools, vcs,
 };
@@ -125,6 +125,7 @@ pub struct AgentInvocationContext {
     pub scope: config::CommandScope,
     pub model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
+    pub prompt_kind: SystemPrompt,
 }
 
 impl Drop for AuditorCleanup {
@@ -266,13 +267,14 @@ impl Auditor {
         Auditor::capture_usage_report_locked(&mut auditor)
     }
 
-    fn record_agent(settings: &config::AgentSettings) {
+    fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
         if let Ok(mut auditor) = AUDITOR.lock() {
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
                 scope: settings.scope,
                 model: settings.provider_model.clone(),
                 reasoning_effort: settings.reasoning_effort,
+                prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Base),
             });
         }
     }
@@ -497,7 +499,7 @@ impl Auditor {
             mode: Self::mode_label(),
             repo: Self::repo_snapshot(project_root),
             config_effective: Self::config_snapshot(&cfg),
-            system_prompt: Self::prompt_info(project_root, &cfg),
+            system_prompt: Self::prompt_info(project_root, &cfg, self.last_agent.as_ref()),
             model: Self::model_snapshot(self.last_agent.as_ref(), &cfg),
             messages: self.messages.clone(),
             operations: Vec::new(),
@@ -602,21 +604,36 @@ impl Auditor {
         })
     }
 
-    fn prompt_info(project_root: &Path, cfg: &config::Config) -> SessionPromptInfo {
-        let prompt_path = project_root.join(".vizier").join("BASE_SYSTEM_PROMPT.md");
-        let prompt_hash = {
-            let prompt = cfg.get_prompt(config::PromptKind::Base);
-            let digest = Sha256::digest(prompt.as_bytes());
-            format!("{:x}", digest)
+    fn prompt_info(
+        project_root: &Path,
+        cfg: &config::Config,
+        context: Option<&AgentInvocationContext>,
+    ) -> SessionPromptInfo {
+        let scope = context
+            .map(|ctx| ctx.scope)
+            .unwrap_or(config::CommandScope::Ask);
+        let kind = context
+            .map(|ctx| ctx.prompt_kind)
+            .unwrap_or(SystemPrompt::Base);
+        let selection = cfg.prompt_for(scope, kind);
+        let origin = selection.origin.clone();
+        let digest = Sha256::digest(selection.text.as_bytes());
+        let hash = format!("{:x}", digest);
+
+        let path = match &origin {
+            PromptOrigin::RepoFile { path } => {
+                let relative = path.strip_prefix(project_root).unwrap_or(path.as_path());
+                Some(relative.to_string_lossy().to_string())
+            }
+            _ => None,
         };
 
         SessionPromptInfo {
-            path: prompt_path
-                .exists()
-                .then(|| prompt_path.strip_prefix(project_root).ok())
-                .flatten()
-                .map(|relative| relative.to_string_lossy().to_string()),
-            hash: prompt_hash,
+            kind: kind.as_str().to_string(),
+            scope: scope.as_str().to_string(),
+            origin: origin.label().to_string(),
+            path,
+            hash,
         }
     }
 
@@ -711,7 +728,7 @@ impl Auditor {
         codex_model: Option<codex::CodexModel>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        Self::record_agent(agent);
+        Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
         let fallback_backend = agent.fallback_backend;
@@ -796,7 +813,7 @@ impl Auditor {
                                 codex_error
                             ));
                             let fallback_prompt =
-                                config::get_system_prompt_with_meta(prompt_variant)?;
+                                config::get_system_prompt_with_meta(agent.scope, prompt_variant)?;
                             let fallback_tools = if tools.is_empty() {
                                 tools::get_tools()
                             } else {
@@ -831,7 +848,7 @@ impl Auditor {
         codex_model: Option<codex::CodexModel>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        Self::record_agent(agent);
+        Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
         let fallback_backend = agent.fallback_backend;
@@ -913,7 +930,7 @@ impl Auditor {
                                 err
                             ));
                             let fallback_prompt =
-                                config::get_system_prompt_with_meta(prompt_variant)?;
+                                config::get_system_prompt_with_meta(agent.scope, prompt_variant)?;
                             let fallback_tools = if tools.is_empty() {
                                 tools::get_tools()
                             } else {
@@ -1036,6 +1053,9 @@ struct SessionRepoState {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SessionPromptInfo {
+    kind: String,
+    scope: String,
+    origin: String,
     path: Option<String>,
     hash: String,
 }
@@ -1134,9 +1154,7 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AUDITOR, Auditor, CommitMessageBuilder, CommitMessageType, find_project_root,
-    };
+    use super::{AUDITOR, Auditor, CommitMessageBuilder, CommitMessageType, find_project_root};
     use std::fs;
     use tempfile::tempdir;
     use wire::{

@@ -33,6 +33,49 @@ pub enum PromptKind {
 /// Alias for prompt variants that feed the system prompt builder.
 pub type SystemPrompt = PromptKind;
 
+impl PromptKind {
+    pub fn all() -> &'static [PromptKind] {
+        const ALL: &[PromptKind] = &[
+            PromptKind::Base,
+            PromptKind::Commit,
+            PromptKind::ImplementationPlan,
+            PromptKind::Review,
+            PromptKind::MergeConflict,
+        ];
+        ALL
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PromptKind::Base => "base",
+            PromptKind::Commit => "commit",
+            PromptKind::ImplementationPlan => "implementation_plan",
+            PromptKind::Review => "review",
+            PromptKind::MergeConflict => "merge_conflict",
+        }
+    }
+
+    fn filename(&self) -> &'static str {
+        match self {
+            PromptKind::Base => "BASE_SYSTEM_PROMPT.md",
+            PromptKind::Commit => "COMMIT_PROMPT.md",
+            PromptKind::ImplementationPlan => "IMPLEMENTATION_PLAN_PROMPT.md",
+            PromptKind::Review => "REVIEW_PROMPT.md",
+            PromptKind::MergeConflict => "MERGE_CONFLICT_PROMPT.md",
+        }
+    }
+
+    fn default_template(&self) -> &'static str {
+        match self {
+            PromptKind::Base => SYSTEM_PROMPT_BASE,
+            PromptKind::Commit => COMMIT_PROMPT,
+            PromptKind::ImplementationPlan => IMPLEMENTATION_PLAN_PROMPT,
+            PromptKind::Review => REVIEW_PROMPT,
+            PromptKind::MergeConflict => MERGE_CONFLICT_PROMPT,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     Codex,
@@ -171,6 +214,39 @@ impl Default for CodexOptions {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RepoPrompt {
+    path: PathBuf,
+    contents: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromptOrigin {
+    ScopedConfig { scope: CommandScope },
+    RepoFile { path: PathBuf },
+    GlobalConfig,
+    Default,
+}
+
+impl PromptOrigin {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PromptOrigin::ScopedConfig { .. } => "scoped-config",
+            PromptOrigin::RepoFile { .. } => "repo-file",
+            PromptOrigin::GlobalConfig => "config",
+            PromptOrigin::Default => "default",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PromptSelection {
+    pub text: String,
+    pub kind: PromptKind,
+    pub requested_scope: CommandScope,
+    pub origin: PromptOrigin,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub provider: Arc<dyn Prompt>,
@@ -184,7 +260,9 @@ pub struct Config {
     pub merge: MergeConfig,
     pub agent_defaults: AgentOverrides,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
-    prompt_store: std::collections::HashMap<SystemPrompt, String>,
+    repo_prompts: HashMap<SystemPrompt, RepoPrompt>,
+    global_prompts: HashMap<SystemPrompt, String>,
+    scoped_prompts: HashMap<(CommandScope, SystemPrompt), String>,
 }
 
 #[derive(Clone)]
@@ -246,35 +324,16 @@ impl Default for MergeCicdGateConfig {
 impl Config {
     pub fn default() -> Self {
         let prompt_directory = tools::try_get_todo_dir().map(std::path::PathBuf::from);
+        let mut repo_prompts = HashMap::new();
 
-        let mut prompt_store = std::collections::HashMap::new();
-        let load_prompt = |filename: &str, fallback: &str| {
-            prompt_directory
-                .as_ref()
-                .and_then(|dir| std::fs::read_to_string(dir.join(filename)).ok())
-                .unwrap_or_else(|| fallback.to_string())
-        };
-
-        prompt_store.insert(
-            SystemPrompt::Base,
-            load_prompt("BASE_SYSTEM_PROMPT.md", SYSTEM_PROMPT_BASE),
-        );
-        prompt_store.insert(
-            SystemPrompt::Commit,
-            load_prompt("COMMIT_PROMPT.md", COMMIT_PROMPT),
-        );
-        prompt_store.insert(
-            SystemPrompt::ImplementationPlan,
-            load_prompt("IMPLEMENTATION_PLAN_PROMPT.md", IMPLEMENTATION_PLAN_PROMPT),
-        );
-        prompt_store.insert(
-            SystemPrompt::Review,
-            load_prompt("REVIEW_PROMPT.md", REVIEW_PROMPT),
-        );
-        prompt_store.insert(
-            SystemPrompt::MergeConflict,
-            load_prompt("MERGE_CONFLICT_PROMPT.md", MERGE_CONFLICT_PROMPT),
-        );
+        if let Some(dir) = prompt_directory.as_ref() {
+            for kind in PromptKind::all().iter().copied() {
+                let path = dir.join(kind.filename());
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    repo_prompts.insert(kind, RepoPrompt { path, contents });
+                }
+            }
+        }
 
         Self {
             provider: Arc::new(openai::OpenAIClient::new(DEFAULT_MODEL)),
@@ -288,7 +347,9 @@ impl Config {
             merge: MergeConfig::default(),
             agent_defaults: AgentOverrides::default(),
             agent_scopes: HashMap::new(),
-            prompt_store,
+            repo_prompts,
+            global_prompts: HashMap::new(),
+            scoped_prompts: HashMap::new(),
         }
     }
 
@@ -487,6 +548,10 @@ impl Config {
             config.set_prompt(PromptKind::MergeConflict, prompt);
         }
 
+        if let Some(prompts_table) = value_at_path(&file_config, &["prompts"]) {
+            config.parse_scoped_prompt_sections(prompts_table)?;
+        }
+
         if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
             config.parse_agent_sections(agent_value)?;
         }
@@ -495,7 +560,16 @@ impl Config {
     }
 
     pub fn set_prompt<S: Into<String>>(&mut self, prompt: SystemPrompt, value: S) {
-        self.prompt_store.insert(prompt, value.into());
+        self.global_prompts.insert(prompt, value.into());
+    }
+
+    pub fn set_scoped_prompt<S: Into<String>>(
+        &mut self,
+        scope: CommandScope,
+        prompt: SystemPrompt,
+        value: S,
+    ) {
+        self.scoped_prompts.insert((scope, prompt), value.into());
     }
 
     fn parse_agent_sections(
@@ -528,8 +602,85 @@ impl Config {
         Ok(())
     }
 
+    fn parse_scoped_prompt_sections(
+        &mut self,
+        prompts_value: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(table) = prompts_value.as_object() else {
+            return Ok(());
+        };
+
+        for (key, value) in table {
+            let Ok(scope) = key.parse::<CommandScope>() else {
+                continue;
+            };
+
+            let scope_table = value.as_object().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("[prompts.{key}] must be a table of prompt overrides"),
+                )
+            })?;
+
+            for (prompt_key, prompt_value) in scope_table {
+                let Some(kind) = prompt_kind_from_key(prompt_key) else {
+                    continue;
+                };
+
+                let Some(text) = prompt_value.as_str().filter(|s| !s.trim().is_empty()) else {
+                    return Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("[prompts.{key}.{prompt_key}] must be a non-empty string"),
+                    )));
+                };
+
+                self.set_scoped_prompt(scope, kind, text.to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
+        if let Some(value) = self.scoped_prompts.get(&(scope, kind)) {
+            return PromptSelection {
+                text: value.clone(),
+                kind,
+                requested_scope: scope,
+                origin: PromptOrigin::ScopedConfig { scope },
+            };
+        }
+
+        if let Some(repo) = self.repo_prompts.get(&kind) {
+            return PromptSelection {
+                text: repo.contents.clone(),
+                kind,
+                requested_scope: scope,
+                origin: PromptOrigin::RepoFile {
+                    path: repo.path.clone(),
+                },
+            };
+        }
+
+        if let Some(value) = self.global_prompts.get(&kind) {
+            return PromptSelection {
+                text: value.clone(),
+                kind,
+                requested_scope: scope,
+                origin: PromptOrigin::GlobalConfig,
+            };
+        }
+
+        PromptSelection {
+            text: kind.default_template().to_string(),
+            kind,
+            requested_scope: scope,
+            origin: PromptOrigin::Default,
+        }
+    }
+
     pub fn get_prompt(&self, prompt: SystemPrompt) -> String {
-        self.prompt_store.get(&prompt).unwrap().to_string()
+        self.prompt_for(CommandScope::Ask, prompt).text
     }
 
     pub fn resolve_agent_settings(
@@ -839,6 +990,21 @@ fn parse_codex_override(
     }
 }
 
+fn prompt_kind_from_key(key: &str) -> Option<PromptKind> {
+    let normalized = key.trim().to_ascii_lowercase().replace('-', "_");
+
+    match normalized.as_str() {
+        "base" | "base_system_prompt" | "system" => Some(PromptKind::Base),
+        "commit" | "commit_prompt" => Some(PromptKind::Commit),
+        "implementation_plan" | "implementation_plan_prompt" | "plan" => {
+            Some(PromptKind::ImplementationPlan)
+        }
+        "review" | "review_prompt" => Some(PromptKind::Review),
+        "merge_conflict" | "merge_conflict_prompt" | "merge" => Some(PromptKind::MergeConflict),
+        _ => None,
+    }
+}
+
 fn parse_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
     let array = value?.as_array()?;
     let mut entries = Vec::new();
@@ -975,12 +1141,14 @@ pub fn get_config() -> Config {
 }
 
 pub fn get_system_prompt_with_meta(
+    scope: CommandScope,
     prompt_kind: Option<SystemPrompt>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let mut prompt = if let Some(prompt) = prompt_kind {
-        get_config().get_prompt(prompt)
+    let cfg = get_config();
+    let mut prompt = if let Some(kind) = prompt_kind {
+        cfg.prompt_for(scope, kind).text
     } else {
-        get_config().get_prompt(SystemPrompt::Base)
+        cfg.prompt_for(scope, SystemPrompt::Base).text
     };
 
     prompt.push_str("<meta>");
@@ -1089,6 +1257,47 @@ merge_conflict = "toml merge override"
         assert_eq!(
             cfg.get_prompt(PromptKind::MergeConflict),
             "toml merge override"
+        );
+    }
+
+    #[test]
+    fn test_scoped_prompt_overrides() {
+        let toml = r#"
+[prompts.ask]
+base = "ask scope"
+
+[prompts.draft]
+implementation_plan = "draft scope"
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
+        let default_cfg = Config::default();
+
+        assert_eq!(
+            cfg.prompt_for(CommandScope::Ask, PromptKind::Base).text,
+            "ask scope"
+        );
+        assert_eq!(
+            cfg.prompt_for(CommandScope::Save, PromptKind::Base).text,
+            default_cfg
+                .prompt_for(CommandScope::Save, PromptKind::Base)
+                .text,
+        );
+        assert_eq!(
+            cfg.prompt_for(CommandScope::Draft, PromptKind::ImplementationPlan)
+                .text,
+            "draft scope"
+        );
+        assert_eq!(
+            cfg.prompt_for(CommandScope::Approve, PromptKind::ImplementationPlan)
+                .text,
+            default_cfg
+                .prompt_for(CommandScope::Approve, PromptKind::ImplementationPlan)
+                .text,
         );
     }
 

@@ -100,14 +100,18 @@ pub async fn bootstrap_snapshot(
     );
 
     let system_prompt = if agent.backend == config::BackendKind::Codex {
-        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())?
+        codex::build_prompt_for_codex(
+            agent.scope,
+            &instruction,
+            agent.codex.bounds_prompt_path.as_deref(),
+        )?
     } else {
-        config::get_system_prompt_with_meta(None)?
+        config::get_system_prompt_with_meta(agent.scope, None)?
     };
 
     let response = Auditor::llm_request_with_tools(
         &agent,
-        None,
+        Some(config::PromptKind::Base),
         system_prompt,
         instruction,
         tools::get_snapshot_tools(),

@@ -647,15 +647,19 @@ async fn save(
     let save_instruction = build_save_instruction(provided_note.as_deref());
 
     let system_prompt = if agent.backend == config::BackendKind::Codex {
-        codex::build_prompt_for_codex(&save_instruction, agent.codex.bounds_prompt_path.as_deref())
-            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
+        codex::build_prompt_for_codex(
+            agent.scope,
+            &save_instruction,
+            agent.codex.bounds_prompt_path.as_deref(),
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
     } else {
-        crate::config::get_system_prompt_with_meta(None)?
+        crate::config::get_system_prompt_with_meta(agent.scope, None)?
     };
 
     let response = Auditor::llm_request_with_tools(
         agent,
-        None,
+        Some(config::PromptKind::Base),
         system_prompt,
         save_instruction,
         tools::active_tooling_for(agent),
@@ -836,6 +840,7 @@ pub async fn inline_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let system_prompt = if agent.backend == config::BackendKind::Codex {
         match codex::build_prompt_for_codex(
+            agent.scope,
             &user_message,
             agent.codex.bounds_prompt_path.as_deref(),
         ) {
@@ -849,7 +854,7 @@ pub async fn inline_command(
             }
         }
     } else {
-        match crate::config::get_system_prompt_with_meta(None) {
+        match crate::config::get_system_prompt_with_meta(agent.scope, None) {
             Ok(s) => s,
             Err(e) => {
                 display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));
@@ -860,7 +865,7 @@ pub async fn inline_command(
 
     let response = match Auditor::llm_request_with_tools(
         agent,
-        None,
+        Some(config::PromptKind::Base),
         system_prompt,
         user_message,
         tools::active_tooling_for(agent),
@@ -965,6 +970,7 @@ pub async fn run_draft(
         let _cwd_guard = WorkdirGuard::enter(&worktree_path)?;
 
         let prompt = codex::build_implementation_plan_prompt(
+            agent.scope,
             &slug,
             &branch_name,
             &spec_text,
@@ -976,7 +982,7 @@ pub async fn run_draft(
 
         let llm_response = Auditor::llm_request_with_tools(
             agent,
-            None,
+            Some(config::PromptKind::ImplementationPlan),
             prompt,
             spec_text.clone(),
             Vec::new(),
@@ -1601,7 +1607,7 @@ async fn attempt_cicd_auto_fix(
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
         agent,
-        None,
+        Some(config::PromptKind::Review),
         prompt,
         instruction,
         tools::active_tooling_for(agent),
@@ -1868,6 +1874,7 @@ async fn try_auto_resolve_conflicts(
 ) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
     display::info("Attempting to resolve conflicts with Codex...");
     let prompt = codex::build_merge_conflict_prompt(
+        agent.scope,
         &spec.target_branch,
         &spec.branch,
         files,
@@ -2116,6 +2123,7 @@ async fn perform_review_workflow(
         .collect();
 
     let prompt = codex::build_review_prompt(
+        agent.scope,
         &spec.slug,
         &spec.branch,
         &spec.target_branch,
@@ -2136,7 +2144,7 @@ async fn perform_review_workflow(
 
     let response = Auditor::llm_request_with_tools_no_display(
         agent,
-        None,
+        Some(config::PromptKind::Base),
         prompt,
         user_message,
         Vec::new(),
@@ -2467,16 +2475,19 @@ async fn apply_review_fixes(
         "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
     );
 
-    let system_prompt =
-        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())
-            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let system_prompt = codex::build_prompt_for_codex(
+        agent.scope,
+        &instruction,
+        agent.codex.bounds_prompt_path.as_deref(),
+    )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let (event_tx, event_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(event_rx);
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
         agent,
-        None,
+        Some(config::PromptKind::Base),
         system_prompt,
         instruction.clone(),
         tools::active_tooling_for(agent),
@@ -2580,9 +2591,12 @@ async fn apply_plan_in_worktree(
         plan::summarize_spec(plan_meta)
     ));
 
-    let system_prompt =
-        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())
-            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let system_prompt = codex::build_prompt_for_codex(
+        agent.scope,
+        &instruction,
+        agent.codex.bounds_prompt_path.as_deref(),
+    )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let (event_tx, event_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(event_rx);
@@ -2654,15 +2668,19 @@ async fn refresh_plan_branch(
 
     let instruction = build_save_instruction(None);
     let system_prompt = if agent.backend == config::BackendKind::Codex {
-        codex::build_prompt_for_codex(&instruction, agent.codex.bounds_prompt_path.as_deref())
-            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
+        codex::build_prompt_for_codex(
+            agent.scope,
+            &instruction,
+            agent.codex.bounds_prompt_path.as_deref(),
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
     } else {
-        crate::config::get_system_prompt_with_meta(None)?
+        crate::config::get_system_prompt_with_meta(agent.scope, None)?
     };
 
     let response = Auditor::llm_request_with_tools(
         agent,
-        None,
+        Some(config::PromptKind::Base),
         system_prompt,
         instruction,
         tools::active_tooling_for(agent),
