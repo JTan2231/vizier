@@ -818,6 +818,24 @@ pub async fn run_exec(
 
     let stderr_summary = stderr_lines.lock().await.clone();
 
+    if usage.is_none() {
+        for line in &stderr_summary {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(|kind| kind == "turn.completed")
+                    .unwrap_or(false)
+                {
+                    usage = extract_usage(&value);
+                    if usage.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if !status.success() {
         if let Some(auth_message) = classify_profile_failure(&stderr_summary) {
             return Err(CodexError::ProfileAuth(auth_message));
@@ -863,10 +881,26 @@ fn extract_usage(value: &Value) -> Option<TokenUsage> {
         .get("output_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    let cached_input = usage
+        .get("cached_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let reasoning = usage
+        .get("reasoning_output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let total = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(input + output);
 
     Some(TokenUsage {
         input_tokens: input,
+        cached_input_tokens: cached_input,
         output_tokens: output,
+        reasoning_output_tokens: reasoning,
+        total_tokens: total,
         known: true,
     })
 }
@@ -884,7 +918,10 @@ fn mock_codex_response() -> CodexResponse {
 
     let usage = (!suppress_usage).then_some(TokenUsage {
         input_tokens: 10,
+        cached_input_tokens: 5,
         output_tokens: 20,
+        reasoning_output_tokens: 3,
+        total_tokens: 30,
         known: true,
     });
 
@@ -895,7 +932,13 @@ fn mock_codex_response() -> CodexResponse {
     } else {
         json!({
             "type": "turn.completed",
-            "usage": { "input_tokens": 10, "output_tokens": 20 }
+            "usage": {
+                "input_tokens": 10,
+                "cached_input_tokens": 5,
+                "output_tokens": 20,
+                "reasoning_output_tokens": 3,
+                "total_tokens": 30
+            }
         })
     };
 
