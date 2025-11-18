@@ -656,11 +656,8 @@ fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, CodexErr
 fn build_exec_args(req: &CodexRequest, output_path: &Path) -> Vec<OsString> {
     let mut args = Vec::new();
     args.push(OsString::from("exec"));
-    args.push(OsString::from("--dangerously-bypass-approvals-and-sandbox"));
     args.push(OsString::from("--model"));
     args.push(OsString::from(req.model.as_model_name()));
-    args.push(OsString::from("-c"));
-    args.push(OsString::from("model_reasoning_effort=\"high\""));
     if matches!(req.output_mode, CodexOutputMode::EventsJson) {
         args.push(OsString::from("--json"));
     }
