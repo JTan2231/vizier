@@ -42,3 +42,5 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 Update (2025-11-15): Authored docs/workflows/draft-approve-merge.md so operators/agents have a documented draft→approve→merge checklist today. Workflow orchestration remains CLI-first work (stage tracker, approvals, gates) beyond this documentation boost.
 
 Update (2025-11-17): Plan/review/merge prompts now ride through the prompt store, so repositories can customize each stage via `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, `.vizier/MERGE_CONFLICT_PROMPT.md`, or `[prompts.*]` without recompiling. The conductor UX, gate wiring, and workflow tracker still need to land.
+
+Update (2025-11-18): Added a global `--no-commit` posture (plus `[workflow] no_commit_default`) so ask/save/draft/approve/review can leave Codex edits dirty for human inspection. Merge still requires finalized commits, so the orchestration story needs to remind operators to re-run approve/review without the flag before merging.
