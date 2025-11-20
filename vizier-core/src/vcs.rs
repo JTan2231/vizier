@@ -1135,6 +1135,21 @@ pub fn commit_ready_merge(message: &str, ready: MergeReady) -> Result<Oid, Error
     Ok(oid)
 }
 
+pub fn commit_squashed_merge(message: &str, ready: MergeReady) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    let mut checkout = CheckoutBuilder::new();
+    let head_commit = repo.find_commit(ready.head_oid)?;
+    let tree = repo.find_tree(ready.tree_oid)?;
+    let sig = repo.signature()?;
+
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])?;
+
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
+}
+
 pub fn commit_in_progress_merge(
     message: &str,
     head_oid: Oid,
@@ -1169,6 +1184,69 @@ pub fn commit_in_progress_merge(
     )?;
 
     repo.cleanup_state()?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
+}
+
+pub fn commit_in_progress_squash(message: &str, head_oid: Oid) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    if repo.state() != RepositoryState::Merge {
+        return Err(Error::from_str("no merge in progress to finalize"));
+    }
+
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Err(Error::from_str(
+            "cannot finalize merge until all conflicts are resolved",
+        ));
+    }
+
+    index.write()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+    let head_commit = repo.find_commit(head_oid)?;
+    let sig = repo.signature()?;
+
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])?;
+
+    repo.cleanup_state()?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
+}
+
+pub fn amend_head_commit(message: Option<&str>) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    let head = repo.head()?;
+    if !head.is_branch() {
+        return Err(Error::from_str("cannot amend detached HEAD"));
+    }
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Err(Error::from_str(
+            "cannot amend commit while conflicts remain",
+        ));
+    }
+    index.write()?;
+    let tree_oid = index.write_tree_to(&repo)?;
+    let tree = repo.find_tree(tree_oid)?;
+    let head_commit = head.peel_to_commit()?;
+    let sig = repo.signature()?;
+    let parents: Vec<_> = (0..head_commit.parent_count())
+        .map(|idx| head_commit.parent(idx))
+        .collect::<Result<Vec<_>, _>>()?;
+    let parent_refs: Vec<&Commit> = parents.iter().collect();
+    let content = message
+        .map(|msg| msg.to_string())
+        .or_else(|| head_commit.message().map(|s| s.to_string()))
+        .unwrap_or_else(|| "amended commit".to_string());
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, &content, &tree, &parent_refs)?;
+
     let mut checkout = CheckoutBuilder::new();
     checkout.force();
     repo.checkout_head(Some(&mut checkout))?;

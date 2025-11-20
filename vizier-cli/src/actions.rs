@@ -13,7 +13,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, MergePreparation, PushErrorKind, RemoteScheme,
-    add_worktree_for_branch, commit_in_progress_merge, commit_paths_in_repo, commit_ready_merge,
+    add_worktree_for_branch, amend_head_commit, commit_in_progress_merge,
+    commit_in_progress_squash, commit_paths_in_repo, commit_ready_merge, commit_squashed_merge,
     create_branch_from, delete_branch, detect_primary_branch, list_conflicted_paths, prepare_merge,
     remove_worktree, repo_root,
 };
@@ -348,6 +349,7 @@ pub struct MergeOptions {
     pub conflict_strategy: MergeConflictStrategy,
     pub complete_conflict: bool,
     pub cicd_gate: CicdGateOptions,
+    pub squash: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,7 +388,35 @@ impl CicdGateOptions {
 struct CicdGateOutcome {
     script: PathBuf,
     attempts: u32,
-    fixes: Vec<String>,
+    fixes: Vec<CicdFixRecord>,
+}
+
+#[derive(Debug, Clone)]
+enum CicdFixRecord {
+    Commit(String),
+    Amend(String),
+}
+
+impl CicdFixRecord {
+    fn describe(&self) -> String {
+        match self {
+            CicdFixRecord::Commit(oid) => format!("commit:{oid}"),
+            CicdFixRecord::Amend(oid) => format!("amend:{oid}"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MergeExecutionResult {
+    merge_oid: Oid,
+    source_oid: Oid,
+    gate: Option<CicdGateOutcome>,
+}
+
+#[derive(Debug)]
+enum MergeConflictResolution {
+    MergeCommitted { merge_oid: Oid, source_oid: Oid },
+    SquashImplementationCommitted { source_oid: Oid },
 }
 
 #[derive(Debug)]
@@ -413,7 +443,14 @@ impl CicdScriptResult {
 #[derive(Debug)]
 enum PendingMergeStatus {
     None,
-    Ready { merge_oid: Oid, source_oid: Oid },
+    Ready {
+        merge_oid: Oid,
+        source_oid: Oid,
+    },
+    SquashReady {
+        source_oid: Oid,
+        merge_message: String,
+    },
     Blocked(PendingMergeBlocker),
 }
 
@@ -1680,6 +1717,29 @@ pub async fn run_merge(
             )?;
             return Ok(());
         }
+        PendingMergeStatus::SquashReady {
+            source_oid,
+            merge_message,
+        } => {
+            let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
+            let verification = prepare_merge(&spec.branch)?;
+            let MergePreparation::Ready(ready) = verification else {
+                return Err(
+                    "squashed merge cannot finalize; merge prep entered conflict after resuming"
+                        .into(),
+                );
+            };
+            let merge_oid = commit_ready_merge(&merge_message, ready)?;
+            finalize_merge(
+                &spec,
+                merge_oid,
+                source_oid,
+                opts.delete_branch,
+                opts.push_after,
+                gate_summary,
+            )?;
+            return Ok(());
+        }
         PendingMergeStatus::Blocked(blocker) => {
             return Err(Box::new(PendingMergeError::new(spec.slug.clone(), blocker)));
         }
@@ -1758,6 +1818,7 @@ pub async fn run_merge(
         vcs::checkout_branch(&spec.target_branch)?;
     }
 
+    let implementation_message = build_implementation_commit_message(&spec, &plan_meta);
     let merge_message = build_merge_commit_message(
         &spec,
         &plan_meta,
@@ -1765,34 +1826,135 @@ pub async fn run_merge(
         opts.note.as_deref(),
     );
 
-    let (merge_oid, source_oid) = match prepare_merge(&spec.branch)? {
+    let preparation = prepare_merge(&spec.branch)?;
+    let execution = if opts.squash {
+        execute_squashed_merge(
+            &spec,
+            &implementation_message,
+            &merge_message,
+            preparation,
+            &opts,
+            agent,
+        )
+        .await?
+    } else {
+        execute_legacy_merge(&spec, &merge_message, preparation, &opts, agent).await?
+    };
+
+    finalize_merge(
+        &spec,
+        execution.merge_oid,
+        execution.source_oid,
+        opts.delete_branch,
+        opts.push_after,
+        execution.gate,
+    )?;
+    Ok(())
+}
+
+async fn execute_legacy_merge(
+    spec: &plan::PlanBranchSpec,
+    merge_message: &str,
+    preparation: MergePreparation,
+    opts: &MergeOptions,
+    agent: &config::AgentSettings,
+) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
+    let (merge_oid, source_oid) = match preparation {
         MergePreparation::Ready(ready) => {
             let source_tip = ready.source_oid;
-            let oid = commit_ready_merge(&merge_message, ready)?;
+            let oid = commit_ready_merge(merge_message, ready)?;
             (oid, source_tip)
         }
         MergePreparation::Conflicted(conflict) => {
-            handle_merge_conflict(
-                &spec,
-                &merge_message,
+            match handle_merge_conflict(
+                spec,
+                merge_message,
                 conflict,
                 opts.conflict_strategy,
+                false,
+                None,
                 agent,
             )
             .await?
+            {
+                MergeConflictResolution::MergeCommitted {
+                    merge_oid,
+                    source_oid,
+                } => (merge_oid, source_oid),
+                MergeConflictResolution::SquashImplementationCommitted { .. } => {
+                    return Err(
+                        "internal error: squashed merge resolution returned for legacy path".into(),
+                    );
+                }
+            }
         }
     };
 
-    let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
-    finalize_merge(
-        &spec,
+    let gate = run_cicd_gate_for_merge(spec, opts, agent).await?;
+    Ok(MergeExecutionResult {
         merge_oid,
         source_oid,
-        opts.delete_branch,
-        opts.push_after,
-        gate_summary,
-    )?;
-    Ok(())
+        gate,
+    })
+}
+
+async fn execute_squashed_merge(
+    spec: &plan::PlanBranchSpec,
+    implementation_message: &str,
+    merge_message: &str,
+    preparation: MergePreparation,
+    opts: &MergeOptions,
+    agent: &config::AgentSettings,
+) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
+    match preparation {
+        MergePreparation::Ready(ready) => {
+            let source_oid = ready.source_oid;
+            let _ = commit_squashed_merge(implementation_message, ready)?;
+            finalize_squashed_merge_from_head(spec, merge_message, source_oid, opts, agent).await
+        }
+        MergePreparation::Conflicted(conflict) => {
+            match handle_merge_conflict(
+                spec,
+                merge_message,
+                conflict,
+                opts.conflict_strategy,
+                true,
+                Some(implementation_message),
+                agent,
+            )
+            .await?
+            {
+                MergeConflictResolution::SquashImplementationCommitted { source_oid } => {
+                    finalize_squashed_merge_from_head(spec, merge_message, source_oid, opts, agent)
+                        .await
+                }
+                MergeConflictResolution::MergeCommitted { .. } => Err(
+                    "internal error: legacy merge conflict resolution triggered while squashing"
+                        .into(),
+                ),
+            }
+        }
+    }
+}
+
+async fn finalize_squashed_merge_from_head(
+    spec: &plan::PlanBranchSpec,
+    merge_message: &str,
+    source_oid: Oid,
+    opts: &MergeOptions,
+    agent: &config::AgentSettings,
+) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
+    let gate = run_cicd_gate_for_merge(spec, opts, agent).await?;
+    let verification = prepare_merge(&spec.branch)?;
+    let MergePreparation::Ready(ready) = verification else {
+        return Err("unable to finalize squashed merge; merge prep re-entered conflict".into());
+    };
+    let merge_oid = commit_ready_merge(merge_message, ready)?;
+    Ok(MergeExecutionResult {
+        merge_oid,
+        source_oid,
+        gate,
+    })
 }
 
 async fn run_cicd_gate_for_merge(
@@ -1807,7 +1969,7 @@ async fn run_cicd_gate_for_merge(
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let mut attempts: u32 = 0;
     let mut fix_attempts: u32 = 0;
-    let mut fix_commits = Vec::new();
+    let mut fix_commits: Vec<CicdFixRecord> = Vec::new();
 
     loop {
         attempts += 1;
@@ -1848,7 +2010,7 @@ async fn run_cicd_gate_for_merge(
         ));
         let truncated_stdout = clip_log(result.stdout.as_bytes());
         let truncated_stderr = clip_log(result.stderr.as_bytes());
-        if let Some(commit) = attempt_cicd_auto_fix(
+        if let Some(record) = attempt_cicd_auto_fix(
             spec,
             script,
             fix_attempts,
@@ -1857,11 +2019,22 @@ async fn run_cicd_gate_for_merge(
             &truncated_stdout,
             &truncated_stderr,
             agent,
+            opts.squash,
         )
         .await?
         {
-            display::info(format!("Remediation attempt committed at {}.", commit));
-            fix_commits.push(commit);
+            match &record {
+                CicdFixRecord::Commit(oid) => {
+                    display::info(format!("Remediation attempt committed at {}.", oid));
+                }
+                CicdFixRecord::Amend(oid) => {
+                    display::info(format!(
+                        "Remediation attempt amended the implementation commit ({}).",
+                        oid
+                    ));
+                }
+            }
+            fix_commits.push(record);
         } else {
             display::info("Codex remediation reported no file changes.");
         }
@@ -1877,7 +2050,8 @@ async fn attempt_cicd_auto_fix(
     stdout: &str,
     stderr: &str,
     agent: &config::AgentSettings,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    amend_head: bool,
+) -> Result<Option<CicdFixRecord>, Box<dyn std::error::Error>> {
     let prompt = codex::build_cicd_failure_prompt(
         &spec.slug,
         &spec.branch,
@@ -1944,25 +2118,30 @@ async fn attempt_cicd_auto_fix(
     let exit_label = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "signal".to_string());
-    let mut builder = CommitMessageBuilder::new(summary);
-    builder
-        .set_header(CommitMessageType::CodeChange)
-        .with_session_log_path(session_path.clone())
-        .with_narrative_summary(narrative_summary.clone())
-        .with_author_note(format!(
-            "CI/CD script: {} (exit={})",
-            script.display(),
-            exit_label
-        ));
-    let message = builder.build();
-
     stage_narrative_paths(&narrative_paths)?;
     vcs::stage(Some(vec!["."]))?;
     trim_staged_vizier_paths(&narrative_paths)?;
-    let commit_oid = vcs::commit_staged(&message, false)?;
+    let record = if amend_head {
+        let commit_oid = amend_head_commit(None)?;
+        CicdFixRecord::Amend(commit_oid.to_string())
+    } else {
+        let mut builder = CommitMessageBuilder::new(summary);
+        builder
+            .set_header(CommitMessageType::CodeChange)
+            .with_session_log_path(session_path.clone())
+            .with_narrative_summary(narrative_summary.clone())
+            .with_author_note(format!(
+                "CI/CD script: {} (exit={})",
+                script.display(),
+                exit_label
+            ));
+        let message = builder.build();
+        let commit_oid = vcs::commit_staged(&message, false)?;
+        CicdFixRecord::Commit(commit_oid.to_string())
+    };
     clear_narrative_tracker(&narrative_paths);
 
-    Ok(Some(commit_oid.to_string()))
+    Ok(Some(record))
 }
 
 fn finalize_merge(
@@ -1997,7 +2176,13 @@ fn finalize_merge(
         let fix_detail = if summary.fixes.is_empty() {
             String::new()
         } else {
-            format!(" fixes=[{}]", summary.fixes.join(","))
+            let labels = summary
+                .fixes
+                .iter()
+                .map(|record| record.describe())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(" fix_commits={} fixes=[{}]", fix_count, labels)
         };
         let script_label = repo_root()
             .ok()
@@ -2010,17 +2195,12 @@ fn finalize_merge(
             })
             .unwrap_or_else(|| summary.script.display().to_string());
         println!(
-            "Merged plan {} into {}; merge_commit={} cicd_script={} attempts={}{}{}{}",
+            "Merged plan {} into {}; merge_commit={} cicd_script={} attempts={}{}{}",
             spec.slug,
             spec.target_branch,
             merge_oid,
             script_label,
             summary.attempts,
-            if summary.fixes.is_empty() {
-                String::new()
-            } else {
-                format!(" fix_commits={}", fix_count)
-            },
             fix_detail,
             token_usage_suffix()
         );
@@ -2102,6 +2282,20 @@ fn try_complete_pending_merge(
 
     let head_oid = Oid::from_str(&state.head_oid)?;
     let source_oid = Oid::from_str(&state.source_oid)?;
+    if state.squash {
+        let message = state
+            .implementation_message
+            .as_deref()
+            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+        let _ = commit_in_progress_squash(message, head_oid)?;
+        let _ = clear_conflict_state(&spec.slug);
+        display::info("Conflicts resolved; implementation commit created for squashed merge.");
+        return Ok(PendingMergeStatus::SquashReady {
+            source_oid,
+            merge_message: state.merge_message.clone(),
+        });
+    }
+
     let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
     let _ = clear_conflict_state(&spec.slug);
     display::info("Conflicts resolved; finalizing merge now.");
@@ -2116,8 +2310,10 @@ async fn handle_merge_conflict(
     merge_message: &str,
     conflict: vcs::MergeConflict,
     strategy: MergeConflictStrategy,
+    squash: bool,
+    implementation_message: Option<&str>,
     agent: &config::AgentSettings,
-) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
+) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
     let files = conflict.files.clone();
     let state = MergeConflictState {
         slug: spec.slug.clone(),
@@ -2126,6 +2322,8 @@ async fn handle_merge_conflict(
         head_oid: conflict.head_oid.to_string(),
         source_oid: conflict.source_oid.to_string(),
         merge_message: merge_message.to_string(),
+        squash,
+        implementation_message: implementation_message.map(|s| s.to_string()),
     };
 
     let state_path = write_conflict_state(&state)?;
@@ -2136,7 +2334,7 @@ async fn handle_merge_conflict(
         }
         MergeConflictStrategy::Codex => {
             match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
-                Ok((merge_oid, source_oid)) => Ok((merge_oid, source_oid)),
+                Ok(result) => Ok(result),
                 Err(err) => {
                     display::warn(format!(
                         "Codex auto-resolution failed: {err}. Falling back to manual resolution."
@@ -2173,7 +2371,7 @@ async fn try_auto_resolve_conflicts(
     state: &MergeConflictState,
     files: &[String],
     agent: &config::AgentSettings,
-) -> Result<(Oid, Oid), Box<dyn std::error::Error>> {
+) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
     display::info("Attempting to resolve conflicts with Codex...");
     let prompt = codex::build_merge_conflict_prompt(
         agent.scope,
@@ -2220,10 +2418,24 @@ async fn try_auto_resolve_conflicts(
 
     let head_oid = Oid::from_str(&state.head_oid)?;
     let source_oid = Oid::from_str(&state.source_oid)?;
-    let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
-    clear_conflict_state(&state.slug)?;
-    display::info("Codex resolved the conflicts; finalizing merge.");
-    Ok((merge_oid, source_oid))
+    if state.squash {
+        let message = state
+            .implementation_message
+            .as_deref()
+            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+        let _ = commit_in_progress_squash(message, head_oid)?;
+        clear_conflict_state(&state.slug)?;
+        display::info("Codex resolved the conflicts; implementation commit recorded.");
+        Ok(MergeConflictResolution::SquashImplementationCommitted { source_oid })
+    } else {
+        let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
+        clear_conflict_state(&state.slug)?;
+        display::info("Codex resolved the conflicts; finalizing merge.");
+        Ok(MergeConflictResolution::MergeCommitted {
+            merge_oid,
+            source_oid,
+        })
+    }
 }
 
 #[cfg(feature = "mock_llm")]
@@ -2301,6 +2513,10 @@ struct MergeConflictState {
     head_oid: String,
     source_oid: String,
     merge_message: String,
+    #[serde(default)]
+    squash: bool,
+    #[serde(default)]
+    implementation_message: Option<String>,
 }
 
 fn merge_conflict_state_path(slug: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -3099,6 +3315,18 @@ fn current_branch_name(repo: &Repository) -> Result<Option<String>, git2::Error>
     } else {
         Ok(None)
     }
+}
+
+fn build_implementation_commit_message(
+    spec: &plan::PlanBranchSpec,
+    meta: &plan::PlanMetadata,
+) -> String {
+    let mut sections = Vec::new();
+    sections.push(format!("Target branch: {}", spec.target_branch));
+    sections.push(format!("Plan branch: {}", spec.branch));
+    sections.push(format!("Summary: {}", plan::summarize_spec(meta)));
+
+    format!("feat: apply plan {}\n\n{}", spec.slug, sections.join("\n"))
 }
 
 fn build_merge_commit_message(
