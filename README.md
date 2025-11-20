@@ -105,6 +105,7 @@ Tune Vizier via repo-local files so settings travel with commits.
 
 - `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), Codex options, and prompt overrides. CLI flags sit above these scopes.
 - `.vizier/*.md` prompt files (BASE_SYSTEM_PROMPT, IMPLEMENTATION_PLAN_PROMPT, REVIEW_PROMPT, MERGE_CONFLICT_PROMPT, etc.) override baked-in templates per command.
+- `.vizier/COMMIT_PROMPT.md` (or `[prompts.commit]` in config) replaces the baked Linux kernel-style commit template if your team prefers a different format.
 - `example-config.toml` documents every knob, precedence rule (`CLI → scoped agent → default agent → legacy`), and Codex vs wire backend settings.
 
 ## Philosophy: Narrative Maintainer
