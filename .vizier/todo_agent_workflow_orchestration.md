@@ -44,3 +44,13 @@ Update (2025-11-15): Authored docs/workflows/draft-approve-merge.md so operators
 Update (2025-11-17): Plan/review/merge prompts now ride through the prompt store, so repositories can customize each stage via `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, `.vizier/MERGE_CONFLICT_PROMPT.md`, or `[prompts.*]` without recompiling. The conductor UX, gate wiring, and workflow tracker still need to land.
 
 Update (2025-11-18): Added a global `--no-commit` posture (plus `[workflow] no_commit_default`) so ask/save/draft/approve/review can leave Codex edits dirty for human inspection. Merge still requires finalized commits, so the orchestration story needs to remind operators to re-run approve/review without the flag before merging.
+Update — Conductor checkpoints and Outcome breadcrumbs
+- Define the canonical sequence: snapshot sign-off → architecture doc draft/reference → implementation plan draft → approve → review (checks+critique) → fix loop → merge with CI/CD gate.
+- Each checkpoint produces an Outcome artifact with machine-readable status and a resume token in session logs.
+- CLI surfaces a `vizier workflow status` view that summarizes all active plan slugs and their checkpoint states.
+- Acceptance: End-to-end run produces consistent Outcome epilogues/JSON; resume tokens allow re-entry at each gate; failures use exit code 10.
+- Cross: Architecture doc gate, Outcome component, Agent backends.
+
+
+---
+
