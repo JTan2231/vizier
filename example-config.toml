@@ -12,7 +12,9 @@ profile = "default"
 bounds_prompt_path = "/etc/vizier/codex_bounds.md"
 extra_args = ["--log-json"]
 
-# Where each prompt should be loaded from on disk (omit entries to fall back to baked defaults)
+# Where each prompt should be loaded from on disk (omit entries to fall back to baked defaults).
+# The baked commit prompt already follows the Linux kernel style (subsystem: summary,
+# 50/72 wrapping, Signed-off-by), so only override `commit` if you need a different policy.
 [prompts]
 base = "./prompts/base.md"
 commit = "./prompts/commit.md"
