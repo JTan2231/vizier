@@ -2,14 +2,14 @@
 # Global defaults (apply unless overridden below)
 model = "gpt-4.1"
 reasoning_effort = "medium"
-backend = "codex"
+backend = "process"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
 
-# Base Codex wiring shared by Codex-backed commands unless a scoped override says otherwise
-[codex]
-binary = "/usr/local/bin/codex"
+# Base process-backend wiring shared by process-backed commands unless a scoped override says otherwise
+[process]
+binary = "/usr/local/bin/agent-cli"
 profile = "default"
-bounds_prompt_path = "/etc/vizier/codex_bounds.md"
+bounds_prompt_path = "/etc/vizier/agent_bounds.md"
 extra_args = ["--log-json"]
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
@@ -21,15 +21,15 @@ model = "gpt-4.1"
 
 [agents.draft.prompts.implementation_plan]
 path = "./prompts/plan.md"
-backend = "codex"
+backend = "process"
 
 [agents.review.prompts.review]
 path = "./prompts/review.md"
-[agents.review.prompts.review.codex]
+[agents.review.prompts.review.process]
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
 
-# Order of operations Codex will run during `vizier review` unless `--skip-checks` is passed
+# Order of operations the configured backend will run during `vizier review` unless `--skip-checks` is passed
 [review.checks]
 commands = [
   "cargo fmt -- --check",
@@ -55,15 +55,15 @@ no_commit_default = false
 
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
-backend = "codex"
+backend = "process"
 model = "gpt-4.1"
 reasoning_effort = "medium"
 
-# Fine-tune how the default Codex backend runs (binary/profile/bounds prompt/extra args)
-[agents.default.codex]
-binary_path = "/usr/local/bin/codex"
+# Fine-tune how the default process backend runs (binary/profile/bounds prompt/extra args)
+[agents.default.process]
+binary_path = "/usr/local/bin/agent-cli"
 profile = "maintainers"
-bounds_prompt_path = "/etc/vizier/codex_bounds.md"
+bounds_prompt_path = "/etc/vizier/agent_bounds.md"
 extra_args = ["--log-json"]
 
 # Force conversational asks onto the wire backend with a higher-effort reasoning profile
@@ -72,27 +72,27 @@ backend = "wire"
 model = "gpt-4.1-preview"
 reasoning_effort = "high"
 
-# Keep save flows on Codex so narrative edits always use the same backend
+# Keep save flows on the process backend so narrative edits always use the same backend
 [agents.save]
-backend = "codex"
+backend = "process"
 
-# Give save flows a stricter Codex profile and extra arguments when editing the repo
-[agents.save.codex]
+# Give save flows a stricter process profile and extra arguments when editing the repo
+[agents.save.process]
 profile = "auditor"
 extra_args = ["--max-edits", "200"]
 
-# The remaining plan workflow commands stay on Codex and inherit the defaults
+# The remaining plan workflow commands stay on the process backend and inherit the defaults
 [agents.draft]
-backend = "codex"
+backend = "process"
 
 [agents.approve]
-backend = "codex"
+backend = "process"
 
 [agents.review]
-backend = "codex"
+backend = "process"
 
-# Review runs Codex with a compliance profile and custom bounds prompt
-[agents.review.codex]
+# Review runs the process backend with a compliance profile and custom bounds prompt
+[agents.review.process]
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
 

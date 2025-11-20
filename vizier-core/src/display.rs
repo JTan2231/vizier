@@ -112,21 +112,21 @@ pub enum Status {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProgressKind {
-    Codex,
+    Agent,
     TokenUsage,
 }
 
 impl ProgressKind {
     fn prefix(self) -> &'static str {
         match self {
-            ProgressKind::Codex => "[codex]",
+            ProgressKind::Agent => "[agent]",
             ProgressKind::TokenUsage => "[usage]",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            ProgressKind::Codex => "codex",
+            ProgressKind::Agent => "agent",
             ProgressKind::TokenUsage => "token-usage",
         }
     }
@@ -135,6 +135,7 @@ impl ProgressKind {
 #[derive(Clone, Debug)]
 pub struct ProgressEvent {
     pub kind: ProgressKind,
+    pub source: Option<String>,
     pub phase: Option<String>,
     pub label: Option<String>,
     pub message: Option<String>,
@@ -370,7 +371,8 @@ pub fn render_progress_event(event: &ProgressEvent, verbosity: Verbosity) -> Vec
     }
 
     let (stage, summary) = event.summarize();
-    let mut primary = format!("{} {}", event.kind.prefix(), stage);
+    let prefix = event.source.as_deref().unwrap_or(event.kind.prefix());
+    let mut primary = format!("{} {}", prefix, stage);
     if let Some(progress) = event.progress.and_then(format_progress_value) {
         primary.push_str(&format!(" ({})", progress));
     }
@@ -389,13 +391,13 @@ pub fn render_progress_event(event: &ProgressEvent, verbosity: Verbosity) -> Vec
 
     if matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
         if let Some(timestamp) = event.timestamp.as_ref().filter(|s| !s.is_empty()) {
-            lines.push(format!("{} timestamp={}", event.kind.prefix(), timestamp));
+            lines.push(format!("{} timestamp={}", prefix, timestamp));
         }
     }
 
     if matches!(verbosity, Verbosity::Debug) {
         if let Some(raw) = event.raw.as_ref().filter(|s| !s.is_empty()) {
-            lines.push(format!("{} event={}", event.kind.prefix(), raw));
+            lines.push(format!("{} event={}", prefix, raw));
         }
     }
 
@@ -418,7 +420,8 @@ mod tests {
     #[test]
     fn renders_basic_progress_line() {
         let event = ProgressEvent {
-            kind: ProgressKind::Codex,
+            kind: ProgressKind::Agent,
+            source: Some("[agent:draft]".into()),
             phase: Some("apply plan".into()),
             label: None,
             message: Some("edit README".into()),
@@ -432,7 +435,7 @@ mod tests {
 
         let lines = render_progress_event(&event, Verbosity::Normal);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("[codex] apply plan"));
+        assert!(lines[0].contains("[agent:draft] apply plan"));
         assert!(lines[0].contains("42%"));
         assert!(lines[0].contains("edit README"));
         assert!(lines[0].contains("README.md"));
@@ -441,7 +444,8 @@ mod tests {
     #[test]
     fn renders_debug_metadata() {
         let event = ProgressEvent {
-            kind: ProgressKind::Codex,
+            kind: ProgressKind::Agent,
+            source: Some("[agent:approve]".into()),
             phase: Some("apply plan".into()),
             label: None,
             message: Some("edit README".into()),

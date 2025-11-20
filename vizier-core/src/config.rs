@@ -78,14 +78,14 @@ impl PromptKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
-    Codex,
+    Process,
     Wire,
 }
 
 impl BackendKind {
     pub fn from_str(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
-            "codex" => Some(Self::Codex),
+            "process" | "codex" => Some(Self::Process),
             "wire" => Some(Self::Wire),
             _ => None,
         }
@@ -95,7 +95,7 @@ impl BackendKind {
 impl std::fmt::Display for BackendKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendKind::Codex => write!(f, "codex"),
+            BackendKind::Process => write!(f, "process"),
             BackendKind::Wire => write!(f, "wire"),
         }
     }
@@ -158,7 +158,7 @@ impl std::fmt::Display for CommandScope {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CodexOverride {
+pub struct ProcessOverride {
     pub binary_path: Option<PathBuf>,
     pub profile: Option<Option<String>>,
     pub bounds_prompt_path: Option<PathBuf>,
@@ -170,12 +170,12 @@ pub struct AgentOverrides {
     pub backend: Option<BackendKind>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ThinkingLevel>,
-    pub codex: Option<CodexOverride>,
+    pub process: Option<ProcessOverride>,
     pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
 }
 
 /// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]` so the same
-/// table controls the template, backend/model overrides, and Codex options for a
+/// table controls the template, backend/model overrides, and process-backend options for a
 /// specific command/prompt pairing. Legacy `[prompts.*]` keys remain supported,
 /// but repositories should converge on these profiles so operators reason about a
 /// single surface when migrating.
@@ -197,7 +197,7 @@ impl AgentOverrides {
         self.backend.is_none()
             && self.model.is_none()
             && self.reasoning_effort.is_none()
-            && self.codex.is_none()
+            && self.process.is_none()
             && self.prompt_overrides.is_empty()
     }
 }
@@ -209,7 +209,7 @@ pub struct AgentSettings {
     pub provider: Arc<dyn Prompt>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
-    pub codex: CodexOptions,
+    pub process: ProcessOptions,
     pub prompt: Option<PromptSelection>,
     pub cli_override: Option<AgentOverrides>,
 }
@@ -228,14 +228,14 @@ impl AgentSettings {
 }
 
 #[derive(Clone, Debug)]
-pub struct CodexOptions {
+pub struct ProcessOptions {
     pub binary_path: PathBuf,
     pub profile: Option<String>,
     pub bounds_prompt_path: Option<PathBuf>,
     pub extra_args: Vec<String>,
 }
 
-impl Default for CodexOptions {
+impl Default for ProcessOptions {
     fn default() -> Self {
         Self {
             binary_path: PathBuf::from("codex"),
@@ -287,7 +287,7 @@ pub struct Config {
     pub reasoning_effort: Option<ThinkingLevel>,
     pub no_session: bool,
     pub backend: BackendKind,
-    pub codex: CodexOptions,
+    pub process: ProcessOptions,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
     pub workflow: WorkflowConfig,
@@ -388,8 +388,8 @@ impl Config {
             provider_model: DEFAULT_MODEL.to_owned(),
             reasoning_effort: None,
             no_session: false,
-            backend: BackendKind::Codex,
-            codex: CodexOptions::default(),
+            backend: BackendKind::Process,
+            process: ProcessOptions::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
             workflow: WorkflowConfig::default(),
@@ -489,27 +489,29 @@ impl Config {
             )));
         }
 
-        if let Some(codex_value) = value_at_path(&file_config, &["codex"]) {
-            if let Some(codex_object) = codex_value.as_object() {
-                if let Some(path_val) = codex_object
+        if let Some(process_value) = value_at_path(&file_config, &["process"])
+            .or_else(|| value_at_path(&file_config, &["codex"]))
+        {
+            if let Some(process_object) = process_value.as_object() {
+                if let Some(path_val) = process_object
                     .get("binary")
-                    .or_else(|| codex_object.get("binary_path"))
+                    .or_else(|| process_object.get("binary_path"))
                 {
                     if let Some(path) = path_val
                         .as_str()
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                     {
-                        config.codex.binary_path = PathBuf::from(path);
+                        config.process.binary_path = PathBuf::from(path);
                     }
                 }
 
-                if let Some(profile_val) = codex_object.get("profile") {
+                if let Some(profile_val) = process_object.get("profile") {
                     if profile_val.is_null() {
-                        config.codex.profile = None;
+                        config.process.profile = None;
                     } else if let Some(profile) = profile_val.as_str() {
                         let trimmed = profile.trim();
-                        config.codex.profile = if trimmed.is_empty() {
+                        config.process.profile = if trimmed.is_empty() {
                             None
                         } else {
                             Some(trimmed.to_string())
@@ -517,20 +519,20 @@ impl Config {
                     }
                 }
 
-                if let Some(bounds_val) = codex_object
+                if let Some(bounds_val) = process_object
                     .get("bounds_prompt_path")
-                    .or_else(|| codex_object.get("bounds_prompt"))
+                    .or_else(|| process_object.get("bounds_prompt"))
                 {
                     if let Some(path) = bounds_val
                         .as_str()
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                     {
-                        config.codex.bounds_prompt_path = Some(PathBuf::from(path));
+                        config.process.bounds_prompt_path = Some(PathBuf::from(path));
                     }
                 }
 
-                if let Some(extra_val) = codex_object.get("extra_args") {
+                if let Some(extra_val) = process_object.get("extra_args") {
                     if let Some(array) = extra_val.as_array() {
                         let mut args = Vec::new();
                         for item in array {
@@ -542,7 +544,7 @@ impl Config {
                             }
                         }
                         if !args.is_empty() {
-                            config.codex.extra_args = args;
+                            config.process.extra_args = args;
                         }
                     }
                 }
@@ -943,7 +945,7 @@ struct AgentSettingsBuilder {
     backend: BackendKind,
     provider_model: String,
     reasoning_effort: Option<ThinkingLevel>,
-    codex: CodexOptions,
+    process: ProcessOptions,
 }
 
 impl AgentSettingsBuilder {
@@ -952,7 +954,7 @@ impl AgentSettingsBuilder {
             backend: cfg.backend,
             provider_model: cfg.provider_model.clone(),
             reasoning_effort: cfg.reasoning_effort,
-            codex: cfg.codex.clone(),
+            process: cfg.process.clone(),
         }
     }
 
@@ -969,21 +971,21 @@ impl AgentSettingsBuilder {
             self.reasoning_effort = Some(level);
         }
 
-        if let Some(codex) = overrides.codex.as_ref() {
+        if let Some(codex) = overrides.process.as_ref() {
             if let Some(path) = codex.binary_path.as_ref() {
-                self.codex.binary_path = path.clone();
+                self.process.binary_path = path.clone();
             }
 
             if let Some(profile) = codex.profile.as_ref() {
-                self.codex.profile = profile.clone();
+                self.process.profile = profile.clone();
             }
 
             if let Some(bounds) = codex.bounds_prompt_path.as_ref() {
-                self.codex.bounds_prompt_path = Some(bounds.clone());
+                self.process.bounds_prompt_path = Some(bounds.clone());
             }
 
             if let Some(extra) = codex.extra_args.as_ref() {
-                self.codex.extra_args = extra.clone();
+                self.process.extra_args = extra.clone();
             }
         }
     }
@@ -1015,7 +1017,7 @@ impl AgentSettingsBuilder {
             provider,
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
-            codex: self.codex.clone(),
+            process: self.process.clone(),
             prompt,
             cli_override: cli_override.cloned(),
         })
@@ -1087,9 +1089,11 @@ fn parse_agent_overrides(
         }
     }
 
-    if let Some(codex_value) = value_at_path(value, &["codex"]) {
-        if let Some(parsed) = parse_codex_override(codex_value)? {
-            overrides.codex = Some(parsed);
+    if let Some(codex_value) = value_at_path(value, &["process"])
+        .or_else(|| value_at_path(value, &["codex"]))
+    {
+        if let Some(parsed) = parse_process_override(codex_value)? {
+            overrides.process = Some(parsed);
         }
     }
 
@@ -1207,15 +1211,15 @@ fn parse_inline_prompt_text(entry: &serde_json::Value) -> Option<&str> {
     None
 }
 
-fn parse_codex_override(
+fn parse_process_override(
     value: &serde_json::Value,
-) -> Result<Option<CodexOverride>, Box<dyn std::error::Error>> {
+) -> Result<Option<ProcessOverride>, Box<dyn std::error::Error>> {
     let object = match value.as_object() {
         Some(obj) => obj,
         None => return Ok(None),
     };
 
-    let mut overrides = CodexOverride::default();
+    let mut overrides = ProcessOverride::default();
 
     if let Some(path_val) = object.get("binary").or_else(|| object.get("binary_path")) {
         if let Some(path) = path_val
@@ -1270,7 +1274,7 @@ fn parse_codex_override(
         }
     }
 
-    if overrides == CodexOverride::default() {
+    if overrides == ProcessOverride::default() {
         Ok(None)
     } else {
         Ok(Some(overrides))
