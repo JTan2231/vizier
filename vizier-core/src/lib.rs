@@ -179,16 +179,47 @@ Implementation Notes (safety/correctness): Reversions must be atomic; no partial
 "#;
 
 pub const COMMIT_PROMPT: &str = r#"
-You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
+You are a git commit message writer. Given a git diff, produce a Linux
+kernel-style commit message that reviewers can drop straight into
+`git commit`.
 
-Structure your commit message as:
-- First line: <type>: <brief summary> (50 chars or less)
-- Blank line
-- Body: Explain what changed and why (wrap at 72 chars)
+Follow this checklist:
 
-Common types: feat, fix, docs, style, refactor, test, chore
+1. Subject line: `subsystem: imperative summary`
+   - Pick the subsystem that best matches the primary files or behavior touched.
+     (Use the directory or module name; keep it lowercase.)
+   - Use imperative mood (e.g., `fs: tighten inode locking`) and keep the subject
+     at or under 50 characters with no trailing punctuation.
+2. Body paragraphs (wrap every line at 72 columns)
+   - Insert a blank line after the subject, then lead with the problem/regression
+     and why it matters.
+   - Explain how the change fixes the issue or improves behavior. Focus on the
+     intent and impact rather than enumerating files or quoting code.
+   - Use additional short paragraphs instead of bullets when more context or
+     rationale is needed.
+3. Trailers
+   - Add a blank line before the trailer block.
+   - Always finish with `Signed-off-by: <name> <email>`. Use the operator identity
+     if provided; otherwise default to `Codex Assistant <codex@vizier.dev>`.
+   - Include other kernel trailers (`Fixes: <sha> ("subject")`, `Link: <url>`,
+     `Reported-by: <name <email>>`, `Tested-by: <name <email>>`, etc.) whenever
+     the diff or snapshot context warrants them.
 
-Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
+Example:
+
+fs: stop double-freeing buffers
+
+Buffer teardown freed the slab twice when the allocator saw an already
+poisoned pointer, which panicked debug builds. Guard the second free
+and document the ownership rules so callers know the sequence.
+
+Fixes: 1a2b3c4d5e6f ("fs: wire raw buffer reclaim")
+Signed-off-by: Codex Assistant <codex@vizier.dev>
+
+Keep the tone calm and factual, prioritize the "why" over the literal code,
+and only mention specific files when it clarifies the subsystem you chose.
+Repositories can override these directions through `.vizier/COMMIT_PROMPT.md`
+or `[prompts.commit]`; obey any repository-provided template when present.
 "#;
 
 pub const IMPLEMENTATION_PLAN_PROMPT: &str = r#"
