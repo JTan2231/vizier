@@ -65,11 +65,11 @@ vizier save -m "feat: tighten io contracts"
 ```
 
 ### Agent-Heavy Flow
-Codex-backed workflows stay isolated on draft branches so you can review work before it merges.
+Agent-backed workflows stay isolated on draft branches so you can review work before they merge.
 
 1. `vizier draft "add retry logic to the API client"` → creates `draft/<slug>` with `.vizier/implementation-plans/<slug>.md` committed on that branch via a disposable worktree.
 2. `vizier approve <slug>` → replays the plan on the draft branch, staging commits without touching your checkout.
-3. `vizier review <slug>` → runs the configured checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when Cargo exists), streams Codex’s critique to the terminal/session log (no `.vizier/reviews` artifacts), updates the plan status, and can apply targeted fixes.
+3. `vizier review <slug>` → runs the configured checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when Cargo exists), streams the configured backend’s critique to the terminal/session log (no `.vizier/reviews` artifacts), updates the plan status, and can apply targeted fixes.
 4. `vizier merge <slug>` → performs a non-fast-forward merge into the target branch, embedding the stored plan under an `Implementation Plan:` section of the merge commit and running any configured CI gate. By default the implementation edits are squashed into a single code commit before the merge commit is written; pass `--no-squash` (or set `[merge] squash = false` in `.vizier/config.toml`) to keep the legacy multi-commit history.
 
 Each Vizier action lands a single commit that bundles code edits with canonical narrative assets (`.vizier/.snapshot` and root-level TODO threads). Plan documents, `.vizier/tmp/*`, and session logs stay as scratch artifacts and are filtered out automatically.
@@ -103,7 +103,7 @@ vizier merge stdout-stderr
 ## Configuration & Agent Backends
 Tune Vizier via repo-local files so settings travel with commits.
 
-- `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan), Codex options, and the prompt profiles attached to each command. Every `[agents.<scope>.prompts.<kind>]` table ties a prompt template (inline text or `path`) to backend/model/reasoning overrides so plan/approve/review share a single surface instead of juggling parallel `[prompts.*]` overrides. CLI flags still sit above these scopes.
+- `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan), backend options, and the prompt profiles attached to each command. Every `[agents.<scope>.prompts.<kind>]` table ties a prompt template (inline text or `path`) to backend/model/reasoning overrides so plan/approve/review share a single surface instead of juggling parallel `[prompts.*]` overrides. CLI flags still sit above these scopes.
 - Each scope now names a single `backend`. When that backend fails, Vizier aborts the command instead of falling back to wire, so rerun once the configured backend is healthy.
 - `.vizier/*.md` prompt files (BASE_SYSTEM_PROMPT, IMPLEMENTATION_PLAN_PROMPT, REVIEW_PROMPT, MERGE_CONFLICT_PROMPT, etc.) remain the fallback when no scope-specific profile is defined; repositories can keep shipping baked prompt files alongside their `.toml` entries.
 - `.vizier/COMMIT_PROMPT.md` (or `[prompts.commit]` in config) replaces the baked Linux kernel-style commit template if your team prefers a different format.

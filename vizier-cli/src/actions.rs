@@ -191,13 +191,13 @@ fn prompt_selection<'a>(
     })
 }
 
-fn require_codex_backend(
+fn require_process_backend(
     agent: &config::AgentSettings,
     prompt: config::PromptKind,
     error_message: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let derived = agent.for_prompt(prompt)?;
-    if derived.backend != config::BackendKind::Codex {
+    if derived.backend != config::BackendKind::Process {
         return Err(error_message.into());
     }
     Ok(())
@@ -382,7 +382,7 @@ pub struct MergeOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeConflictStrategy {
     Manual,
-    Codex,
+    Agent,
 }
 
 #[derive(Debug, Clone)]
@@ -826,11 +826,11 @@ async fn save(
     let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
     let selection = prompt_selection(&prompt_agent)?;
 
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Codex {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
         codex::build_prompt_for_codex(
             selection,
             &save_instruction,
-            prompt_agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.process.bounds_prompt_path.as_deref(),
         )
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
     } else {
@@ -1067,17 +1067,17 @@ pub async fn inline_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
     let selection = prompt_selection(&prompt_agent)?;
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Codex {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
         match codex::build_prompt_for_codex(
             selection,
             &user_message,
-            prompt_agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.process.bounds_prompt_path.as_deref(),
         ) {
             Ok(prompt) => prompt,
             Err(e) => {
                 display::emit(
                     LogLevel::Error,
-                    format!("Error building Codex prompt: {}", e),
+                    format!("Error building agent prompt: {}", e),
                 );
                 return Err(Box::<dyn std::error::Error>::from(e));
             }
@@ -1202,10 +1202,10 @@ pub async fn run_draft(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    require_codex_backend(
+    require_process_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier draft requires the Codex backend; update [agents.draft] or pass --backend codex",
+        "vizier draft requires the process backend; update [agents.draft] or pass --backend process",
     )?;
 
     let DraftArgs {
@@ -1282,7 +1282,7 @@ pub async fn run_draft(
             &slug,
             &branch_name,
             &spec_text,
-            prompt_agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.process.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             Box::from(format!("build_prompt: {err}"))
@@ -1298,7 +1298,7 @@ pub async fn run_draft(
             Some(worktree_path.clone()),
         )
         .await
-        .map_err(|err| Box::<dyn std::error::Error>::from(format!("Codex: {err}")))?;
+        .map_err(|err| Box::<dyn std::error::Error>::from(format!("Agent backend: {err}")))?;
 
         let plan_body = llm_response.content;
         let document = plan::render_plan_document(
@@ -1416,10 +1416,10 @@ pub async fn run_approve(
         return list_pending_plans(opts.target.clone());
     }
 
-    require_codex_backend(
+    require_process_backend(
         agent,
         config::PromptKind::Base,
-        "vizier approve requires the Codex backend; update [agents.approve] or pass --backend codex",
+        "vizier approve requires the process backend; update [agents.approve] or pass --backend process",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1557,10 +1557,10 @@ pub async fn run_review(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    require_codex_backend(
+    require_process_backend(
         agent,
         config::PromptKind::Review,
-        "vizier review requires the Codex backend; update [agents.review] or pass --backend codex",
+        "vizier review requires the process backend; update [agents.review] or pass --backend process",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1701,19 +1701,19 @@ pub async fn run_merge(
         opts.target.as_deref(),
     )?;
 
-    if matches!(opts.conflict_strategy, MergeConflictStrategy::Codex) {
-        require_codex_backend(
+    if matches!(opts.conflict_strategy, MergeConflictStrategy::Agent) {
+        require_process_backend(
             agent,
             config::PromptKind::MergeConflict,
-            "Codex-based conflict resolution requires the Codex backend; update [agents.merge] or rerun with --backend codex",
+            "Agent-based conflict resolution requires the process backend; update [agents.merge] or rerun with --backend process",
         )?;
     }
 
     if opts.cicd_gate.auto_resolve && opts.cicd_gate.script.is_some() {
         let review_agent = agent.for_prompt(config::PromptKind::Review)?;
-        if review_agent.backend != config::BackendKind::Codex {
+        if review_agent.backend != config::BackendKind::Process {
             display::warn(
-                "CI/CD auto-remediation requested but [agents.merge] is not set to Codex; gate failures will abort without auto fixes.",
+                "CI/CD auto-remediation requested but [agents.merge] is not set to the process backend; gate failures will abort without auto fixes.",
             );
         }
     }
@@ -2033,9 +2033,9 @@ async fn run_cicd_gate_for_merge(
             return Err(cicd_gate_failure_error(script, &result));
         }
 
-        if agent.backend != config::BackendKind::Codex {
+        if agent.backend != config::BackendKind::Process {
             display::warn(
-                "CI/CD gate auto-remediation requires the Codex backend; skipping automatic fixes.",
+                "CI/CD gate auto-remediation requires the process backend; skipping automatic fixes.",
             );
             return Err(cicd_gate_failure_error(script, &result));
         }
@@ -2050,7 +2050,7 @@ async fn run_cicd_gate_for_merge(
 
         fix_attempts += 1;
         display::info(format!(
-            "CI/CD gate failed; attempting Codex remediation ({}/{})...",
+            "CI/CD gate failed; attempting backend remediation ({}/{})...",
             fix_attempts, opts.cicd_gate.retries
         ));
         let truncated_stdout = clip_log(result.stdout.as_bytes());
@@ -2081,7 +2081,7 @@ async fn run_cicd_gate_for_merge(
             }
             fix_commits.push(record);
         } else {
-            display::info("Codex remediation reported no file changes.");
+            display::info("Backend remediation reported no file changes.");
         }
     }
 }
@@ -2108,7 +2108,7 @@ async fn attempt_cicd_auto_fix(
         exit_code,
         stdout,
         stderr,
-        fix_agent.codex.bounds_prompt_path.as_deref(),
+        fix_agent.process.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let instruction = format!(
@@ -2378,18 +2378,18 @@ async fn handle_merge_conflict(
             emit_conflict_instructions(&spec.slug, &files, &state_path);
             Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
         }
-        MergeConflictStrategy::Codex => {
-            match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
-                Ok(result) => Ok(result),
-                Err(err) => {
-                    display::warn(format!(
-                        "Codex auto-resolution failed: {err}. Falling back to manual resolution."
-                    ));
-                    emit_conflict_instructions(&spec.slug, &files, &state_path);
-                    Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
-                }
+        MergeConflictStrategy::Agent => match try_auto_resolve_conflicts(spec, &state, &files, agent)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                display::warn(format!(
+                    "Backend auto-resolution failed: {err}. Falling back to manual resolution."
+                ));
+                emit_conflict_instructions(&spec.slug, &files, &state_path);
+                Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
             }
-        }
+        },
     }
 }
 
@@ -2418,7 +2418,7 @@ async fn try_auto_resolve_conflicts(
     files: &[String],
     agent: &config::AgentSettings,
 ) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
-    display::info("Attempting to resolve conflicts with Codex...");
+    display::info("Attempting to resolve conflicts with the configured backend...");
     let prompt_agent = agent.for_prompt(config::PromptKind::MergeConflict)?;
     let selection = prompt_selection(&prompt_agent)?;
     let prompt = codex::build_merge_conflict_prompt(
@@ -2426,17 +2426,18 @@ async fn try_auto_resolve_conflicts(
         &spec.target_branch,
         &spec.branch,
         files,
-        prompt_agent.codex.bounds_prompt_path.as_deref(),
+        prompt_agent.process.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let request = codex::CodexRequest {
         prompt,
         repo_root,
-        profile: prompt_agent.codex.profile.clone(),
-        bin: prompt_agent.codex.binary_path.clone(),
-        extra_args: prompt_agent.codex.extra_args.clone(),
+        profile: prompt_agent.process.profile.clone(),
+        bin: prompt_agent.process.binary_path.clone(),
+        extra_args: prompt_agent.process.extra_args.clone(),
         model: codex::CodexModel::Gpt5Codex,
         output_mode: codex::CodexOutputMode::EventsJson,
+        scope: Some(prompt_agent.scope),
     };
 
     let (progress_tx, progress_rx) = mpsc::channel(64);
@@ -2461,7 +2462,7 @@ async fn try_auto_resolve_conflicts(
 
     let remaining = list_conflicted_paths()?;
     if !remaining.is_empty() {
-        return Err("conflicts remain after Codex attempt".into());
+        return Err("conflicts remain after backend attempt".into());
     }
 
     let head_oid = Oid::from_str(&state.head_oid)?;
@@ -2473,12 +2474,12 @@ async fn try_auto_resolve_conflicts(
             .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
         let _ = commit_in_progress_squash(message, head_oid)?;
         clear_conflict_state(&state.slug)?;
-        display::info("Codex resolved the conflicts; implementation commit recorded.");
+        display::info("Backend resolved the conflicts; implementation commit recorded.");
         Ok(MergeConflictResolution::SquashImplementationCommitted { source_oid })
     } else {
         let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
         clear_conflict_state(&state.slug)?;
-        display::info("Codex resolved the conflicts; finalizing merge.");
+        display::info("Backend resolved the conflicts; finalizing merge.");
         Ok(MergeConflictResolution::MergeCommitted {
             merge_oid,
             source_oid,
@@ -2701,7 +2702,7 @@ async fn perform_review_workflow(
         &plan_document,
         &diff_summary,
         &check_contexts,
-        critique_agent.codex.bounds_prompt_path.as_deref(),
+        critique_agent.process.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -2741,7 +2742,7 @@ async fn perform_review_workflow(
 
     if commit_mode.should_commit() {
         let mut summary = format!(
-            "Recorded Codex critique for plan {} (checks {}/{} passed).",
+            "Recorded backend critique for plan {} (checks {}/{} passed).",
             spec.slug, checks_passed, checks_total
         );
         summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
@@ -2810,7 +2811,7 @@ async fn perform_review_workflow(
                     )?;
                 }
                 None => {
-                    display::info("Codex reported no changes while addressing review feedback.");
+                    display::info("Backend reported no changes while addressing review feedback.");
                     plan::set_plan_status(plan_path, "review-ready", None)?;
                 }
             }
@@ -3029,7 +3030,7 @@ fn run_git_capture(
 fn emit_review_critique(plan_slug: &str, critique: &str) {
     println!("--- Review critique for plan {plan_slug} ---");
     if critique.trim().is_empty() {
-        println!("(Codex returned an empty critique.)");
+    println!("(Agent returned an empty critique.)");
     } else {
         println!("{}", critique.trim());
     }
@@ -3071,7 +3072,7 @@ async fn apply_review_fixes(
     let system_prompt = codex::build_prompt_for_codex(
         selection,
         &instruction,
-        prompt_agent.codex.bounds_prompt_path.as_deref(),
+        prompt_agent.process.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3102,7 +3103,7 @@ async fn apply_review_fixes(
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
-        display::info("Codex reported no file modifications during fix-up.");
+        display::info("Backend reported no file modifications during fix-up.");
         return Ok(None);
     }
 
@@ -3200,7 +3201,7 @@ async fn apply_plan_in_worktree(
     let system_prompt = codex::build_prompt_for_codex(
         selection,
         &instruction,
-        prompt_agent.codex.bounds_prompt_path.as_deref(),
+        prompt_agent.process.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3231,7 +3232,7 @@ async fn apply_plan_in_worktree(
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
-        return Err("Codex completed without modifying files; nothing new to approve.".into());
+        return Err("Agent completed without modifying files; nothing new to approve.".into());
     }
 
     plan::set_plan_status(plan_path, "implemented", Some("implemented_at"))?;
@@ -3289,11 +3290,11 @@ async fn refresh_plan_branch(
     let selection = prompt_selection(&prompt_agent)?;
 
     let instruction = build_save_instruction(None);
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Codex {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
         codex::build_prompt_for_codex(
             selection,
             &instruction,
-            prompt_agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.process.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
     } else {
@@ -3393,7 +3394,7 @@ fn build_merge_commit_message(
     note: Option<&str>,
 ) -> String {
     // Merge commits now keep a concise subject line and embed the stored plan
-    // document directly so reviewers see the same content Codex implemented.
+    // document directly so reviewers see the same content the backend implemented.
     let mut sections: Vec<String> = Vec::new();
 
     if let Some(note_text) = note.and_then(|value| {

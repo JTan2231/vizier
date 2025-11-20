@@ -100,14 +100,14 @@ pub async fn bootstrap_snapshot(
         options.issues_provider.clone(),
     );
 
-    let system_prompt = if agent.backend == config::BackendKind::Codex {
+    let system_prompt = if agent.backend == config::BackendKind::Process {
         let selection = agent
             .prompt_selection()
             .ok_or_else(|| "missing base prompt selection".to_string())?;
         codex::build_prompt_for_codex(
             selection,
             &instruction,
-            agent.codex.bounds_prompt_path.as_deref(),
+            agent.process.bounds_prompt_path.as_deref(),
         )?
     } else {
         config::get_system_prompt_with_meta(agent.scope, None)?
