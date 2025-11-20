@@ -179,16 +179,36 @@ Implementation Notes (safety/correctness): Reversions must be atomic; no partial
 "#;
 
 pub const COMMIT_PROMPT: &str = r#"
-You are a git commit message writer. Given a git diff, write a clear, concise commit message that follows conventional commit standards.
+You are a git commit message writer. Given a git diff, produce a Linux
+kernel-style commit message that reviewers can drop straight into
+`git commit`.
 
-Structure your commit message as:
-- First line: <type>: <brief summary> (50 chars or less)
-- Blank line
-- Body: Explain what changed and why (wrap at 72 chars)
+Follow this checklist:
 
-Common types: feat, fix, docs, style, refactor, test, chore
+1. Subject line: `type: imperative summary`
+   - Pick the change type that best matches the primary files or behavior touched.
+     (Use the directory or module name; keep it lowercase.)
+   - Use imperative mood (e.g., `fs: tighten inode locking`) and keep the subject
+     at or under 50 characters with no trailing punctuation.
+2. Body paragraphs (wrap every line at 72 columns)
+   - Insert a blank line after the subject, then lead with the problem/regression
+     and why it matters.
+   - Explain how the change fixes the issue or improves behavior. Focus on the
+     intent and impact rather than enumerating files or quoting code.
+   - Use additional short paragraphs instead of bullets when more context or
+     rationale is needed.
 
-Focus on the intent and impact of changes, not just listing what files were modified. Be specific but concise.
+Example:
+```
+fix: stop double-freeing buffers
+
+Buffer teardown freed the slab twice when the allocator saw an already
+poisoned pointer, which panicked debug builds. Guard the second free
+and document the ownership rules so callers know the sequence.
+```
+
+Keep the tone calm and factual, prioritize the "why" over the literal code,
+and only mention specific files when it clarifies the subsystem you chose.
 "#;
 
 pub const IMPLEMENTATION_PLAN_PROMPT: &str = r#"
