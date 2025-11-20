@@ -12,7 +12,7 @@ use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::vcs::{
-    AttemptOutcome, CredentialAttempt, MergePreparation, PushErrorKind, RemoteScheme,
+    AttemptOutcome, CredentialAttempt, MergePreparation, MergeReady, PushErrorKind, RemoteScheme,
     add_worktree_for_branch, amend_head_commit, commit_in_progress_merge,
     commit_in_progress_squash, commit_paths_in_repo, commit_ready_merge, commit_squashed_merge,
     create_branch_from, delete_branch, detect_primary_branch, list_conflicted_paths, prepare_merge,
@@ -1722,13 +1722,7 @@ pub async fn run_merge(
             merge_message,
         } => {
             let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
-            let verification = prepare_merge(&spec.branch)?;
-            let MergePreparation::Ready(ready) = verification else {
-                return Err(
-                    "squashed merge cannot finalize; merge prep entered conflict after resuming"
-                        .into(),
-                );
-            };
+            let ready = merge_ready_from_head(source_oid)?;
             let merge_oid = commit_ready_merge(&merge_message, ready)?;
             finalize_merge(
                 &spec,
@@ -1945,15 +1939,27 @@ async fn finalize_squashed_merge_from_head(
     agent: &config::AgentSettings,
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
     let gate = run_cicd_gate_for_merge(spec, opts, agent).await?;
-    let verification = prepare_merge(&spec.branch)?;
-    let MergePreparation::Ready(ready) = verification else {
-        return Err("unable to finalize squashed merge; merge prep re-entered conflict".into());
-    };
+    let ready = merge_ready_from_head(source_oid)?;
     let merge_oid = commit_ready_merge(merge_message, ready)?;
     Ok(MergeExecutionResult {
         merge_oid,
         source_oid,
         gate,
+    })
+}
+
+fn merge_ready_from_head(source_oid: Oid) -> Result<MergeReady, Box<dyn std::error::Error>> {
+    let repo = Repository::discover(".")?;
+    let head = repo.head()?;
+    if !head.is_branch() {
+        return Err("cannot finalize merge while HEAD is detached; checkout the target branch first"
+            .into());
+    }
+    let head_commit = head.peel_to_commit()?;
+    Ok(MergeReady {
+        head_oid: head_commit.id(),
+        source_oid,
+        tree_oid: head_commit.tree_id(),
     })
 }
 
@@ -2471,7 +2477,8 @@ fn strip_conflict_markers(input: &str) -> Option<String> {
         let (_, after_marker) = after_start.split_once("<<<<<<<")?;
         let (_, after_left) = after_marker.split_once("=======")?;
         let (right, after_right) = after_left.split_once(">>>>>>>")?;
-        output.push_str(right);
+        let resolved = right.strip_prefix('\n').unwrap_or(right);
+        output.push_str(resolved);
 
         if let Some(idx) = after_right.find('\n') {
             remainder = &after_right[idx + 1..];
