@@ -13,3 +13,5 @@ Commit prompts default to the Linux kernel style: `subsystem: imperative summary
 subjects (≤50 chars), wrapped 72-char bodies that explain the "why," plus a
 `Signed-off-by` trailer block. Repositories can swap in their own style via
 `.vizier/COMMIT_PROMPT.md` or `[prompts.commit]`.
+
+Need to tune prompts/backends per command? Use `[agents.<scope>.prompts.<kind>]` tables inside `.vizier/config.toml` so a single entry defines the template (inline text or `path`) plus backend/model/reasoning overrides for that scope. For example, `[agents.draft.prompts.implementation_plan]` controls plan drafting while `[agents.review.prompts.review]` governs critique prompts; legacy `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is set.
