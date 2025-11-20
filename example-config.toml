@@ -12,21 +12,22 @@ profile = "default"
 bounds_prompt_path = "/etc/vizier/codex_bounds.md"
 extra_args = ["--log-json"]
 
-# Where each prompt should be loaded from on disk (omit entries to fall back to baked defaults).
-# The baked commit prompt already follows the Linux kernel style (subsystem: summary,
-# 50/72 wrapping, Signed-off-by), so only override `commit` if you need a different policy.
-[prompts]
-base = "./prompts/base.md"
-commit = "./prompts/commit.md"
-implementation_plan = "./prompts/plan.md"
-review = "./prompts/review.md"
-merge_conflict = "./prompts/merge.md"
+# Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
+# together with backend/model overrides for that scope+prompt pairing. Available kinds: base, commit,
+# implementation_plan, review, merge_conflict.
+[agents.default.prompts.base]
+path = "./prompts/base.md"
+model = "gpt-4.1"
 
-[prompts.ask]
-base = "./prompts/ask_base.md"
+[agents.draft.prompts.implementation_plan]
+path = "./prompts/plan.md"
+backend = "codex"
 
-[prompts.draft]
-implementation_plan = "./prompts/plan_draft.md"
+[agents.review.prompts.review]
+path = "./prompts/review.md"
+[agents.review.prompts.review.codex]
+profile = "compliance"
+bounds_prompt_path = "./prompts/review-bounds.md"
 
 # Order of operations Codex will run during `vizier review` unless `--skip-checks` is passed
 [review.checks]

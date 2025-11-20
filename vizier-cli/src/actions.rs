@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
@@ -174,6 +174,33 @@ fn token_usage_suffix() -> String {
         detail.push_str(&format!("; {}", annotation));
     }
     format!(" (tokens: {})", detail)
+}
+
+fn prompt_selection<'a>(
+    agent: &'a config::AgentSettings,
+) -> Result<&'a config::PromptSelection, Box<dyn std::error::Error>> {
+    agent.prompt_selection().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "agent for `{}` is missing a resolved prompt; call AgentSettings::for_prompt first",
+                agent.scope.as_str()
+            ),
+        )
+        .into()
+    })
+}
+
+fn require_codex_backend(
+    agent: &config::AgentSettings,
+    prompt: config::PromptKind,
+    error_message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let derived = agent.for_prompt(prompt)?;
+    if derived.backend != config::BackendKind::Codex {
+        return Err(error_message.into());
+    }
+    Ok(())
 }
 
 fn format_agent_annotation() -> Option<String> {
@@ -796,24 +823,26 @@ async fn save(
     };
 
     let save_instruction = build_save_instruction(provided_note.as_deref());
+    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
+    let selection = prompt_selection(&prompt_agent)?;
 
-    let system_prompt = if agent.backend == config::BackendKind::Codex {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Codex {
         codex::build_prompt_for_codex(
-            agent.scope,
+            selection,
             &save_instruction,
-            agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.codex.bounds_prompt_path.as_deref(),
         )
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
     } else {
-        crate::config::get_system_prompt_with_meta(agent.scope, None)?
+        crate::config::get_system_prompt_with_meta(prompt_agent.scope, None)?
     };
 
     let response = Auditor::llm_request_with_tools(
-        agent,
+        &prompt_agent,
         Some(config::PromptKind::Base),
         system_prompt,
         save_instruction,
-        tools::active_tooling_for(agent),
+        tools::active_tooling_for(&prompt_agent),
         None,
         None,
     )
@@ -1036,11 +1065,13 @@ pub async fn inline_command(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let system_prompt = if agent.backend == config::BackendKind::Codex {
+    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
+    let selection = prompt_selection(&prompt_agent)?;
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Codex {
         match codex::build_prompt_for_codex(
-            agent.scope,
+            selection,
             &user_message,
-            agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.codex.bounds_prompt_path.as_deref(),
         ) {
             Ok(prompt) => prompt,
             Err(e) => {
@@ -1052,7 +1083,7 @@ pub async fn inline_command(
             }
         }
     } else {
-        match crate::config::get_system_prompt_with_meta(agent.scope, None) {
+        match crate::config::get_system_prompt_with_meta(prompt_agent.scope, None) {
             Ok(s) => s,
             Err(e) => {
                 display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));
@@ -1062,11 +1093,11 @@ pub async fn inline_command(
     };
 
     let response = match Auditor::llm_request_with_tools(
-        agent,
+        &prompt_agent,
         Some(config::PromptKind::Base),
         system_prompt,
         user_message,
-        tools::active_tooling_for(agent),
+        tools::active_tooling_for(&prompt_agent),
         None,
         None,
     )
@@ -1171,9 +1202,11 @@ pub async fn run_draft(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if agent.backend != config::BackendKind::Codex {
-        return Err("vizier draft requires the Codex backend; update [agents.draft] or pass --backend codex".into());
-    }
+    require_codex_backend(
+        agent,
+        config::PromptKind::ImplementationPlan,
+        "vizier draft requires the Codex backend; update [agents.draft] or pass --backend codex",
+    )?;
 
     let DraftArgs {
         spec_text,
@@ -1242,19 +1275,21 @@ pub async fn run_draft(
         worktree_created = true;
         let _cwd_guard = WorkdirGuard::enter(&worktree_path)?;
 
+        let prompt_agent = agent.for_prompt(config::PromptKind::ImplementationPlan)?;
+        let selection = prompt_selection(&prompt_agent)?;
         let prompt = codex::build_implementation_plan_prompt(
-            agent.scope,
+            selection,
             &slug,
             &branch_name,
             &spec_text,
-            agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.codex.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             Box::from(format!("build_prompt: {err}"))
         })?;
 
         let llm_response = Auditor::llm_request_with_tools(
-            agent,
+            &prompt_agent,
             Some(config::PromptKind::ImplementationPlan),
             prompt,
             spec_text.clone(),
@@ -1381,9 +1416,11 @@ pub async fn run_approve(
         return list_pending_plans(opts.target.clone());
     }
 
-    if agent.backend != config::BackendKind::Codex {
-        return Err("vizier approve requires the Codex backend; update [agents.approve] or pass --backend codex".into());
-    }
+    require_codex_backend(
+        agent,
+        config::PromptKind::Base,
+        "vizier approve requires the Codex backend; update [agents.approve] or pass --backend codex",
+    )?;
 
     let spec = plan::PlanBranchSpec::resolve(
         opts.plan.as_deref(),
@@ -1520,9 +1557,11 @@ pub async fn run_review(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if agent.backend != config::BackendKind::Codex {
-        return Err("vizier review requires the Codex backend; update [agents.review] or pass --backend codex".into());
-    }
+    require_codex_backend(
+        agent,
+        config::PromptKind::Review,
+        "vizier review requires the Codex backend; update [agents.review] or pass --backend codex",
+    )?;
 
     let spec = plan::PlanBranchSpec::resolve(
         Some(opts.plan.as_str()),
@@ -1662,22 +1701,21 @@ pub async fn run_merge(
         opts.target.as_deref(),
     )?;
 
-    if matches!(opts.conflict_strategy, MergeConflictStrategy::Codex)
-        && agent.backend != config::BackendKind::Codex
-    {
-        return Err(
-            "Codex-based conflict resolution requires the Codex backend; update [agents.merge] or rerun with --backend codex"
-                .into(),
-        );
+    if matches!(opts.conflict_strategy, MergeConflictStrategy::Codex) {
+        require_codex_backend(
+            agent,
+            config::PromptKind::MergeConflict,
+            "Codex-based conflict resolution requires the Codex backend; update [agents.merge] or rerun with --backend codex",
+        )?;
     }
 
-    if opts.cicd_gate.auto_resolve
-        && opts.cicd_gate.script.is_some()
-        && agent.backend != config::BackendKind::Codex
-    {
-        display::warn(
-            "CI/CD auto-remediation requested but [agents.merge] is not set to Codex; gate failures will abort without auto fixes.",
-        );
+    if opts.cicd_gate.auto_resolve && opts.cicd_gate.script.is_some() {
+        let review_agent = agent.for_prompt(config::PromptKind::Review)?;
+        if review_agent.backend != config::BackendKind::Codex {
+            display::warn(
+                "CI/CD auto-remediation requested but [agents.merge] is not set to Codex; gate failures will abort without auto fixes.",
+            );
+        }
     }
 
     let repo = Repository::discover(".")?;
@@ -1952,8 +1990,9 @@ fn merge_ready_from_head(source_oid: Oid) -> Result<MergeReady, Box<dyn std::err
     let repo = Repository::discover(".")?;
     let head = repo.head()?;
     if !head.is_branch() {
-        return Err("cannot finalize merge while HEAD is detached; checkout the target branch first"
-            .into());
+        return Err(
+            "cannot finalize merge while HEAD is detached; checkout the target branch first".into(),
+        );
     }
     let head_commit = head.peel_to_commit()?;
     Ok(MergeReady {
@@ -2058,6 +2097,7 @@ async fn attempt_cicd_auto_fix(
     agent: &config::AgentSettings,
     amend_head: bool,
 ) -> Result<Option<CicdFixRecord>, Box<dyn std::error::Error>> {
+    let fix_agent = agent.for_prompt(config::PromptKind::Review)?;
     let prompt = codex::build_cicd_failure_prompt(
         &spec.slug,
         &spec.branch,
@@ -2068,7 +2108,7 @@ async fn attempt_cicd_auto_fix(
         exit_code,
         stdout,
         stderr,
-        agent.codex.bounds_prompt_path.as_deref(),
+        fix_agent.codex.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let instruction = format!(
@@ -2083,11 +2123,11 @@ async fn attempt_cicd_auto_fix(
     let progress_handle = spawn_plain_progress_logger(event_rx);
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
-        agent,
+        &fix_agent,
         Some(config::PromptKind::Review),
         prompt,
         instruction,
-        tools::active_tooling_for(agent),
+        tools::active_tooling_for(&fix_agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
@@ -2379,20 +2419,22 @@ async fn try_auto_resolve_conflicts(
     agent: &config::AgentSettings,
 ) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
     display::info("Attempting to resolve conflicts with Codex...");
+    let prompt_agent = agent.for_prompt(config::PromptKind::MergeConflict)?;
+    let selection = prompt_selection(&prompt_agent)?;
     let prompt = codex::build_merge_conflict_prompt(
-        agent.scope,
+        selection,
         &spec.target_branch,
         &spec.branch,
         files,
-        agent.codex.bounds_prompt_path.as_deref(),
+        prompt_agent.codex.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let request = codex::CodexRequest {
         prompt,
         repo_root,
-        profile: agent.codex.profile.clone(),
-        bin: agent.codex.binary_path.clone(),
-        extra_args: agent.codex.extra_args.clone(),
+        profile: prompt_agent.codex.profile.clone(),
+        bin: prompt_agent.codex.binary_path.clone(),
+        extra_args: prompt_agent.codex.extra_args.clone(),
         model: codex::CodexModel::Gpt5Codex,
         output_mode: codex::CodexOutputMode::EventsJson,
     };
@@ -2649,15 +2691,17 @@ async fn perform_review_workflow(
         .map(ReviewCheckResult::to_context)
         .collect();
 
+    let critique_agent = agent.for_prompt(config::PromptKind::Review)?;
+    let selection = prompt_selection(&critique_agent)?;
     let prompt = codex::build_review_prompt(
-        agent.scope,
+        selection,
         &spec.slug,
         &spec.branch,
         &spec.target_branch,
         &plan_document,
         &diff_summary,
         &check_contexts,
-        agent.codex.bounds_prompt_path.as_deref(),
+        critique_agent.codex.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -2670,8 +2714,8 @@ async fn perform_review_workflow(
     let (text_tx, _text_rx) = mpsc::channel(1);
 
     let response = Auditor::llm_request_with_tools_no_display(
-        agent,
-        Some(config::PromptKind::Base),
+        &critique_agent,
+        Some(config::PromptKind::Review),
         prompt,
         user_message,
         Vec::new(),
@@ -3001,6 +3045,8 @@ async fn apply_review_fixes(
     agent: &config::AgentSettings,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let plan_rel = spec.plan_rel_path();
+    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
+    let selection = prompt_selection(&prompt_agent)?;
     let mut instruction = format!(
         "<instruction>Read the implementation plan at {} and the review critique below. Address every Action Item without changing unrelated code.</instruction>",
         plan_rel.display()
@@ -3023,9 +3069,9 @@ async fn apply_review_fixes(
     );
 
     let system_prompt = codex::build_prompt_for_codex(
-        agent.scope,
+        selection,
         &instruction,
-        agent.codex.bounds_prompt_path.as_deref(),
+        prompt_agent.codex.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3033,11 +3079,11 @@ async fn apply_review_fixes(
     let progress_handle = spawn_plain_progress_logger(event_rx);
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
-        agent,
+        &prompt_agent,
         Some(config::PromptKind::Base),
         system_prompt,
         instruction.clone(),
-        tools::active_tooling_for(agent),
+        tools::active_tooling_for(&prompt_agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
@@ -3138,6 +3184,8 @@ async fn apply_plan_in_worktree(
     agent: &config::AgentSettings,
 ) -> Result<PlanApplyResult, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
+    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
+    let selection = prompt_selection(&prompt_agent)?;
 
     let plan_rel = spec.plan_rel_path();
     let mut instruction = format!(
@@ -3150,9 +3198,9 @@ async fn apply_plan_in_worktree(
     ));
 
     let system_prompt = codex::build_prompt_for_codex(
-        agent.scope,
+        selection,
         &instruction,
-        agent.codex.bounds_prompt_path.as_deref(),
+        prompt_agent.codex.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3160,11 +3208,11 @@ async fn apply_plan_in_worktree(
     let progress_handle = spawn_plain_progress_logger(event_rx);
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
-        agent,
+        &prompt_agent,
         None,
         system_prompt,
         instruction.clone(),
-        tools::active_tooling_for(agent),
+        tools::active_tooling_for(&prompt_agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
@@ -3237,25 +3285,27 @@ async fn refresh_plan_branch(
     agent: &config::AgentSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
+    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
+    let selection = prompt_selection(&prompt_agent)?;
 
     let instruction = build_save_instruction(None);
-    let system_prompt = if agent.backend == config::BackendKind::Codex {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Codex {
         codex::build_prompt_for_codex(
-            agent.scope,
+            selection,
             &instruction,
-            agent.codex.bounds_prompt_path.as_deref(),
+            prompt_agent.codex.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
     } else {
-        crate::config::get_system_prompt_with_meta(agent.scope, None)?
+        crate::config::get_system_prompt_with_meta(prompt_agent.scope, None)?
     };
 
     let response = Auditor::llm_request_with_tools(
-        agent,
+        &prompt_agent,
         Some(config::PromptKind::Base),
         system_prompt,
         instruction,
-        tools::active_tooling_for(agent),
+        tools::active_tooling_for(&prompt_agent),
         None,
         Some(worktree_path.to_path_buf()),
     )

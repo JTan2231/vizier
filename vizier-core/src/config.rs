@@ -172,6 +172,25 @@ pub struct AgentOverrides {
     pub model: Option<String>,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub codex: Option<CodexOverride>,
+    pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
+}
+
+/// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]` so the same
+/// table controls the template, backend/model overrides, and Codex options for a
+/// specific command/prompt pairing. Legacy `[prompts.*]` keys remain supported,
+/// but repositories should converge on these profiles so operators reason about a
+/// single surface when migrating.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PromptOverrides {
+    pub text: Option<String>,
+    pub source_path: Option<PathBuf>,
+    pub agent: Option<Box<AgentOverrides>>,
+}
+
+impl PromptOverrides {
+    pub fn agent_overrides(&self) -> Option<&AgentOverrides> {
+        self.agent.as_deref()
+    }
 }
 
 impl AgentOverrides {
@@ -181,6 +200,7 @@ impl AgentOverrides {
             && self.model.is_none()
             && self.reasoning_effort.is_none()
             && self.codex.is_none()
+            && self.prompt_overrides.is_empty()
     }
 }
 
@@ -193,6 +213,21 @@ pub struct AgentSettings {
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub codex: CodexOptions,
+    pub prompt: Option<PromptSelection>,
+    pub cli_override: Option<AgentOverrides>,
+}
+
+impl AgentSettings {
+    pub fn for_prompt(
+        &self,
+        kind: PromptKind,
+    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+        get_config().resolve_prompt_profile(self.scope, kind, self.cli_override.as_ref())
+    }
+
+    pub fn prompt_selection(&self) -> Option<&PromptSelection> {
+        self.prompt.as_ref()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +280,7 @@ pub struct PromptSelection {
     pub kind: PromptKind,
     pub requested_scope: CommandScope,
     pub origin: PromptOrigin,
+    pub source_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -408,19 +444,27 @@ impl Config {
 
     fn from_reader(path: &Path, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)?;
-        Self::from_str(&contents, format)
+        let base_dir = path.parent();
+        Self::from_str(&contents, format, base_dir)
     }
 
-    fn from_str(contents: &str, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_str(
+        contents: &str,
+        format: FileFormat,
+        base_dir: Option<&Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let file_config: serde_json::Value = match format {
             FileFormat::Json => serde_json::from_str(contents)?,
             FileFormat::Toml => toml::from_str(contents)?,
         };
 
-        Self::from_value(file_config)
+        Self::from_value(file_config, base_dir)
     }
 
-    fn from_value(file_config: serde_json::Value) -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_value(
+        file_config: serde_json::Value,
+        base_dir: Option<&Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut config = Self::default();
 
         if let Some(model) = find_string(&file_config, MODEL_KEY_PATHS) {
@@ -593,7 +637,7 @@ impl Config {
         }
 
         if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
-            config.parse_agent_sections(agent_value)?;
+            config.parse_agent_sections(agent_value, base_dir)?;
         }
 
         Ok(config)
@@ -615,13 +659,14 @@ impl Config {
     fn parse_agent_sections(
         &mut self,
         agents_value: &serde_json::Value,
+        base_dir: Option<&Path>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let table = agents_value.as_object().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "[agents] must be a table")
         })?;
 
         for (key, value) in table.iter() {
-            let Some(overrides) = parse_agent_overrides(value)? else {
+            let Some(overrides) = parse_agent_overrides(value, true, base_dir)? else {
                 continue;
             };
 
@@ -681,12 +726,17 @@ impl Config {
     }
 
     pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
+        if let Some(selection) = self.prompt_from_agent_override(scope, kind) {
+            return selection;
+        }
+
         if let Some(value) = self.scoped_prompts.get(&(scope, kind)) {
             return PromptSelection {
                 text: value.clone(),
                 kind,
                 requested_scope: scope,
                 origin: PromptOrigin::ScopedConfig { scope },
+                source_path: None,
             };
         }
 
@@ -698,6 +748,7 @@ impl Config {
                 origin: PromptOrigin::RepoFile {
                     path: repo.path.clone(),
                 },
+                source_path: Some(repo.path.clone()),
             };
         }
 
@@ -707,6 +758,7 @@ impl Config {
                 kind,
                 requested_scope: scope,
                 origin: PromptOrigin::GlobalConfig,
+                source_path: None,
             };
         }
 
@@ -715,7 +767,47 @@ impl Config {
             kind,
             requested_scope: scope,
             origin: PromptOrigin::Default,
+            source_path: None,
         }
+    }
+
+    fn prompt_from_agent_override(
+        &self,
+        scope: CommandScope,
+        kind: PromptKind,
+    ) -> Option<PromptSelection> {
+        if let Some(scoped) = self
+            .agent_scopes
+            .get(&scope)
+            .and_then(|value| value.prompt_overrides.get(&kind))
+        {
+            if let Some(selection) = Self::selection_from_override(scope, kind, scoped, scope) {
+                return Some(selection);
+            }
+        }
+
+        if let Some(defaults) = self.agent_defaults.prompt_overrides.get(&kind) {
+            return Self::selection_from_override(scope, kind, defaults, scope);
+        }
+
+        None
+    }
+
+    fn selection_from_override(
+        scope: CommandScope,
+        kind: PromptKind,
+        overrides: &PromptOverrides,
+        origin_scope: CommandScope,
+    ) -> Option<PromptSelection> {
+        overrides.text.as_ref().map(|text| PromptSelection {
+            text: text.clone(),
+            kind,
+            requested_scope: scope,
+            origin: PromptOrigin::ScopedConfig {
+                scope: origin_scope,
+            },
+            source_path: overrides.source_path.clone(),
+        })
     }
 
     pub fn get_prompt(&self, prompt: SystemPrompt) -> String {
@@ -743,23 +835,43 @@ impl Config {
             }
         }
 
-        let provider = if builder.provider_model == self.provider_model
-            && builder.reasoning_effort == self.reasoning_effort
-        {
-            self.provider.clone()
-        } else {
-            Self::provider_from_settings(&builder.provider_model, builder.reasoning_effort)?
-        };
+        builder.build(self, scope, None, cli_override)
+    }
 
-        Ok(AgentSettings {
-            scope,
-            backend: builder.backend,
-            fallback_backend: builder.fallback_backend,
-            provider,
-            provider_model: builder.provider_model,
-            reasoning_effort: builder.reasoning_effort,
-            codex: builder.codex,
-        })
+    pub fn resolve_prompt_profile(
+        &self,
+        scope: CommandScope,
+        kind: PromptKind,
+        cli_override: Option<&AgentOverrides>,
+    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+        let mut builder = AgentSettingsBuilder::new(self);
+
+        if !self.agent_defaults.is_empty() {
+            builder.apply(&self.agent_defaults);
+        }
+
+        if let Some(scope_overrides) = self.agent_scopes.get(&scope) {
+            builder.apply(scope_overrides);
+        }
+
+        if let Some(default_prompt) = self.agent_defaults.prompt_overrides.get(&kind) {
+            builder.apply_prompt_overrides(default_prompt);
+        }
+
+        if let Some(scoped_prompt) = self
+            .agent_scopes
+            .get(&scope)
+            .and_then(|scope_overrides| scope_overrides.prompt_overrides.get(&kind))
+        {
+            builder.apply_prompt_overrides(scoped_prompt);
+        }
+
+        if let Some(overrides) = cli_override {
+            builder.apply(overrides);
+        }
+
+        let prompt = self.prompt_for(scope, kind);
+        builder.build(self, scope, Some(prompt), cli_override)
     }
 }
 
@@ -882,6 +994,40 @@ impl AgentSettingsBuilder {
             }
         }
     }
+
+    fn apply_prompt_overrides(&mut self, overrides: &PromptOverrides) {
+        if let Some(agent) = overrides.agent_overrides() {
+            self.apply(agent);
+        }
+    }
+
+    fn build(
+        &self,
+        cfg: &Config,
+        scope: CommandScope,
+        prompt: Option<PromptSelection>,
+        cli_override: Option<&AgentOverrides>,
+    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+        let provider = if self.provider_model == cfg.provider_model
+            && self.reasoning_effort == cfg.reasoning_effort
+        {
+            cfg.provider.clone()
+        } else {
+            Config::provider_from_settings(&self.provider_model, self.reasoning_effort)?
+        };
+
+        Ok(AgentSettings {
+            scope,
+            backend: self.backend,
+            fallback_backend: self.fallback_backend,
+            provider,
+            provider_model: self.provider_model.clone(),
+            reasoning_effort: self.reasoning_effort,
+            codex: self.codex.clone(),
+            prompt,
+            cli_override: cli_override.cloned(),
+        })
+    }
 }
 
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
@@ -913,6 +1059,8 @@ fn find_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
 
 fn parse_agent_overrides(
     value: &serde_json::Value,
+    allow_prompt_children: bool,
+    base_dir: Option<&Path>,
 ) -> Result<Option<AgentOverrides>, Box<dyn std::error::Error>> {
     if !value.is_object() {
         return Ok(None);
@@ -952,11 +1100,118 @@ fn parse_agent_overrides(
         }
     }
 
+    if allow_prompt_children {
+        if let Some(prompts_value) = value_at_path(value, &["prompts"]) {
+            overrides.prompt_overrides =
+                parse_prompt_override_table(prompts_value, base_dir)?.unwrap_or_default();
+        }
+    }
+
     if overrides.is_empty() {
         Ok(None)
     } else {
         Ok(Some(overrides))
     }
+}
+
+fn parse_prompt_override_table(
+    value: &serde_json::Value,
+    base_dir: Option<&Path>,
+) -> Result<Option<HashMap<PromptKind, PromptOverrides>>, Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(None),
+    };
+
+    let mut overrides = HashMap::new();
+
+    for (key, entry) in table {
+        let Some(kind) = prompt_kind_from_key(key) else {
+            continue;
+        };
+
+        let mut prompt_override = PromptOverrides::default();
+
+        match entry {
+            serde_json::Value::String(text) => {
+                if !text.trim().is_empty() {
+                    prompt_override.text = Some(text.clone());
+                }
+            }
+            serde_json::Value::Object(_) => {
+                if let Some(path) = parse_prompt_path(entry, base_dir)? {
+                    prompt_override.source_path = Some(path.clone());
+                    prompt_override.text = Some(std::fs::read_to_string(&path)?);
+                } else if let Some(text) =
+                    parse_inline_prompt_text(entry).map(|text| text.to_string())
+                {
+                    prompt_override.text = Some(text);
+                }
+
+                if let Some(agent) = parse_agent_overrides(entry, false, base_dir)? {
+                    prompt_override.agent = Some(Box::new(agent));
+                }
+            }
+            _ => continue,
+        }
+
+        if prompt_override.text.is_none() && prompt_override.agent.is_none() {
+            continue;
+        }
+
+        overrides.insert(kind, prompt_override);
+    }
+
+    if overrides.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(overrides))
+    }
+}
+
+fn parse_prompt_path(
+    entry: &serde_json::Value,
+    base_dir: Option<&Path>,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let Some(object) = entry.as_object() else {
+        return Ok(None);
+    };
+
+    let path_value = object
+        .get("path")
+        .or_else(|| object.get("file"))
+        .and_then(|value| value.as_str());
+
+    let Some(raw_path) = path_value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let mut resolved = PathBuf::from(raw_path);
+    if resolved.is_relative() {
+        if let Some(base) = base_dir {
+            resolved = base.join(resolved);
+        }
+    }
+
+    Ok(Some(resolved))
+}
+
+fn parse_inline_prompt_text(entry: &serde_json::Value) -> Option<&str> {
+    let object = entry.as_object()?;
+    for key in ["text", "prompt", "template", "inline"] {
+        if let Some(value) = object.get(key) {
+            if let Some(text) = value.as_str() {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_codex_override(
@@ -1216,7 +1471,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, tempdir};
     use wire::config::ThinkingLevel;
 
     fn write_json_file(contents: &str) -> NamedTempFile {
@@ -1437,7 +1692,7 @@ retries = 3
 
     #[test]
     fn test_project_config_path_prefers_toml_over_json() {
-        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let temp_dir = tempdir().expect("create temp dir");
         assert!(
             project_config_path(temp_dir.path()).is_none(),
             "no config files should return None"
@@ -1490,5 +1745,45 @@ retries = 3
                 std::env::remove_var(KEY);
             },
         }
+    }
+
+    #[test]
+    fn test_agent_prompt_override_with_path_and_backend() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let prompt_path = temp_dir.path().join("profile_base.md");
+        fs::write(&prompt_path, "scoped prompt from file").expect("write prompt file");
+
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[agents.default.prompts.base]
+path = "profile_base.md"
+backend = "wire"
+model = "gpt-4o-mini"
+"#,
+        )
+        .expect("write config");
+
+        let cfg =
+            Config::from_toml(config_path).expect("should parse config with prompt overrides");
+        let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Base);
+        assert_eq!(selection.text.trim(), "scoped prompt from file");
+        assert_eq!(selection.source_path, Some(prompt_path.clone()));
+
+        let agent = cfg
+            .resolve_prompt_profile(CommandScope::Ask, PromptKind::Base, None)
+            .expect("resolve prompt profile");
+        assert_eq!(
+            agent
+                .prompt
+                .as_ref()
+                .expect("prompt should be attached")
+                .text
+                .trim(),
+            "scoped prompt from file"
+        );
+        assert_eq!(agent.backend, BackendKind::Wire);
+        assert_eq!(agent.provider_model, "gpt-4o-mini");
     }
 }

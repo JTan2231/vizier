@@ -63,6 +63,7 @@ pub async fn bootstrap_snapshot(
 ) -> Result<BootstrapReport, Box<dyn std::error::Error>> {
     let repo = Repository::discover(".")?;
     let agent = config::get_config().resolve_agent_settings(config::CommandScope::Ask, None)?;
+    let agent = agent.for_prompt(config::PromptKind::Base)?;
 
     let todo_dir = resolve_todo_dir()?;
     let snapshot_path = todo_dir.join(".snapshot");
@@ -100,8 +101,11 @@ pub async fn bootstrap_snapshot(
     );
 
     let system_prompt = if agent.backend == config::BackendKind::Codex {
+        let selection = agent
+            .prompt_selection()
+            .ok_or_else(|| "missing base prompt selection".to_string())?;
         codex::build_prompt_for_codex(
-            agent.scope,
+            selection,
             &instruction,
             agent.codex.bounds_prompt_path.as_deref(),
         )?
