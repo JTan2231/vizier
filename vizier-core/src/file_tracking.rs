@@ -1,15 +1,13 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use git2::{Repository, StatusOptions, StatusShow};
 use lazy_static::lazy_static;
-
-use crate::vcs;
 
 lazy_static! {
     static ref FILE_TRACKER: Mutex<FileTracker> = Mutex::new(FileTracker::new());
@@ -44,66 +42,52 @@ impl FileTracker {
             .lock()
             .unwrap()
             .updated_files
-            .insert(path.to_string());
+            .insert(Self::normalize_repo_path(Path::new(path)));
 
         Ok(())
     }
 
     pub fn has_pending_changes() -> bool {
-        FILE_TRACKER.lock().unwrap().updated_files.len() > 0
+        FILE_TRACKER
+            .lock()
+            .unwrap()
+            .updated_files
+            .iter()
+            .any(|path| is_canonical_story_path(path))
     }
 
-    /// Commits changes specific to the `.vizier` directory--primarily intended as a log for Vizier
-    /// changes to existing TODOs and narrative threads
-    /// Doesn't do anything if there are no changes to commit
-    pub async fn commit_changes(message: &str) -> Result<(), Box<dyn std::error::Error>> {
-        if FILE_TRACKER.lock().unwrap().updated_files.len() == 0 {
-            return Ok(());
+    pub fn pending_paths(repo_root: &Path) -> Result<Vec<String>, git2::Error> {
+        Self::sync_vizier_changes(repo_root)?;
+
+        let tracker = FILE_TRACKER.lock().unwrap();
+        let mut paths: Vec<String> = tracker
+            .updated_files
+            .iter()
+            .filter(|path| is_canonical_story_path(path))
+            .cloned()
+            .collect();
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    pub fn clear_tracked(paths: &[String]) {
+        if paths.is_empty() {
+            return;
         }
 
-        let repo_root = vcs::repo_root()?;
-        let repo_root_str = repo_root.to_string_lossy().to_string();
-
-        let staged_snapshot = vcs::snapshot_staged(&repo_root_str)?;
-        let mut staged_to_restore = Vec::new();
-        let mut paths_to_unstage: Vec<String> = Vec::new();
-
-        for item in staged_snapshot.iter() {
-            if is_vizier_path(&item.path) {
-                continue;
-            }
-
-            staged_to_restore.push(item.clone());
-            match &item.kind {
-                vcs::StagedKind::Renamed { from, to } => {
-                    paths_to_unstage.push(from.clone());
-                    paths_to_unstage.push(to.clone());
-                }
-                _ => paths_to_unstage.push(item.path.clone()),
-            }
+        let mut tracker = FILE_TRACKER.lock().unwrap();
+        for path in paths {
+            tracker.updated_files.remove(path);
         }
-
-        if !paths_to_unstage.is_empty() {
-            let refs: Vec<&str> = paths_to_unstage.iter().map(|path| path.as_str()).collect();
-            vcs::unstage(Some(refs))?;
-        }
-
-        // TODO: Commit message builder
-        vcs::add_and_commit(Some(vec![&crate::tools::get_todo_dir()]), message, false)?;
-
-        if !staged_to_restore.is_empty() {
-            vcs::restore_staged(&repo_root_str, &staged_to_restore)?;
-        }
-
-        Self::clear();
-
-        Ok(())
     }
 
     pub fn delete(path: &str) -> std::io::Result<()> {
         let mut tracker = FILE_TRACKER.lock().unwrap();
 
-        tracker.updated_files.insert(path.to_string());
+        tracker
+            .updated_files
+            .insert(Self::normalize_repo_path(Path::new(path)));
         tracker.all_files.retain(|f| f != path);
 
         std::fs::remove_file(path)?;
@@ -121,7 +105,10 @@ impl FileTracker {
             return Ok(());
         }
 
-        let changed = Self::collect_vizier_changes(repo_root)?;
+        let changed = Self::collect_vizier_changes(repo_root)?
+            .into_iter()
+            .filter(|path| is_canonical_story_path(path))
+            .collect::<Vec<_>>();
         if changed.is_empty() {
             return Ok(());
         }
@@ -136,10 +123,6 @@ impl FileTracker {
         }
 
         Ok(())
-    }
-
-    fn clear() {
-        FILE_TRACKER.lock().unwrap().updated_files.clear();
     }
 
     fn collect_vizier_changes(repo_root: &Path) -> Result<Vec<String>, git2::Error> {
@@ -194,4 +177,25 @@ impl FileTracker {
 
 fn is_vizier_path(path: &str) -> bool {
     path.starts_with(".vizier/") || path.starts_with(".vizier\\")
+}
+
+fn is_canonical_story_path(path: &str) -> bool {
+    if !is_vizier_path(path) {
+        return false;
+    }
+
+    let trimmed = path
+        .trim_start_matches(".vizier/")
+        .trim_start_matches(".vizier\\");
+    if trimmed == ".snapshot" {
+        return true;
+    }
+
+    if trimmed.contains(['/', '\\']) {
+        return false;
+    }
+
+    PathBuf::from(trimmed)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }

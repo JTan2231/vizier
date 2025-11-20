@@ -52,9 +52,11 @@ impl BackendUsageTotals {
         self.reasoning_output_total = self
             .reasoning_output_total
             .saturating_add(usage.reasoning_output_tokens);
-        self.billed_total = self
-            .billed_total
-            .saturating_add(usage.total_tokens.max(usage.input_tokens + usage.output_tokens));
+        self.billed_total = self.billed_total.saturating_add(
+            usage
+                .total_tokens
+                .max(usage.input_tokens + usage.output_tokens),
+        );
         self.has_data = true;
     }
 
@@ -95,10 +97,7 @@ impl TokenUsageReport {
     fn to_progress_event(&self) -> display::ProgressEvent {
         let summary = if self.known {
             let mut parts = vec![
-                format!(
-                    "prompt={} (+{})",
-                    self.prompt_total, self.prompt_delta
-                ),
+                format!("prompt={} (+{})", self.prompt_total, self.prompt_delta),
                 format!(
                     "completion={} (+{})",
                     self.completion_total, self.completion_delta
@@ -111,10 +110,7 @@ impl TokenUsageReport {
             }
             if let Some(reasoning_total) = self.reasoning_output_total {
                 let delta = self.reasoning_output_delta.unwrap_or(0);
-                parts.push(format!(
-                    "reasoning_output={} (+{})",
-                    reasoning_total, delta
-                ));
+                parts.push(format!("reasoning_output={} (+{})", reasoning_total, delta));
             }
             parts.join(" ")
         } else {
@@ -237,9 +233,22 @@ pub enum AuditState {
 }
 
 #[derive(Clone, Debug)]
+pub struct NarrativeChangeSet {
+    pub paths: Vec<String>,
+    pub summary: Option<String>,
+}
+
+impl NarrativeChangeSet {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct AuditResult {
     pub session_artifact: Option<SessionArtifact>,
     pub state: AuditState,
+    pub narrative_changes: Option<NarrativeChangeSet>,
 }
 
 impl AuditResult {
@@ -247,6 +256,10 @@ impl AuditResult {
         self.session_artifact
             .as_ref()
             .map(|artifact| artifact.display_path())
+    }
+
+    pub fn narrative_changes(&self) -> Option<&NarrativeChangeSet> {
+        self.narrative_changes.as_ref()
     }
 
     pub fn committed(&self) -> bool {
@@ -434,11 +447,7 @@ impl Auditor {
         let reasoning_delta = reasoning_total.map(|value| value.saturating_sub(prev_reasoning));
         let billed_total = backend_totals
             .has_data
-            .then_some(
-                backend_totals
-                    .billed_total
-                    .max(totals.total_tokens),
-            );
+            .then_some(backend_totals.billed_total.max(totals.total_tokens));
         let billed_delta = billed_total.map(|value| value.saturating_sub(prev_billed));
 
         let report = TokenUsageReport {
@@ -530,11 +539,9 @@ impl Auditor {
         }
     }
 
-    /// Persist the session log + commit narrative changes (if any).
-    /// Returns the session artifact that now owns the transcript for downstream plumbing.
-    pub async fn commit_audit() -> Result<Option<SessionArtifact>, Box<dyn std::error::Error>> {
-        let outcome = Self::finalize(CommitDisposition::Auto).await?;
-        Ok(outcome.session_artifact)
+    /// Persist the session log and return any pending narrative changes.
+    pub async fn commit_audit() -> Result<AuditResult, Box<dyn std::error::Error>> {
+        Self::finalize(CommitDisposition::Auto).await
     }
 
     pub async fn finalize(
@@ -553,10 +560,22 @@ impl Auditor {
             ));
         }
 
-        if !file_tracking::FileTracker::has_pending_changes() {
+        let pending_paths = match file_tracking::FileTracker::pending_paths(&project_root) {
+            Ok(paths) => paths,
+            Err(err) => {
+                display::debug(format!(
+                    "Unable to enumerate pending .vizier changes; treating as clean ({})",
+                    err
+                ));
+                Vec::new()
+            }
+        };
+
+        if pending_paths.is_empty() {
             return Ok(AuditResult {
                 session_artifact,
                 state: AuditState::Clean,
+                narrative_changes: None,
             });
         }
 
@@ -580,29 +599,20 @@ impl Auditor {
             return Ok(AuditResult {
                 session_artifact,
                 state: AuditState::Pending,
+                narrative_changes: Some(NarrativeChangeSet {
+                    paths: pending_paths,
+                    summary: diff_message,
+                }),
             });
-        }
-
-        if let Some(commit_message) = diff_message {
-            display::info("Committing TODO changes...");
-            file_tracking::FileTracker::commit_changes(
-                &CommitMessageBuilder::new(commit_message)
-                    .set_header(CommitMessageType::NarrativeChange)
-                    .with_session_log_path(
-                        session_artifact
-                            .as_ref()
-                            .map(|artifact| artifact.display_path()),
-                    )
-                    .build(),
-            )
-            .await?;
-
-            display::info("Committed TODO changes");
         }
 
         Ok(AuditResult {
             session_artifact,
             state: AuditState::Committed,
+            narrative_changes: Some(NarrativeChangeSet {
+                paths: pending_paths,
+                summary: diff_message,
+            }),
         })
     }
 
@@ -1215,6 +1225,7 @@ pub struct CommitMessageBuilder {
     session_id: String,
     session_log_path: Option<String>,
     author_note: Option<String>,
+    narrative_summary: Option<String>,
     body: String,
 }
 
@@ -1514,6 +1525,7 @@ impl CommitMessageBuilder {
             session_id: AUDITOR.lock().unwrap().session_id.clone(),
             session_log_path: None,
             author_note: None,
+            narrative_summary: None,
             body,
         }
     }
@@ -1531,6 +1543,19 @@ impl CommitMessageBuilder {
 
     pub fn with_session_log_path(&mut self, session_log_path: Option<String>) -> &mut Self {
         self.session_log_path = session_log_path;
+
+        self
+    }
+
+    pub fn with_narrative_summary(&mut self, summary: Option<String>) -> &mut Self {
+        self.narrative_summary = summary.and_then(|text| {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
 
         self
     }
@@ -1563,10 +1588,23 @@ impl CommitMessageBuilder {
             self.body.clone()
         };
 
-        if body.trim().is_empty() {
+        let mut sections: Vec<String> = Vec::new();
+        let body_trimmed = body.trim();
+        if !body_trimmed.is_empty() {
+            sections.push(body_trimmed.to_string());
+        }
+
+        if let Some(summary) = &self.narrative_summary {
+            let trimmed = summary.trim();
+            if !trimmed.is_empty() {
+                sections.push(format!("Narrative updates:\n{}", trimmed));
+            }
+        }
+
+        if sections.is_empty() {
             message
         } else {
-            format!("{}\n\n{}", message, body)
+            format!("{}\n\n{}", message, sections.join("\n\n"))
         }
     }
 
