@@ -168,7 +168,6 @@ pub struct CodexOverride {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOverrides {
     pub backend: Option<BackendKind>,
-    pub fallback_backend: Option<BackendKind>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub codex: Option<CodexOverride>,
@@ -177,7 +176,6 @@ pub struct AgentOverrides {
 impl AgentOverrides {
     pub fn is_empty(&self) -> bool {
         self.backend.is_none()
-            && self.fallback_backend.is_none()
             && self.model.is_none()
             && self.reasoning_effort.is_none()
             && self.codex.is_none()
@@ -188,7 +186,6 @@ impl AgentOverrides {
 pub struct AgentSettings {
     pub scope: CommandScope,
     pub backend: BackendKind,
-    pub fallback_backend: Option<BackendKind>,
     pub provider: Arc<dyn Prompt>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
@@ -254,7 +251,6 @@ pub struct Config {
     pub reasoning_effort: Option<ThinkingLevel>,
     pub no_session: bool,
     pub backend: BackendKind,
-    pub fallback_backend: Option<BackendKind>,
     pub codex: CodexOptions,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
@@ -357,7 +353,6 @@ impl Config {
             reasoning_effort: None,
             no_session: false,
             backend: BackendKind::Codex,
-            fallback_backend: Some(BackendKind::Wire),
             codex: CodexOptions::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
@@ -443,10 +438,11 @@ impl Config {
             config.backend = backend;
         }
 
-        if let Some(fallback) = find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS)
-            .and_then(|value| BackendKind::from_str(value.trim()))
-        {
-            config.fallback_backend = Some(fallback);
+        if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                FALLBACK_BACKEND_DEPRECATION_MESSAGE,
+            )));
         }
 
         if let Some(codex_value) = value_at_path(&file_config, &["codex"]) {
@@ -754,7 +750,6 @@ impl Config {
         Ok(AgentSettings {
             scope,
             backend: builder.backend,
-            fallback_backend: builder.fallback_backend,
             provider,
             provider_model: builder.provider_model,
             reasoning_effort: builder.reasoning_effort,
@@ -777,6 +772,7 @@ const MODEL_KEY_PATHS: &[&[&str]] = &[
 ];
 const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
 const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
+const FALLBACK_BACKEND_DEPRECATION_MESSAGE: &str = "fallback_backend entries are no longer supported. Vizier now fails fast when the configured agent backend fails; remove fallback_backend from your config and re-run.";
 const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["reasoning_effort"],
     &["reasoning-effort"],
@@ -830,7 +826,6 @@ const MERGE_CONFLICT_PROMPT_KEY_PATHS: &[&[&str]] = &[
 #[derive(Clone)]
 struct AgentSettingsBuilder {
     backend: BackendKind,
-    fallback_backend: Option<BackendKind>,
     provider_model: String,
     reasoning_effort: Option<ThinkingLevel>,
     codex: CodexOptions,
@@ -840,7 +835,6 @@ impl AgentSettingsBuilder {
     fn new(cfg: &Config) -> Self {
         Self {
             backend: cfg.backend,
-            fallback_backend: cfg.fallback_backend,
             provider_model: cfg.provider_model.clone(),
             reasoning_effort: cfg.reasoning_effort,
             codex: cfg.codex.clone(),
@@ -850,10 +844,6 @@ impl AgentSettingsBuilder {
     fn apply(&mut self, overrides: &AgentOverrides) {
         if let Some(backend) = overrides.backend {
             self.backend = backend;
-        }
-
-        if let Some(fallback) = overrides.fallback_backend {
-            self.fallback_backend = Some(fallback);
         }
 
         if let Some(model) = overrides.model.as_ref() {
@@ -918,18 +908,19 @@ fn parse_agent_overrides(
         return Ok(None);
     }
 
+    if find_string(value, FALLBACK_BACKEND_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            FALLBACK_BACKEND_DEPRECATION_MESSAGE,
+        )));
+    }
+
     let mut overrides = AgentOverrides::default();
 
     if let Some(backend) =
         find_string(value, BACKEND_KEY_PATHS).and_then(|text| BackendKind::from_str(text.trim()))
     {
         overrides.backend = Some(backend);
-    }
-
-    if let Some(fallback) = find_string(value, FALLBACK_BACKEND_KEY_PATHS)
-        .and_then(|text| BackendKind::from_str(text.trim()))
-    {
-        overrides.fallback_backend = Some(fallback);
     }
 
     if let Some(model) = find_string(value, MODEL_KEY_PATHS) {
@@ -1376,6 +1367,49 @@ implementation_plan = "draft scope"
 
         assert_eq!(cfg.provider_model, DEFAULT_MODEL);
         assert_eq!(cfg.reasoning_effort, Some(ThinkingLevel::High));
+    }
+
+    #[test]
+    fn test_fallback_backend_rejected_in_root_config() {
+        let toml = r#"
+backend = "codex"
+fallback_backend = "wire"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match Config::from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("fallback_backend should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("fallback_backend entries are no longer supported"),
+            "error message should mention fallback_backend removal: {err}"
+        );
+    }
+
+    #[test]
+    fn test_fallback_backend_rejected_in_agent_scope() {
+        let toml = r#"
+[agents.ask]
+backend = "wire"
+fallback_backend = "codex"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match Config::from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("fallback_backend in agents.* should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("fallback_backend entries are no longer supported"),
+            "error message should mention fallback_backend removal: {err}"
+        );
     }
 
     #[test]

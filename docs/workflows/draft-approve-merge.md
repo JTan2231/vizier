@@ -9,7 +9,6 @@ The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier me
 ```toml
 [agents.default]
 backend = "codex"
-fallback_backend = "wire"
 
 [agents.approve]
 backend = "codex"      # enforce Codex-backed implementation
@@ -22,6 +21,8 @@ profile = "compliance"
 [agents.merge]
 backend = "wire"       # keep merge cleanup on the wire stack
 ```
+
+If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier no longer falls back to wire automatically; rerun the command once the configured backend is healthy.
 
 CLI overrides (`--backend`, `--codex-*`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. Vizier warns when a model override is ignored because Codex is active, so operators know when to adjust the per-command config instead of expecting wire-only flags to work everywhere.
 
