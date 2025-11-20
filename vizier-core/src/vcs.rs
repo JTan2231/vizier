@@ -1237,15 +1237,18 @@ pub fn amend_head_commit(message: Option<&str>) -> Result<Oid, Error> {
     let tree = repo.find_tree(tree_oid)?;
     let head_commit = head.peel_to_commit()?;
     let sig = repo.signature()?;
-    let parents: Vec<_> = (0..head_commit.parent_count())
-        .map(|idx| head_commit.parent(idx))
-        .collect::<Result<Vec<_>, _>>()?;
-    let parent_refs: Vec<&Commit> = parents.iter().collect();
     let content = message
         .map(|msg| msg.to_string())
         .or_else(|| head_commit.message().map(|s| s.to_string()))
         .unwrap_or_else(|| "amended commit".to_string());
-    let oid = repo.commit(Some("HEAD"), &sig, &sig, &content, &tree, &parent_refs)?;
+    let oid = head_commit.amend(
+        Some("HEAD"),
+        Some(&sig),
+        Some(&sig),
+        None,
+        Some(&content),
+        Some(&tree),
+    )?;
 
     let mut checkout = CheckoutBuilder::new();
     checkout.force();
