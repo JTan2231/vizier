@@ -1155,6 +1155,71 @@ fn test_merge_removes_plan_document() -> TestResult {
 }
 
 #[test]
+fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "squash-default", "squash smoke"])?;
+    repo.vizier_output(&["approve", "squash-default", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let repo_handle = repo.repo();
+    let base_commit = repo_handle.head()?.peel_to_commit()?.id();
+
+    let merge = repo.vizier_output(&["merge", "squash-default", "--yes"])?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let head = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        head.parent_count(),
+        2,
+        "merge commit should keep both parents"
+    );
+    let implementation_commit = head.parent(0)?;
+    assert_eq!(
+        implementation_commit.parent_count(),
+        1,
+        "implementation commit should have a single parent"
+    );
+    assert_eq!(
+        implementation_commit.parent(0)?.id(),
+        base_commit,
+        "implementation commit should descend from the previous master head"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_no_squash_matches_legacy_parentage() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "legacy-merge", "legacy merge spec"])?;
+    repo.vizier_output(&["approve", "legacy-merge", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let repo_handle = repo.repo();
+    let base_commit = repo_handle.head()?.peel_to_commit()?.id();
+
+    let merge = repo.vizier_output(&["merge", "legacy-merge", "--yes", "--no-squash"])?;
+    assert!(
+        merge.status.success(),
+        "vizier merge --no-squash failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let head = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        head.parent(0)?.id(),
+        base_commit,
+        "legacy merge should point directly to the previous master head"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_merge_cicd_gate_executes_script() -> TestResult {
     let repo = IntegrationRepo::new()?;
     repo.vizier_output(&["draft", "--name", "cicd-pass", "cicd gate spec"])?;
@@ -1254,12 +1319,10 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
         repo.path().join("ci/fixed.txt").exists(),
         "auto remediation should create the expected fix file"
     );
-    let repo_handle = repo.repo();
-    let head = repo_handle.head()?.peel_to_commit()?;
-    let message = head.message().unwrap_or_default().to_string();
+    let stdout = String::from_utf8_lossy(&merge.stdout);
     assert!(
-        message.contains("CI/CD script:"),
-        "head commit should document CI/CD remediation: {message}"
+        stdout.contains("fixes=[") && stdout.contains("amend:"),
+        "merge summary should report the amended implementation commit: {stdout}"
     );
     Ok(())
 }

@@ -36,6 +36,11 @@ commands = [
   "cargo test --all --all-targets"
 ]
 
+# Default merge behavior (per-plan history will be [implementation commit, merge commit])
+[merge]
+# When true, Vizier squashes implementation commits before creating the merge commit.
+squash = true
+
 # Optional CI/CD gate script run during `vizier merge`
 [merge.cicd_gate]
 script = "./cicd.sh"

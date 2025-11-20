@@ -342,6 +342,14 @@ struct MergeCmd {
     /// Number of remediation attempts before aborting (`merge.cicd_gate.retries` by default)
     #[arg(long = "cicd-retries", value_name = "COUNT")]
     cicd_retries: Option<u32>,
+
+    /// Squash implementation commits before creating the merge commit
+    #[arg(long = "squash", action = ArgAction::SetTrue, conflicts_with = "no_squash")]
+    squash: bool,
+
+    /// Preserve implementation commits (legacy behavior)
+    #[arg(long = "no-squash", action = ArgAction::SetTrue, conflicts_with = "squash")]
+    no_squash: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -562,6 +570,14 @@ fn resolve_merge_options(
         }
     }
 
+    let mut squash = config::get_config().merge.squash_default;
+    if cmd.squash {
+        squash = true;
+    }
+    if cmd.no_squash {
+        squash = false;
+    }
+
     Ok(MergeOptions {
         plan,
         target: cmd.target.clone(),
@@ -573,6 +589,7 @@ fn resolve_merge_options(
         conflict_strategy,
         complete_conflict: cmd.complete_conflict,
         cicd_gate,
+        squash,
     })
 }
 
