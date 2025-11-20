@@ -53,7 +53,7 @@ Use this when you want to inspect Codex output locally before history changes. O
 
 ### Customizing the plan/review/merge prompts
 
-Repositories can tune every Codex instruction involved in this workflow without recompiling Vizier. Drop Markdown files under `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` (or set `[prompts.implementation_plan|review|merge_conflict]` in your config) to change how draft plans are generated, how reviews critique a branch, and how Codex handles merge conflicts. The CLI reads these templates when it starts, so restart `vizier` after editing them to ensure new instructions take effect.
+Repositories can tune every Codex instruction involved in this workflow without recompiling Vizier. Define `[agents.<scope>.prompts.<kind>]` tables (for example, `[agents.draft.prompts.implementation_plan]`, `[agents.review.prompts.review]`, `[agents.merge.prompts.merge_conflict]`) inside `.vizier/config.toml` to point at custom Markdown templates via `path` or inline text and to pin backend/model/reasoning overrides for that specific scope. Vizier loads those profiles before each run, so prompt updates take effect immediately; legacy `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` files remain as fallbacks when no profile is defined.
 
 ## `vizier draft`: create the plan branch
 
