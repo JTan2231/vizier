@@ -295,12 +295,14 @@ impl Default for ReviewChecksConfig {
 #[derive(Clone)]
 pub struct MergeConfig {
     pub cicd_gate: MergeCicdGateConfig,
+    pub squash_default: bool,
 }
 
 impl Default for MergeConfig {
     fn default() -> Self {
         Self {
             cicd_gate: MergeCicdGateConfig::default(),
+            squash_default: true,
         }
     }
 }
@@ -539,6 +541,19 @@ impl Config {
                     config.merge.cicd_gate.retries = retries;
                 } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
                     config.merge.cicd_gate.retries = retries;
+                }
+            }
+        }
+
+        if let Some(merge_table) = value_at_path(&file_config, &["merge"]) {
+            if let Some(table) = merge_table.as_object() {
+                if let Some(squash) = parse_bool(
+                    table
+                        .get("squash")
+                        .or_else(|| table.get("squash_default"))
+                        .or_else(|| table.get("squash-default")),
+                ) {
+                    config.merge.squash_default = squash;
                 }
             }
         }
