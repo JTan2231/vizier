@@ -638,7 +638,6 @@ fn test_agent_scope_resolution() -> TestResult {
         r#"
 [agents.default]
 backend = "codex"
-fallback_backend = "wire"
 
 [agents.ask]
 backend = "wire"
@@ -697,7 +696,7 @@ reasoning_effort = "low"
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
         Some("codex"),
-        "save should fall back to the default Codex backend"
+        "save should use the default Codex backend"
     );
     assert_eq!(
         save_json
@@ -789,7 +788,7 @@ backend = "wire"
     cmd.env("VIZIER_CONFIG_FILE", env_config.as_os_str());
     cmd.env("VIZIER_CONFIG_DIR", isolated_config.path());
     cmd.env("XDG_CONFIG_HOME", isolated_config.path());
-    cmd.args(["ask", "env config fallback"]);
+    cmd.args(["ask", "env config selection"]);
     let output = cmd.output()?;
     assert!(
         output.status.success(),
@@ -1093,7 +1092,6 @@ fn test_cli_backend_override_rejected_for_approve() -> TestResult {
         r#"
 [agents.default]
 backend = "codex"
-fallback_backend = "wire"
 "#,
     )?;
 
@@ -1122,6 +1120,148 @@ fallback_backend = "wire"
         stderr
     );
 
+    Ok(())
+}
+
+#[test]
+fn test_draft_fails_when_codex_errors() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let mut cmd = repo.vizier_cmd();
+    cmd.env("VIZIER_FORCE_CODEX_ERROR", "1");
+    cmd.args(["draft", "--name", "codex-failure", "force failure"]);
+    let output = cmd.output()?;
+    assert!(
+        !output.status.success(),
+        "vizier draft should fail when Codex errors"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Codex"),
+        "stderr should mention Codex failure, got: {stderr}"
+    );
+    assert!(
+        !stderr
+            .to_ascii_lowercase()
+            .contains("wire backend"),
+        "stderr hinted at a wire fallback: {stderr}"
+    );
+    let plan_path = repo
+        .path()
+        .join(".vizier/implementation-plans/codex-failure.md");
+    assert!(
+        !plan_path.exists(),
+        "failed draft should not leave a partially written plan"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_approve_fails_when_codex_errors() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft = repo
+        .vizier_cmd()
+        .args(["draft", "--name", "codex-approve", "spec"])
+        .output()?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed unexpectedly: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+    let repo_handle = repo.repo();
+    let before_commit = repo_handle
+        .find_branch("draft/codex-approve", BranchType::Local)?
+        .get()
+        .peel_to_commit()?;
+
+    let mut approve = repo.vizier_cmd();
+    approve.env("VIZIER_FORCE_CODEX_ERROR", "1");
+    approve.args(["approve", "codex-approve", "--yes"]);
+    let output = approve.output()?;
+    assert!(
+        !output.status.success(),
+        "vizier approve should fail when Codex errors"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Codex"),
+        "stderr should mention Codex error, got: {stderr}"
+    );
+    assert!(
+        !stderr
+            .to_ascii_lowercase()
+            .contains("wire backend"),
+        "stderr hinted at a wire fallback: {stderr}"
+    );
+
+    let repo_handle = repo.repo();
+    let after_commit = repo_handle
+        .find_branch("draft/codex-approve", BranchType::Local)?
+        .get()
+        .peel_to_commit()?;
+    assert_eq!(
+        before_commit.id(),
+        after_commit.id(),
+        "Codex failure should not add commits to the plan branch"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft = repo
+        .vizier_cmd()
+        .args(["draft", "--name", "codex-merge", "merge failure testcase"])
+        .output()?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+    let approve = repo
+        .vizier_cmd()
+        .args(["approve", "codex-merge", "--yes"])
+        .output()?;
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    repo.write("a", "master conflicting change")?;
+    repo.git(&["add", "a"])?;
+    repo.git(&["commit", "-m", "master conflicting change"])?;
+
+    let mut merge = repo.vizier_cmd();
+    merge.env("VIZIER_FORCE_CODEX_ERROR", "1");
+    merge.args([
+        "merge",
+        "codex-merge",
+        "--yes",
+        "--auto-resolve-conflicts",
+    ]);
+    let output = merge.output()?;
+    assert!(
+        !output.status.success(),
+        "merge should fail when Codex auto-resolution errors"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Codex auto-resolution failed")
+            || stderr.contains("forced mock Codex failure")
+            || stderr.contains("Codex exited"),
+        "stderr should mention Codex failure, got: {stderr}"
+    );
+    assert!(
+        !stderr
+            .to_ascii_lowercase()
+            .contains("wire backend"),
+        "stderr hinted at a wire fallback: {stderr}"
+    );
+
+    repo.repo()
+        .find_branch("draft/codex-merge", BranchType::Local)
+        .expect("plan branch should remain after failure");
     Ok(())
 }
 

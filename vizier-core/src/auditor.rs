@@ -769,7 +769,6 @@ impl Auditor {
     fn config_snapshot(cfg: &config::Config) -> serde_json::Value {
         json!({
             "backend": cfg.backend.to_string(),
-            "fallback_backend": cfg.fallback_backend.map(|kind| kind.to_string()),
             "reasoning_effort": cfg
                 .reasoning_effort
                 .as_ref()
@@ -913,7 +912,6 @@ impl Auditor {
         Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
-        let fallback_backend = agent.fallback_backend;
         let provider = agent.provider.clone();
         let codex_opts = agent.codex.clone();
         let resolved_codex_model = codex_model.unwrap_or_default();
@@ -985,36 +983,7 @@ impl Auditor {
 
                 match codex_run {
                     Ok(response) => Ok(response.last().unwrap().clone()),
-                    Err(err) => {
-                        if fallback_backend == Some(config::BackendKind::Wire) {
-                            let codex_error = match err.downcast::<codex::CodexError>() {
-                                Ok(e) => *e,
-                                Err(other) => return Err(other as Box<dyn std::error::Error>),
-                            };
-                            display::warn(format!(
-                                "Codex backend failed ({}); retrying with wire backend",
-                                codex_error
-                            ));
-                            let fallback_prompt =
-                                config::get_system_prompt_with_meta(agent.scope, prompt_variant)?;
-                            let fallback_tools = if tools.is_empty() {
-                                tools::get_tools()
-                            } else {
-                                tools.clone()
-                            };
-                            let response = run_wire_with_status(
-                                provider.clone(),
-                                fallback_prompt,
-                                messages.clone(),
-                                fallback_tools,
-                                |resp| Self::replace_messages(resp),
-                            )
-                            .await?;
-                            Ok(response.last().unwrap().clone())
-                        } else {
-                            Err(err as Box<dyn std::error::Error>)
-                        }
-                    }
+                    Err(err) => Err(err),
                 }
             }
         }
@@ -1034,7 +1003,6 @@ impl Auditor {
         Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
-        let fallback_backend = agent.fallback_backend;
         let provider = agent.provider.clone();
         let codex_opts = agent.codex.clone();
         let resolved_codex_model = codex_model.unwrap_or_default();
@@ -1107,40 +1075,7 @@ impl Auditor {
                         }
                         Ok(assistant_message)
                     }
-                    Err(err) => {
-                        if fallback_backend == Some(config::BackendKind::Wire) {
-                            display::warn(format!(
-                                "Codex backend failed ({}); retrying with wire backend",
-                                err
-                            ));
-                            let fallback_prompt =
-                                config::get_system_prompt_with_meta(agent.scope, prompt_variant)?;
-                            let fallback_tools = if tools.is_empty() {
-                                tools::get_tools()
-                            } else {
-                                tools.clone()
-                            };
-                            let (fallback_tx, drain_handle) = channel_for_stream(&stream);
-                            let response = prompt_wire_with_tools(
-                                &*provider,
-                                fallback_tx,
-                                &fallback_prompt,
-                                messages.clone(),
-                                fallback_tools,
-                            )
-                            .await?;
-                            if let Some(handle) = drain_handle {
-                                let _ = handle.await;
-                            }
-                            let last = response.last().unwrap().clone();
-                            if let Some(report) = Self::add_message(last.clone()) {
-                                forward_usage_report(&report, &stream).await;
-                            }
-                            Ok(last)
-                        } else {
-                            Err(Box::new(err))
-                        }
-                    }
+                    Err(err) => Err(Box::new(err)),
                 }
             }
         }
