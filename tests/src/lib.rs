@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use git2::{
-    BranchType, Diff, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
+    BranchType, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
     build::CheckoutBuilder,
 };
 use serde_json::Value;
@@ -164,7 +164,7 @@ fn oid_for_spec(repo: &Repository, spec: &str) -> Result<Oid, git2::Error> {
     Ok(obj.peel_to_commit()?.id())
 }
 
-fn count_files_in_commit(repo: &Repository, spec: &str) -> Result<usize, git2::Error> {
+fn files_changed_in_commit(repo: &Repository, spec: &str) -> Result<HashSet<String>, git2::Error> {
     let commit = repo.find_commit(oid_for_spec(repo, spec)?)?;
     let tree = commit.tree()?;
     let parent_tree = if commit.parent_count() > 0 {
@@ -180,11 +180,14 @@ fn count_files_in_commit(repo: &Repository, spec: &str) -> Result<usize, git2::E
         None => repo.diff_tree_to_tree(None, Some(&tree), Some(&mut DiffOptions::new()))?,
     };
 
-    Ok(diff_deltas_len(&diff))
-}
+    let mut paths = HashSet::new();
+    for delta in diff.deltas() {
+        if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
+            paths.insert(path.to_string_lossy().replace('\\', "/"));
+        }
+    }
 
-fn diff_deltas_len(diff: &Diff) -> usize {
-    diff.deltas().count()
+    Ok(paths)
 }
 
 fn count_commits_from_head(repo: &Repository) -> Result<usize, git2::Error> {
@@ -464,10 +467,12 @@ fn test_save() -> TestResult {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let after = count_commits_from_head(&repo.repo())?;
-    assert_eq!(
-        after - before,
-        2,
-        "save should create narrative + code commits"
+    assert_eq!(after - before, 1, "save should create a single commit");
+
+    let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
+    assert!(
+        files.contains("a") && files.contains(".vizier/.snapshot"),
+        "combined commit should include code + narrative files, got {files:?}"
     );
 
     let snapshot = repo.read(".vizier/.snapshot")?;
@@ -489,6 +494,7 @@ fn test_save() -> TestResult {
 #[test]
 fn test_save_with_staged_files() -> TestResult {
     let repo = IntegrationRepo::new()?;
+    let before = count_commits_from_head(&repo.repo())?;
     repo.write("b", "this is an integration test")?;
     add_all(&repo.repo(), &["."])?;
 
@@ -496,10 +502,16 @@ fn test_save_with_staged_files() -> TestResult {
     assert!(status.success(), "vizier save exited with {status:?}");
 
     let repo_handle = repo.repo();
-    assert_eq!(count_files_in_commit(&repo_handle, "HEAD")?, 2);
+    let after = count_commits_from_head(&repo_handle)?;
+    assert_eq!(
+        after - before,
+        1,
+        "save should still create a single combined commit when files are pre-staged"
+    );
+    let files = files_changed_in_commit(&repo_handle, "HEAD")?;
     assert!(
-        count_files_in_commit(&repo_handle, "HEAD~1")? >= 1,
-        "expected narrative commit to touch at least one .vizier file"
+        files.contains("b") && files.contains(".vizier/.snapshot"),
+        "combined commit should include staged code and narrative files, got {files:?}"
     );
     Ok(())
 }
@@ -521,11 +533,6 @@ fn test_save_without_code_changes() -> TestResult {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("code_commit=none"),
-        "expected save output to skip code commit but saw: {}",
-        stdout
-    );
     let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
         session_log
@@ -535,12 +542,12 @@ fn test_save_without_code_changes() -> TestResult {
     );
 
     let after = count_commits_from_head(&repo.repo())?;
-    assert_eq!(
-        after - before,
-        1,
-        "should only create a narrative commit when code changes are skipped"
+    assert_eq!(after - before, 1, "should create a single commit");
+    let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
+    assert!(
+        files.contains(".vizier/.snapshot") && !files.contains("a"),
+        "expected commit to contain only narrative assets when code changes are skipped, got {files:?}"
     );
-    assert_eq!(count_files_in_commit(&repo.repo(), "HEAD")?, 2);
     Ok(())
 }
 
@@ -581,6 +588,43 @@ fn test_save_no_commit_leaves_pending_changes() -> TestResult {
     assert!(
         status_stdout.contains(".vizier/.snapshot"),
         "expected .vizier/.snapshot to be dirty after --no-commit save, git status was: {status_stdout}"
+    );
+
+    let code_status = Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "status",
+            "--short",
+            "a",
+        ])
+        .output()?;
+    let code_stdout = String::from_utf8_lossy(&code_status.stdout);
+    assert!(
+        code_stdout.contains("a"),
+        "expected code changes to remain unstaged after --no-commit save, git status was: {code_stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_ask_creates_single_combined_commit() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before = count_commits_from_head(&repo.repo())?;
+
+    let output = repo.vizier_output(&["ask", "single commit check"])?;
+    assert!(
+        output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = count_commits_from_head(&repo.repo())?;
+    assert_eq!(after - before, 1, "ask should create one combined commit");
+    let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
+    assert!(
+        files.contains(".vizier/.snapshot") && files.contains("a"),
+        "ask commit should include code and narrative assets, got {files:?}"
     );
     Ok(())
 }
@@ -1000,6 +1044,47 @@ fn test_approve_merges_plan() -> TestResult {
 }
 
 #[test]
+fn test_approve_creates_single_combined_commit() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "single-commit-approve", "spec"])?;
+
+    let repo_handle = repo.repo();
+    let draft_branch = repo_handle.find_branch("draft/single-commit-approve", BranchType::Local)?;
+    let before_commit = draft_branch.get().peel_to_commit()?.id();
+
+    clean_workdir(&repo)?;
+    let approve = repo.vizier_output(&["approve", "single-commit-approve", "--yes"])?;
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let branch = repo_handle.find_branch("draft/single-commit-approve", BranchType::Local)?;
+    let commit = branch.get().peel_to_commit()?;
+    assert_eq!(
+        commit.parent(0)?.id(),
+        before_commit,
+        "approve should add exactly one commit"
+    );
+
+    let files = files_changed_in_commit(&repo_handle, &commit.id().to_string())?;
+    assert!(
+        files.contains(".vizier/.snapshot") && files.contains("a"),
+        "approve commit should include code and narrative assets, got {files:?}"
+    );
+    assert!(
+        !files
+            .iter()
+            .any(|path| path.contains("implementation-plans")),
+        "plan documents should remain scratch, got {files:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_cli_backend_override_rejected_for_approve() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let config_path = repo.path().join("agents.toml");
@@ -1199,6 +1284,9 @@ fn test_review_streams_critique() -> TestResult {
     );
 
     clean_workdir(&repo)?;
+    let repo_handle = repo.repo();
+    let branch_before = repo_handle.find_branch("draft/review-smoke", BranchType::Local)?;
+    let before_commit = branch_before.get().peel_to_commit()?.id();
 
     let review =
         repo.vizier_output(&["review", "review-smoke", "--review-only", "--skip-checks"])?;
@@ -1215,9 +1303,13 @@ fn test_review_streams_critique() -> TestResult {
         stdout
     );
 
-    let repo_handle = repo.repo();
     let branch = repo_handle.find_branch("draft/review-smoke", BranchType::Local)?;
     let commit = branch.get().peel_to_commit()?;
+    assert_eq!(
+        commit.parent(0)?.id(),
+        before_commit,
+        "review should add exactly one commit"
+    );
     let tree = commit.tree()?;
     assert!(
         tree.get_path(Path::new(".vizier/reviews/review-smoke.md"))
@@ -1225,18 +1317,29 @@ fn test_review_streams_critique() -> TestResult {
         "review artifacts should not be committed to the plan branch"
     );
 
-    let plan_entry = tree.get_path(Path::new(".vizier/implementation-plans/review-smoke.md"))?;
-    let plan_blob = repo_handle.find_blob(plan_entry.id())?;
-    let plan_contents = std::str::from_utf8(plan_blob.content())?;
-    assert!(
-        plan_contents.contains("status: review-ready"),
-        "plan status should be marked review-ready after review: {}",
-        plan_contents
-    );
-
     assert!(
         !repo.path().join(".vizier/reviews/review-smoke.md").exists(),
         "review directory should not exist after streaming critiques"
+    );
+
+    assert!(
+        !repo
+            .path()
+            .join(".vizier/implementation-plans/review-smoke.md")
+            .exists(),
+        "plan document should remain confined to the draft branch"
+    );
+
+    let files = files_changed_in_commit(&repo_handle, &commit.id().to_string())?;
+    assert!(
+        files.contains(".vizier/.snapshot"),
+        "critique commit should include narrative assets, got {files:?}"
+    );
+    assert!(
+        !files
+            .iter()
+            .any(|path| path.contains("implementation-plans")),
+        "plan documents should remain scratch, got {files:?}"
     );
 
     Ok(())

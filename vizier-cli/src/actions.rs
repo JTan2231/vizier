@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -23,7 +24,7 @@ use vizier_core::{
     bootstrap::{BootstrapOptions, IssuesProvider},
     codex, config,
     display::{self, LogLevel, ProgressEvent, Verbosity},
-    tools, vcs,
+    file_tracking, tools, vcs,
 };
 
 use crate::plan;
@@ -670,6 +671,58 @@ fn short_hash(hash: &str) -> String {
     }
 }
 
+fn narrative_change_set(result: &auditor::AuditResult) -> (Vec<String>, Option<String>) {
+    result
+        .narrative_changes()
+        .map(|changes| (changes.paths.clone(), changes.summary.clone()))
+        .unwrap_or_else(|| (Vec::new(), None))
+}
+
+fn stage_narrative_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+    vcs::stage(Some(refs))?;
+    Ok(())
+}
+
+fn trim_staged_vizier_paths(allowed: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let allowlist: HashSet<&str> = allowed.iter().map(|p| p.as_str()).collect();
+    let staged = vcs::snapshot_staged(".")?;
+    let mut to_unstage: Vec<String> = Vec::new();
+
+    for item in staged {
+        match &item.kind {
+            vcs::StagedKind::Renamed { from, to } => {
+                if to.starts_with(".vizier/") && !allowlist.contains(to.as_str()) {
+                    to_unstage.push(from.clone());
+                    to_unstage.push(to.clone());
+                }
+            }
+            _ => {
+                if item.path.starts_with(".vizier/") && !allowlist.contains(item.path.as_str()) {
+                    to_unstage.push(item.path.clone());
+                }
+            }
+        }
+    }
+
+    if !to_unstage.is_empty() {
+        to_unstage.sort();
+        to_unstage.dedup();
+        let refs: Vec<&str> = to_unstage.iter().map(|p| p.as_str()).collect();
+        vcs::unstage(Some(refs))?;
+    }
+
+    Ok(())
+}
+
+fn clear_narrative_tracker(paths: &[String]) {
+    file_tracking::FileTracker::clear_tracked(paths);
+}
+
 fn build_save_instruction(note: Option<&str>) -> String {
     let mut instruction =
         "<instruction>Update the snapshot and existing TODOs as needed</instruction>".to_string();
@@ -731,11 +784,8 @@ async fn save(
 
     let audit_result = auditor::Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_display = audit_result.session_display();
-    if audit_result.pending() {
-        display::info(
-            "Snapshot/TODO updates left pending (--no-commit); review and commit when ready.",
-        );
-    }
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    let has_narrative_changes = !narrative_paths.is_empty();
 
     display::info(format!(
         "Assistant summary: {}{}",
@@ -748,55 +798,87 @@ async fn save(
     let has_code_changes = !post_tool_diff.trim().is_empty();
     let mut code_commit = None;
 
-    if has_code_changes {
-        if commit_mode.should_commit() {
-            let commit_body = Auditor::llm_request(
-                config::get_config().get_prompt(config::PromptKind::Commit),
-                post_tool_diff.clone(),
-            )
-            .await?
-            .content;
+    if commit_mode.should_commit() {
+        if has_code_changes || has_narrative_changes {
+            let commit_body = if has_code_changes {
+                Auditor::llm_request(
+                    config::get_config().get_prompt(config::PromptKind::Commit),
+                    post_tool_diff.clone(),
+                )
+                .await?
+                .content
+            } else {
+                narrative_summary
+                    .clone()
+                    .unwrap_or_else(|| "Update snapshot and TODO threads".to_string())
+            };
 
             let mut message_builder = CommitMessageBuilder::new(commit_body);
             message_builder
-                .set_header(CommitMessageType::CodeChange)
+                .set_header(if has_code_changes {
+                    CommitMessageType::CodeChange
+                } else {
+                    CommitMessageType::NarrativeChange
+                })
                 .with_session_log_path(session_display.clone());
+
+            if has_code_changes {
+                message_builder.with_narrative_summary(narrative_summary.clone());
+            }
 
             if let Some(note) = provided_note.as_ref() {
                 message_builder.with_author_note(note.clone());
             }
 
+            stage_narrative_paths(&narrative_paths)?;
+            if has_code_changes {
+                vcs::stage(Some(vec!["."]))?;
+            } else {
+                vcs::stage(None)?;
+            }
+            trim_staged_vizier_paths(&narrative_paths)?;
+
             let commit_message = message_builder.build();
 
-            display::info("Committing remaining code changes...");
-            let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+            display::info("Committing combined changes...");
+            let commit_oid = vcs::commit_staged(&commit_message, false)?;
             display::info(format!(
                 "Changes committed with message: {}",
                 commit_message
             ));
 
+            clear_narrative_tracker(&narrative_paths);
             code_commit = Some(commit_oid.to_string());
         } else {
+            display::info("No code or narrative changes detected; skipping commit.");
+        }
+    } else {
+        if has_narrative_changes {
+            display::info(
+                "Snapshot/TODO updates left pending (--no-commit); review and commit when ready.",
+            );
+        }
+        if has_code_changes {
             display::info(
                 "Code changes detected but --no-commit is active; leaving them staged/dirty.",
             );
-        }
-    } else {
-        if provided_note.is_some() {
+        } else if provided_note.is_some() {
             display::info(
                 "Author note provided but no code changes detected; skipping code commit.",
             );
-        } else {
-            display::info("No code changes detected; skipping code commit.");
         }
     }
 
     let mut pushed = false;
     if commit_mode.should_commit() && push_after_commit {
-        push_origin_if_requested(true)?;
-        pushed = true;
+        if code_commit.is_some() {
+            push_origin_if_requested(true)?;
+            pushed = true;
+        } else {
+            display::info("Push skipped because no commit was created.");
+        }
     } else if push_after_commit {
-        display::info("Push skipped because no commit was created (--no-commit).");
+        display::info("Push skipped because --no-commit is active.");
     }
 
     Ok(SaveOutcome {
@@ -960,24 +1042,85 @@ pub async fn inline_command(
         }
     };
 
-    match auditor::Auditor::finalize(audit_disposition(commit_mode)).await {
-        Ok(outcome) => {
-            if outcome.pending() {
-                display::info(
-                    "Held .vizier changes for manual review (--no-commit active); commit them when ready.",
-                );
-            }
-        }
+    let audit_result = match auditor::Auditor::finalize(audit_disposition(commit_mode)).await {
+        Ok(outcome) => outcome,
         Err(e) => {
             display::emit(LogLevel::Error, format!("Error finalizing audit: {e}"));
             return Err(Box::<dyn std::error::Error>::from(e));
         }
+    };
+    let session_display = audit_result.session_display();
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    let has_narrative_changes = !narrative_paths.is_empty();
+
+    let post_tool_diff = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"]))?;
+    let has_code_changes = !post_tool_diff.trim().is_empty();
+    let mut commit_oid: Option<String> = None;
+
+    if commit_mode.should_commit() {
+        if has_code_changes || has_narrative_changes {
+            let commit_body = if has_code_changes {
+                Auditor::llm_request(
+                    config::get_config().get_prompt(config::PromptKind::Commit),
+                    post_tool_diff.clone(),
+                )
+                .await?
+                .content
+            } else {
+                narrative_summary
+                    .clone()
+                    .unwrap_or_else(|| "Update snapshot and TODO threads".to_string())
+            };
+
+            let mut builder = CommitMessageBuilder::new(commit_body);
+            builder
+                .set_header(if has_code_changes {
+                    CommitMessageType::CodeChange
+                } else {
+                    CommitMessageType::NarrativeChange
+                })
+                .with_session_log_path(session_display.clone());
+
+            if has_code_changes {
+                builder.with_narrative_summary(narrative_summary.clone());
+            }
+
+            stage_narrative_paths(&narrative_paths)?;
+            if has_code_changes {
+                vcs::stage(Some(vec!["."]))?;
+            } else {
+                vcs::stage(None)?;
+            }
+            trim_staged_vizier_paths(&narrative_paths)?;
+
+            let commit_message = builder.build();
+            let oid = vcs::commit_staged(&commit_message, false)?;
+            clear_narrative_tracker(&narrative_paths);
+            commit_oid = Some(oid.to_string());
+        } else {
+            display::info("No code or narrative changes detected; skipping commit.");
+        }
+    } else {
+        if has_narrative_changes {
+            display::info(
+                "Held .vizier changes for manual review (--no-commit active); commit them when ready.",
+            );
+        }
+        if has_code_changes {
+            display::info(
+                "Code changes detected but --no-commit is active; leaving them staged/dirty.",
+            );
+        }
     }
 
     if commit_mode.should_commit() {
-        push_origin_if_requested(push_after_commit)?;
+        if commit_oid.is_some() {
+            push_origin_if_requested(push_after_commit)?;
+        } else if push_after_commit {
+            display::info("Push skipped because no commit was created.");
+        }
     } else if push_after_commit {
-        display::info("Push skipped because --no-commit left changes pending.");
+        display::info("Push skipped because --no-commit is active.");
     }
 
     println!("{}", response.content.trim_end());
@@ -1782,17 +1925,15 @@ async fn attempt_cicd_auto_fix(
         mock_cicd_remediation(&repo_root)?;
     }
 
-    let session_artifact = Auditor::commit_audit().await?;
-    let session_path = session_artifact
-        .as_ref()
-        .map(|artifact| artifact.display_path());
+    let audit_result = Auditor::commit_audit().await?;
+    let session_path = audit_result.session_display();
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
         return Ok(None);
     }
 
-    vcs::stage(Some(vec!["."]))?;
     let mut summary = response.content.trim().to_string();
     if summary.is_empty() {
         summary = format!(
@@ -1807,13 +1948,20 @@ async fn attempt_cicd_auto_fix(
     builder
         .set_header(CommitMessageType::CodeChange)
         .with_session_log_path(session_path.clone())
+        .with_narrative_summary(narrative_summary.clone())
         .with_author_note(format!(
             "CI/CD script: {} (exit={})",
             script.display(),
             exit_label
         ));
     let message = builder.build();
-    let commit_oid = vcs::add_and_commit(None, &message, false)?;
+
+    stage_narrative_paths(&narrative_paths)?;
+    vcs::stage(Some(vec!["."]))?;
+    trim_staged_vizier_paths(&narrative_paths)?;
+    let commit_oid = vcs::commit_staged(&message, false)?;
+    clear_narrative_tracker(&narrative_paths);
+
     Ok(Some(commit_oid.to_string()))
 }
 
@@ -2318,17 +2466,13 @@ async fn perform_review_workflow(
 
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
-    if audit_result.pending() {
-        display::info("Review critique artifacts held for manual review (--no-commit active).");
-    }
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
 
     let critique_text = response.content.trim().to_string();
     emit_review_critique(&spec.slug, &critique_text);
     plan::set_plan_status(plan_path, "review-ready", Some("reviewed_at"))?;
 
     if commit_mode.should_commit() {
-        vcs::stage(Some(vec!["."]))?;
-
         let mut summary = format!(
             "Recorded Codex critique for plan {} (checks {}/{} passed).",
             spec.slug, checks_passed, checks_total
@@ -2339,12 +2483,17 @@ async fn perform_review_workflow(
         builder
             .set_header(CommitMessageType::NarrativeChange)
             .with_session_log_path(session_path.clone())
+            .with_narrative_summary(narrative_summary.clone())
             .with_author_note(format!(
                 "Review critique streamed to terminal; session: {}",
                 session_path.as_deref().unwrap_or("<session unavailable>")
             ));
         let commit_message = builder.build();
-        let _review_commit = vcs::add_and_commit(None, &commit_message, false)?;
+        stage_narrative_paths(&narrative_paths)?;
+        vcs::stage(Some(vec!["."]))?;
+        trim_staged_vizier_paths(&narrative_paths)?;
+        let _review_commit = vcs::commit_staged(&commit_message, false)?;
+        clear_narrative_tracker(&narrative_paths);
     } else {
         let session_hint = session_path
             .as_deref()
@@ -2354,6 +2503,9 @@ async fn perform_review_workflow(
             "Review critique not committed (--no-commit); consult the terminal output or session log {} before committing manually.",
             session_hint
         ));
+        if !narrative_paths.is_empty() {
+            display::info("Review critique artifacts held for manual review (--no-commit active).");
+        }
     }
 
     let mut fix_commit: Option<String> = None;
@@ -2677,9 +2829,7 @@ async fn apply_review_fixes(
 
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
-    if audit_result.pending() {
-        display::info("Fix-up edits held for manual review (--no-commit active).");
-    }
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -2688,7 +2838,9 @@ async fn apply_review_fixes(
     }
 
     if commit_mode.should_commit() {
+        stage_narrative_paths(&narrative_paths)?;
         vcs::stage(Some(vec!["."]))?;
+        trim_staged_vizier_paths(&narrative_paths)?;
         let mut summary = response.content.trim().to_string();
         if summary.is_empty() {
             summary = format!(
@@ -2700,15 +2852,20 @@ async fn apply_review_fixes(
         builder
             .set_header(CommitMessageType::CodeChange)
             .with_session_log_path(session_path.clone())
+            .with_narrative_summary(narrative_summary.clone())
             .with_author_note(format!(
                 "Review critique streamed to terminal; session: {}",
                 session_path.as_deref().unwrap_or("<session unavailable>")
             ));
         let commit_message = builder.build();
-        let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+        let commit_oid = vcs::commit_staged(&commit_message, false)?;
+        clear_narrative_tracker(&narrative_paths);
         Ok(Some(commit_oid.to_string()))
     } else {
         display::info("Fixes left pending; commit manually once satisfied.");
+        if !narrative_paths.is_empty() {
+            display::info("Narrative updates left pending (--no-commit active).");
+        }
         Ok(None)
     }
 }
@@ -2799,11 +2956,7 @@ async fn apply_plan_in_worktree(
 
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
-    if audit_result.pending() {
-        display::info(
-            "Narrative assets updated with --no-commit; changes left pending in the plan worktree.",
-        );
-    }
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -2825,14 +2978,18 @@ async fn apply_plan_in_worktree(
     let mut builder = CommitMessageBuilder::new(summary);
     builder
         .set_header(CommitMessageType::CodeChange)
-        .with_session_log_path(session_path.clone());
+        .with_session_log_path(session_path.clone())
+        .with_narrative_summary(narrative_summary.clone());
 
-    let commit_message = builder.build();
     let mut commit_oid: Option<String> = None;
 
     if commit_mode.should_commit() {
+        stage_narrative_paths(&narrative_paths)?;
         vcs::stage(Some(vec!["."]))?;
-        let oid = vcs::add_and_commit(None, &commit_message, false)?;
+        trim_staged_vizier_paths(&narrative_paths)?;
+        let commit_message = builder.build();
+        let oid = vcs::commit_staged(&commit_message, false)?;
+        clear_narrative_tracker(&narrative_paths);
         commit_oid = Some(oid.to_string());
 
         if push_after {
@@ -2840,6 +2997,10 @@ async fn apply_plan_in_worktree(
         }
     } else if push_after {
         display::info("Push skipped because --no-commit left changes pending.");
+    } else if !narrative_paths.is_empty() {
+        display::info(
+            "Narrative assets updated with --no-commit; changes left pending in the plan worktree.",
+        );
     }
 
     Ok(PlanApplyResult { commit_oid })
@@ -2876,10 +3037,14 @@ async fn refresh_plan_branch(
         Some(worktree_path.to_path_buf()),
     )
     .await?;
-    let session_artifact = Auditor::commit_audit().await?;
-    let session_path = session_artifact
-        .as_ref()
-        .map(|artifact| artifact.display_path());
+    let audit_result = Auditor::commit_audit().await?;
+    let session_path = audit_result.session_display();
+    let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    let mut allowed_paths = narrative_paths.clone();
+    let plan_rel = spec.plan_rel_path();
+    if !worktree_path.join(&plan_rel).exists() {
+        allowed_paths.push(plan_rel.to_string_lossy().replace('\\', "/"));
+    }
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -2905,11 +3070,15 @@ async fn refresh_plan_branch(
     let mut builder = CommitMessageBuilder::new(summary);
     builder
         .set_header(CommitMessageType::NarrativeChange)
-        .with_session_log_path(session_path.clone());
+        .with_session_log_path(session_path.clone())
+        .with_narrative_summary(narrative_summary.clone());
     let commit_message = builder.build();
 
+    stage_narrative_paths(&narrative_paths)?;
     vcs::stage(Some(vec!["."]))?;
-    let commit_oid = vcs::add_and_commit(None, &commit_message, false)?;
+    trim_staged_vizier_paths(&allowed_paths)?;
+    let commit_oid = vcs::commit_staged(&commit_message, false)?;
+    clear_narrative_tracker(&narrative_paths);
 
     if push_after {
         push_origin_if_requested(true)?;

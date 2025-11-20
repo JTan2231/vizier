@@ -32,6 +32,8 @@ CLI overrides (`--backend`, `--codex-*`, `-p/--model`, `-r/--reasoning-effort`) 
 3. **`vizier review <slug>`** — Runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists), captures the diff summary, streams Codex’s critique to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, updates the plan status (e.g., `review-ready`), and optionally applies fixes on the plan branch.
 4. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, and performs a non–fast-forward merge into the target branch with the stored plan embedded under an `Implementation Plan:` block in the merge commit.
 
+Every step commits code and canonical narrative edits together in a single commit (`.vizier/.snapshot` plus root-level TODO threads). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
+
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
 Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary), along with the stored metadata summary.

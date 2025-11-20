@@ -702,6 +702,60 @@ pub fn add_and_commit_in<P: AsRef<Path>>(
     add_and_commit_impl(&repo, paths, message, allow_empty)
 }
 
+fn commit_staged_impl(
+    repo: &Repository,
+    message: &str,
+    allow_empty: bool,
+) -> Result<Oid, git2::Error> {
+    let mut index = repo.index()?;
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+
+    let signature = repo
+        .signature()
+        .or_else(|_| Signature::now("Vizier", "vizier@local"))?;
+    let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+
+    if !allow_empty {
+        if let Some(ref parent) = parent_commit {
+            if parent.tree_id() == tree_id {
+                return Err(git2::Error::from_str("nothing to commit"));
+            }
+        } else if index.is_empty() {
+            return Err(git2::Error::from_str("nothing to commit"));
+        }
+    }
+
+    let parents: Vec<&git2::Commit> = match parent_commit.as_ref() {
+        Some(p) => vec![p],
+        None => vec![],
+    };
+
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &parents,
+    )
+}
+
+pub fn commit_staged(message: &str, allow_empty: bool) -> Result<Oid, git2::Error> {
+    let repo = Repository::open(".")?;
+    commit_staged_impl(&repo, message, allow_empty)
+}
+
+pub fn commit_staged_in<P: AsRef<Path>>(
+    repo_path: P,
+    message: &str,
+    allow_empty: bool,
+) -> Result<Oid, git2::Error> {
+    let repo = Repository::open(repo_path)?;
+    commit_staged_impl(&repo, message, allow_empty)
+}
+
 /// Push the current HEAD branch to the specified remote without invoking the git binary.
 ///
 /// Safety rails:
