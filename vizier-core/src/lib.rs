@@ -185,8 +185,8 @@ kernel-style commit message that reviewers can drop straight into
 
 Follow this checklist:
 
-1. Subject line: `subsystem: imperative summary`
-   - Pick the subsystem that best matches the primary files or behavior touched.
+1. Subject line: `type: imperative summary`
+   - Pick the change type that best matches the primary files or behavior touched.
      (Use the directory or module name; keep it lowercase.)
    - Use imperative mood (e.g., `fs: tighten inode locking`) and keep the subject
      at or under 50 characters with no trailing punctuation.
@@ -197,29 +197,18 @@ Follow this checklist:
      intent and impact rather than enumerating files or quoting code.
    - Use additional short paragraphs instead of bullets when more context or
      rationale is needed.
-3. Trailers
-   - Add a blank line before the trailer block.
-   - Always finish with `Signed-off-by: <name> <email>`. Use the operator identity
-     if provided; otherwise default to `Codex Assistant <codex@vizier.dev>`.
-   - Include other kernel trailers (`Fixes: <sha> ("subject")`, `Link: <url>`,
-     `Reported-by: <name <email>>`, `Tested-by: <name <email>>`, etc.) whenever
-     the diff or snapshot context warrants them.
 
 Example:
-
-fs: stop double-freeing buffers
+```
+fix: stop double-freeing buffers
 
 Buffer teardown freed the slab twice when the allocator saw an already
 poisoned pointer, which panicked debug builds. Guard the second free
 and document the ownership rules so callers know the sequence.
-
-Fixes: 1a2b3c4d5e6f ("fs: wire raw buffer reclaim")
-Signed-off-by: Codex Assistant <codex@vizier.dev>
+```
 
 Keep the tone calm and factual, prioritize the "why" over the literal code,
 and only mention specific files when it clarifies the subsystem you chose.
-Repositories can override these directions through `.vizier/COMMIT_PROMPT.md`
-or `[prompts.commit]`; obey any repository-provided template when present.
 "#;
 
 pub const IMPLEMENTATION_PLAN_PROMPT: &str = r#"
