@@ -48,6 +48,8 @@ Update — Surface CICD gate metadata in Outcome
   3) Auto-fix attempts list commits created and final status.
 - Cross: Outcome component; Agent workflow orchestration.
 
+Update (2025-11-20): Default squash merge behavior and knobs
+- `vizier merge` now defaults to squashing a plan’s implementation edits into a single code commit on the target branch before writing the non–fast-forward merge commit that embeds the stored plan under an `Implementation Plan:` block. Repositories can flip `[merge] squash = false` in `.vizier/config.toml` or operators can pass `--no-squash` to keep the legacy “merge straight from draft/<slug> history” behavior; `--squash` forces the new behavior even when config disagrees. README, `docs/workflows/draft-approve-merge.md`, and `example-config.toml` describe the flag/config story, and integration tests (`test_merge_default_squash_adds_implementation_commit`, `test_merge_no_squash_matches_legacy_parentage`) lock in the default parentage so operators can reason about commit graphs when tuning Git hygiene policies.
+
 
 ---
-
