@@ -3,7 +3,7 @@
 model = "gpt-4.1"
 reasoning_effort = "medium"
 backend = "codex"
-fallback_backend = "wire"
+# Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
 
 # Base Codex wiring shared by Codex-backed commands unless a scoped override says otherwise
 [codex]
@@ -55,7 +55,6 @@ no_commit_default = false
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
 backend = "codex"
-fallback_backend = "wire"
 model = "gpt-4.1"
 reasoning_effort = "medium"
 
@@ -72,10 +71,9 @@ backend = "wire"
 model = "gpt-4.1-preview"
 reasoning_effort = "high"
 
-# Keep save flows on Codex but allow a wire fallback when Codex exits early
+# Keep save flows on Codex so narrative edits always use the same backend
 [agents.save]
 backend = "codex"
-fallback_backend = "wire"
 
 # Give save flows a stricter Codex profile and extra arguments when editing the repo
 [agents.save.codex]

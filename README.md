@@ -104,6 +104,7 @@ vizier merge stdout-stderr
 Tune Vizier via repo-local files so settings travel with commits.
 
 - `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan), Codex options, and prompt overrides. CLI flags sit above these scopes.
+- Each scope now names a single `backend`. When that backend fails, Vizier aborts the command instead of falling back to wire, so rerun once the configured backend is healthy.
 - `.vizier/*.md` prompt files (BASE_SYSTEM_PROMPT, IMPLEMENTATION_PLAN_PROMPT, REVIEW_PROMPT, MERGE_CONFLICT_PROMPT, etc.) override baked-in templates per command.
 - `.vizier/COMMIT_PROMPT.md` (or `[prompts.commit]` in config) replaces the baked Linux kernel-style commit template if your team prefers a different format.
 - `example-config.toml` documents every knob, precedence rule (`CLI → scoped agent → default agent → legacy`), and Codex vs wire backend settings.
