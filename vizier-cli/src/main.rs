@@ -69,7 +69,7 @@ struct GlobalOpts {
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
 
-    /// Backend to use for edit orchestration (`codex` or `wire`)
+    /// Backend to use for edit orchestration (`codex` or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 

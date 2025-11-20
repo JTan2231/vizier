@@ -686,6 +686,12 @@ pub async fn run_exec(
 ) -> Result<CodexResponse, CodexError> {
     #[cfg(feature = "mock_llm")]
     {
+        if mock_codex_failure_requested() {
+            return Err(CodexError::NonZeroExit(
+                42,
+                vec!["forced mock Codex failure".to_string()],
+            ));
+        }
         let response = mock_codex_response();
         if let Some(progress_hook) = progress {
             for event in &response.events {
@@ -964,6 +970,18 @@ fn mock_codex_response() -> CodexResponse {
             },
         ],
     }
+}
+
+#[cfg(feature = "mock_llm")]
+fn mock_codex_failure_requested() -> bool {
+    std::env::var("VIZIER_FORCE_CODEX_ERROR")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
