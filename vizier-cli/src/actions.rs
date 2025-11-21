@@ -564,10 +564,7 @@ pub async fn run_snapshot_init(
         "Outcome".to_string(),
         "Snapshot bootstrap complete".to_string(),
     )];
-    rows.push((
-        "Depth used".to_string(),
-        format_number(report.depth_used),
-    ));
+    rows.push(("Depth used".to_string(), format_number(report.depth_used)));
     rows.push((
         "Files".to_string(),
         if files_updated == 0 {
@@ -578,10 +575,7 @@ pub async fn run_snapshot_init(
     ));
 
     if matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
-        rows.push((
-            "Analyzed at".to_string(),
-            report.analysis_timestamp.clone(),
-        ));
+        rows.push(("Analyzed at".to_string(), report.analysis_timestamp.clone()));
         rows.push((
             "Branch".to_string(),
             report
@@ -603,16 +597,10 @@ pub async fn run_snapshot_init(
             if report.dirty { "dirty" } else { "clean" }.to_string(),
         ));
         if !report.scope_includes.is_empty() {
-            rows.push((
-                "Includes".to_string(),
-                report.scope_includes.join(", "),
-            ));
+            rows.push(("Includes".to_string(), report.scope_includes.join(", ")));
         }
         if !report.scope_excludes.is_empty() {
-            rows.push((
-                "Excludes".to_string(),
-                report.scope_excludes.join(", "),
-            ));
+            rows.push(("Excludes".to_string(), report.scope_excludes.join(", ")));
         }
         if let Some(provider) = report.issues_provider.as_ref() {
             rows.push(("Issues provider".to_string(), provider.to_string()));
@@ -695,10 +683,7 @@ fn format_save_outcome(outcome: &SaveOutcome, verbosity: Verbosity) -> String {
         _ => rows.push(("Code commit".to_string(), "none".to_string())),
     }
 
-    rows.push((
-        "Mode".to_string(),
-        outcome.commit_mode.label().to_string(),
-    ));
+    rows.push(("Mode".to_string(), outcome.commit_mode.label().to_string()));
     rows.push((
         "Narrative".to_string(),
         match outcome.audit_state {
@@ -1388,12 +1373,12 @@ pub async fn run_draft(
                 ));
             }
 
-                if let Some(plan_text) = plan_to_print {
-                    println!();
-                    println!("{plan_text}");
-                }
-                Ok(())
+            if let Some(plan_text) = plan_to_print {
+                println!();
+                println!("{plan_text}");
             }
+            Ok(())
+        }
         Err(err) => {
             if worktree_created {
                 let _ = remove_worktree(&worktree_name, true);
@@ -3248,7 +3233,9 @@ async fn perform_review_workflow(
                 session_hint
             ));
             if !narrative_paths.is_empty() {
-                display::info("Review critique artifacts held for manual review (--no-commit active).");
+                display::info(
+                    "Review critique artifacts held for manual review (--no-commit active).",
+                );
             }
         } else {
             display::info(format!(
@@ -3637,13 +3624,46 @@ fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Err
 fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let entries = plan::PlanSlugInventory::collect(target_override.as_deref())?;
     if entries.is_empty() {
-        println!("No pending draft branches");
+        let mut rows = vec![(
+            "Outcome".to_string(),
+            "No pending draft branches".to_string(),
+        )];
+        if let Some(target) = target_override {
+            rows.push(("Target".to_string(), target));
+        }
+        println!("{}", format_block(rows));
         return Ok(());
     }
 
-    for entry in entries {
-        let summary = entry.summary.replace('"', "'");
-        println!("plan={} branch={} summary=\"{}\"", entry.slug, entry.branch, summary);
+    let mut header_rows = vec![(
+        "Outcome".to_string(),
+        format!(
+            "{} pending draft {}",
+            format_number(entries.len()),
+            if entries.len() == 1 {
+                "branch"
+            } else {
+                "branches"
+            }
+        ),
+    )];
+    if let Some(target) = target_override {
+        header_rows.push(("Target".to_string(), target));
+    }
+    println!("{}", format_block(header_rows));
+    println!();
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let summary = entry.summary.replace('"', "'").replace('\n', " ");
+        let rows = vec![
+            ("Plan".to_string(), entry.slug.clone()),
+            ("Branch".to_string(), entry.branch.clone()),
+            ("Summary".to_string(), summary),
+        ];
+        println!("{}", format_block_with_indent(rows, 2));
+        if idx + 1 < entries.len() {
+            println!();
+        }
     }
 
     Ok(())

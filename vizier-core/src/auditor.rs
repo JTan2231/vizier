@@ -44,10 +44,7 @@ impl TokenUsage {
         }
 
         let mut rows = Vec::new();
-        rows.push((
-            "Total".to_string(),
-            format_number(self.total_tokens),
-        ));
+        rows.push(("Total".to_string(), format_number(self.total_tokens)));
 
         let mut input = format_number(self.input_tokens);
         if self.cached_input_tokens > 0 {
@@ -165,13 +162,8 @@ impl TokenUsageReport {
             format_number(self.completion_delta)
         );
         if let Some(reasoning_total) = self.reasoning_output_total {
-            let reasoning_value = self
-                .reasoning_output_delta
-                .unwrap_or(reasoning_total);
-            output.push_str(&format!(
-                ", reasoning {}",
-                format_number(reasoning_value)
-            ));
+            let reasoning_value = self.reasoning_output_delta.unwrap_or(reasoning_total);
+            output.push_str(&format!(", reasoning {}", format_number(reasoning_value)));
         }
         rows.push(("Output".to_string(), output));
 
