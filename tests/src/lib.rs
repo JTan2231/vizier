@@ -695,8 +695,8 @@ reasoning_effort = "low"
             .get("model")
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
-        Some("process"),
-        "save should use the default process backend"
+        Some("codex"),
+        "save should use the configured process backend runner"
     );
     assert_eq!(
         save_json
@@ -1020,7 +1020,7 @@ fn test_approve_merges_plan() -> TestResult {
     );
     let approve_stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        approve_stderr.contains("[agent:approve] apply plan"),
+        approve_stderr.contains("[codex] apply plan"),
         "Agent progress log missing expected line: {}",
         approve_stderr
     );

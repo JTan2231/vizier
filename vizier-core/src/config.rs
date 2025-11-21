@@ -1880,4 +1880,29 @@ model = "gpt-4o-mini"
         assert!(agent.runner.is_none());
         assert!(Arc::strong_count(&agent.display_adapter) >= 1);
     }
+
+    #[test]
+    fn scoped_process_backend_overrides_wire_default() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Wire;
+
+        let mut overrides = AgentOverrides::default();
+        overrides.backend = Some(BackendKind::Process);
+        cfg.agent_scopes.insert(CommandScope::Save, overrides);
+
+        let ask = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("ask scope should resolve");
+        assert_eq!(ask.backend, BackendKind::Wire);
+        assert!(ask.runner.is_none(), "wire scopes should not resolve runners");
+
+        let save = cfg
+            .resolve_agent_settings(CommandScope::Save, None)
+            .expect("save scope should resolve");
+        assert_eq!(save.backend, BackendKind::Process);
+        assert!(
+            save.process_runner().is_ok(),
+            "process scopes should expose a runner even when defaults are wire"
+        );
+    }
 }
