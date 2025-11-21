@@ -11,8 +11,8 @@ use wire::{
 };
 
 use crate::{
-    COMMIT_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT, REVIEW_PROMPT,
-    SYSTEM_PROMPT_BASE,
+    COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
+    REVIEW_PROMPT,
     agent::{AgentDisplayAdapter, AgentRunner, FallbackDisplayAdapter},
     codex::{CodexDisplayAdapter, CodexRunner},
     tools, tree,
@@ -26,7 +26,7 @@ lazy_static! {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum PromptKind {
-    Base,
+    Documentation,
     Commit,
     ImplementationPlan,
     Review,
@@ -39,7 +39,7 @@ pub type SystemPrompt = PromptKind;
 impl PromptKind {
     pub fn all() -> &'static [PromptKind] {
         const ALL: &[PromptKind] = &[
-            PromptKind::Base,
+            PromptKind::Documentation,
             PromptKind::Commit,
             PromptKind::ImplementationPlan,
             PromptKind::Review,
@@ -50,7 +50,7 @@ impl PromptKind {
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            PromptKind::Base => "base",
+            PromptKind::Documentation => "documentation",
             PromptKind::Commit => "commit",
             PromptKind::ImplementationPlan => "implementation_plan",
             PromptKind::Review => "review",
@@ -58,19 +58,19 @@ impl PromptKind {
         }
     }
 
-    fn filename(&self) -> &'static str {
+    fn filename_candidates(&self) -> &'static [&'static str] {
         match self {
-            PromptKind::Base => "BASE_SYSTEM_PROMPT.md",
-            PromptKind::Commit => "COMMIT_PROMPT.md",
-            PromptKind::ImplementationPlan => "IMPLEMENTATION_PLAN_PROMPT.md",
-            PromptKind::Review => "REVIEW_PROMPT.md",
-            PromptKind::MergeConflict => "MERGE_CONFLICT_PROMPT.md",
+            PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md", "BASE_SYSTEM_PROMPT.md"],
+            PromptKind::Commit => &["COMMIT_PROMPT.md"],
+            PromptKind::ImplementationPlan => &["IMPLEMENTATION_PLAN_PROMPT.md"],
+            PromptKind::Review => &["REVIEW_PROMPT.md"],
+            PromptKind::MergeConflict => &["MERGE_CONFLICT_PROMPT.md"],
         }
     }
 
     fn default_template(&self) -> &'static str {
         match self {
-            PromptKind::Base => SYSTEM_PROMPT_BASE,
+            PromptKind::Documentation => DOCUMENTATION_PROMPT,
             PromptKind::Commit => COMMIT_PROMPT,
             PromptKind::ImplementationPlan => IMPLEMENTATION_PLAN_PROMPT,
             PromptKind::Review => REVIEW_PROMPT,
@@ -160,12 +160,59 @@ impl std::fmt::Display for CommandScope {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentationSettings {
+    pub use_documentation_prompt: bool,
+    pub include_snapshot: bool,
+    pub include_todo_threads: bool,
+}
+
+impl Default for DocumentationSettings {
+    fn default() -> Self {
+        Self {
+            use_documentation_prompt: true,
+            include_snapshot: true,
+            include_todo_threads: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentationSettingsOverride {
+    pub use_documentation_prompt: Option<bool>,
+    pub include_snapshot: Option<bool>,
+    pub include_todo_threads: Option<bool>,
+}
+
+impl DocumentationSettingsOverride {
+    fn is_empty(&self) -> bool {
+        self.use_documentation_prompt.is_none()
+            && self.include_snapshot.is_none()
+            && self.include_todo_threads.is_none()
+    }
+
+    fn apply_to(&self, settings: &mut DocumentationSettings) {
+        if let Some(enabled) = self.use_documentation_prompt {
+            settings.use_documentation_prompt = enabled;
+        }
+
+        if let Some(include_snapshot) = self.include_snapshot {
+            settings.include_snapshot = include_snapshot;
+        }
+
+        if let Some(include_threads) = self.include_todo_threads {
+            settings.include_todo_threads = include_threads;
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOverrides {
     pub backend: Option<BackendKind>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
+    pub documentation: DocumentationSettingsOverride,
     pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
 }
 
@@ -193,6 +240,7 @@ impl AgentOverrides {
             && self.model.is_none()
             && self.reasoning_effort.is_none()
             && self.agent_runtime.is_none()
+            && self.documentation.is_empty()
             && self.prompt_overrides.is_empty()
     }
 }
@@ -207,6 +255,7 @@ pub struct AgentSettings {
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub agent_runtime: AgentRuntimeOptions,
+    pub documentation: DocumentationSettings,
     pub prompt: Option<PromptSelection>,
     pub cli_override: Option<AgentOverrides>,
 }
@@ -391,9 +440,12 @@ impl Config {
 
         if let Some(dir) = prompt_directory.as_ref() {
             for kind in PromptKind::all().iter().copied() {
-                let path = dir.join(kind.filename());
-                if let Ok(contents) = std::fs::read_to_string(&path) {
-                    repo_prompts.insert(kind, RepoPrompt { path, contents });
+                for filename in kind.filename_candidates() {
+                    let path = dir.join(filename);
+                    if let Ok(contents) = std::fs::read_to_string(&path) {
+                        repo_prompts.insert(kind, RepoPrompt { path, contents });
+                        break;
+                    }
                 }
             }
         }
@@ -601,8 +653,8 @@ impl Config {
             }
         }
 
-        if let Some(prompt) = find_string(&file_config, BASE_PROMPT_KEY_PATHS) {
-            config.set_prompt(PromptKind::Base, prompt);
+        if let Some(prompt) = find_string(&file_config, DOCUMENTATION_PROMPT_KEY_PATHS) {
+            config.set_prompt(PromptKind::Documentation, prompt);
         }
 
         if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
@@ -861,8 +913,14 @@ impl Config {
             }
         }
 
-        let prompt = self.prompt_for(scope, kind);
-        builder.build(self, scope, Some(prompt), cli_override)
+        let prompt = if kind == PromptKind::Documentation
+            && !builder.documentation.use_documentation_prompt
+        {
+            None
+        } else {
+            Some(self.prompt_for(scope, kind))
+        };
+        builder.build(self, scope, prompt, cli_override)
     }
 }
 
@@ -895,7 +953,13 @@ const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["flags", "thinking_level"],
     &["flags", "thinking-level"],
 ];
-const BASE_PROMPT_KEY_PATHS: &[&[&str]] = &[
+const DOCUMENTATION_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["DOCUMENTATION_PROMPT"],
+    &["documentation_prompt"],
+    &["prompts", "DOCUMENTATION_PROMPT"],
+    &["prompts", "documentation"],
+    &["prompts", "documentation_prompt"],
+    // Legacy keys
     &["BASE_SYSTEM_PROMPT"],
     &["base_system_prompt"],
     &["prompts", "BASE_SYSTEM_PROMPT"],
@@ -937,6 +1001,7 @@ struct AgentSettingsBuilder {
     provider_model: String,
     reasoning_effort: Option<ThinkingLevel>,
     agent_runtime: AgentRuntimeOptions,
+    documentation: DocumentationSettings,
 }
 
 impl AgentSettingsBuilder {
@@ -946,6 +1011,7 @@ impl AgentSettingsBuilder {
             provider_model: cfg.provider_model.clone(),
             reasoning_effort: cfg.reasoning_effort,
             agent_runtime: cfg.agent_runtime.clone(),
+            documentation: DocumentationSettings::default(),
         }
     }
 
@@ -981,6 +1047,8 @@ impl AgentSettingsBuilder {
                 self.agent_runtime.extra_args = extra.clone();
             }
         }
+
+        overrides.documentation.apply_to(&mut self.documentation);
     }
 
     fn apply_cli_override(&mut self, overrides: &AgentOverrides) {
@@ -1015,6 +1083,8 @@ impl AgentSettingsBuilder {
                 self.agent_runtime.extra_args = extra.clone();
             }
         }
+
+        overrides.documentation.apply_to(&mut self.documentation);
     }
 
     fn apply_prompt_overrides(&mut self, overrides: &PromptOverrides) {
@@ -1047,6 +1117,7 @@ impl AgentSettingsBuilder {
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
             agent_runtime: self.agent_runtime.clone(),
+            documentation: self.documentation.clone(),
             prompt,
             cli_override: cli_override.cloned(),
         })
@@ -1141,6 +1212,10 @@ fn parse_agent_overrides(
     }
 
     if allow_prompt_children {
+        if let Some(doc_settings) = parse_documentation_settings(value)? {
+            overrides.documentation = doc_settings;
+        }
+
         if let Some(prompts_value) = value_at_path(value, &["prompts"]) {
             overrides.prompt_overrides =
                 parse_prompt_override_table(prompts_value, base_dir)?.unwrap_or_default();
@@ -1346,11 +1421,64 @@ fn parse_agent_runtime_override(
     }
 }
 
+fn parse_documentation_settings(
+    value: &serde_json::Value,
+) -> Result<Option<DocumentationSettingsOverride>, Box<dyn std::error::Error>> {
+    let Some(table) = value_at_path(value, &["documentation"]).and_then(|v| v.as_object()) else {
+        return Ok(None);
+    };
+
+    let mut overrides = DocumentationSettingsOverride::default();
+
+    if let Some(enabled) = parse_bool(
+        table
+            .get("enabled")
+            .or_else(|| table.get("enable"))
+            .or_else(|| table.get("use_prompt"))
+            .or_else(|| table.get("use-prompt"))
+            .or_else(|| table.get("use_documentation_prompt"))
+            .or_else(|| table.get("use-documentation-prompt")),
+    ) {
+        overrides.use_documentation_prompt = Some(enabled);
+    }
+
+    if let Some(include_snapshot) = parse_bool(
+        table
+            .get("include_snapshot")
+            .or_else(|| table.get("include-snapshot"))
+            .or_else(|| table.get("snapshot")),
+    ) {
+        overrides.include_snapshot = Some(include_snapshot);
+    }
+
+    if let Some(include_threads) = parse_bool(
+        table
+            .get("include_todo_threads")
+            .or_else(|| table.get("include-todo-threads"))
+            .or_else(|| table.get("include_todos"))
+            .or_else(|| table.get("include-todos")),
+    ) {
+        overrides.include_todo_threads = Some(include_threads);
+    }
+
+    if overrides.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(overrides))
+    }
+}
+
 fn prompt_kind_from_key(key: &str) -> Option<PromptKind> {
     let normalized = key.trim().to_ascii_lowercase().replace('-', "_");
 
     match normalized.as_str() {
-        "base" | "base_system_prompt" | "system" => Some(PromptKind::Base),
+        "documentation"
+        | "documentation_prompt"
+        | "docs"
+        | "doc"
+        | "base"
+        | "base_system_prompt"
+        | "system" => Some(PromptKind::Documentation),
         "commit" | "commit_prompt" => Some(PromptKind::Commit),
         "implementation_plan" | "implementation_plan_prompt" | "plan" => {
             Some(PromptKind::ImplementationPlan)
@@ -1504,7 +1632,7 @@ pub fn get_system_prompt_with_meta(
     let mut prompt = if let Some(kind) = prompt_kind {
         cfg.prompt_for(scope, kind).text
     } else {
-        cfg.prompt_for(scope, SystemPrompt::Base).text
+        cfg.prompt_for(scope, SystemPrompt::Documentation).text
     };
 
     prompt.push_str("<meta>");
@@ -1558,7 +1686,7 @@ mod tests {
 
         let cfg = Config::from_json(file.path().to_path_buf()).expect("should parse JSON config");
 
-        assert_eq!(cfg.get_prompt(PromptKind::Base), "base override");
+        assert_eq!(cfg.get_prompt(PromptKind::Documentation), "base override");
         assert_eq!(cfg.get_prompt(PromptKind::Commit), "commit override");
         assert_eq!(
             cfg.get_prompt(PromptKind::ImplementationPlan),
@@ -1579,8 +1707,8 @@ mod tests {
 
         assert_eq!(cfg.get_prompt(PromptKind::Commit), "only commit override");
         assert_eq!(
-            cfg.get_prompt(PromptKind::Base),
-            default_cfg.get_prompt(PromptKind::Base)
+            cfg.get_prompt(PromptKind::Documentation),
+            default_cfg.get_prompt(PromptKind::Documentation)
         );
     }
 
@@ -1590,7 +1718,7 @@ mod tests {
 model = "gpt-5"
 
 [prompts]
-base = "toml base override"
+documentation = "toml documentation override"
 commit = "toml commit override"
 implementation_plan = "toml plan override"
 review = "toml review override"
@@ -1603,7 +1731,10 @@ merge_conflict = "toml merge override"
 
         let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
 
-        assert_eq!(cfg.get_prompt(PromptKind::Base), "toml base override");
+        assert_eq!(
+            cfg.get_prompt(PromptKind::Documentation),
+            "toml documentation override"
+        );
         assert_eq!(cfg.get_prompt(PromptKind::Commit), "toml commit override");
         assert_eq!(
             cfg.get_prompt(PromptKind::ImplementationPlan),
@@ -1620,7 +1751,7 @@ merge_conflict = "toml merge override"
     fn test_scoped_prompt_overrides() {
         let toml = r#"
 [prompts.ask]
-base = "ask scope"
+documentation = "ask scope"
 
 [prompts.draft]
 implementation_plan = "draft scope"
@@ -1634,13 +1765,15 @@ implementation_plan = "draft scope"
         let default_cfg = Config::default();
 
         assert_eq!(
-            cfg.prompt_for(CommandScope::Ask, PromptKind::Base).text,
+            cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation)
+                .text,
             "ask scope"
         );
         assert_eq!(
-            cfg.prompt_for(CommandScope::Save, PromptKind::Base).text,
+            cfg.prompt_for(CommandScope::Save, PromptKind::Documentation)
+                .text,
             default_cfg
-                .prompt_for(CommandScope::Save, PromptKind::Base)
+                .prompt_for(CommandScope::Save, PromptKind::Documentation)
                 .text,
         );
         assert_eq!(
@@ -1655,6 +1788,42 @@ implementation_plan = "draft scope"
                 .prompt_for(CommandScope::Approve, PromptKind::ImplementationPlan)
                 .text,
         );
+    }
+
+    #[test]
+    fn documentation_settings_follow_scope_overrides() {
+        let toml = r#"
+[agents.default.documentation]
+enabled = false
+include_snapshot = false
+include_todo_threads = false
+
+[agents.ask.documentation]
+enabled = true
+include_snapshot = true
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
+
+        let ask_settings = cfg
+            .resolve_prompt_profile(CommandScope::Ask, PromptKind::Documentation, None)
+            .expect("resolve ask settings");
+        assert!(ask_settings.documentation.use_documentation_prompt);
+        assert!(ask_settings.documentation.include_snapshot);
+        assert!(!ask_settings.documentation.include_todo_threads);
+        assert!(ask_settings.prompt_selection().is_some());
+
+        let save_settings = cfg
+            .resolve_prompt_profile(CommandScope::Save, PromptKind::Documentation, None)
+            .expect("resolve save settings");
+        assert!(!save_settings.documentation.use_documentation_prompt);
+        assert!(!save_settings.documentation.include_snapshot);
+        assert!(!save_settings.documentation.include_todo_threads);
+        assert!(save_settings.prompt_selection().is_none());
     }
 
     #[test]
@@ -1855,15 +2024,15 @@ retries = 3
     #[test]
     fn test_agent_prompt_override_with_path_and_backend() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let prompt_path = temp_dir.path().join("profile_base.md");
+        let prompt_path = temp_dir.path().join("profile_documentation.md");
         fs::write(&prompt_path, "scoped prompt from file").expect("write prompt file");
 
         let config_path = temp_dir.path().join("config.toml");
         fs::write(
             &config_path,
             r#"
-[agents.default.prompts.base]
-path = "profile_base.md"
+[agents.default.prompts.documentation]
+path = "profile_documentation.md"
 backend = "wire"
 model = "gpt-4o-mini"
 "#,
@@ -1872,12 +2041,12 @@ model = "gpt-4o-mini"
 
         let cfg =
             Config::from_toml(config_path).expect("should parse config with prompt overrides");
-        let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Base);
+        let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation);
         assert_eq!(selection.text.trim(), "scoped prompt from file");
         assert_eq!(selection.source_path, Some(prompt_path.clone()));
 
         let agent = cfg
-            .resolve_prompt_profile(CommandScope::Ask, PromptKind::Base, None)
+            .resolve_prompt_profile(CommandScope::Ask, PromptKind::Documentation, None)
             .expect("resolve prompt profile");
         assert_eq!(
             agent

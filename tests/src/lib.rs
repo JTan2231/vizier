@@ -1511,12 +1511,8 @@ fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() 
     repo.write("a", "manual resolution wins\n")?;
     repo.git(&["add", "a"])?;
 
-    let resume = repo.vizier_output(&[
-        "merge",
-        "replay-conflict",
-        "--yes",
-        "--complete-conflict",
-    ])?;
+    let resume =
+        repo.vizier_output(&["merge", "replay-conflict", "--yes", "--complete-conflict"])?;
     assert!(
         resume.status.success(),
         "vizier merge --complete-conflict failed after manual resolution: {}",

@@ -454,7 +454,7 @@ impl Auditor {
                     config::BackendKind::Agent => "n/a".to_string(),
                 },
                 reasoning_effort: settings.reasoning_effort,
-                prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Base),
+                prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
             });
         }
     }
@@ -870,7 +870,7 @@ impl Auditor {
             .unwrap_or(config::CommandScope::Ask);
         let kind = context
             .map(|ctx| ctx.prompt_kind)
-            .unwrap_or(SystemPrompt::Base);
+            .unwrap_or(SystemPrompt::Documentation);
         let selection = cfg.prompt_for(scope, kind);
         let origin = selection.origin.clone();
         let digest = Sha256::digest(selection.text.as_bytes());
