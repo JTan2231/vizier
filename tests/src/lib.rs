@@ -123,6 +123,9 @@ impl IntegrationRepo {
         let status = Command::new("git")
             .arg("-C")
             .arg(self.path())
+            .env("GIT_MERGE_AUTOEDIT", "no")
+            .env("GIT_EDITOR", "true")
+            .env("VISUAL", "true")
             .args(args)
             .status()?;
         if !status.success() {
@@ -1426,6 +1429,118 @@ fn test_merge_squash_allows_zero_diff_range() -> TestResult {
 }
 
 #[test]
+fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "replay-conflict", "replay conflict plan"])?;
+
+    repo.git(&["checkout", "draft/replay-conflict"])?;
+    repo.write("a", "plan step one\n")?;
+    repo.git(&["commit", "-am", "plan step one"])?;
+    repo.write("a", "plan step two\n")?;
+    repo.git(&["commit", "-am", "plan step two"])?;
+
+    repo.git(&["checkout", "master"])?;
+    clean_workdir(&repo)?;
+    repo.write("a", "master diverges\n")?;
+    repo.git(&["commit", "-am", "master divergence"])?;
+    let base_commit = repo.repo().head()?.peel_to_commit()?.id();
+
+    let merge = repo.vizier_output(&["merge", "replay-conflict", "--yes"])?;
+    assert!(
+        !merge.status.success(),
+        "expected merge to surface cherry-pick conflict, got:\n{}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/replay-conflict.json");
+    assert!(
+        sentinel.exists(),
+        "merge conflict sentinel missing after initial failure"
+    );
+
+    repo.write("a", "manual resolution wins\n")?;
+    repo.git(&["add", "a"])?;
+
+    let resume = repo.vizier_output(&[
+        "merge",
+        "replay-conflict",
+        "--yes",
+        "--complete-conflict",
+    ])?;
+    assert!(
+        resume.status.success(),
+        "vizier merge --complete-conflict failed after manual resolution: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+    assert!(
+        !sentinel.exists(),
+        "sentinel should be removed after --complete-conflict succeeds"
+    );
+
+    let contents = repo.read("a")?;
+    assert_eq!(
+        contents, "manual resolution wins\n",
+        "manual resolution should survive replaying the remaining plan commits"
+    );
+
+    let repo_handle = repo.repo();
+    let head = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        head.parent_count(),
+        2,
+        "merge commit should still record both parents after replay"
+    );
+    let implementation_commit = head.parent(0)?;
+    assert_eq!(
+        implementation_commit.parent(0)?.id(),
+        base_commit,
+        "implementation commit should descend from the pre-merge target head"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_squash_replay_handles_plan_branch_merge_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&[
+        "draft",
+        "--name",
+        "replay-merge-history",
+        "plan branch includes merge history",
+    ])?;
+
+    repo.git(&["checkout", "draft/replay-merge-history"])?;
+    repo.write("a", "main path change\n")?;
+    repo.git(&["commit", "-am", "main path change"])?;
+
+    repo.git(&["checkout", "HEAD^", "-b", "plan-side"])?;
+    repo.write("b", "side path change\n")?;
+    repo.git(&["commit", "-am", "side path change"])?;
+
+    repo.git(&["checkout", "draft/replay-merge-history"])?;
+    repo.git(&["merge", "plan-side"])?;
+
+    repo.git(&["checkout", "master"])?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&["merge", "replay-merge-history", "--yes"])?;
+    assert!(
+        !merge.status.success(),
+        "expected merge to fail on plan branch with merge commits; got success"
+    );
+    let stderr = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        stderr.contains("mainline branch is not specified"),
+        "merge failure should surface mainline/merge commit limitation; stderr:\n{stderr}"
+    );
+
+    repo.git(&["reset", "--hard"])?;
+    Ok(())
+}
+
+#[test]
 fn test_merge_cicd_gate_executes_script() -> TestResult {
     let repo = IntegrationRepo::new()?;
     repo.vizier_output(&["draft", "--name", "cicd-pass", "cicd gate spec"])?;
@@ -1778,6 +1893,97 @@ fn test_merge_conflict_complete_flag() -> TestResult {
     assert!(
         !sentinel.exists(),
         "sentinel should be removed after --complete-conflict succeeds"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_conflict_complete_blocks_wrong_branch() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_conflicting_plan(
+        &repo,
+        "conflict-wrong-branch",
+        "master branch keeps its version\n",
+        "plan branch prefers this text\n",
+    )?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&["merge", "conflict-wrong-branch", "--yes"])?;
+    assert!(
+        !merge.status.success(),
+        "expected merge to fail on conflicts"
+    );
+
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/conflict-wrong-branch.json");
+    assert!(
+        sentinel.exists(),
+        "conflict sentinel missing after initial failure"
+    );
+
+    repo.git(&["cherry-pick", "--abort"])?;
+    repo.git(&["checkout", "-b", "elsewhere"])?;
+
+    let resume = repo.vizier_output(&[
+        "merge",
+        "conflict-wrong-branch",
+        "--yes",
+        "--complete-conflict",
+    ])?;
+    assert!(
+        !resume.status.success(),
+        "expected --complete-conflict to block when not on the target branch"
+    );
+    assert!(
+        sentinel.exists(),
+        "sentinel should remain when resume is blocked on wrong branch"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_conflict_complete_flag_rejects_head_drift() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_conflicting_plan(
+        &repo,
+        "conflict-head-drift",
+        "master branch keeps its version\n",
+        "plan branch prefers this text\n",
+    )?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&["merge", "conflict-head-drift", "--yes"])?;
+    assert!(
+        !merge.status.success(),
+        "expected merge to fail on conflicts"
+    );
+
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/conflict-head-drift.json");
+    assert!(
+        sentinel.exists(),
+        "conflict sentinel missing after initial failure"
+    );
+
+    repo.git(&["cherry-pick", "--abort"])?;
+    repo.write("a", "head moved after conflicts\n")?;
+    repo.git(&["commit", "-am", "head drifted"])?;
+
+    let resume = repo.vizier_output(&[
+        "merge",
+        "conflict-head-drift",
+        "--yes",
+        "--complete-conflict",
+    ])?;
+    assert!(
+        !resume.status.success(),
+        "expected --complete-conflict to block when HEAD moved"
+    );
+    assert!(
+        !sentinel.exists(),
+        "sentinel should be cleared when HEAD drift is detected"
     );
     Ok(())
 }
