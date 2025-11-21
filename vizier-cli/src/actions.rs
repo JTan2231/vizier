@@ -19,8 +19,8 @@ use vizier_core::vcs::{
     PushErrorKind, RemoteScheme, add_worktree_for_branch, amend_head_commit,
     apply_cherry_pick_sequence, build_squash_plan, commit_in_progress_cherry_pick,
     commit_in_progress_merge, commit_in_progress_squash, commit_paths_in_repo, commit_ready_merge,
-    commit_soft_squash, create_branch_from, delete_branch, detect_primary_branch,
-    list_conflicted_paths, prepare_merge, remove_worktree, repo_root,
+    commit_soft_squash, commit_squashed_merge, create_branch_from, delete_branch,
+    detect_primary_branch, list_conflicted_paths, prepare_merge, remove_worktree, repo_root,
 };
 use vizier_core::{
     agent_prompt, auditor,
@@ -412,12 +412,17 @@ struct MergeExecutionResult {
     merge_oid: Oid,
     source_oid: Oid,
     gate: Option<CicdGateOutcome>,
+    squashed: bool,
+    implementation_oid: Option<Oid>,
 }
 
 #[derive(Debug)]
 enum MergeConflictResolution {
     MergeCommitted { merge_oid: Oid, source_oid: Oid },
-    SquashImplementationCommitted { source_oid: Oid },
+    SquashImplementationCommitted {
+        source_oid: Oid,
+        implementation_oid: Oid,
+    },
 }
 
 #[derive(Debug)]
@@ -1755,31 +1760,30 @@ pub async fn run_merge(
             source_oid,
         } => {
             let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
-            finalize_merge(
-                &spec,
+            let execution = MergeExecutionResult {
                 merge_oid,
                 source_oid,
-                opts.delete_branch,
-                opts.push_after,
-                gate_summary,
-            )?;
+                gate: gate_summary,
+                squashed: false,
+                implementation_oid: None,
+            };
+            finalize_merge(&spec, execution, opts.delete_branch, opts.push_after)?;
             return Ok(());
         }
         PendingMergeStatus::SquashReady {
             source_oid,
             merge_message,
         } => {
-            let gate_summary = run_cicd_gate_for_merge(&spec, &opts, agent).await?;
-            let ready = merge_ready_from_head(source_oid)?;
-            let merge_oid = commit_ready_merge(&merge_message, ready)?;
-            finalize_merge(
+            let execution = finalize_squashed_merge_from_head(
                 &spec,
-                merge_oid,
+                &merge_message,
                 source_oid,
-                opts.delete_branch,
-                opts.push_after,
-                gate_summary,
-            )?;
+                None,
+                &opts,
+                agent,
+            )
+            .await?;
+            finalize_merge(&spec, execution, opts.delete_branch, opts.push_after)?;
             return Ok(());
         }
         PendingMergeStatus::Blocked(blocker) => {
@@ -1875,14 +1879,7 @@ pub async fn run_merge(
         execute_legacy_merge(&spec, &merge_message, preparation, &opts, agent).await?
     };
 
-    finalize_merge(
-        &spec,
-        execution.merge_oid,
-        execution.source_oid,
-        opts.delete_branch,
-        opts.push_after,
-        execution.gate,
-    )?;
+    finalize_merge(&spec, execution, opts.delete_branch, opts.push_after)?;
     Ok(())
 }
 
@@ -1929,6 +1926,8 @@ async fn execute_legacy_merge(
         merge_oid,
         source_oid,
         gate,
+        squashed: false,
+        implementation_oid: None,
     })
 }
 
@@ -1943,9 +1942,17 @@ async fn execute_squashed_merge(
     match apply_cherry_pick_sequence(plan.target_head, &plan.commits_to_apply, None)? {
         CherryPickOutcome::Completed(result) => {
             let expected_head = result.applied.last().copied().unwrap_or(plan.target_head);
-            let _ = commit_soft_squash(implementation_message, plan.target_head, expected_head)?;
-            finalize_squashed_merge_from_head(spec, merge_message, plan.source_tip, opts, agent)
-                .await
+            let implementation_oid =
+                commit_soft_squash(implementation_message, plan.target_head, expected_head)?;
+            finalize_squashed_merge_from_head(
+                spec,
+                merge_message,
+                plan.source_tip,
+                Some(implementation_oid),
+                opts,
+                agent,
+            )
+            .await
         }
         CherryPickOutcome::Conflicted(conflict) => {
             match handle_squash_apply_conflict(
@@ -1959,9 +1966,19 @@ async fn execute_squashed_merge(
             )
             .await?
             {
-                MergeConflictResolution::SquashImplementationCommitted { source_oid } => {
-                    finalize_squashed_merge_from_head(spec, merge_message, source_oid, opts, agent)
-                        .await
+                MergeConflictResolution::SquashImplementationCommitted {
+                    source_oid,
+                    implementation_oid,
+                } => {
+                    finalize_squashed_merge_from_head(
+                        spec,
+                        merge_message,
+                        source_oid,
+                        Some(implementation_oid),
+                        opts,
+                        agent,
+                    )
+                    .await
                 }
                 MergeConflictResolution::MergeCommitted { .. } => Err(
                     "internal error: legacy merge conflict resolution triggered while squashing"
@@ -1976,16 +1993,29 @@ async fn finalize_squashed_merge_from_head(
     spec: &plan::PlanBranchSpec,
     merge_message: &str,
     source_oid: Oid,
+    expected_implementation: Option<Oid>,
     opts: &MergeOptions,
     agent: &config::AgentSettings,
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
     let gate = run_cicd_gate_for_merge(spec, opts, agent).await?;
     let ready = merge_ready_from_head(source_oid)?;
-    let merge_oid = commit_ready_merge(merge_message, ready)?;
+    if let Some(expected) = expected_implementation {
+        if expected != ready.head_oid {
+            display::warn(format!(
+                "HEAD moved after recording the implementation commit (expected {}, saw {}); finalizing merge from the current HEAD state.",
+                short_hash(&expected.to_string()),
+                short_hash(&ready.head_oid.to_string())
+            ));
+        }
+    }
+    let implementation_head = ready.head_oid;
+    let merge_oid = commit_squashed_merge(merge_message, ready)?;
     Ok(MergeExecutionResult {
         merge_oid,
         source_oid,
         gate,
+        squashed: true,
+        implementation_oid: Some(implementation_head),
     })
 }
 
@@ -2251,22 +2281,53 @@ async fn attempt_cicd_auto_fix(
 
 fn finalize_merge(
     spec: &plan::PlanBranchSpec,
-    merge_oid: Oid,
-    source_oid: Oid,
+    execution: MergeExecutionResult,
     delete_branch: bool,
     push_after: bool,
-    gate: Option<CicdGateOutcome>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let MergeExecutionResult {
+        merge_oid,
+        source_oid,
+        gate,
+        squashed,
+        implementation_oid,
+    } = execution;
+
+    let repo = Repository::discover(".")?;
     if delete_branch {
-        let repo = Repository::discover(".")?;
-        if repo.graph_descendant_of(merge_oid, source_oid)? {
-            vcs::delete_branch(&spec.branch)?;
-            display::info(format!("Deleted {} after merge", spec.branch));
-        } else {
+        let mut should_delete = true;
+        if squashed {
+            let merge_commit = repo.find_commit(merge_oid)?;
+            if merge_commit.parent_count() != 1 {
+                display::warn(format!(
+                    "Skipping deletion of {}; expected a single-parent merge but found {} parent(s).",
+                    spec.branch,
+                    merge_commit.parent_count()
+                ));
+                should_delete = false;
+            } else if let Some(expected_impl) = implementation_oid {
+                let parent = merge_commit.parent(0)?;
+                if parent.id() != expected_impl {
+                    display::warn(format!(
+                        "Skipping deletion of {}; merge parent {} did not match the recorded implementation commit {}.",
+                        spec.branch,
+                        short_hash(&parent.id().to_string()),
+                        short_hash(&expected_impl.to_string())
+                    ));
+                    should_delete = false;
+                }
+            }
+        } else if !repo.graph_descendant_of(merge_oid, source_oid)? {
             display::warn(format!(
                 "Skipping deletion of {}; merge commit did not include the branch tip.",
                 spec.branch
             ));
+            should_delete = false;
+        }
+
+        if should_delete {
+            vcs::delete_branch(&spec.branch)?;
+            display::info(format!("Deleted {} after merge", spec.branch));
         }
     } else {
         display::info(format!(
@@ -2894,10 +2955,14 @@ async fn try_auto_resolve_conflicts(
         }
 
         let expected_head = applied_commits.last().copied().unwrap_or(start_oid);
-        let _ = commit_soft_squash(implementation_message, start_oid, expected_head)?;
+        let implementation_oid =
+            commit_soft_squash(implementation_message, start_oid, expected_head)?;
         clear_conflict_state(&state.slug)?;
         display::info("Backend resolved the conflicts; implementation commit recorded.");
-        return Ok(MergeConflictResolution::SquashImplementationCommitted { source_oid });
+        return Ok(MergeConflictResolution::SquashImplementationCommitted {
+            source_oid,
+            implementation_oid,
+        });
     }
 
     let head_oid = Oid::from_str(&state.head_oid)?;
@@ -2906,10 +2971,13 @@ async fn try_auto_resolve_conflicts(
             .implementation_message
             .as_deref()
             .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
-        let _ = commit_in_progress_squash(message, head_oid)?;
+        let implementation_oid = commit_in_progress_squash(message, head_oid)?;
         clear_conflict_state(&state.slug)?;
         display::info("Backend resolved the conflicts; implementation commit recorded.");
-        Ok(MergeConflictResolution::SquashImplementationCommitted { source_oid })
+        Ok(MergeConflictResolution::SquashImplementationCommitted {
+            source_oid,
+            implementation_oid,
+        })
     } else {
         let merge_oid = commit_in_progress_merge(&state.merge_message, head_oid, source_oid)?;
         clear_conflict_state(&state.slug)?;
