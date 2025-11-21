@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use vizier_core::agent::{AgentOutputMode, AgentRequest, ProgressHook};
+use vizier_core::agent::{AgentOutputMode, AgentRequest, ProgressHook, ReviewCheckContext};
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, MergePreparation, MergeReady, PushErrorKind, RemoteScheme,
     add_worktree_for_branch, amend_head_commit, commit_in_progress_merge,
@@ -21,11 +21,11 @@ use vizier_core::vcs::{
     remove_worktree, repo_root,
 };
 use vizier_core::{
-    auditor,
+    agent_prompt, auditor,
     auditor::{Auditor, CommitMessageBuilder, CommitMessageType},
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
-    codex, config,
+    config,
     display::{self, LogLevel, ProgressEvent, Verbosity},
     file_tracking, tools, vcs,
 };
@@ -848,7 +848,7 @@ async fn save(
     let selection = prompt_selection(&prompt_agent)?;
 
     let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
-        codex::build_prompt_for_codex(
+        agent_prompt::build_base_prompt(
             selection,
             &save_instruction,
             prompt_agent.process.bounds_prompt_path.as_deref(),
@@ -1089,7 +1089,7 @@ pub async fn inline_command(
     let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
     let selection = prompt_selection(&prompt_agent)?;
     let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
-        match codex::build_prompt_for_codex(
+        match agent_prompt::build_base_prompt(
             selection,
             &user_message,
             prompt_agent.process.bounds_prompt_path.as_deref(),
@@ -1298,7 +1298,7 @@ pub async fn run_draft(
 
         let prompt_agent = agent.for_prompt(config::PromptKind::ImplementationPlan)?;
         let selection = prompt_selection(&prompt_agent)?;
-        let prompt = codex::build_implementation_plan_prompt(
+        let prompt = agent_prompt::build_implementation_plan_prompt(
             selection,
             &slug,
             &branch_name,
@@ -2119,7 +2119,7 @@ async fn attempt_cicd_auto_fix(
     amend_head: bool,
 ) -> Result<Option<CicdFixRecord>, Box<dyn std::error::Error>> {
     let fix_agent = agent.for_prompt(config::PromptKind::Review)?;
-    let prompt = codex::build_cicd_failure_prompt(
+    let prompt = agent_prompt::build_cicd_failure_prompt(
         &spec.slug,
         &spec.branch,
         &spec.target_branch,
@@ -2442,7 +2442,7 @@ async fn try_auto_resolve_conflicts(
     display::info("Attempting to resolve conflicts with the configured backend...");
     let prompt_agent = agent.for_prompt(config::PromptKind::MergeConflict)?;
     let selection = prompt_selection(&prompt_agent)?;
-    let prompt = codex::build_merge_conflict_prompt(
+    let prompt = agent_prompt::build_merge_conflict_prompt(
         selection,
         &spec.target_branch,
         &spec.branch,
@@ -2678,8 +2678,8 @@ impl ReviewCheckResult {
         }
     }
 
-    fn to_context(&self) -> codex::ReviewCheckContext {
-        codex::ReviewCheckContext {
+    fn to_context(&self) -> ReviewCheckContext {
+        ReviewCheckContext {
             command: self.command.clone(),
             status_code: self.status_code,
             success: self.success,
@@ -2719,7 +2719,7 @@ async fn perform_review_workflow(
 
     let critique_agent = agent.for_prompt(config::PromptKind::Review)?;
     let selection = prompt_selection(&critique_agent)?;
-    let prompt = codex::build_review_prompt(
+    let prompt = agent_prompt::build_review_prompt(
         selection,
         &spec.slug,
         &spec.branch,
@@ -3094,7 +3094,7 @@ async fn apply_review_fixes(
         "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
     );
 
-    let system_prompt = codex::build_prompt_for_codex(
+    let system_prompt = agent_prompt::build_base_prompt(
         selection,
         &instruction,
         prompt_agent.process.bounds_prompt_path.as_deref(),
@@ -3223,7 +3223,7 @@ async fn apply_plan_in_worktree(
         plan::summarize_spec(plan_meta)
     ));
 
-    let system_prompt = codex::build_prompt_for_codex(
+    let system_prompt = agent_prompt::build_base_prompt(
         selection,
         &instruction,
         prompt_agent.process.bounds_prompt_path.as_deref(),
@@ -3319,7 +3319,7 @@ async fn refresh_plan_branch(
 
     let instruction = build_save_instruction(None);
     let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
-        codex::build_prompt_for_codex(
+        agent_prompt::build_base_prompt(
             selection,
             &instruction,
             prompt_agent.process.bounds_prompt_path.as_deref(),
