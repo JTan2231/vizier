@@ -30,14 +30,14 @@ CLI overrides (`--backend`, `--agent-bin`, `--agent-profile`, `--agent-bounds`, 
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.
 2. **`vizier approve <slug>`** — Applies the plan on `draft/<slug>` from within another temporary worktree, staging and committing the resulting edits on that branch only.
-3. **`vizier review <slug>`** — Runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists), captures the diff summary, streams the configured backend’s critique to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, updates the plan status (e.g., `review-ready`), and optionally applies fixes on the plan branch.
+3. **`vizier review <slug>`** — Runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists), captures the diff summary, streams the configured backend’s critique to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and optionally applies fixes on the plan branch without mutating the plan document’s front matter.
 4. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, replays the plan branch commits onto the target, and (by default) soft-squashes that range into a single implementation commit on the target before writing the non–fast-forward merge commit that embeds the stored plan under an `Implementation Plan:` block. Pass `--no-squash` or set `[merge] squash = false` in `.vizier/config.toml` to keep the legacy “merge straight from the draft branch history” behavior.
 
 Every step commits code and canonical narrative edits together in a single commit (`.vizier/.snapshot` plus root-level TODO threads). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
-Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary), along with the stored metadata summary.
+Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary), along with the stored spec summary.
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
@@ -116,8 +116,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Creates another disposable worktree on `draft/<slug>`, gathers the diff against the target branch, and runs the configured review checks (defaults to `cargo check --all --all-targets` and `cargo test --all --all-targets` when a `Cargo.toml` is present or the `[review.checks]` commands in your config).
 - Streams each check result to stderr so you see passes/failures before the backend speaks. Failures are captured verbatim and wired into the prompt.
 - Builds an agent prompt that includes the snapshot, TODO threads, plan document, diff summary, and the check logs, then prints the Markdown critique directly to stdout (and into the session log) instead of saving `.vizier/reviews/<slug>.md`.
-- Updates `.vizier/implementation-plans/<slug>.md` to `status: review-ready`, stages the plan refresh, and commits on the plan branch so reviewers have an auditable artifact without leaving temporary review files behind.
-- Prompts `Apply suggested fixes on draft/<slug>? [y/N]` unless you passed `--review-only` or `-y/--yes`. When accepted, Vizier feeds the backend both the plan document and the in-memory critique text, applies the fixes on `draft/<slug>`, and stages/commits the result with a `review-addressed` status.
+- Prompts `Apply suggested fixes on draft/<slug>? [y/N]` unless you passed `--review-only` or `-y/--yes`. When accepted, Vizier feeds the backend both the plan document and the in-memory critique text, applies the fixes on `draft/<slug>`, and commits those changes (or leaves them pending with `--no-commit`). The plan document front matter stays lean (`plan` + `branch`) and is no longer mutated by review status updates.
 
 **Flags to remember**
 - `vizier review <slug>` — default flow
@@ -137,7 +136,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 
 **Outputs to watch**
 - CLI prints `critique=terminal`, the diff command, check counts, and the session log path in the Outcome line; the critique itself appears earlier in stdout for immediate consumption.
-- `draft/<slug>` only gains the updated plan document (status + timestamps); there is no `.vizier/reviews` directory.
+- `draft/<slug>` gains the streamed critique and any optional fix commits; the plan document stays untouched and there is no `.vizier/reviews` directory.
 - `git log draft/<slug>` shows a narrative commit for the critique and (optionally) a code commit for the auto-applied fixes.
 
 ## `vizier merge`: land the plan with metadata
