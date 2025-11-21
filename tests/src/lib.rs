@@ -858,9 +858,9 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
 
     let fmt = format_number;
     assert!(
-        usage_lines
-            .iter()
-            .any(|line| line.replace(' ', "").contains(&format!("Total:{}", fmt(session_usage.total)))),
+        usage_lines.iter().any(|line| line
+            .replace(' ', "")
+            .contains(&format!("Total:{}", fmt(session_usage.total)))),
         "CLI usage should report total tokens:\n{stderr}"
     );
     if session_usage.total_delta > 0 {
@@ -872,9 +872,9 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
         );
     }
     assert!(
-        usage_lines
-            .iter()
-            .any(|line| line.replace(' ', "").contains(&format!("Input:{}", fmt(session_usage.prompt_total)))),
+        usage_lines.iter().any(|line| line
+            .replace(' ', "")
+            .contains(&format!("Input:{}", fmt(session_usage.prompt_total)))),
         "CLI usage should report prompt tokens:\n{stderr}"
     );
     if session_usage.prompt_delta > 0 {
@@ -886,20 +886,16 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
         );
     }
     assert!(
-        usage_lines
-            .iter()
-            .any(|line| line.replace(' ', "").contains(&format!(
-                "Output:{}",
-                fmt(session_usage.completion_total)
-            ))),
+        usage_lines.iter().any(|line| line
+            .replace(' ', "")
+            .contains(&format!("Output:{}", fmt(session_usage.completion_total)))),
         "CLI usage should report completion tokens:\n{stderr}"
     );
     if session_usage.completion_delta > 0 {
         assert!(
-            usage_lines.iter().any(|line| line.contains(&format!(
-                "(+{})",
-                fmt(session_usage.completion_delta)
-            ))),
+            usage_lines
+                .iter()
+                .any(|line| line.contains(&format!("(+{})", fmt(session_usage.completion_delta)))),
             "CLI usage should report completion deltas:\n{stderr}"
         );
     }
@@ -1049,8 +1045,13 @@ fn test_approve_merges_plan() -> TestResult {
     );
     let stdout_before = String::from_utf8_lossy(&list_before.stdout);
     assert!(
-        stdout_before.contains("plan=approve-smoke"),
+        stdout_before.contains("Plan   : approve-smoke"),
         "pending plans missing approve-smoke: {}",
+        stdout_before
+    );
+    assert!(
+        stdout_before.contains("Branch : draft/approve-smoke"),
+        "pending plans missing branch detail: {}",
         stdout_before
     );
 
@@ -1089,6 +1090,68 @@ fn test_approve_merges_plan() -> TestResult {
         contents.contains("approve-smoke"),
         "plan document missing slug content"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_list_outputs_prettified_blocks() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let empty = repo.vizier_output(&["list"])?;
+    assert!(
+        empty.status.success(),
+        "vizier list (empty) failed: {}",
+        String::from_utf8_lossy(&empty.stderr)
+    );
+    let empty_stdout = String::from_utf8_lossy(&empty.stdout);
+    assert!(
+        empty_stdout.contains("Outcome: No pending draft branches"),
+        "empty list output missing outcome: {empty_stdout}"
+    );
+
+    let draft_alpha = repo.vizier_output(&["draft", "--name", "alpha", "Alpha spec line"])?;
+    assert!(
+        draft_alpha.status.success(),
+        "vizier draft alpha failed: {}",
+        String::from_utf8_lossy(&draft_alpha.stderr)
+    );
+    let draft_beta = repo.vizier_output(&["draft", "--name", "beta", "Beta spec line"])?;
+    assert!(
+        draft_beta.status.success(),
+        "vizier draft beta failed: {}",
+        String::from_utf8_lossy(&draft_beta.stderr)
+    );
+
+    let list = repo.vizier_output(&["list"])?;
+    assert!(
+        list.status.success(),
+        "vizier list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("Outcome: 2 pending draft branches"),
+        "list header missing pending count: {stdout}"
+    );
+    assert!(
+        stdout.contains("\n\n  Plan   : beta"),
+        "list output should separate entries with whitespace: {stdout}"
+    );
+    for (slug, summary) in [("alpha", "Alpha spec line"), ("beta", "Beta spec line")] {
+        assert!(
+            stdout.contains(&format!("  Plan   : {slug}")),
+            "list output missing plan {slug}: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("  Branch : draft/{slug}")),
+            "list output missing branch for {slug}: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("  Summary: {summary}")),
+            "list output missing summary for {slug}: {stdout}"
+        );
+    }
 
     Ok(())
 }
