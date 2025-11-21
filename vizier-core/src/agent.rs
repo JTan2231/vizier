@@ -243,7 +243,10 @@ mod tests {
         assert_eq!(progress.source.as_deref(), Some("[wire:review]"));
         assert_eq!(progress.phase.as_deref(), Some("thread started"));
         assert_eq!(progress.message.as_deref(), Some("hello from wire"));
-        assert!(progress.raw.as_ref().is_some(), "raw payload should be preserved");
+        assert!(
+            progress.raw.as_ref().is_some(),
+            "raw payload should be preserved"
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use chrono::{SecondsFormat, Utc};
 use git2::{Repository, Status, StatusOptions};
 use tokio::task;
 
-use crate::{auditor::Auditor, codex, config, tools, vcs};
+use crate::{agent_prompt, auditor::Auditor, config, tools, vcs};
 
 #[derive(Debug, Clone)]
 pub struct BootstrapOptions {
@@ -104,7 +104,7 @@ pub async fn bootstrap_snapshot(
         let selection = agent
             .prompt_selection()
             .ok_or_else(|| "missing base prompt selection".to_string())?;
-        codex::build_prompt_for_codex(
+        agent_prompt::build_base_prompt(
             selection,
             &instruction,
             agent.process.bounds_prompt_path.as_deref(),

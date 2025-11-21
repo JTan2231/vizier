@@ -1894,7 +1894,10 @@ model = "gpt-4o-mini"
             .resolve_agent_settings(CommandScope::Ask, None)
             .expect("ask scope should resolve");
         assert_eq!(ask.backend, BackendKind::Wire);
-        assert!(ask.runner.is_none(), "wire scopes should not resolve runners");
+        assert!(
+            ask.runner.is_none(),
+            "wire scopes should not resolve runners"
+        );
 
         let save = cfg
             .resolve_agent_settings(CommandScope::Save, None)
