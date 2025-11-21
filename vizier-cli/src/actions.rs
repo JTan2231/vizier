@@ -845,23 +845,19 @@ async fn save(
     };
 
     let save_instruction = build_save_instruction(provided_note.as_deref());
-    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
-    let selection = prompt_selection(&prompt_agent)?;
+    let prompt_agent = agent.for_prompt(config::PromptKind::Documentation)?;
 
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Agent {
-        agent_prompt::build_base_prompt(
-            selection,
-            &save_instruction,
-            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
-        )
-        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
-    } else {
-        crate::config::get_system_prompt_with_meta(prompt_agent.scope, None)?
-    };
+    let system_prompt = agent_prompt::build_documentation_prompt(
+        prompt_agent.prompt_selection(),
+        &save_instruction,
+        &prompt_agent.documentation,
+        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
     let response = Auditor::llm_request_with_tools(
         &prompt_agent,
-        Some(config::PromptKind::Base),
+        Some(config::PromptKind::Documentation),
         system_prompt,
         save_instruction,
         tools::active_tooling_for(&prompt_agent),
@@ -1087,36 +1083,26 @@ pub async fn inline_command(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
-    let selection = prompt_selection(&prompt_agent)?;
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Agent {
-        match agent_prompt::build_base_prompt(
-            selection,
-            &user_message,
-            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
-        ) {
-            Ok(prompt) => prompt,
-            Err(e) => {
-                display::emit(
-                    LogLevel::Error,
-                    format!("Error building agent prompt: {}", e),
-                );
-                return Err(Box::<dyn std::error::Error>::from(e));
-            }
-        }
-    } else {
-        match crate::config::get_system_prompt_with_meta(prompt_agent.scope, None) {
-            Ok(s) => s,
-            Err(e) => {
-                display::emit(LogLevel::Error, format!("Error loading system prompt: {e}"));
-                return Err(Box::<dyn std::error::Error>::from(e));
-            }
+    let prompt_agent = agent.for_prompt(config::PromptKind::Documentation)?;
+    let system_prompt = match agent_prompt::build_documentation_prompt(
+        prompt_agent.prompt_selection(),
+        &user_message,
+        &prompt_agent.documentation,
+        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
+    ) {
+        Ok(prompt) => prompt,
+        Err(e) => {
+            display::emit(
+                LogLevel::Error,
+                format!("Error building agent prompt: {}", e),
+            );
+            return Err(Box::<dyn std::error::Error>::from(e));
         }
     };
 
     let response = match Auditor::llm_request_with_tools(
         &prompt_agent,
-        Some(config::PromptKind::Base),
+        Some(config::PromptKind::Documentation),
         system_prompt,
         user_message,
         tools::active_tooling_for(&prompt_agent),
@@ -1304,6 +1290,7 @@ pub async fn run_draft(
             &slug,
             &branch_name,
             &spec_text,
+            &prompt_agent.documentation,
             prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
@@ -1440,7 +1427,7 @@ pub async fn run_approve(
 
     require_agent_backend(
         agent,
-        config::PromptKind::Base,
+        config::PromptKind::Documentation,
         "vizier approve requires the agent backend; update [agents.approve] or pass --backend agent",
     )?;
 
@@ -2178,6 +2165,7 @@ async fn attempt_cicd_auto_fix(
         exit_code,
         stdout,
         stderr,
+        &fix_agent.documentation,
         fix_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -2787,6 +2775,7 @@ async fn try_auto_resolve_conflicts(
         &spec.target_branch,
         &spec.branch,
         files,
+        &prompt_agent.documentation,
         prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -3157,6 +3146,7 @@ async fn perform_review_workflow(
         &plan_document,
         &diff_summary,
         &check_contexts,
+        &critique_agent.documentation,
         critique_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -3501,8 +3491,7 @@ async fn apply_review_fixes(
     agent: &config::AgentSettings,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let plan_rel = spec.plan_rel_path();
-    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
-    let selection = prompt_selection(&prompt_agent)?;
+    let prompt_agent = agent.for_prompt(config::PromptKind::Documentation)?;
     let mut instruction = format!(
         "<instruction>Read the implementation plan at {} and the review critique below. Address every Action Item without changing unrelated code.</instruction>",
         plan_rel.display()
@@ -3524,9 +3513,10 @@ async fn apply_review_fixes(
         "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
     );
 
-    let system_prompt = agent_prompt::build_base_prompt(
-        selection,
+    let system_prompt = agent_prompt::build_documentation_prompt(
+        prompt_agent.prompt_selection(),
         &instruction,
+        &prompt_agent.documentation,
         prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -3536,7 +3526,7 @@ async fn apply_review_fixes(
     let (text_tx, _text_rx) = mpsc::channel(1);
     let response = Auditor::llm_request_with_tools_no_display(
         &prompt_agent,
-        Some(config::PromptKind::Base),
+        Some(config::PromptKind::Documentation),
         system_prompt,
         instruction.clone(),
         tools::active_tooling_for(&prompt_agent),
@@ -3640,8 +3630,7 @@ async fn apply_plan_in_worktree(
     agent: &config::AgentSettings,
 ) -> Result<PlanApplyResult, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
-    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
-    let selection = prompt_selection(&prompt_agent)?;
+    let prompt_agent = agent.for_prompt(config::PromptKind::Documentation)?;
 
     let plan_rel = spec.plan_rel_path();
     let mut instruction = format!(
@@ -3653,9 +3642,10 @@ async fn apply_plan_in_worktree(
         plan::summarize_spec(plan_meta)
     ));
 
-    let system_prompt = agent_prompt::build_base_prompt(
-        selection,
+    let system_prompt = agent_prompt::build_documentation_prompt(
+        prompt_agent.prompt_selection(),
         &instruction,
+        &prompt_agent.documentation,
         prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -3744,24 +3734,20 @@ async fn refresh_plan_branch(
     agent: &config::AgentSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
-    let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
-    let selection = prompt_selection(&prompt_agent)?;
+    let prompt_agent = agent.for_prompt(config::PromptKind::Documentation)?;
 
     let instruction = build_save_instruction(None);
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Agent {
-        agent_prompt::build_base_prompt(
-            selection,
-            &instruction,
-            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
-        )
-        .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
-    } else {
-        crate::config::get_system_prompt_with_meta(prompt_agent.scope, None)?
-    };
+    let system_prompt = agent_prompt::build_documentation_prompt(
+        prompt_agent.prompt_selection(),
+        &instruction,
+        &prompt_agent.documentation,
+        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
+    )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let response = Auditor::llm_request_with_tools(
         &prompt_agent,
-        Some(config::PromptKind::Base),
+        Some(config::PromptKind::Documentation),
         system_prompt,
         instruction,
         tools::active_tooling_for(&prompt_agent),
