@@ -119,6 +119,7 @@ impl TokenUsageReport {
 
         display::ProgressEvent {
             kind: display::ProgressKind::TokenUsage,
+            source: None,
             phase: None,
             label: Some("token-usage".to_string()),
             message: Some(summary),
@@ -774,10 +775,10 @@ impl Auditor {
                 .as_ref()
                 .map(|level| format!("{level:?}")),
             "codex": {
-                "binary": cfg.codex.binary_path.display().to_string(),
-                "profile": cfg.codex.profile.clone(),
+                "binary": cfg.process.binary_path.display().to_string(),
+                "profile": cfg.process.profile.clone(),
                 "bounds_prompt": cfg
-                    .codex
+                    .process
                     .bounds_prompt_path
                     .as_ref()
                     .map(|path| path.display().to_string()),
@@ -913,7 +914,8 @@ impl Auditor {
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let codex_opts = agent.codex.clone();
+        let codex_opts = agent.process.clone();
+        let agent_scope = agent.scope;
         let resolved_codex_model = codex_model.unwrap_or_default();
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
@@ -932,7 +934,7 @@ impl Auditor {
                 .await?;
                 Ok(response.last().unwrap().clone())
             }
-            config::BackendKind::Codex => {
+            config::BackendKind::Process => {
                 simulate_integration_changes()?;
                 let repo_root = match repo_root_override {
                     Some(path) => path,
@@ -952,6 +954,7 @@ impl Auditor {
                         extra_args: opts_clone.extra_args.clone(),
                         model: resolved_codex_model,
                         output_mode: codex::CodexOutputMode::EventsJson,
+                        scope: Some(agent_scope),
                     };
 
                     let response =
@@ -1004,7 +1007,8 @@ impl Auditor {
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let codex_opts = agent.codex.clone();
+        let codex_opts = agent.process.clone();
+        let agent_scope = agent.scope;
         let resolved_codex_model = codex_model.unwrap_or_default();
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
@@ -1032,7 +1036,7 @@ impl Auditor {
                 }
                 Ok(last)
             }
-            config::BackendKind::Codex => {
+            config::BackendKind::Process => {
                 simulate_integration_changes()?;
                 let repo_root = match repo_root_override {
                     Some(path) => path,
@@ -1055,6 +1059,7 @@ impl Auditor {
                     extra_args: codex_opts.extra_args.clone(),
                     model: resolved_codex_model,
                     output_mode,
+                    scope: Some(agent_scope),
                 };
 
                 match codex::run_exec(request, progress_hook).await {

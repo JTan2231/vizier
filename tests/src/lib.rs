@@ -478,15 +478,15 @@ fn test_save() -> TestResult {
     let snapshot = repo.read(".vizier/.snapshot")?;
     assert!(
         snapshot.contains("some snapshot change"),
-        "expected Codex mock snapshot update"
+        "expected mock backend snapshot update"
     );
 
     let session_log = session_log_contents_from_output(&repo, &stdout)?;
     assert!(
         session_log
             .to_ascii_lowercase()
-            .contains("mock codex response"),
-        "session log missing Codex response"
+            .contains("mock agent response"),
+        "session log missing backend response"
     );
     Ok(())
 }
@@ -537,8 +537,8 @@ fn test_save_without_code_changes() -> TestResult {
     assert!(
         session_log
             .to_ascii_lowercase()
-            .contains("mock codex response"),
-        "session log missing Codex response"
+            .contains("mock agent response"),
+        "session log missing backend response"
     );
 
     let after = count_commits_from_head(&repo.repo())?;
@@ -695,8 +695,8 @@ reasoning_effort = "low"
             .get("model")
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
-        Some("codex"),
-        "save should use the default Codex backend"
+        Some("process"),
+        "save should use the default process backend"
     );
     assert_eq!(
         save_json
@@ -1020,8 +1020,8 @@ fn test_approve_merges_plan() -> TestResult {
     );
     let approve_stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        approve_stderr.contains("[codex] apply plan"),
-        "Codex progress log missing expected line: {}",
+        approve_stderr.contains("[agent:approve] apply plan"),
+        "Agent progress log missing expected line: {}",
         approve_stderr
     );
 
@@ -1115,7 +1115,7 @@ backend = "codex"
     );
     let stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        stderr.contains("requires the Codex backend"),
+        stderr.contains("requires the process backend"),
         "stderr missing backend warning: {}",
         stderr
     );
@@ -1127,17 +1127,17 @@ backend = "codex"
 fn test_draft_fails_when_codex_errors() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let mut cmd = repo.vizier_cmd();
-    cmd.env("VIZIER_FORCE_CODEX_ERROR", "1");
+    cmd.env("VIZIER_FORCE_AGENT_ERROR", "1");
     cmd.args(["draft", "--name", "codex-failure", "force failure"]);
     let output = cmd.output()?;
     assert!(
         !output.status.success(),
-        "vizier draft should fail when Codex errors"
+        "vizier draft should fail when the backend errors"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Codex"),
-        "stderr should mention Codex failure, got: {stderr}"
+        stderr.contains("agent backend"),
+        "stderr should mention backend failure, got: {stderr}"
     );
     assert!(
         !stderr
@@ -1174,17 +1174,17 @@ fn test_approve_fails_when_codex_errors() -> TestResult {
         .peel_to_commit()?;
 
     let mut approve = repo.vizier_cmd();
-    approve.env("VIZIER_FORCE_CODEX_ERROR", "1");
+    approve.env("VIZIER_FORCE_AGENT_ERROR", "1");
     approve.args(["approve", "codex-approve", "--yes"]);
     let output = approve.output()?;
     assert!(
         !output.status.success(),
-        "vizier approve should fail when Codex errors"
+        "vizier approve should fail when the backend errors"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Codex"),
-        "stderr should mention Codex error, got: {stderr}"
+        stderr.contains("agent backend"),
+        "stderr should mention backend error, got: {stderr}"
     );
     assert!(
         !stderr
@@ -1201,7 +1201,7 @@ fn test_approve_fails_when_codex_errors() -> TestResult {
     assert_eq!(
         before_commit.id(),
         after_commit.id(),
-        "Codex failure should not add commits to the plan branch"
+        "backend failure should not add commits to the plan branch"
     );
     Ok(())
 }
@@ -1233,7 +1233,7 @@ fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
     repo.git(&["commit", "-m", "master conflicting change"])?;
 
     let mut merge = repo.vizier_cmd();
-    merge.env("VIZIER_FORCE_CODEX_ERROR", "1");
+    merge.env("VIZIER_FORCE_AGENT_ERROR", "1");
     merge.args([
         "merge",
         "codex-merge",
@@ -1243,14 +1243,14 @@ fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
     let output = merge.output()?;
     assert!(
         !output.status.success(),
-        "merge should fail when Codex auto-resolution errors"
+        "merge should fail when backend auto-resolution errors"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Codex auto-resolution failed")
-            || stderr.contains("forced mock Codex failure")
-            || stderr.contains("Codex exited"),
-        "stderr should mention Codex failure, got: {stderr}"
+        stderr.contains("Backend auto-resolution failed")
+            || stderr.contains("forced mock agent failure")
+            || stderr.contains("agent backend exited"),
+        "stderr should mention backend failure, got: {stderr}"
     );
     assert!(
         !stderr

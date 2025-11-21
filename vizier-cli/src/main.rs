@@ -69,21 +69,26 @@ struct GlobalOpts {
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
 
-    /// Backend to use for edit orchestration (`codex` or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
+    /// Backend to use for edit orchestration (`process` or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
-    /// Path to the Codex binary (defaults to resolving `codex` on PATH)
-    #[arg(long = "codex-bin", value_name = "PATH", global = true)]
-    codex_bin: Option<PathBuf>,
+    /// Path to the agent backend binary (defaults to resolving `codex` on PATH)
+    #[arg(long = "agent-bin", value_name = "PATH", global = true, alias = "codex-bin")]
+    agent_bin: Option<PathBuf>,
 
-    /// Codex profile to load (pass empty to unset)
-    #[arg(long = "codex-profile", value_name = "NAME", global = true)]
-    codex_profile: Option<String>,
+    /// Agent profile to load (pass empty to unset)
+    #[arg(long = "agent-profile", value_name = "NAME", global = true, alias = "codex-profile")]
+    agent_profile: Option<String>,
 
-    /// Override Codex bounds prompt with a file on disk
-    #[arg(long = "codex-bounds-prompt", value_name = "PATH", global = true)]
-    codex_bounds_prompt: Option<PathBuf>,
+    /// Override the agent bounds prompt with a file on disk
+    #[arg(
+        long = "agent-bounds-prompt",
+        value_name = "PATH",
+        global = true,
+        alias = "codex-bounds-prompt"
+    )]
+    agent_bounds_prompt: Option<PathBuf>,
 
     /// Emit the audit as JSON to stdout
     #[arg(short = 'j', long, global = true)]
@@ -118,9 +123,9 @@ impl Default for GlobalOpts {
             no_session: false,
             model: None,
             backend: None,
-            codex_bin: None,
-            codex_profile: None,
-            codex_bounds_prompt: None,
+            agent_bin: None,
+            agent_profile: None,
+            agent_bounds_prompt: None,
             json: false,
             config_file: None,
             reasoning_effort: None,
@@ -139,14 +144,15 @@ enum ProgressArg {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum BackendArg {
-    Codex,
+    #[value(alias = "codex")]
+    Process,
     Wire,
 }
 
 impl From<BackendArg> for config::BackendKind {
     fn from(value: BackendArg) -> Self {
         match value {
-            BackendArg::Codex => config::BackendKind::Codex,
+            BackendArg::Process => config::BackendKind::Process,
             BackendArg::Wire => config::BackendKind::Wire,
         }
     }
@@ -276,7 +282,7 @@ struct ReviewCmd {
     #[arg(long = "branch", value_name = "BRANCH")]
     branch: Option<String>,
 
-    /// Skip the fix-up prompt and apply Codex fixes automatically
+    /// Skip the fix-up prompt and apply backend fixes automatically
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
 
@@ -319,7 +325,7 @@ struct MergeCmd {
     #[arg(long = "note", value_name = "TEXT")]
     note: Option<String>,
 
-    /// Attempt Codex-backed auto-resolution when conflicts arise
+    /// Attempt backend-backed auto-resolution when conflicts arise
     #[arg(long = "auto-resolve-conflicts")]
     auto_resolve_conflicts: bool,
 
@@ -331,11 +337,11 @@ struct MergeCmd {
     #[arg(long = "cicd-script", value_name = "PATH")]
     cicd_script: Option<PathBuf>,
 
-    /// Force-enable Codex remediation when the CI/CD script fails
+    /// Force-enable backend remediation when the CI/CD script fails
     #[arg(long = "auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "no_auto_cicd_fix")]
     auto_cicd_fix: bool,
 
-    /// Disable Codex remediation even if configured
+    /// Disable backend remediation even if configured
     #[arg(long = "no-auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "auto_cicd_fix")]
     no_auto_cicd_fix: bool,
 
@@ -533,7 +539,7 @@ fn resolve_merge_options(
         .clone()
         .ok_or_else(|| "plan argument is required for vizier merge")?;
     let conflict_strategy = if cmd.auto_resolve_conflicts {
-        MergeConflictStrategy::Codex
+        MergeConflictStrategy::Agent
     } else {
         MergeConflictStrategy::Manual
     };
@@ -628,26 +634,29 @@ fn build_cli_agent_overrides(
         overrides.reasoning_effort = Some(wire::config::ThinkingLevel::from_string(trimmed)?);
     }
 
-    if let Some(bin) = opts.codex_bin.as_ref() {
+    if let Some(bin) = opts.agent_bin.as_ref() {
         overrides
-            .codex
+            .process
             .get_or_insert_with(Default::default)
             .binary_path = Some(bin.clone());
     }
 
-    if let Some(profile) = opts.codex_profile.as_ref() {
+    if let Some(profile) = opts.agent_profile.as_ref() {
         let trimmed = profile.trim();
         let value = if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_string())
         };
-        overrides.codex.get_or_insert_with(Default::default).profile = Some(value);
+        overrides
+            .process
+            .get_or_insert_with(Default::default)
+            .profile = Some(value);
     }
 
-    if let Some(bounds) = opts.codex_bounds_prompt.as_ref() {
+    if let Some(bounds) = opts.agent_bounds_prompt.as_ref() {
         overrides
-            .codex
+            .process
             .get_or_insert_with(Default::default)
             .bounds_prompt_path = Some(bounds.clone());
     }
@@ -950,21 +959,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.backend = backend_arg.into();
     }
 
-    if let Some(ref bin_override) = cli.global.codex_bin {
-        cfg.codex.binary_path = bin_override.clone();
+    if let Some(ref bin_override) = cli.global.agent_bin {
+        cfg.process.binary_path = bin_override.clone();
     }
 
-    if let Some(profile_override) = &cli.global.codex_profile {
+    if let Some(profile_override) = &cli.global.agent_profile {
         let trimmed = profile_override.trim();
         if trimmed.is_empty() {
-            cfg.codex.profile = None;
+            cfg.process.profile = None;
         } else {
-            cfg.codex.profile = Some(trimmed.to_owned());
+            cfg.process.profile = Some(trimmed.to_owned());
         }
     }
 
-    if let Some(ref bounds_override) = cli.global.codex_bounds_prompt {
-        cfg.codex.bounds_prompt_path = Some(bounds_override.clone());
+    if let Some(ref bounds_override) = cli.global.agent_bounds_prompt {
+        cfg.process.bounds_prompt_path = Some(bounds_override.clone());
     }
 
     let mut provider_needs_rebuild =
