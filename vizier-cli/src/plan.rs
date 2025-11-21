@@ -1,4 +1,3 @@
-use chrono::{DateTime, SecondsFormat, Utc};
 use git2::{BranchType, Oid, Repository};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -71,13 +70,6 @@ impl PlanBranchSpec {
     pub fn show_preview(&self, meta: &PlanMetadata) {
         println!("Plan: {}", meta.slug);
         println!("Branch: {}", self.branch);
-        println!("Created: {}", meta.created_at_display());
-        println!(
-            "Spec source: {}",
-            meta.spec_source
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string())
-        );
         println!("Spec summary: {}", summarize_spec(meta));
     }
 
@@ -253,19 +245,14 @@ pub fn trim_trailing_newlines(text: &str) -> &str {
 pub fn render_plan_document(
     slug: &str,
     branch_name: &str,
-    spec_source: &str,
     spec_text: &str,
     plan_body: &str,
 ) -> String {
     let mut doc = String::new();
-    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
 
     doc.push_str("---\n");
     doc.push_str(&format!("plan: {slug}\n"));
     doc.push_str(&format!("branch: {branch_name}\n"));
-    doc.push_str("status: draft\n");
-    doc.push_str(&format!("created_at: {timestamp}\n"));
-    doc.push_str(&format!("spec_source: {spec_source}\n"));
     doc.push_str("---\n\n");
 
     doc.push_str("## Operator Spec\n");
@@ -350,13 +337,8 @@ impl From<std::str::Utf8Error> for PlanError {
 pub struct PlanMetadata {
     pub slug: String,
     pub branch: String,
-    pub status: Option<String>,
-    pub created_at: Option<DateTime<Utc>>,
-    pub created_at_raw: Option<String>,
-    pub spec_source: Option<String>,
     pub spec_excerpt: Option<String>,
     pub spec_summary: Option<String>,
-    pub reviewed_at: Option<String>,
 }
 
 impl PlanMetadata {
@@ -373,39 +355,15 @@ impl PlanMetadata {
             .ok_or(PlanError::MissingField("branch"))?
             .to_string();
 
-        let status = fields.get("status").cloned();
-        let created_at_raw = fields.get("created_at").cloned();
-        let created_at = created_at_raw
-            .as_deref()
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|dt| dt.with_timezone(&Utc));
-        let spec_source = fields.get("spec_source").cloned();
-        let reviewed_at = fields.get("reviewed_at").cloned();
-
         let spec_excerpt = extract_section(body, "Operator Spec");
         let spec_summary = spec_excerpt.as_ref().and_then(|text| summarize_line(text));
 
         Ok(Self {
             slug,
             branch,
-            status,
-            created_at,
-            created_at_raw,
-            spec_source,
             spec_excerpt,
             spec_summary,
-            reviewed_at,
         })
-    }
-
-    pub fn created_at_display(&self) -> String {
-        if let Some(ts) = &self.created_at {
-            ts.to_rfc3339_opts(SecondsFormat::Secs, true)
-        } else if let Some(raw) = &self.created_at_raw {
-            raw.clone()
-        } else {
-            "unknown".to_string()
-        }
     }
 }
 
@@ -414,9 +372,6 @@ pub struct PlanSlugEntry {
     pub slug: String,
     pub branch: String,
     pub summary: String,
-    pub created_at: String,
-    pub status: Option<String>,
-    pub reviewed_at: Option<String>,
 }
 
 pub struct PlanSlugInventory;
@@ -472,14 +427,10 @@ impl PlanSlugInventory {
                 Ok(meta) => {
                     seen.insert(slug.clone());
                     let summary = summarize_spec(&meta);
-                    let created_at = meta.created_at_display();
                     entries.push(PlanSlugEntry {
                         slug: meta.slug.clone(),
                         branch: meta.branch.clone(),
                         summary,
-                        created_at,
-                        status: meta.status.clone(),
-                        reviewed_at: meta.reviewed_at.clone(),
                     });
                 }
                 Err(_) => continue,
@@ -550,15 +501,11 @@ impl PlanSlugInventory {
         }
 
         let summary = summarize_spec(&meta);
-        let created_at = meta.created_at_display();
 
         Ok(Some(PlanSlugEntry {
             slug: meta.slug.clone(),
             branch: meta.branch.clone(),
             summary,
-            created_at,
-            status: meta.status.clone(),
-            reviewed_at: meta.reviewed_at.clone(),
         }))
     }
 }
@@ -587,30 +534,6 @@ pub fn summarize_spec(meta: &PlanMetadata) -> String {
         .or_else(|| meta.spec_excerpt.clone())
         .map(|text| clip_summary(&text))
         .unwrap_or_else(|| format!("Plan {} lacks an operator spec summary", meta.slug))
-}
-
-pub fn set_plan_status(
-    plan_path: &Path,
-    status: &str,
-    timestamp_field: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string(plan_path)?;
-    let (front, body) = split_front_matter(&contents)?;
-    let mut fields = parse_front_matter_pairs(front);
-    set_front_field(&mut fields, "status", status);
-    if let Some(field) = timestamp_field {
-        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-        set_front_field(&mut fields, field, &now);
-    }
-
-    let mut document = String::new();
-    document.push_str("---\n");
-    document.push_str(&render_front_matter(&fields));
-    document.push_str("---\n");
-    document.push_str(body);
-
-    fs::write(plan_path, document)?;
-    Ok(())
 }
 
 fn clip_summary(input: &str) -> String {
@@ -663,37 +586,6 @@ fn parse_front_matter(front: &str) -> HashMap<String, String> {
         }
     }
     fields
-}
-
-fn parse_front_matter_pairs(front: &str) -> Vec<(String, String)> {
-    let mut entries = Vec::new();
-    for line in front.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = trimmed.split_once(':') {
-            entries.push((key.trim().to_string(), value.trim().to_string()));
-        }
-    }
-    entries
-}
-
-fn render_front_matter(entries: &[(String, String)]) -> String {
-    let mut rendered = String::new();
-    for (key, value) in entries {
-        rendered.push_str(&format!("{key}: {value}\n"));
-    }
-    rendered
-}
-
-fn set_front_field(entries: &mut Vec<(String, String)>, key: &str, value: &str) {
-    if let Some(existing) = entries.iter_mut().find(|(entry_key, _)| entry_key == key) {
-        existing.1 = value.to_string();
-        return;
-    }
-
-    entries.push((key.to_string(), value.to_string()));
 }
 
 fn extract_section(document: &str, header: &str) -> Option<String> {
@@ -756,17 +648,20 @@ mod tests {
     }
 
     #[test]
-    fn render_plan_document_includes_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    fn render_plan_document_includes_front_matter() -> Result<(), Box<dyn std::error::Error>> {
         let doc = render_plan_document(
             "alpha",
             "draft/alpha",
-            "inline",
             "spec body",
             "## Execution Plan\n- step",
         );
         assert!(doc.contains("plan: alpha"));
         assert!(doc.contains("branch: draft/alpha"));
         assert!(doc.contains("## Operator Spec"));
+        assert!(
+            !doc.contains("status:"),
+            "lean plan format should omit status metadata"
+        );
         Ok(())
     }
 
@@ -787,8 +682,8 @@ mod tests {
         let doc = r#"---
 plan: alpha
 branch: draft/alpha
+status: review-ready
 created_at: 2024-07-01T12:34:56Z
-spec_source: inline
 ---
 
 ## Operator Spec
@@ -801,7 +696,6 @@ Add streaming UI with guard rails.
         let meta = PlanMetadata::from_document(doc)?;
         assert_eq!(meta.slug, "alpha");
         assert_eq!(meta.branch, "draft/alpha");
-        assert_eq!(meta.spec_source.as_deref(), Some("inline"));
         assert_eq!(
             meta.spec_summary.as_deref(),
             Some("Add streaming UI with guard rails.")
@@ -814,43 +708,39 @@ Add streaming UI with guard rails.
         let meta = PlanMetadata {
             slug: "alpha".into(),
             branch: "draft/alpha".into(),
-            status: None,
-            created_at: None,
-            created_at_raw: None,
-            spec_source: None,
             spec_excerpt: Some("Line one\nLine two".into()),
             spec_summary: None,
-            reviewed_at: None,
         };
 
         assert_eq!(summarize_spec(&meta), "Line one\nLine two".to_string());
     }
 
     #[test]
-    fn set_plan_status_updates_front_matter() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
-        let path = dir.path().join("plan.md");
-        let contents = r#"---
+    fn from_document_ignores_unknown_front_matter() -> Result<(), Box<dyn std::error::Error>> {
+        let doc = r#"---
 plan: alpha
 branch: draft/alpha
 status: draft
-created_at: 2024-07-01T12:00:00Z
 spec_source: inline
+created_at: 2024-07-01T12:00:00Z
+reviewed_at: 2024-07-02T12:00:00Z
+implemented_at: 2024-07-03T12:00:00Z
 ---
 
 ## Operator Spec
-Do a thing.
+Unknown fields should be ignored.
 
 ## Implementation Plan
 - Step 1
-- Step 2
 "#;
-        std::fs::write(&path, contents)?;
 
-        set_plan_status(&path, "implemented", Some("implemented_at"))?;
-        let updated = std::fs::read_to_string(&path)?;
-        assert!(updated.contains("status: implemented"));
-        assert!(updated.contains("implemented_at: "));
+        let meta = PlanMetadata::from_document(doc)?;
+        assert_eq!(meta.slug, "alpha");
+        assert_eq!(meta.branch, "draft/alpha");
+        assert_eq!(
+            meta.spec_summary.as_deref(),
+            Some("Unknown fields should be ignored.")
+        );
         Ok(())
     }
 
@@ -930,8 +820,6 @@ Do a thing.
             r#"---
 plan: {slug}
 branch: draft/{slug}
-created_at: 2024-01-01T00:00:00Z
-spec_source: inline
 ---
 
 ## Operator Spec

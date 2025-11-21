@@ -968,10 +968,20 @@ fn test_draft_creates_branch_and_plan() -> TestResult {
     let entry = tree.get_path(Path::new(".vizier/implementation-plans/smoke.md"))?;
     let blob = repo_handle.find_blob(entry.id())?;
     let contents = std::str::from_utf8(blob.content())?;
-    assert!(contents.contains("status: draft"));
-    assert!(contents.contains("spec_source: inline"));
     assert!(contents.contains("ship the draft flow"));
     assert!(contents.contains("## Implementation Plan"));
+    assert!(
+        contents.contains("plan: smoke"),
+        "plan front matter should include slug"
+    );
+    assert!(
+        contents.contains("branch: draft/smoke"),
+        "plan front matter should include branch"
+    );
+    assert!(
+        !contents.contains("status:"),
+        "plan metadata should omit status fields"
+    );
 
     let after = count_commits_from_head(&repo_handle)?;
     assert_eq!(after, before, "draft should not add commits to master");
