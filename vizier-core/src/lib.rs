@@ -12,7 +12,7 @@ pub mod tree;
 pub mod vcs;
 pub mod walker;
 
-pub const SYSTEM_PROMPT_BASE: &str = r#"
+pub const DOCUMENTATION_PROMPT: &str = r#"
 <mainInstruction>
 Your Job: Maintain the project's narrative threads by converting conversations into concrete plot points (TODOs) **and** by curating a faithful, current SNAPSHOT of the project.
 
@@ -96,12 +96,13 @@ FORMAT GUIDANCE:
 - To the user: output only a concise commit-message-like summary of what changed (not the raw snapshot or todos).
 </mainInstruction>
 "#;
+pub const SYSTEM_PROMPT_BASE: &str = DOCUMENTATION_PROMPT;
 
 // TODO: This has instructions to maintain input requirements with the tools--how do we deal with
 //       this + configuration?
 pub const REVISE_TODO_PROMPT: &str = r#"
 <mainInstruction>
-You are the TODO reviser. Apply the project's SNAPSHOT + narrative-thread discipline already defined in SYSTEM_PROMPT_BASE. Your job: evaluate ONE provided TODO and output EXACTLY ONE of three options with NO extra text, headers, or commentary.
+You are the TODO reviser. Apply the project's SNAPSHOT + narrative-thread discipline already defined in DOCUMENTATION_PROMPT. Your job: evaluate ONE provided TODO and output EXACTLY ONE of three options with NO extra text, headers, or commentary.
 
 ALLOWED OUTPUTS (MUST choose exactly one):
 1) null
@@ -153,7 +154,7 @@ FORMAT REQUIREMENTS (STRICT):
   • the complete revised TODO text (no fencing, no labels, no JSON, no prefaces, no epilogues).
 - If you output revised text, do not include any meta-explanation. The text you output is the new TODO.
 
-REFERENCE GUARDRAILS (from SYSTEM_PROMPT_BASE):
+REFERENCE GUARDRAILS (from DOCUMENTATION_PROMPT):
 - Default to PRODUCT LEVEL. Pointer level allowed for orientation. Implementation level is RESTRICTED to A/B/C.
 - No “investigate X” with no tension/resolution.
 - Evidence > speculation; tie changes to behavior/tests/user reports.

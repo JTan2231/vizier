@@ -63,7 +63,7 @@ pub async fn bootstrap_snapshot(
 ) -> Result<BootstrapReport, Box<dyn std::error::Error>> {
     let repo = Repository::discover(".")?;
     let agent = config::get_config().resolve_agent_settings(config::CommandScope::Ask, None)?;
-    let agent = agent.for_prompt(config::PromptKind::Base)?;
+    let agent = agent.for_prompt(config::PromptKind::Documentation)?;
 
     let todo_dir = resolve_todo_dir()?;
     let snapshot_path = todo_dir.join(".snapshot");
@@ -100,22 +100,16 @@ pub async fn bootstrap_snapshot(
         options.issues_provider.clone(),
     );
 
-    let system_prompt = if agent.backend == config::BackendKind::Agent {
-        let selection = agent
-            .prompt_selection()
-            .ok_or_else(|| "missing base prompt selection".to_string())?;
-        agent_prompt::build_base_prompt(
-            selection,
-            &instruction,
-            agent.agent_runtime.bounds_prompt_path.as_deref(),
-        )?
-    } else {
-        config::get_system_prompt_with_meta(agent.scope, None)?
-    };
+    let system_prompt = agent_prompt::build_documentation_prompt(
+        agent.prompt_selection(),
+        &instruction,
+        &agent.documentation,
+        agent.agent_runtime.bounds_prompt_path.as_deref(),
+    )?;
 
     let response = Auditor::llm_request_with_tools(
         &agent,
-        Some(config::PromptKind::Base),
+        Some(config::PromptKind::Documentation),
         system_prompt,
         instruction,
         tools::get_snapshot_tools(),

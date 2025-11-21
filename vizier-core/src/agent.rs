@@ -165,6 +165,7 @@ pub enum AgentError {
     MalformedEvent(String),
     MissingAssistantMessage,
     BoundsRead(PathBuf, std::io::Error),
+    MissingPrompt(config::PromptKind),
 }
 
 impl fmt::Display for AgentError {
@@ -198,6 +199,11 @@ impl fmt::Display for AgentError {
                 "failed to read agent bounds prompt at {}: {}",
                 path.display(),
                 err
+            ),
+            AgentError::MissingPrompt(kind) => write!(
+                f,
+                "no prompt template was resolved for kind `{}`",
+                kind.as_str()
             ),
         }
     }
