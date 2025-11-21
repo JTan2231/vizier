@@ -1406,6 +1406,11 @@ fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
 
     let repo_handle = repo.repo();
     let base_commit = repo_handle.head()?.peel_to_commit()?.id();
+    let source_tip = repo_handle
+        .find_branch("draft/squash-default", BranchType::Local)?
+        .get()
+        .peel_to_commit()?
+        .id();
 
     let merge = repo.vizier_output(&["merge", "squash-default", "--yes"])?;
     assert!(
@@ -1418,8 +1423,8 @@ fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
     let head = repo_handle.head()?.peel_to_commit()?;
     assert_eq!(
         head.parent_count(),
-        2,
-        "merge commit should keep both parents"
+        1,
+        "squashed merge should produce a single-parent merge commit"
     );
     let implementation_commit = head.parent(0)?;
     assert_eq!(
@@ -1431,6 +1436,16 @@ fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
         implementation_commit.parent(0)?.id(),
         base_commit,
         "implementation commit should descend from the previous master head"
+    );
+    assert!(
+        !repo_handle.graph_descendant_of(head.id(), source_tip)?,
+        "squashed merge should sever ancestry to the draft branch"
+    );
+    assert!(
+        repo_handle
+            .find_branch("draft/squash-default", BranchType::Local)
+            .is_err(),
+        "default squashed merge should delete the draft branch"
     );
     Ok(())
 }
@@ -1450,6 +1465,11 @@ fn test_merge_squash_replays_plan_history() -> TestResult {
 
     repo.git(&["checkout", "master"])?;
     clean_workdir(&repo)?;
+    let plan_tip = repo_handle
+        .find_branch("draft/squash-replay", BranchType::Local)?
+        .get()
+        .peel_to_commit()?
+        .id();
     let base_commit = repo_handle.head()?.peel_to_commit()?.id();
 
     let merge = repo.vizier_output(&["merge", "squash-replay", "--yes"])?;
@@ -1462,8 +1482,8 @@ fn test_merge_squash_replays_plan_history() -> TestResult {
     let merge_commit = repo_handle.head()?.peel_to_commit()?;
     assert_eq!(
         merge_commit.parent_count(),
-        2,
-        "merge commit should keep both parents"
+        1,
+        "squashed merge should keep only the implementation commit as its parent"
     );
     let implementation_commit = merge_commit.parent(0)?;
     assert_eq!(
@@ -1471,8 +1491,15 @@ fn test_merge_squash_replays_plan_history() -> TestResult {
         base_commit,
         "implementation commit should descend from the previous master head"
     );
-    let plan_tree = merge_commit.parent(1)?.tree_id();
-    assert_eq!(implementation_commit.tree_id(), plan_tree);
+    assert!(
+        !repo_handle.graph_descendant_of(merge_commit.id(), plan_tip)?,
+        "squashed merge should not keep the draft branch in the ancestry graph"
+    );
+    let contents = repo.read("a")?;
+    assert!(
+        contents.starts_with("second replay change\n"),
+        "squashed merge should apply the plan branch edits to the target"
+    );
     Ok(())
 }
 
@@ -1511,6 +1538,11 @@ fn test_merge_squash_allows_zero_diff_range() -> TestResult {
 
     let repo_handle = repo.repo();
     let base_commit = repo_handle.head()?.peel_to_commit()?;
+    let source_tip = repo_handle
+        .find_branch("draft/zero-diff", BranchType::Local)?
+        .get()
+        .peel_to_commit()?
+        .id();
 
     let merge = repo.vizier_output(&["merge", "zero-diff", "--yes"])?;
     assert!(
@@ -1522,8 +1554,8 @@ fn test_merge_squash_allows_zero_diff_range() -> TestResult {
     let head = repo_handle.head()?.peel_to_commit()?;
     assert_eq!(
         head.parent_count(),
-        2,
-        "merge commit should keep both parents"
+        1,
+        "squashed merge should keep only the implementation commit as its parent"
     );
     let implementation_commit = head.parent(0)?;
     assert_eq!(
@@ -1531,10 +1563,9 @@ fn test_merge_squash_allows_zero_diff_range() -> TestResult {
         base_commit.id(),
         "implementation commit should still descend from the previous master head"
     );
-    assert_eq!(
-        implementation_commit.tree_id(),
-        head.parent(1)?.tree_id(),
-        "implementation commit tree should match the plan tip even when the range is effectively a no-op"
+    assert!(
+        !repo_handle.graph_descendant_of(head.id(), source_tip)?,
+        "squashed merge should not retain the draft branch ancestry"
     );
     Ok(())
 }
@@ -1549,6 +1580,13 @@ fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() 
     repo.git(&["commit", "-am", "plan step one"])?;
     repo.write("a", "plan step two\n")?;
     repo.git(&["commit", "-am", "plan step two"])?;
+
+    let plan_tip = repo
+        .repo()
+        .find_branch("draft/replay-conflict", BranchType::Local)?
+        .get()
+        .peel_to_commit()?
+        .id();
 
     repo.git(&["checkout", "master"])?;
     clean_workdir(&repo)?;
@@ -1596,14 +1634,18 @@ fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() 
     let head = repo_handle.head()?.peel_to_commit()?;
     assert_eq!(
         head.parent_count(),
-        2,
-        "merge commit should still record both parents after replay"
+        1,
+        "squashed merge should keep only the implementation commit as its parent after replay"
     );
     let implementation_commit = head.parent(0)?;
     assert_eq!(
         implementation_commit.parent(0)?.id(),
         base_commit,
         "implementation commit should descend from the pre-merge target head"
+    );
+    assert!(
+        !repo_handle.graph_descendant_of(head.id(), plan_tip)?,
+        "squashed merge should not retain draft branch ancestry after manual conflict resolution"
     );
     Ok(())
 }
