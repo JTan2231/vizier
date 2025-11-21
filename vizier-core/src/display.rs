@@ -379,15 +379,34 @@ pub fn render_progress_event(event: &ProgressEvent, verbosity: Verbosity) -> Vec
     if let Some(status) = event.status.as_ref().filter(|s| !s.is_empty()) {
         primary.push_str(&format!(" [{}]", status));
     }
-    if let Some(summary) = summary {
+
+    let summary_lines: Vec<String> = summary
+        .as_ref()
+        .map(|value| {
+            value
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(first) = summary_lines.first() {
         primary.push_str(" — ");
-        primary.push_str(&summary);
+        primary.push_str(first);
     }
     if let Some(scope) = event.scope() {
         primary.push_str(&format!(" ({})", scope));
     }
 
     let mut lines = vec![primary];
+
+    if summary_lines.len() > 1 {
+        let continuation_prefix = format!("{}    ", prefix);
+        for line in summary_lines.iter().skip(1) {
+            lines.push(format!("{}{}", continuation_prefix, line));
+        }
+    }
 
     if matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
         if let Some(timestamp) = event.timestamp.as_ref().filter(|s| !s.is_empty()) {
@@ -411,6 +430,43 @@ pub fn value_to_string(value: &Value) -> Option<String> {
         Value::Bool(flag) => Some(flag.to_string()),
         _ => None,
     }
+}
+
+pub fn format_number(value: usize) -> String {
+    let digits: Vec<char> = value.to_string().chars().collect();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+
+    for (idx, ch) in digits.iter().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(*ch);
+    }
+
+    formatted.chars().rev().collect()
+}
+
+pub fn format_label_value_block(rows: &[(String, String)], indent: usize) -> String {
+    let filtered: Vec<_> = rows
+        .iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .collect();
+    if filtered.is_empty() {
+        return String::new();
+    }
+
+    let width = filtered
+        .iter()
+        .map(|(label, _)| label.len())
+        .max()
+        .unwrap_or(0);
+    let padding = " ".repeat(indent);
+
+    filtered
+        .into_iter()
+        .map(|(label, value)| format!("{padding}{label:<width$}: {value}", width = width))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -439,6 +495,35 @@ mod tests {
         assert!(lines[0].contains("42%"));
         assert!(lines[0].contains("edit README"));
         assert!(lines[0].contains("README.md"));
+    }
+
+    #[test]
+    fn renders_multiline_summary() {
+        let event = ProgressEvent {
+            kind: ProgressKind::TokenUsage,
+            source: Some("[usage]".into()),
+            phase: Some("token-usage".into()),
+            label: None,
+            message: Some("Total: 10\nInput: 5".into()),
+            detail: None,
+            path: None,
+            progress: None,
+            status: None,
+            timestamp: None,
+            raw: None,
+        };
+
+        let lines = render_progress_event(&event, Verbosity::Normal);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Total: 10"), "lines were {lines:?}");
+        assert!(
+            lines[1].starts_with("[usage]"),
+            "continuation lines keep the prefix: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("Input: 5"),
+            "continuation should render the second row: {lines:?}"
+        );
     }
 
     #[test]

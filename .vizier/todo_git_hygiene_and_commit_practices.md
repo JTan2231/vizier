@@ -31,3 +31,4 @@ Pointers
 - `.vizier/todo_architecture_doc_gate_and_commit_history.md` for architecture-doc linkage and commit history expectations
 - Snapshot threads: Commit isolation + gates; Architecture doc gate + compliance; Outcome summaries; Agent workflow orchestration
 
+Update (2025-11-21): Plan workflow steps already co-commit code edits with `.vizier/.snapshot` and root TODO updates while filtering `.vizier/implementation-plans/<slug>.md`, `.vizier/tmp/*`, and session logs out of staging/merge targets. Treat that behavior as the current baseline when shaping the commit-hygiene guidance.
