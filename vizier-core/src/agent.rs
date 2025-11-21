@@ -98,9 +98,13 @@ impl AgentDisplayAdapter for FallbackDisplayAdapter {
             })
             .or_else(|| Some(event.payload.to_string()));
 
+        let source = scope
+            .map(|s| format!("[wire:{}]", s.as_str()))
+            .unwrap_or_else(|| "[wire]".to_string());
+
         ProgressEvent {
             kind: ProgressKind::Agent,
-            source: scope.map(|s| format!("[agent:{}]", s.as_str())),
+            source: Some(source),
             phase: Some(humanize_event_type(&event.kind)),
             label: None,
             message,
@@ -218,4 +222,81 @@ pub trait AgentRunner: Send + Sync {
         adapter: Arc<dyn AgentDisplayAdapter>,
         progress_hook: Option<ProgressHook>,
     ) -> AgentFuture;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::CommandScope, display::Status};
+    use serde_json::json;
+
+    #[test]
+    fn fallback_adapter_scopes_wire_events_and_humanizes_kind() {
+        let adapter = FallbackDisplayAdapter::default();
+        let event = AgentEvent {
+            kind: "thread.started".to_string(),
+            payload: json!({"message": "hello from wire"}),
+        };
+
+        let progress = adapter.adapt(&event, Some(CommandScope::Review));
+
+        assert_eq!(progress.source.as_deref(), Some("[wire:review]"));
+        assert_eq!(progress.phase.as_deref(), Some("thread started"));
+        assert_eq!(progress.message.as_deref(), Some("hello from wire"));
+        assert!(progress.raw.as_ref().is_some(), "raw payload should be preserved");
+    }
+
+    #[test]
+    fn fallback_adapter_uses_detail_when_message_missing() {
+        let adapter = FallbackDisplayAdapter::default();
+        let event = AgentEvent {
+            kind: "item.completed".to_string(),
+            payload: json!({"detail": "fallback detail"}),
+        };
+
+        let progress = adapter.adapt(&event, Some(CommandScope::Ask));
+
+        assert_eq!(progress.message.as_deref(), Some("fallback detail"));
+        assert!(progress.raw.as_ref().unwrap().contains("fallback detail"));
+    }
+
+    #[tokio::test]
+    async fn progress_hook_forwards_plain_events() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let hook = ProgressHook::Plain(tx);
+        let adapter = FallbackDisplayAdapter::default();
+        let event = AgentEvent {
+            kind: "progress.update".to_string(),
+            payload: json!({"message": "plain route"}),
+        };
+        let rendered = adapter.adapt(&event, Some(CommandScope::Approve));
+
+        hook.send_event(rendered.clone()).await;
+        let received = rx.recv().await.expect("event should arrive");
+
+        assert_eq!(received.source, rendered.source);
+        assert_eq!(received.message, Some("plain route".to_string()));
+    }
+
+    #[tokio::test]
+    async fn progress_hook_forwards_display_status_events() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let hook = ProgressHook::Display(tx);
+        let adapter = FallbackDisplayAdapter::default();
+        let event = AgentEvent {
+            kind: "progress.update".to_string(),
+            payload: json!({"message": "display route"}),
+        };
+        let rendered = adapter.adapt(&event, Some(CommandScope::Merge));
+
+        hook.send_event(rendered.clone()).await;
+        let received = rx.recv().await.expect("status should arrive");
+
+        if let Status::Event(progress) = received {
+            assert_eq!(progress.source, rendered.source);
+            assert_eq!(progress.message, Some("display route".to_string()));
+        } else {
+            panic!("expected Status::Event");
+        }
+    }
 }

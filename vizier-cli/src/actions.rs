@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use vizier_core::agent::ProgressHook;
+use vizier_core::agent::{AgentOutputMode, AgentRequest, ProgressHook};
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, MergePreparation, MergeReady, PushErrorKind, RemoteScheme,
     add_worktree_for_branch, amend_head_commit, commit_in_progress_merge,
@@ -207,7 +207,7 @@ fn require_process_backend(
 
 fn format_agent_annotation() -> Option<String> {
     auditor::Auditor::latest_agent_context().map(|context| {
-        let mut parts = vec![format!("agent={}", context.backend)];
+        let mut parts = vec![format!("agent={}", context.backend_label)];
         parts.push(format!("scope={}", context.scope.as_str()));
         if context.backend == config::BackendKind::Wire {
             parts.push(format!("model={}", context.model));
@@ -217,6 +217,25 @@ fn format_agent_annotation() -> Option<String> {
         }
         parts.join(" ")
     })
+}
+
+fn build_agent_request(
+    agent: &config::AgentSettings,
+    prompt: String,
+    repo_root: PathBuf,
+    output_mode: AgentOutputMode,
+) -> AgentRequest {
+    AgentRequest {
+        prompt,
+        repo_root,
+        profile: agent.process.profile.clone(),
+        bin: agent.process.binary_path.clone(),
+        extra_args: agent.process.extra_args.clone(),
+        model: Some(agent.provider_model.clone()),
+        output_mode,
+        scope: Some(agent.scope),
+        metadata: BTreeMap::new(),
+    }
 }
 
 fn describe_usage_report(report: &auditor::TokenUsageReport) -> String {
@@ -1296,7 +1315,7 @@ pub async fn run_draft(
             prompt,
             spec_text.clone(),
             Vec::new(),
-            Some(codex::CodexModel::Gpt5Codex),
+            None,
             Some(worktree_path.clone()),
         )
         .await
@@ -2134,7 +2153,7 @@ async fn attempt_cicd_auto_fix(
             text: text_tx,
             events: Some(event_tx),
         },
-        Some(codex::CodexModel::Gpt5Codex),
+        None,
         Some(request_root),
     )
     .await?;
@@ -2431,20 +2450,15 @@ async fn try_auto_resolve_conflicts(
         prompt_agent.process.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-    let request = codex::CodexRequest {
+    let request = build_agent_request(
+        &prompt_agent,
         prompt,
         repo_root,
-        profile: prompt_agent.process.profile.clone(),
-        bin: prompt_agent.process.binary_path.clone(),
-        extra_args: prompt_agent.process.extra_args.clone(),
-        model: Some(codex::CodexModel::Gpt5Codex.as_model_name().to_string()),
-        output_mode: codex::CodexOutputMode::EventsJson,
-        scope: Some(prompt_agent.scope),
-        metadata: BTreeMap::new(),
-    };
+        AgentOutputMode::EventsJson,
+    );
 
-    let runner = Arc::clone(agent.process_runner()?);
-    let adapter = agent.display_adapter.clone();
+    let runner = Arc::clone(prompt_agent.process_runner()?);
+    let adapter = prompt_agent.display_adapter.clone();
     let (progress_tx, progress_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(progress_rx);
     let result = runner
@@ -2735,7 +2749,7 @@ async fn perform_review_workflow(
             text: text_tx,
             events: Some(event_tx),
         },
-        Some(codex::CodexModel::Gpt5),
+        None,
         Some(worktree_path.to_path_buf()),
     )
     .await?;
@@ -3100,7 +3114,7 @@ async fn apply_review_fixes(
             text: text_tx,
             events: Some(event_tx),
         },
-        Some(codex::CodexModel::Gpt5Codex),
+        None,
         Some(worktree_path.to_path_buf()),
     )
     .await?;
@@ -3229,7 +3243,7 @@ async fn apply_plan_in_worktree(
             text: text_tx,
             events: Some(event_tx),
         },
-        Some(codex::CodexModel::Gpt5Codex),
+        None,
         Some(worktree_path.to_path_buf()),
     )
     .await
@@ -3464,8 +3478,13 @@ impl Drop for WorkdirGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::build_merge_commit_message;
+    use super::{build_agent_request, build_merge_commit_message};
     use crate::plan::{PlanBranchSpec, PlanMetadata};
+    use std::path::PathBuf;
+    use vizier_core::{
+        agent::AgentOutputMode,
+        config::{self, CommandScope},
+    };
 
     fn sample_spec() -> PlanBranchSpec {
         PlanBranchSpec {
@@ -3540,5 +3559,40 @@ Tidy merge message bodies.
             message.contains("Implementation plan document unavailable for merge-headers"),
             "missing plan placeholder should be present: {message}"
         );
+    }
+
+    #[test]
+    fn build_agent_request_uses_agent_settings() {
+        let mut cfg = config::Config::default();
+        cfg.process.binary_path = PathBuf::from("/opt/backend");
+        cfg.process.profile = Some("merge-profile".to_string());
+        cfg.process.extra_args = vec!["--trace".to_string(), "--audit".to_string()];
+        cfg.provider_model = "custom-model".to_string();
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Merge, None)
+            .expect("merge scope should resolve");
+
+        let request = build_agent_request(
+            &agent,
+            "prompt body".to_string(),
+            PathBuf::from("/repo/root"),
+            AgentOutputMode::EventsJson,
+        );
+
+        assert_eq!(request.bin, PathBuf::from("/opt/backend"));
+        assert_eq!(request.profile.as_deref(), Some("merge-profile"));
+        assert_eq!(
+            request.extra_args,
+            vec!["--trace".to_string(), "--audit".to_string()]
+        );
+        assert_eq!(request.model.as_deref(), Some("custom-model"));
+        assert_eq!(
+            request.scope,
+            Some(config::CommandScope::Merge),
+            "request should carry the originating scope"
+        );
+        assert_eq!(request.repo_root, PathBuf::from("/repo/root"));
+        assert_eq!(request.output_mode, AgentOutputMode::EventsJson);
     }
 }

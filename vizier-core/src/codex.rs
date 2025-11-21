@@ -85,7 +85,7 @@ impl AgentRunner for CodexRunner {
 pub struct CodexDisplayAdapter;
 
 impl AgentDisplayAdapter for CodexDisplayAdapter {
-    fn adapt(&self, event: &AgentEvent, scope: Option<config::CommandScope>) -> ProgressEvent {
+    fn adapt(&self, event: &AgentEvent, _scope: Option<config::CommandScope>) -> ProgressEvent {
         let payload = &event.payload;
         let phase = value_from(payload, "phase")
             .or_else(|| pointer_value(payload, "/data/phase"))
@@ -110,7 +110,7 @@ impl AgentDisplayAdapter for CodexDisplayAdapter {
 
         ProgressEvent {
             kind: ProgressKind::Agent,
-            source: scope.map(|s| format!("[agent:{}]", s.as_str())),
+            source: Some("[codex]".to_string()),
             phase,
             label,
             message,
@@ -914,6 +914,22 @@ mod tests {
     }
 
     #[test]
+    fn omits_model_flag_when_model_not_set() {
+        let mut req = base_request(CodexOutputMode::EventsJson);
+        req.model = None;
+        let args = build_exec_args(&req, Path::new("/tmp/out"));
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            !rendered.iter().any(|arg| arg == "--model"),
+            "model flag should be absent when no model is configured: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn progress_event_uses_event_type_as_phase_fallback() {
         let payload = serde_json::json!({
             "type": "thread.started",
@@ -930,7 +946,7 @@ mod tests {
             crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
-            lines[0].contains("[agent:ask] thread started"),
+            lines[0].contains("[codex] thread started"),
             "unexpected progress line: {}",
             lines[0]
         );
@@ -957,7 +973,7 @@ mod tests {
             crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
-            lines[0].contains("[agent:approve] item completed"),
+            lines[0].contains("[codex] item completed"),
             "unexpected progress line: {}",
             lines[0]
         );

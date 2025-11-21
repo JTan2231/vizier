@@ -17,8 +17,7 @@ use tokio::{
 use wire::config::ThinkingLevel;
 
 use crate::{
-    agent::ProgressHook,
-    codex,
+    agent::{AgentOutputMode, AgentRequest, ProgressHook},
     config::{self, PromptOrigin, SystemPrompt},
     display::{self, Verbosity},
     file_tracking, tools, vcs,
@@ -175,6 +174,7 @@ pub struct AuditorCleanup {
 #[derive(Clone, Debug)]
 pub struct AgentInvocationContext {
     pub backend: config::BackendKind,
+    pub backend_label: String,
     pub scope: config::CommandScope,
     pub model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
@@ -377,8 +377,14 @@ impl Auditor {
 
     fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
         if let Ok(mut auditor) = AUDITOR.lock() {
+            let backend_label = settings
+                .runner
+                .as_ref()
+                .map(|runner| runner.backend_name().to_string())
+                .unwrap_or_else(|| settings.backend.to_string());
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
+                backend_label,
                 scope: settings.scope,
                 model: settings.provider_model.clone(),
                 reasoning_effort: settings.reasoning_effort,
@@ -703,7 +709,7 @@ impl Auditor {
     ) -> SessionModelInfo {
         match agent {
             Some(ctx) => SessionModelInfo {
-                provider: ctx.backend.to_string(),
+                provider: ctx.backend_label.clone(),
                 name: ctx.model.clone(),
                 reasoning_effort: ctx.reasoning_effort.map(|level| format!("{level:?}")),
                 scope: Some(ctx.scope.as_str().to_string()),
@@ -909,16 +915,16 @@ impl Auditor {
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
-        codex_model: Option<codex::CodexModel>,
+        model_override: Option<String>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let codex_opts = agent.process.clone();
+        let process_opts = agent.process.clone();
         let agent_scope = agent.scope;
-        let resolved_codex_model = codex_model.unwrap_or_default();
+        let resolved_model = model_override.or_else(|| Some(agent.provider_model.clone()));
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -940,24 +946,25 @@ impl Auditor {
                 simulate_integration_changes()?;
                 let runner = Arc::clone(agent.process_runner()?);
                 let display_adapter = agent.display_adapter.clone();
+                let model_for_request = resolved_model.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
                 let messages_clone = messages.clone();
                 let provider_clone = provider.clone();
-                let opts_clone = codex_opts.clone();
+                let opts_clone = process_opts.clone();
                 let prompt_clone = system_prompt.clone();
 
                 let codex_run = display::call_with_status(async move |tx| {
-                    let request = codex::CodexRequest {
+                    let request = AgentRequest {
                         prompt: prompt_clone.clone(),
                         repo_root: repo_root.clone(),
                         profile: opts_clone.profile.clone(),
                         bin: opts_clone.binary_path.clone(),
                         extra_args: opts_clone.extra_args.clone(),
-                        model: Some(resolved_codex_model.as_model_name().to_string()),
-                        output_mode: codex::CodexOutputMode::EventsJson,
+                        model: model_for_request.clone(),
+                        output_mode: AgentOutputMode::EventsJson,
                         scope: Some(agent_scope),
                         metadata: BTreeMap::new(),
                     };
@@ -1009,16 +1016,16 @@ impl Auditor {
         user_message: String,
         tools: Vec<wire::types::Tool>,
         stream: RequestStream,
-        codex_model: Option<codex::CodexModel>,
+        model_override: Option<String>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let codex_opts = agent.process.clone();
+        let process_opts = agent.process.clone();
         let agent_scope = agent.scope;
-        let resolved_codex_model = codex_model.unwrap_or_default();
+        let resolved_model = model_override.or_else(|| Some(agent.provider_model.clone()));
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -1055,20 +1062,18 @@ impl Auditor {
                 };
                 let (output_mode, progress_hook) = match &stream {
                     RequestStream::Status { events, .. } => (
-                        codex::CodexOutputMode::EventsJson,
+                        AgentOutputMode::EventsJson,
                         events.clone().map(ProgressHook::Plain),
                     ),
-                    RequestStream::PassthroughStderr => {
-                        (codex::CodexOutputMode::PassthroughHuman, None)
-                    }
+                    RequestStream::PassthroughStderr => (AgentOutputMode::PassthroughHuman, None),
                 };
-                let request = codex::CodexRequest {
+                let request = AgentRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
-                    profile: codex_opts.profile.clone(),
-                    bin: codex_opts.binary_path.clone(),
-                    extra_args: codex_opts.extra_args.clone(),
-                    model: Some(resolved_codex_model.as_model_name().to_string()),
+                    profile: process_opts.profile.clone(),
+                    bin: process_opts.binary_path.clone(),
+                    extra_args: process_opts.extra_args.clone(),
+                    model: resolved_model.clone(),
                     output_mode,
                     scope: Some(agent_scope),
                     metadata: BTreeMap::new(),
