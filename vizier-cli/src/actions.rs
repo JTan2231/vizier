@@ -1257,8 +1257,11 @@ pub async fn run_draft(
     let worktree_name = format!("vizier-draft-{slug}-{worktree_suffix}");
     let worktree_path = tmp_root.join(format!("{slug}-{worktree_suffix}"));
     let plan_in_worktree = worktree_path.join(&plan_rel_path);
-
     let spec_source_label = spec_source.as_metadata_value();
+    display::debug(format!(
+        "Drafting plan {slug} from spec source: {spec_source_label}"
+    ));
+
     let mut plan_document_preview: Option<String> = None;
 
     let primary_branch = detect_primary_branch()
@@ -1326,7 +1329,6 @@ pub async fn run_draft(
         let document = plan::render_plan_document(
             &slug,
             &branch_name,
-            &spec_source_label,
             &spec_text,
             &plan_body,
         );
@@ -3193,41 +3195,53 @@ async fn perform_review_workflow(
 
     let critique_text = response.content.trim().to_string();
     emit_review_critique(&spec.slug, &critique_text);
-    plan::set_plan_status(plan_path, "review-ready", Some("reviewed_at"))?;
 
+    let review_diff = vcs::get_diff(".", Some("HEAD"), None)?;
+    let mut branch_mutated = !review_diff.trim().is_empty();
     if commit_mode.should_commit() {
-        let mut summary = format!(
-            "Recorded backend critique for plan {} (checks {}/{} passed).",
-            spec.slug, checks_passed, checks_total
-        );
-        summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
+        if branch_mutated {
+            let mut summary = format!(
+                "Recorded backend critique for plan {} (checks {}/{} passed).",
+                spec.slug, checks_passed, checks_total
+            );
+            summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
 
-        let mut builder = CommitMessageBuilder::new(summary);
-        builder
-            .set_header(CommitMessageType::NarrativeChange)
-            .with_session_log_path(session_path.clone())
-            .with_narrative_summary(narrative_summary.clone())
-            .with_author_note(format!(
-                "Review critique streamed to terminal; session: {}",
-                session_path.as_deref().unwrap_or("<session unavailable>")
-            ));
-        let commit_message = builder.build();
-        stage_narrative_paths(&narrative_paths)?;
-        vcs::stage(Some(vec!["."]))?;
-        trim_staged_vizier_paths(&narrative_paths)?;
-        let _review_commit = vcs::commit_staged(&commit_message, false)?;
-        clear_narrative_tracker(&narrative_paths);
+            let mut builder = CommitMessageBuilder::new(summary);
+            builder
+                .set_header(CommitMessageType::NarrativeChange)
+                .with_session_log_path(session_path.clone())
+                .with_narrative_summary(narrative_summary.clone())
+                .with_author_note(format!(
+                    "Review critique streamed to terminal; session: {}",
+                    session_path.as_deref().unwrap_or("<session unavailable>")
+                ));
+            let commit_message = builder.build();
+            stage_narrative_paths(&narrative_paths)?;
+            vcs::stage(Some(vec!["."]))?;
+            trim_staged_vizier_paths(&narrative_paths)?;
+            let _review_commit = vcs::commit_staged(&commit_message, false)?;
+            clear_narrative_tracker(&narrative_paths);
+        } else {
+            display::info("No file modifications produced during review; skipping commit.");
+        }
     } else {
         let session_hint = session_path
             .as_deref()
             .unwrap_or("<session unavailable>")
             .to_string();
-        display::info(format!(
-            "Review critique not committed (--no-commit); consult the terminal output or session log {} before committing manually.",
-            session_hint
-        ));
-        if !narrative_paths.is_empty() {
-            display::info("Review critique artifacts held for manual review (--no-commit active).");
+        if branch_mutated {
+            display::info(format!(
+                "Review critique not committed (--no-commit); consult the terminal output or session log {} before committing manually.",
+                session_hint
+            ));
+            if !narrative_paths.is_empty() {
+                display::info("Review critique artifacts held for manual review (--no-commit active).");
+            }
+        } else {
+            display::info(format!(
+                "Review critique streamed (--no-commit); no file modifications generated. Session log: {}",
+                session_hint
+            ));
         }
     }
 
@@ -3246,7 +3260,6 @@ async fn perform_review_workflow(
         }
 
         if apply_fixes {
-            plan::set_plan_status(plan_path, "review-fixes-in-progress", None)?;
             match apply_review_fixes(
                 spec,
                 plan_meta,
@@ -3259,15 +3272,17 @@ async fn perform_review_workflow(
             {
                 Some(commit) => {
                     fix_commit = Some(commit);
-                    plan::set_plan_status(
-                        plan_path,
-                        "review-addressed",
-                        Some("review_addressed_at"),
-                    )?;
+                    branch_mutated = true;
                 }
                 None => {
-                    display::info("Backend reported no changes while addressing review feedback.");
-                    plan::set_plan_status(plan_path, "review-ready", None)?;
+                    let post_fix_diff = vcs::get_diff(".", Some("HEAD"), None)?;
+                    let post_fix_changed = !post_fix_diff.trim().is_empty();
+                    branch_mutated = branch_mutated || post_fix_changed;
+                    if !post_fix_changed {
+                        display::info(
+                            "Backend reported no changes while addressing review feedback.",
+                        );
+                    }
                 }
             }
         } else {
@@ -3281,7 +3296,7 @@ async fn perform_review_workflow(
         checks_passed,
         checks_total,
         diff_command,
-        branch_mutated: true,
+        branch_mutated,
         fix_commit,
     })
 }
@@ -3615,16 +3630,7 @@ fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std
 
     for entry in entries {
         let summary = entry.summary.replace('"', "'");
-        let status = entry.status.as_deref().unwrap_or("unknown");
-        let reviewed = entry
-            .reviewed_at
-            .as_ref()
-            .map(|value| format!(" reviewed_at={}", value))
-            .unwrap_or_else(|| "".to_string());
-        println!(
-            "plan={} branch={} created={} status={}{} summary=\"{}\"",
-            entry.slug, entry.branch, entry.created_at, status, reviewed, summary
-        );
+        println!("plan={} branch={} summary=\"{}\"", entry.slug, entry.branch, summary);
     }
 
     Ok(())
@@ -3634,7 +3640,7 @@ async fn apply_plan_in_worktree(
     spec: &plan::PlanBranchSpec,
     plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
-    plan_path: &Path,
+    _plan_path: &Path,
     push_after: bool,
     commit_mode: CommitMode,
     agent: &config::AgentSettings,
@@ -3692,8 +3698,6 @@ async fn apply_plan_in_worktree(
     if diff.trim().is_empty() {
         return Err("Agent completed without modifying files; nothing new to approve.".into());
     }
-
-    plan::set_plan_status(plan_path, "implemented", Some("implemented_at"))?;
 
     let mut summary = response.content.trim().to_string();
     if summary.is_empty() {
@@ -3928,13 +3932,8 @@ mod tests {
         PlanMetadata {
             slug: spec.slug.clone(),
             branch: spec.branch.clone(),
-            status: Some("implemented".to_string()),
-            created_at: None,
-            created_at_raw: None,
-            spec_source: Some("inline".to_string()),
             spec_excerpt: None,
             spec_summary: Some("Trim redundant headers".to_string()),
-            reviewed_at: None,
         }
     }
 
@@ -3945,9 +3944,6 @@ mod tests {
         let plan_doc = r#"---
 plan: merge-headers
 branch: draft/merge-headers
-status: implemented
-created_at: 2025-11-15T00:00:00Z
-spec_source: inline
 
 ## Operator Spec
 
