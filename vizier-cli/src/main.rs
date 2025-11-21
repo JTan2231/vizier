@@ -65,20 +65,30 @@ struct GlobalOpts {
     #[arg(short = 'n', long = "no-session", global = true)]
     no_session: bool,
 
-    /// Set LLM model to use for main prompting + tool usage
+    /// Set LLM model for wire-backed runs (agent backends ignore this; configure models in .vizier/config.toml instead)
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
 
-    /// Backend to use for edit orchestration (`process` or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
+    /// Backend to use for edit orchestration (`agent` or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
     /// Path to the agent backend binary (defaults to resolving `codex` on PATH)
-    #[arg(long = "agent-bin", value_name = "PATH", global = true, alias = "codex-bin")]
+    #[arg(
+        long = "agent-bin",
+        value_name = "PATH",
+        global = true,
+        alias = "codex-bin"
+    )]
     agent_bin: Option<PathBuf>,
 
     /// Agent profile to load (pass empty to unset)
-    #[arg(long = "agent-profile", value_name = "NAME", global = true, alias = "codex-profile")]
+    #[arg(
+        long = "agent-profile",
+        value_name = "NAME",
+        global = true,
+        alias = "codex-profile"
+    )]
     agent_profile: Option<String>,
 
     /// Override the agent bounds prompt with a file on disk
@@ -145,14 +155,14 @@ enum ProgressArg {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum BackendArg {
     #[value(alias = "codex")]
-    Process,
+    Agent,
     Wire,
 }
 
 impl From<BackendArg> for config::BackendKind {
     fn from(value: BackendArg) -> Self {
         match value {
-            BackendArg::Process => config::BackendKind::Process,
+            BackendArg::Agent => config::BackendKind::Agent,
             BackendArg::Wire => config::BackendKind::Wire,
         }
     }
@@ -636,9 +646,9 @@ fn build_cli_agent_overrides(
 
     if let Some(bin) = opts.agent_bin.as_ref() {
         overrides
-            .process
+            .agent_runtime
             .get_or_insert_with(Default::default)
-            .binary_path = Some(bin.clone());
+            .command = Some(vec![bin.to_string_lossy().into_owned(), "exec".to_string()]);
     }
 
     if let Some(profile) = opts.agent_profile.as_ref() {
@@ -649,14 +659,14 @@ fn build_cli_agent_overrides(
             Some(trimmed.to_string())
         };
         overrides
-            .process
+            .agent_runtime
             .get_or_insert_with(Default::default)
             .profile = Some(value);
     }
 
     if let Some(bounds) = opts.agent_bounds_prompt.as_ref() {
         overrides
-            .process
+            .agent_runtime
             .get_or_insert_with(Default::default)
             .bounds_prompt_path = Some(bounds.clone());
     }
@@ -960,20 +970,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(ref bin_override) = cli.global.agent_bin {
-        cfg.process.binary_path = bin_override.clone();
+        let bin_str = bin_override.to_string_lossy().into_owned();
+        if cfg.agent_runtime.command.is_empty() {
+            cfg.agent_runtime.command = vec![bin_str, "exec".to_string()];
+        } else {
+            let mut command = cfg.agent_runtime.command.clone();
+            command[0] = bin_str;
+            cfg.agent_runtime.command = command;
+        }
     }
 
     if let Some(profile_override) = &cli.global.agent_profile {
         let trimmed = profile_override.trim();
         if trimmed.is_empty() {
-            cfg.process.profile = None;
+            cfg.agent_runtime.profile = None;
         } else {
-            cfg.process.profile = Some(trimmed.to_owned());
+            cfg.agent_runtime.profile = Some(trimmed.to_owned());
         }
     }
 
     if let Some(ref bounds_override) = cli.global.agent_bounds_prompt {
-        cfg.process.bounds_prompt_path = Some(bounds_override.clone());
+        cfg.agent_runtime.bounds_prompt_path = Some(bounds_override.clone());
     }
 
     let mut provider_needs_rebuild =

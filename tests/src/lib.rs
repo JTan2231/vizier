@@ -695,8 +695,8 @@ reasoning_effort = "low"
             .get("model")
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
-        Some("process"),
-        "save should use the default process backend"
+        Some("codex"),
+        "save should use the configured agent backend runner"
     );
     assert_eq!(
         save_json
@@ -1020,7 +1020,7 @@ fn test_approve_merges_plan() -> TestResult {
     );
     let approve_stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        approve_stderr.contains("[agent:approve] apply plan"),
+        approve_stderr.contains("[codex] apply plan"),
         "Agent progress log missing expected line: {}",
         approve_stderr
     );
@@ -1115,7 +1115,7 @@ backend = "codex"
     );
     let stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        stderr.contains("requires the process backend"),
+        stderr.contains("requires the agent backend"),
         "stderr missing backend warning: {}",
         stderr
     );
@@ -1140,9 +1140,7 @@ fn test_draft_fails_when_codex_errors() -> TestResult {
         "stderr should mention backend failure, got: {stderr}"
     );
     assert!(
-        !stderr
-            .to_ascii_lowercase()
-            .contains("wire backend"),
+        !stderr.to_ascii_lowercase().contains("wire backend"),
         "stderr hinted at a wire fallback: {stderr}"
     );
     let plan_path = repo
@@ -1187,9 +1185,7 @@ fn test_approve_fails_when_codex_errors() -> TestResult {
         "stderr should mention backend error, got: {stderr}"
     );
     assert!(
-        !stderr
-            .to_ascii_lowercase()
-            .contains("wire backend"),
+        !stderr.to_ascii_lowercase().contains("wire backend"),
         "stderr hinted at a wire fallback: {stderr}"
     );
 
@@ -1234,12 +1230,7 @@ fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
 
     let mut merge = repo.vizier_cmd();
     merge.env("VIZIER_FORCE_AGENT_ERROR", "1");
-    merge.args([
-        "merge",
-        "codex-merge",
-        "--yes",
-        "--auto-resolve-conflicts",
-    ]);
+    merge.args(["merge", "codex-merge", "--yes", "--auto-resolve-conflicts"]);
     let output = merge.output()?;
     assert!(
         !output.status.success(),
@@ -1253,9 +1244,7 @@ fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
         "stderr should mention backend failure, got: {stderr}"
     );
     assert!(
-        !stderr
-            .to_ascii_lowercase()
-            .contains("wire backend"),
+        !stderr.to_ascii_lowercase().contains("wire backend"),
         "stderr hinted at a wire fallback: {stderr}"
     );
 

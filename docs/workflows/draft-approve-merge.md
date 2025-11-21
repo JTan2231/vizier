@@ -8,14 +8,14 @@ The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier me
 
 ```toml
 [agents.default]
-backend = "agent-alpha"
+backend = "agent"
 
 [agents.approve]
-backend = "agent-alpha"      # enforce an editing-capable implementation backend
+backend = "agent"            # enforce an editing-capable implementation backend
 
 [agents.review]
-backend = "agent-alpha"
-[agents.review.backend]
+backend = "agent"
+[agents.review.agent]
 profile = "compliance"
 
 [agents.merge]
@@ -24,7 +24,7 @@ backend = "wire"             # keep merge cleanup on the wire stack
 
 If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier no longer falls back to wire automatically; rerun the command once the configured backend is healthy.
 
-CLI overrides (`--backend`, `--agent-bin`, `--agent-profile`, `--agent-bounds`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. Vizier warns when a model override is ignored because the selected backend cannot honor it, so operators know when to adjust the per-command config instead of expecting wire-only flags to work everywhere.
+CLI overrides (`--backend`, `--agent-bin`, `--agent-profile`, `--agent-bounds`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. The `-p/--model` flag is wire-only: agent/Codex backends ignore it, so model overrides only affect scopes running on wire.
 
 ## High-Level Timeline
 

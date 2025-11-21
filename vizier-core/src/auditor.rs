@@ -4,6 +4,7 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
@@ -16,7 +17,7 @@ use tokio::{
 use wire::config::ThinkingLevel;
 
 use crate::{
-    codex,
+    agent::{AgentOutputMode, AgentRequest, ProgressHook},
     config::{self, PromptOrigin, SystemPrompt},
     display::{self, Verbosity},
     file_tracking, tools, vcs,
@@ -173,6 +174,7 @@ pub struct AuditorCleanup {
 #[derive(Clone, Debug)]
 pub struct AgentInvocationContext {
     pub backend: config::BackendKind,
+    pub backend_label: String,
     pub scope: config::CommandScope,
     pub model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
@@ -375,10 +377,19 @@ impl Auditor {
 
     fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
         if let Ok(mut auditor) = AUDITOR.lock() {
+            let backend_label = settings
+                .runner
+                .as_ref()
+                .map(|runner| runner.backend_name().to_string())
+                .unwrap_or_else(|| settings.backend.to_string());
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
+                backend_label,
                 scope: settings.scope,
-                model: settings.provider_model.clone(),
+                model: match settings.backend {
+                    config::BackendKind::Wire => settings.provider_model.clone(),
+                    config::BackendKind::Agent => "n/a".to_string(),
+                },
                 reasoning_effort: settings.reasoning_effort,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Base),
             });
@@ -701,7 +712,7 @@ impl Auditor {
     ) -> SessionModelInfo {
         match agent {
             Some(ctx) => SessionModelInfo {
-                provider: ctx.backend.to_string(),
+                provider: ctx.backend_label.clone(),
                 name: ctx.model.clone(),
                 reasoning_effort: ctx.reasoning_effort.map(|level| format!("{level:?}")),
                 scope: Some(ctx.scope.as_str().to_string()),
@@ -774,11 +785,11 @@ impl Auditor {
                 .reasoning_effort
                 .as_ref()
                 .map(|level| format!("{level:?}")),
-            "codex": {
-                "binary": cfg.process.binary_path.display().to_string(),
-                "profile": cfg.process.profile.clone(),
+            "agent": {
+                "command": cfg.agent_runtime.command.clone(),
+                "profile": cfg.agent_runtime.profile.clone(),
                 "bounds_prompt": cfg
-                    .process
+                    .agent_runtime
                     .bounds_prompt_path
                     .as_ref()
                     .map(|path| path.display().to_string()),
@@ -907,16 +918,21 @@ impl Auditor {
         system_prompt: String,
         user_message: String,
         tools: Vec<wire::types::Tool>,
-        codex_model: Option<codex::CodexModel>,
+        model_override: Option<String>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let codex_opts = agent.process.clone();
+        let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
-        let resolved_codex_model = codex_model.unwrap_or_default();
+        let resolved_model = match backend {
+            config::BackendKind::Wire => {
+                model_override.or_else(|| Some(agent.provider_model.clone()))
+            }
+            config::BackendKind::Agent => None,
+        };
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -924,8 +940,14 @@ impl Auditor {
 
         match backend {
             config::BackendKind::Wire => {
+                let wire_provider = match resolved_model {
+                    Some(ref model) => {
+                        config::Config::provider_from_settings(model, agent.reasoning_effort)?
+                    }
+                    None => provider.clone(),
+                };
                 let response = run_wire_with_status(
-                    provider.clone(),
+                    wire_provider,
                     system_prompt,
                     messages.clone(),
                     tools.clone(),
@@ -934,33 +956,39 @@ impl Auditor {
                 .await?;
                 Ok(response.last().unwrap().clone())
             }
-            config::BackendKind::Process => {
+            config::BackendKind::Agent => {
                 simulate_integration_changes()?;
+                let runner = Arc::clone(agent.agent_runner()?);
+                let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
                 let messages_clone = messages.clone();
                 let provider_clone = provider.clone();
-                let opts_clone = codex_opts.clone();
+                let opts_clone = runtime_opts.clone();
                 let prompt_clone = system_prompt.clone();
 
                 let codex_run = display::call_with_status(async move |tx| {
-                    let request = codex::CodexRequest {
+                    let request = AgentRequest {
                         prompt: prompt_clone.clone(),
                         repo_root: repo_root.clone(),
                         profile: opts_clone.profile.clone(),
-                        bin: opts_clone.binary_path.clone(),
+                        command: opts_clone.command.clone(),
                         extra_args: opts_clone.extra_args.clone(),
-                        model: resolved_codex_model,
-                        output_mode: codex::CodexOutputMode::EventsJson,
+                        output_mode: AgentOutputMode::EventsJson,
                         scope: Some(agent_scope),
+                        metadata: BTreeMap::new(),
                     };
 
-                    let response =
-                        codex::run_exec(request, Some(codex::ProgressHook::Display(tx.clone())))
-                            .await
-                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                    let response = runner
+                        .execute(
+                            request,
+                            display_adapter.clone(),
+                            Some(ProgressHook::Display(tx.clone())),
+                        )
+                        .await
+                        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
                     let mut updated = messages_clone.clone();
                     let mut assistant_message = provider_clone
@@ -1000,16 +1028,21 @@ impl Auditor {
         user_message: String,
         tools: Vec<wire::types::Tool>,
         stream: RequestStream,
-        codex_model: Option<codex::CodexModel>,
+        model_override: Option<String>,
         repo_root_override: Option<PathBuf>,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         Self::record_agent(agent, prompt_variant);
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let codex_opts = agent.process.clone();
+        let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
-        let resolved_codex_model = codex_model.unwrap_or_default();
+        let resolved_model = match backend {
+            config::BackendKind::Wire => {
+                model_override.or_else(|| Some(agent.provider_model.clone()))
+            }
+            config::BackendKind::Agent => None,
+        };
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -1017,9 +1050,15 @@ impl Auditor {
 
         match backend {
             config::BackendKind::Wire => {
+                let wire_provider = match resolved_model {
+                    Some(ref model) => {
+                        config::Config::provider_from_settings(model, agent.reasoning_effort)?
+                    }
+                    None => provider.clone(),
+                };
                 let (wire_tx, drain_handle) = channel_for_stream(&stream);
                 let response = prompt_wire_with_tools(
-                    &*provider,
+                    &*wire_provider,
                     wire_tx,
                     &system_prompt,
                     messages.clone(),
@@ -1036,33 +1075,36 @@ impl Auditor {
                 }
                 Ok(last)
             }
-            config::BackendKind::Process => {
+            config::BackendKind::Agent => {
                 simulate_integration_changes()?;
+                let runner = Arc::clone(agent.agent_runner()?);
+                let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
                 let (output_mode, progress_hook) = match &stream {
                     RequestStream::Status { events, .. } => (
-                        codex::CodexOutputMode::EventsJson,
-                        events.clone().map(codex::ProgressHook::Plain),
+                        AgentOutputMode::EventsJson,
+                        events.clone().map(ProgressHook::Plain),
                     ),
-                    RequestStream::PassthroughStderr => {
-                        (codex::CodexOutputMode::PassthroughHuman, None)
-                    }
+                    RequestStream::PassthroughStderr => (AgentOutputMode::PassthroughHuman, None),
                 };
-                let request = codex::CodexRequest {
+                let request = AgentRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
-                    profile: codex_opts.profile.clone(),
-                    bin: codex_opts.binary_path.clone(),
-                    extra_args: codex_opts.extra_args.clone(),
-                    model: resolved_codex_model,
+                    profile: runtime_opts.profile.clone(),
+                    command: runtime_opts.command.clone(),
+                    extra_args: runtime_opts.extra_args.clone(),
                     output_mode,
                     scope: Some(agent_scope),
+                    metadata: BTreeMap::new(),
                 };
 
-                match codex::run_exec(request, progress_hook).await {
+                match runner
+                    .execute(request, display_adapter.clone(), progress_hook)
+                    .await
+                {
                     Ok(response) => {
                         let mut assistant_message = provider
                             .new_message(response.assistant_text.clone())

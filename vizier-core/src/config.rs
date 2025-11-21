@@ -12,7 +12,10 @@ use wire::{
 
 use crate::{
     COMMIT_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT, REVIEW_PROMPT,
-    SYSTEM_PROMPT_BASE, tools, tree,
+    SYSTEM_PROMPT_BASE,
+    agent::{AgentDisplayAdapter, AgentRunner, FallbackDisplayAdapter},
+    codex::{CodexDisplayAdapter, CodexRunner},
+    tools, tree,
 };
 
 pub const DEFAULT_MODEL: &str = "gpt-5";
@@ -78,14 +81,14 @@ impl PromptKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
-    Process,
+    Agent,
     Wire,
 }
 
 impl BackendKind {
     pub fn from_str(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
-            "process" | "codex" => Some(Self::Process),
+            "agent" | "codex" => Some(Self::Agent),
             "wire" => Some(Self::Wire),
             _ => None,
         }
@@ -95,7 +98,7 @@ impl BackendKind {
 impl std::fmt::Display for BackendKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendKind::Process => write!(f, "process"),
+            BackendKind::Agent => write!(f, "agent"),
             BackendKind::Wire => write!(f, "wire"),
         }
     }
@@ -158,24 +161,16 @@ impl std::fmt::Display for CommandScope {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ProcessOverride {
-    pub binary_path: Option<PathBuf>,
-    pub profile: Option<Option<String>>,
-    pub bounds_prompt_path: Option<PathBuf>,
-    pub extra_args: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOverrides {
     pub backend: Option<BackendKind>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ThinkingLevel>,
-    pub process: Option<ProcessOverride>,
+    pub agent_runtime: Option<AgentRuntimeOverride>,
     pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
 }
 
 /// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]` so the same
-/// table controls the template, backend/model overrides, and process-backend options for a
+/// table controls the template, backend/model overrides, and agent-backend options for a
 /// specific command/prompt pairing. Legacy `[prompts.*]` keys remain supported,
 /// but repositories should converge on these profiles so operators reason about a
 /// single surface when migrating.
@@ -197,7 +192,7 @@ impl AgentOverrides {
         self.backend.is_none()
             && self.model.is_none()
             && self.reasoning_effort.is_none()
-            && self.process.is_none()
+            && self.agent_runtime.is_none()
             && self.prompt_overrides.is_empty()
     }
 }
@@ -207,9 +202,11 @@ pub struct AgentSettings {
     pub scope: CommandScope,
     pub backend: BackendKind,
     pub provider: Arc<dyn Prompt>,
+    pub runner: Option<Arc<dyn AgentRunner>>,
+    pub display_adapter: Arc<dyn AgentDisplayAdapter>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
-    pub process: ProcessOptions,
+    pub agent_runtime: AgentRuntimeOptions,
     pub prompt: Option<PromptSelection>,
     pub cli_override: Option<AgentOverrides>,
 }
@@ -225,20 +222,38 @@ impl AgentSettings {
     pub fn prompt_selection(&self) -> Option<&PromptSelection> {
         self.prompt.as_ref()
     }
+
+    pub fn agent_runner(&self) -> Result<&Arc<dyn AgentRunner>, Box<dyn std::error::Error>> {
+        self.runner.as_ref().ok_or_else(|| {
+            format!(
+                "agent scope `{}` requires an agent backend runner, but none was resolved",
+                self.scope.as_str()
+            )
+            .into()
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentRuntimeOverride {
+    pub command: Option<Vec<String>>,
+    pub profile: Option<Option<String>>,
+    pub bounds_prompt_path: Option<PathBuf>,
+    pub extra_args: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ProcessOptions {
-    pub binary_path: PathBuf,
+pub struct AgentRuntimeOptions {
+    pub command: Vec<String>,
     pub profile: Option<String>,
     pub bounds_prompt_path: Option<PathBuf>,
     pub extra_args: Vec<String>,
 }
 
-impl Default for ProcessOptions {
+impl Default for AgentRuntimeOptions {
     fn default() -> Self {
         Self {
-            binary_path: PathBuf::from("codex"),
+            command: vec!["codex".to_string(), "exec".to_string()],
             profile: None,
             bounds_prompt_path: None,
             extra_args: Vec::new(),
@@ -287,7 +302,7 @@ pub struct Config {
     pub reasoning_effort: Option<ThinkingLevel>,
     pub no_session: bool,
     pub backend: BackendKind,
-    pub process: ProcessOptions,
+    pub agent_runtime: AgentRuntimeOptions,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
     pub workflow: WorkflowConfig,
@@ -388,8 +403,8 @@ impl Config {
             provider_model: DEFAULT_MODEL.to_owned(),
             reasoning_effort: None,
             no_session: false,
-            backend: BackendKind::Process,
-            process: ProcessOptions::default(),
+            backend: BackendKind::Agent,
+            agent_runtime: AgentRuntimeOptions::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
             workflow: WorkflowConfig::default(),
@@ -489,29 +504,18 @@ impl Config {
             )));
         }
 
-        if let Some(process_value) = value_at_path(&file_config, &["process"])
-            .or_else(|| value_at_path(&file_config, &["codex"]))
-        {
-            if let Some(process_object) = process_value.as_object() {
-                if let Some(path_val) = process_object
-                    .get("binary")
-                    .or_else(|| process_object.get("binary_path"))
-                {
-                    if let Some(path) = path_val
-                        .as_str()
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                    {
-                        config.process.binary_path = PathBuf::from(path);
-                    }
+        if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
+            if let Some(agent_object) = agent_value.as_object() {
+                if let Some(command) = parse_agent_command(agent_object) {
+                    config.agent_runtime.command = command;
                 }
 
-                if let Some(profile_val) = process_object.get("profile") {
+                if let Some(profile_val) = agent_object.get("profile") {
                     if profile_val.is_null() {
-                        config.process.profile = None;
+                        config.agent_runtime.profile = None;
                     } else if let Some(profile) = profile_val.as_str() {
                         let trimmed = profile.trim();
-                        config.process.profile = if trimmed.is_empty() {
+                        config.agent_runtime.profile = if trimmed.is_empty() {
                             None
                         } else {
                             Some(trimmed.to_string())
@@ -519,34 +523,21 @@ impl Config {
                     }
                 }
 
-                if let Some(bounds_val) = process_object
+                if let Some(bounds_val) = agent_object
                     .get("bounds_prompt_path")
-                    .or_else(|| process_object.get("bounds_prompt"))
+                    .or_else(|| agent_object.get("bounds_prompt"))
                 {
                     if let Some(path) = bounds_val
                         .as_str()
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                     {
-                        config.process.bounds_prompt_path = Some(PathBuf::from(path));
+                        config.agent_runtime.bounds_prompt_path = Some(PathBuf::from(path));
                     }
                 }
 
-                if let Some(extra_val) = process_object.get("extra_args") {
-                    if let Some(array) = extra_val.as_array() {
-                        let mut args = Vec::new();
-                        for item in array {
-                            if let Some(arg) = item.as_str() {
-                                let trimmed = arg.trim();
-                                if !trimmed.is_empty() {
-                                    args.push(trimmed.to_string());
-                                }
-                            }
-                        }
-                        if !args.is_empty() {
-                            config.process.extra_args = args;
-                        }
-                    }
+                if let Some(args) = parse_string_array(agent_object.get("extra_args")) {
+                    config.agent_runtime.extra_args = args;
                 }
             }
         }
@@ -829,7 +820,7 @@ impl Config {
 
         if let Some(overrides) = cli_override {
             if !overrides.is_empty() {
-                builder.apply(overrides);
+                builder.apply_cli_override(overrides);
             }
         }
 
@@ -866,7 +857,7 @@ impl Config {
 
         if let Some(overrides) = cli_override {
             if !overrides.is_empty() {
-                builder.apply(overrides);
+                builder.apply_cli_override(overrides);
             }
         }
 
@@ -945,7 +936,7 @@ struct AgentSettingsBuilder {
     backend: BackendKind,
     provider_model: String,
     reasoning_effort: Option<ThinkingLevel>,
-    process: ProcessOptions,
+    agent_runtime: AgentRuntimeOptions,
 }
 
 impl AgentSettingsBuilder {
@@ -954,7 +945,7 @@ impl AgentSettingsBuilder {
             backend: cfg.backend,
             provider_model: cfg.provider_model.clone(),
             reasoning_effort: cfg.reasoning_effort,
-            process: cfg.process.clone(),
+            agent_runtime: cfg.agent_runtime.clone(),
         }
     }
 
@@ -964,28 +955,64 @@ impl AgentSettingsBuilder {
         }
 
         if let Some(model) = overrides.model.as_ref() {
-            self.provider_model = model.clone();
+            if self.backend == BackendKind::Wire {
+                self.provider_model = model.clone();
+            }
         }
 
         if let Some(level) = overrides.reasoning_effort {
             self.reasoning_effort = Some(level);
         }
 
-        if let Some(codex) = overrides.process.as_ref() {
-            if let Some(path) = codex.binary_path.as_ref() {
-                self.process.binary_path = path.clone();
+        if let Some(runtime) = overrides.agent_runtime.as_ref() {
+            if let Some(command) = runtime.command.as_ref() {
+                self.agent_runtime.command = command.clone();
             }
 
-            if let Some(profile) = codex.profile.as_ref() {
-                self.process.profile = profile.clone();
+            if let Some(profile) = runtime.profile.as_ref() {
+                self.agent_runtime.profile = profile.clone();
             }
 
-            if let Some(bounds) = codex.bounds_prompt_path.as_ref() {
-                self.process.bounds_prompt_path = Some(bounds.clone());
+            if let Some(bounds) = runtime.bounds_prompt_path.as_ref() {
+                self.agent_runtime.bounds_prompt_path = Some(bounds.clone());
             }
 
-            if let Some(extra) = codex.extra_args.as_ref() {
-                self.process.extra_args = extra.clone();
+            if let Some(extra) = runtime.extra_args.as_ref() {
+                self.agent_runtime.extra_args = extra.clone();
+            }
+        }
+    }
+
+    fn apply_cli_override(&mut self, overrides: &AgentOverrides) {
+        if let Some(backend) = overrides.backend {
+            self.backend = backend;
+        }
+
+        if let Some(model) = overrides.model.as_ref() {
+            if self.backend == BackendKind::Wire {
+                self.provider_model = model.clone();
+            }
+        }
+
+        if let Some(level) = overrides.reasoning_effort {
+            self.reasoning_effort = Some(level);
+        }
+
+        if let Some(runtime) = overrides.agent_runtime.as_ref() {
+            if let Some(command) = runtime.command.as_ref() {
+                self.agent_runtime.command = command.clone();
+            }
+
+            if let Some(profile) = runtime.profile.as_ref() {
+                self.agent_runtime.profile = profile.clone();
+            }
+
+            if let Some(bounds) = runtime.bounds_prompt_path.as_ref() {
+                self.agent_runtime.bounds_prompt_path = Some(bounds.clone());
+            }
+
+            if let Some(extra) = runtime.extra_args.as_ref() {
+                self.agent_runtime.extra_args = extra.clone();
             }
         }
     }
@@ -1015,12 +1042,30 @@ impl AgentSettingsBuilder {
             scope,
             backend: self.backend,
             provider,
+            runner: resolve_agent_runner(self.backend)?,
+            display_adapter: resolve_display_adapter(self.backend),
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
-            process: self.process.clone(),
+            agent_runtime: self.agent_runtime.clone(),
             prompt,
             cli_override: cli_override.cloned(),
         })
+    }
+}
+
+fn resolve_agent_runner(
+    backend: BackendKind,
+) -> Result<Option<Arc<dyn AgentRunner>>, Box<dyn std::error::Error>> {
+    match backend {
+        BackendKind::Wire => Ok(None),
+        BackendKind::Agent => Ok(Some(Arc::new(CodexRunner))),
+    }
+}
+
+fn resolve_display_adapter(backend: BackendKind) -> Arc<dyn AgentDisplayAdapter> {
+    match backend {
+        BackendKind::Wire => Arc::new(FallbackDisplayAdapter::default()),
+        BackendKind::Agent => Arc::new(CodexDisplayAdapter::default()),
     }
 }
 
@@ -1089,11 +1134,9 @@ fn parse_agent_overrides(
         }
     }
 
-    if let Some(codex_value) = value_at_path(value, &["process"])
-        .or_else(|| value_at_path(value, &["codex"]))
-    {
-        if let Some(parsed) = parse_process_override(codex_value)? {
-            overrides.process = Some(parsed);
+    if let Some(runtime_value) = value_at_path(value, &["agent"]) {
+        if let Some(parsed) = parse_agent_runtime_override(runtime_value)? {
+            overrides.agent_runtime = Some(parsed);
         }
     }
 
@@ -1211,24 +1254,59 @@ fn parse_inline_prompt_text(entry: &serde_json::Value) -> Option<&str> {
     None
 }
 
-fn parse_process_override(
+fn parse_command_value(value: &serde_json::Value) -> Option<Vec<String>> {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(vec![trimmed.to_string()])
+            }
+        }
+        serde_json::Value::Array(entries) => {
+            let mut parts = Vec::new();
+            for entry in entries {
+                if let Some(text) = entry.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    parts.push(text.to_string());
+                }
+            }
+            if parts.is_empty() { None } else { Some(parts) }
+        }
+        _ => None,
+    }
+}
+
+fn parse_agent_command(table: &serde_json::Map<String, serde_json::Value>) -> Option<Vec<String>> {
+    if let Some(value) = table.get("command") {
+        if let Some(command) = parse_command_value(value) {
+            return Some(command);
+        }
+    }
+
+    if let Some(binary) = table
+        .get("binary")
+        .or_else(|| table.get("binary_path"))
+        .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+    {
+        return Some(vec![binary.to_string(), "exec".to_string()]);
+    }
+
+    None
+}
+
+fn parse_agent_runtime_override(
     value: &serde_json::Value,
-) -> Result<Option<ProcessOverride>, Box<dyn std::error::Error>> {
+) -> Result<Option<AgentRuntimeOverride>, Box<dyn std::error::Error>> {
     let object = match value.as_object() {
         Some(obj) => obj,
         None => return Ok(None),
     };
 
-    let mut overrides = ProcessOverride::default();
+    let mut overrides = AgentRuntimeOverride::default();
 
-    if let Some(path_val) = object.get("binary").or_else(|| object.get("binary_path")) {
-        if let Some(path) = path_val
-            .as_str()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            overrides.binary_path = Some(PathBuf::from(path));
-        }
+    if let Some(command) = parse_agent_command(object) {
+        overrides.command = Some(command);
     }
 
     if let Some(profile_val) = object.get("profile") {
@@ -1257,24 +1335,11 @@ fn parse_process_override(
         }
     }
 
-    if let Some(extra_val) = object.get("extra_args") {
-        if let Some(array) = extra_val.as_array() {
-            let mut args = Vec::new();
-            for entry in array {
-                if let Some(arg) = entry.as_str() {
-                    let trimmed = arg.trim();
-                    if !trimmed.is_empty() {
-                        args.push(trimmed.to_string());
-                    }
-                }
-            }
-            if !args.is_empty() {
-                overrides.extra_args = Some(args);
-            }
-        }
+    if let Some(args) = parse_string_array(object.get("extra_args")) {
+        overrides.extra_args = Some(args);
     }
 
-    if overrides == ProcessOverride::default() {
+    if overrides == AgentRuntimeOverride::default() {
         Ok(None)
     } else {
         Ok(Some(overrides))
@@ -1823,6 +1888,128 @@ model = "gpt-4o-mini"
                 .trim(),
             "scoped prompt from file"
         );
+        assert_eq!(agent.backend, BackendKind::Wire);
+        assert_eq!(agent.provider_model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn agent_command_accepts_command_tokens() {
+        let toml = r#"
+[agent]
+command = ["./bin/codex", "exec", "--local"]
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse agent command");
+        assert_eq!(
+            cfg.agent_runtime.command,
+            vec![
+                "./bin/codex".to_string(),
+                "exec".to_string(),
+                "--local".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_binary_alias_maps_to_exec_command() {
+        let toml = r#"
+[agent]
+binary = "/opt/custom-codex"
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let cfg = Config::from_toml(file.path().to_path_buf())
+            .expect("should parse agent binary into command");
+        assert_eq!(
+            cfg.agent_runtime.command,
+            vec!["/opt/custom-codex".to_string(), "exec".to_string(),]
+        );
+    }
+
+    #[test]
+    fn agent_backend_exposes_runner_and_adapter() {
+        let cfg = Config::default();
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("agent backend should resolve");
+        assert!(agent.agent_runner().is_ok());
+        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
+    }
+
+    #[test]
+    fn wire_backend_skips_runner_but_keeps_adapter() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Wire;
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("wire backend should resolve");
+        assert!(agent.runner.is_none());
+        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
+    }
+
+    #[test]
+    fn scoped_agent_backend_overrides_wire_default() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Wire;
+
+        let mut overrides = AgentOverrides::default();
+        overrides.backend = Some(BackendKind::Agent);
+        cfg.agent_scopes.insert(CommandScope::Save, overrides);
+
+        let ask = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("ask scope should resolve");
+        assert_eq!(ask.backend, BackendKind::Wire);
+        assert!(
+            ask.runner.is_none(),
+            "wire scopes should not resolve runners"
+        );
+
+        let save = cfg
+            .resolve_agent_settings(CommandScope::Save, None)
+            .expect("save scope should resolve");
+        assert_eq!(save.backend, BackendKind::Agent);
+        assert!(
+            save.agent_runner().is_ok(),
+            "agent scopes should expose a runner even when defaults are wire"
+        );
+    }
+
+    #[test]
+    fn cli_model_override_is_ignored_for_agent_backend() {
+        let cfg = Config::default();
+
+        let mut cli_override = AgentOverrides::default();
+        cli_override.model = Some("gpt-4o-mini".to_string());
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
+            .expect("ask scope should resolve");
+        assert_eq!(agent.backend, BackendKind::Agent);
+        assert_eq!(
+            agent.provider_model, DEFAULT_MODEL,
+            "agent backends should ignore CLI model overrides"
+        );
+    }
+
+    #[test]
+    fn cli_model_override_applies_for_wire_backend() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Wire;
+
+        let mut cli_override = AgentOverrides::default();
+        cli_override.model = Some("gpt-4o-mini".to_string());
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
+            .expect("ask scope should resolve");
         assert_eq!(agent.backend, BackendKind::Wire);
         assert_eq!(agent.provider_model, "gpt-4o-mini");
     }
