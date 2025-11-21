@@ -386,7 +386,10 @@ impl Auditor {
                 backend: settings.backend,
                 backend_label,
                 scope: settings.scope,
-                model: settings.provider_model.clone(),
+                model: match settings.backend {
+                    config::BackendKind::Wire => settings.provider_model.clone(),
+                    config::BackendKind::Agent => "n/a".to_string(),
+                },
                 reasoning_effort: settings.reasoning_effort,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Base),
             });
@@ -782,11 +785,11 @@ impl Auditor {
                 .reasoning_effort
                 .as_ref()
                 .map(|level| format!("{level:?}")),
-            "codex": {
-                "binary": cfg.process.binary_path.display().to_string(),
-                "profile": cfg.process.profile.clone(),
+            "agent": {
+                "command": cfg.agent_runtime.command.clone(),
+                "profile": cfg.agent_runtime.profile.clone(),
                 "bounds_prompt": cfg
-                    .process
+                    .agent_runtime
                     .bounds_prompt_path
                     .as_ref()
                     .map(|path| path.display().to_string()),
@@ -922,9 +925,14 @@ impl Auditor {
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let process_opts = agent.process.clone();
+        let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
-        let resolved_model = model_override.or_else(|| Some(agent.provider_model.clone()));
+        let resolved_model = match backend {
+            config::BackendKind::Wire => {
+                model_override.or_else(|| Some(agent.provider_model.clone()))
+            }
+            config::BackendKind::Agent => None,
+        };
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -932,8 +940,14 @@ impl Auditor {
 
         match backend {
             config::BackendKind::Wire => {
+                let wire_provider = match resolved_model {
+                    Some(ref model) => {
+                        config::Config::provider_from_settings(model, agent.reasoning_effort)?
+                    }
+                    None => provider.clone(),
+                };
                 let response = run_wire_with_status(
-                    provider.clone(),
+                    wire_provider,
                     system_prompt,
                     messages.clone(),
                     tools.clone(),
@@ -942,18 +956,17 @@ impl Auditor {
                 .await?;
                 Ok(response.last().unwrap().clone())
             }
-            config::BackendKind::Process => {
+            config::BackendKind::Agent => {
                 simulate_integration_changes()?;
-                let runner = Arc::clone(agent.process_runner()?);
+                let runner = Arc::clone(agent.agent_runner()?);
                 let display_adapter = agent.display_adapter.clone();
-                let model_for_request = resolved_model.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
                 let messages_clone = messages.clone();
                 let provider_clone = provider.clone();
-                let opts_clone = process_opts.clone();
+                let opts_clone = runtime_opts.clone();
                 let prompt_clone = system_prompt.clone();
 
                 let codex_run = display::call_with_status(async move |tx| {
@@ -961,9 +974,8 @@ impl Auditor {
                         prompt: prompt_clone.clone(),
                         repo_root: repo_root.clone(),
                         profile: opts_clone.profile.clone(),
-                        bin: opts_clone.binary_path.clone(),
+                        command: opts_clone.command.clone(),
                         extra_args: opts_clone.extra_args.clone(),
-                        model: model_for_request.clone(),
                         output_mode: AgentOutputMode::EventsJson,
                         scope: Some(agent_scope),
                         metadata: BTreeMap::new(),
@@ -1023,9 +1035,14 @@ impl Auditor {
 
         let backend = agent.backend;
         let provider = agent.provider.clone();
-        let process_opts = agent.process.clone();
+        let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
-        let resolved_model = model_override.or_else(|| Some(agent.provider_model.clone()));
+        let resolved_model = match backend {
+            config::BackendKind::Wire => {
+                model_override.or_else(|| Some(agent.provider_model.clone()))
+            }
+            config::BackendKind::Agent => None,
+        };
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
 
@@ -1033,9 +1050,15 @@ impl Auditor {
 
         match backend {
             config::BackendKind::Wire => {
+                let wire_provider = match resolved_model {
+                    Some(ref model) => {
+                        config::Config::provider_from_settings(model, agent.reasoning_effort)?
+                    }
+                    None => provider.clone(),
+                };
                 let (wire_tx, drain_handle) = channel_for_stream(&stream);
                 let response = prompt_wire_with_tools(
-                    &*provider,
+                    &*wire_provider,
                     wire_tx,
                     &system_prompt,
                     messages.clone(),
@@ -1052,9 +1075,9 @@ impl Auditor {
                 }
                 Ok(last)
             }
-            config::BackendKind::Process => {
+            config::BackendKind::Agent => {
                 simulate_integration_changes()?;
-                let runner = Arc::clone(agent.process_runner()?);
+                let runner = Arc::clone(agent.agent_runner()?);
                 let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
@@ -1070,10 +1093,9 @@ impl Auditor {
                 let request = AgentRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
-                    profile: process_opts.profile.clone(),
-                    bin: process_opts.binary_path.clone(),
-                    extra_args: process_opts.extra_args.clone(),
-                    model: resolved_model.clone(),
+                    profile: runtime_opts.profile.clone(),
+                    command: runtime_opts.command.clone(),
+                    extra_args: runtime_opts.extra_args.clone(),
                     output_mode,
                     scope: Some(agent_scope),
                     metadata: BTreeMap::new(),

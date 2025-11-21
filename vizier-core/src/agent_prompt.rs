@@ -400,7 +400,7 @@ fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, AgentErr
         return Ok(contents);
     }
 
-    if let Some(path) = &config::get_config().process.bounds_prompt_path {
+    if let Some(path) = &config::get_config().agent_runtime.bounds_prompt_path {
         let contents = std::fs::read_to_string(path)
             .map_err(|err| AgentError::BoundsRead(path.clone(), err))?;
         Ok(contents)

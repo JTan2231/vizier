@@ -26,9 +26,8 @@ pub struct AgentRequest {
     pub prompt: String,
     pub repo_root: PathBuf,
     pub profile: Option<String>,
-    pub bin: PathBuf,
+    pub command: Vec<String>,
     pub extra_args: Vec<String>,
-    pub model: Option<String>,
     pub output_mode: AgentOutputMode,
     pub scope: Option<config::CommandScope>,
     pub metadata: BTreeMap<String, String>,
@@ -40,9 +39,8 @@ impl AgentRequest {
             prompt,
             repo_root,
             profile: None,
-            bin: PathBuf::from("codex"),
+            command: vec!["codex".to_string(), "exec".to_string()],
             extra_args: Vec::new(),
-            model: None,
             output_mode: AgentOutputMode::default(),
             scope: None,
             metadata: BTreeMap::new(),
@@ -159,6 +157,7 @@ impl ProgressHook {
 #[derive(Debug)]
 pub enum AgentError {
     BinaryNotFound(PathBuf),
+    MissingCommand,
     Spawn(std::io::Error),
     Io(std::io::Error),
     NonZeroExit(i32, Vec<String>),
@@ -172,8 +171,9 @@ impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AgentError::BinaryNotFound(path) => {
-                write!(f, "agent backend binary not found at {}", path.display())
+                write!(f, "agent backend command not found at {}", path.display())
             }
+            AgentError::MissingCommand => write!(f, "agent backend command was not provided"),
             AgentError::Spawn(e) => write!(f, "failed spawning agent backend: {}", e),
             AgentError::Io(e) => write!(f, "I/O error: {}", e),
             AgentError::NonZeroExit(code, lines) => {

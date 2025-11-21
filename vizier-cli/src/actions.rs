@@ -193,13 +193,13 @@ fn prompt_selection<'a>(
     })
 }
 
-fn require_process_backend(
+fn require_agent_backend(
     agent: &config::AgentSettings,
     prompt: config::PromptKind,
     error_message: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let derived = agent.for_prompt(prompt)?;
-    if derived.backend != config::BackendKind::Process {
+    if derived.backend != config::BackendKind::Agent {
         return Err(error_message.into());
     }
     Ok(())
@@ -228,10 +228,9 @@ fn build_agent_request(
     AgentRequest {
         prompt,
         repo_root,
-        profile: agent.process.profile.clone(),
-        bin: agent.process.binary_path.clone(),
-        extra_args: agent.process.extra_args.clone(),
-        model: Some(agent.provider_model.clone()),
+        profile: agent.agent_runtime.profile.clone(),
+        command: agent.agent_runtime.command.clone(),
+        extra_args: agent.agent_runtime.extra_args.clone(),
         output_mode,
         scope: Some(agent.scope),
         metadata: BTreeMap::new(),
@@ -847,11 +846,11 @@ async fn save(
     let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
     let selection = prompt_selection(&prompt_agent)?;
 
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Agent {
         agent_prompt::build_base_prompt(
             selection,
             &save_instruction,
-            prompt_agent.process.bounds_prompt_path.as_deref(),
+            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
         )
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
     } else {
@@ -1088,11 +1087,11 @@ pub async fn inline_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prompt_agent = agent.for_prompt(config::PromptKind::Base)?;
     let selection = prompt_selection(&prompt_agent)?;
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Agent {
         match agent_prompt::build_base_prompt(
             selection,
             &user_message,
-            prompt_agent.process.bounds_prompt_path.as_deref(),
+            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
         ) {
             Ok(prompt) => prompt,
             Err(e) => {
@@ -1223,10 +1222,10 @@ pub async fn run_draft(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    require_process_backend(
+    require_agent_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier draft requires the process backend; update [agents.draft] or pass --backend process",
+        "vizier draft requires the agent backend; update [agents.draft] or pass --backend agent",
     )?;
 
     let DraftArgs {
@@ -1303,7 +1302,7 @@ pub async fn run_draft(
             &slug,
             &branch_name,
             &spec_text,
-            prompt_agent.process.bounds_prompt_path.as_deref(),
+            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             Box::from(format!("build_prompt: {err}"))
@@ -1437,10 +1436,10 @@ pub async fn run_approve(
         return list_pending_plans(opts.target.clone());
     }
 
-    require_process_backend(
+    require_agent_backend(
         agent,
         config::PromptKind::Base,
-        "vizier approve requires the process backend; update [agents.approve] or pass --backend process",
+        "vizier approve requires the agent backend; update [agents.approve] or pass --backend agent",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1578,10 +1577,10 @@ pub async fn run_review(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    require_process_backend(
+    require_agent_backend(
         agent,
         config::PromptKind::Review,
-        "vizier review requires the process backend; update [agents.review] or pass --backend process",
+        "vizier review requires the agent backend; update [agents.review] or pass --backend agent",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1723,18 +1722,18 @@ pub async fn run_merge(
     )?;
 
     if matches!(opts.conflict_strategy, MergeConflictStrategy::Agent) {
-        require_process_backend(
+        require_agent_backend(
             agent,
             config::PromptKind::MergeConflict,
-            "Agent-based conflict resolution requires the process backend; update [agents.merge] or rerun with --backend process",
+            "Agent-based conflict resolution requires the agent backend; update [agents.merge] or rerun with --backend agent",
         )?;
     }
 
     if opts.cicd_gate.auto_resolve && opts.cicd_gate.script.is_some() {
         let review_agent = agent.for_prompt(config::PromptKind::Review)?;
-        if review_agent.backend != config::BackendKind::Process {
+        if review_agent.backend != config::BackendKind::Agent {
             display::warn(
-                "CI/CD auto-remediation requested but [agents.merge] is not set to the process backend; gate failures will abort without auto fixes.",
+                "CI/CD auto-remediation requested but [agents.merge] is not set to the agent backend; gate failures will abort without auto fixes.",
             );
         }
     }
@@ -2054,9 +2053,9 @@ async fn run_cicd_gate_for_merge(
             return Err(cicd_gate_failure_error(script, &result));
         }
 
-        if agent.backend != config::BackendKind::Process {
+        if agent.backend != config::BackendKind::Agent {
             display::warn(
-                "CI/CD gate auto-remediation requires the process backend; skipping automatic fixes.",
+                "CI/CD gate auto-remediation requires the agent backend; skipping automatic fixes.",
             );
             return Err(cicd_gate_failure_error(script, &result));
         }
@@ -2129,7 +2128,7 @@ async fn attempt_cicd_auto_fix(
         exit_code,
         stdout,
         stderr,
-        fix_agent.process.bounds_prompt_path.as_deref(),
+        fix_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let instruction = format!(
@@ -2447,7 +2446,7 @@ async fn try_auto_resolve_conflicts(
         &spec.target_branch,
         &spec.branch,
         files,
-        prompt_agent.process.bounds_prompt_path.as_deref(),
+        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let request = build_agent_request(
@@ -2457,7 +2456,7 @@ async fn try_auto_resolve_conflicts(
         AgentOutputMode::EventsJson,
     );
 
-    let runner = Arc::clone(prompt_agent.process_runner()?);
+    let runner = Arc::clone(prompt_agent.agent_runner()?);
     let adapter = prompt_agent.display_adapter.clone();
     let (progress_tx, progress_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(progress_rx);
@@ -2727,7 +2726,7 @@ async fn perform_review_workflow(
         &plan_document,
         &diff_summary,
         &check_contexts,
-        critique_agent.process.bounds_prompt_path.as_deref(),
+        critique_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3097,7 +3096,7 @@ async fn apply_review_fixes(
     let system_prompt = agent_prompt::build_base_prompt(
         selection,
         &instruction,
-        prompt_agent.process.bounds_prompt_path.as_deref(),
+        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3226,7 +3225,7 @@ async fn apply_plan_in_worktree(
     let system_prompt = agent_prompt::build_base_prompt(
         selection,
         &instruction,
-        prompt_agent.process.bounds_prompt_path.as_deref(),
+        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -3318,11 +3317,11 @@ async fn refresh_plan_branch(
     let selection = prompt_selection(&prompt_agent)?;
 
     let instruction = build_save_instruction(None);
-    let system_prompt = if prompt_agent.backend == config::BackendKind::Process {
+    let system_prompt = if prompt_agent.backend == config::BackendKind::Agent {
         agent_prompt::build_base_prompt(
             selection,
             &instruction,
-            prompt_agent.process.bounds_prompt_path.as_deref(),
+            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
     } else {
@@ -3564,10 +3563,13 @@ Tidy merge message bodies.
     #[test]
     fn build_agent_request_uses_agent_settings() {
         let mut cfg = config::Config::default();
-        cfg.process.binary_path = PathBuf::from("/opt/backend");
-        cfg.process.profile = Some("merge-profile".to_string());
-        cfg.process.extra_args = vec!["--trace".to_string(), "--audit".to_string()];
-        cfg.provider_model = "custom-model".to_string();
+        cfg.agent_runtime.command = vec![
+            "/opt/backend".to_string(),
+            "exec".to_string(),
+            "--mode".to_string(),
+        ];
+        cfg.agent_runtime.profile = Some("merge-profile".to_string());
+        cfg.agent_runtime.extra_args = vec!["--trace".to_string(), "--audit".to_string()];
 
         let agent = cfg
             .resolve_agent_settings(CommandScope::Merge, None)
@@ -3580,13 +3582,19 @@ Tidy merge message bodies.
             AgentOutputMode::EventsJson,
         );
 
-        assert_eq!(request.bin, PathBuf::from("/opt/backend"));
+        assert_eq!(
+            request.command,
+            vec![
+                "/opt/backend".to_string(),
+                "exec".to_string(),
+                "--mode".to_string()
+            ]
+        );
         assert_eq!(request.profile.as_deref(), Some("merge-profile"));
         assert_eq!(
             request.extra_args,
             vec!["--trace".to_string(), "--audit".to_string()]
         );
-        assert_eq!(request.model.as_deref(), Some("custom-model"));
         assert_eq!(
             request.scope,
             Some(config::CommandScope::Merge),
