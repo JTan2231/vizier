@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use git2::{BranchType, Oid, Repository, RepositoryState};
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
+use vizier_core::agent::ProgressHook;
 use vizier_core::vcs::{
     AttemptOutcome, CredentialAttempt, MergePreparation, MergeReady, PushErrorKind, RemoteScheme,
     add_worktree_for_branch, amend_head_commit, commit_in_progress_merge,
@@ -2378,18 +2380,18 @@ async fn handle_merge_conflict(
             emit_conflict_instructions(&spec.slug, &files, &state_path);
             Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
         }
-        MergeConflictStrategy::Agent => match try_auto_resolve_conflicts(spec, &state, &files, agent)
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(err) => {
-                display::warn(format!(
-                    "Backend auto-resolution failed: {err}. Falling back to manual resolution."
-                ));
-                emit_conflict_instructions(&spec.slug, &files, &state_path);
-                Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
+        MergeConflictStrategy::Agent => {
+            match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
+                Ok(result) => Ok(result),
+                Err(err) => {
+                    display::warn(format!(
+                        "Backend auto-resolution failed: {err}. Falling back to manual resolution."
+                    ));
+                    emit_conflict_instructions(&spec.slug, &files, &state_path);
+                    Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
+                }
             }
-        },
+        }
     }
 }
 
@@ -2435,14 +2437,23 @@ async fn try_auto_resolve_conflicts(
         profile: prompt_agent.process.profile.clone(),
         bin: prompt_agent.process.binary_path.clone(),
         extra_args: prompt_agent.process.extra_args.clone(),
-        model: codex::CodexModel::Gpt5Codex,
+        model: Some(codex::CodexModel::Gpt5Codex.as_model_name().to_string()),
         output_mode: codex::CodexOutputMode::EventsJson,
         scope: Some(prompt_agent.scope),
+        metadata: BTreeMap::new(),
     };
 
+    let runner = Arc::clone(agent.process_runner()?);
+    let adapter = agent.display_adapter.clone();
     let (progress_tx, progress_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(progress_rx);
-    let result = codex::run_exec(request, Some(codex::ProgressHook::Plain(progress_tx))).await;
+    let result = runner
+        .execute(
+            request,
+            adapter.clone(),
+            Some(ProgressHook::Plain(progress_tx)),
+        )
+        .await;
     if let Some(handle) = progress_handle {
         let _ = handle.await;
     }
@@ -3030,7 +3041,7 @@ fn run_git_capture(
 fn emit_review_critique(plan_slug: &str, critique: &str) {
     println!("--- Review critique for plan {plan_slug} ---");
     if critique.trim().is_empty() {
-    println!("(Agent returned an empty critique.)");
+        println!("(Agent returned an empty critique.)");
     } else {
         println!("{}", critique.trim());
     }

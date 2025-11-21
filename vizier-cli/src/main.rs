@@ -74,11 +74,21 @@ struct GlobalOpts {
     backend: Option<BackendArg>,
 
     /// Path to the agent backend binary (defaults to resolving `codex` on PATH)
-    #[arg(long = "agent-bin", value_name = "PATH", global = true, alias = "codex-bin")]
+    #[arg(
+        long = "agent-bin",
+        value_name = "PATH",
+        global = true,
+        alias = "codex-bin"
+    )]
     agent_bin: Option<PathBuf>,
 
     /// Agent profile to load (pass empty to unset)
-    #[arg(long = "agent-profile", value_name = "NAME", global = true, alias = "codex-profile")]
+    #[arg(
+        long = "agent-profile",
+        value_name = "NAME",
+        global = true,
+        alias = "codex-profile"
+    )]
     agent_profile: Option<String>,
 
     /// Override the agent bounds prompt with a file on disk

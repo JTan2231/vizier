@@ -4,6 +4,7 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
@@ -16,6 +17,7 @@ use tokio::{
 use wire::config::ThinkingLevel;
 
 use crate::{
+    agent::ProgressHook,
     codex,
     config::{self, PromptOrigin, SystemPrompt},
     display::{self, Verbosity},
@@ -936,6 +938,8 @@ impl Auditor {
             }
             config::BackendKind::Process => {
                 simulate_integration_changes()?;
+                let runner = Arc::clone(agent.process_runner()?);
+                let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
@@ -952,15 +956,20 @@ impl Auditor {
                         profile: opts_clone.profile.clone(),
                         bin: opts_clone.binary_path.clone(),
                         extra_args: opts_clone.extra_args.clone(),
-                        model: resolved_codex_model,
+                        model: Some(resolved_codex_model.as_model_name().to_string()),
                         output_mode: codex::CodexOutputMode::EventsJson,
                         scope: Some(agent_scope),
+                        metadata: BTreeMap::new(),
                     };
 
-                    let response =
-                        codex::run_exec(request, Some(codex::ProgressHook::Display(tx.clone())))
-                            .await
-                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                    let response = runner
+                        .execute(
+                            request,
+                            display_adapter.clone(),
+                            Some(ProgressHook::Display(tx.clone())),
+                        )
+                        .await
+                        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
                     let mut updated = messages_clone.clone();
                     let mut assistant_message = provider_clone
@@ -1038,6 +1047,8 @@ impl Auditor {
             }
             config::BackendKind::Process => {
                 simulate_integration_changes()?;
+                let runner = Arc::clone(agent.process_runner()?);
+                let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
@@ -1045,7 +1056,7 @@ impl Auditor {
                 let (output_mode, progress_hook) = match &stream {
                     RequestStream::Status { events, .. } => (
                         codex::CodexOutputMode::EventsJson,
-                        events.clone().map(codex::ProgressHook::Plain),
+                        events.clone().map(ProgressHook::Plain),
                     ),
                     RequestStream::PassthroughStderr => {
                         (codex::CodexOutputMode::PassthroughHuman, None)
@@ -1057,12 +1068,16 @@ impl Auditor {
                     profile: codex_opts.profile.clone(),
                     bin: codex_opts.binary_path.clone(),
                     extra_args: codex_opts.extra_args.clone(),
-                    model: resolved_codex_model,
+                    model: Some(resolved_codex_model.as_model_name().to_string()),
                     output_mode,
                     scope: Some(agent_scope),
+                    metadata: BTreeMap::new(),
                 };
 
-                match codex::run_exec(request, progress_hook).await {
+                match runner
+                    .execute(request, display_adapter.clone(), progress_hook)
+                    .await
+                {
                     Ok(response) => {
                         let mut assistant_message = provider
                             .new_message(response.assistant_text.clone())

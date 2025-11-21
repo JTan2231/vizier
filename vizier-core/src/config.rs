@@ -12,7 +12,10 @@ use wire::{
 
 use crate::{
     COMMIT_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT, REVIEW_PROMPT,
-    SYSTEM_PROMPT_BASE, tools, tree,
+    SYSTEM_PROMPT_BASE,
+    agent::{AgentDisplayAdapter, AgentRunner, FallbackDisplayAdapter},
+    codex::{CodexDisplayAdapter, CodexRunner},
+    tools, tree,
 };
 
 pub const DEFAULT_MODEL: &str = "gpt-5";
@@ -207,6 +210,8 @@ pub struct AgentSettings {
     pub scope: CommandScope,
     pub backend: BackendKind,
     pub provider: Arc<dyn Prompt>,
+    pub runner: Option<Arc<dyn AgentRunner>>,
+    pub display_adapter: Arc<dyn AgentDisplayAdapter>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub process: ProcessOptions,
@@ -224,6 +229,16 @@ impl AgentSettings {
 
     pub fn prompt_selection(&self) -> Option<&PromptSelection> {
         self.prompt.as_ref()
+    }
+
+    pub fn process_runner(&self) -> Result<&Arc<dyn AgentRunner>, Box<dyn std::error::Error>> {
+        self.runner.as_ref().ok_or_else(|| {
+            format!(
+                "agent scope `{}` requires a process backend runner, but none was resolved",
+                self.scope.as_str()
+            )
+            .into()
+        })
     }
 }
 
@@ -1015,12 +1030,30 @@ impl AgentSettingsBuilder {
             scope,
             backend: self.backend,
             provider,
+            runner: resolve_agent_runner(self.backend)?,
+            display_adapter: resolve_display_adapter(self.backend),
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
             process: self.process.clone(),
             prompt,
             cli_override: cli_override.cloned(),
         })
+    }
+}
+
+fn resolve_agent_runner(
+    backend: BackendKind,
+) -> Result<Option<Arc<dyn AgentRunner>>, Box<dyn std::error::Error>> {
+    match backend {
+        BackendKind::Wire => Ok(None),
+        BackendKind::Process => Ok(Some(Arc::new(CodexRunner))),
+    }
+}
+
+fn resolve_display_adapter(backend: BackendKind) -> Arc<dyn AgentDisplayAdapter> {
+    match backend {
+        BackendKind::Wire => Arc::new(FallbackDisplayAdapter::default()),
+        BackendKind::Process => Arc::new(CodexDisplayAdapter::default()),
     }
 }
 
@@ -1089,8 +1122,8 @@ fn parse_agent_overrides(
         }
     }
 
-    if let Some(codex_value) = value_at_path(value, &["process"])
-        .or_else(|| value_at_path(value, &["codex"]))
+    if let Some(codex_value) =
+        value_at_path(value, &["process"]).or_else(|| value_at_path(value, &["codex"]))
     {
         if let Some(parsed) = parse_process_override(codex_value)? {
             overrides.process = Some(parsed);
@@ -1825,5 +1858,26 @@ model = "gpt-4o-mini"
         );
         assert_eq!(agent.backend, BackendKind::Wire);
         assert_eq!(agent.provider_model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn process_backend_exposes_runner_and_adapter() {
+        let cfg = Config::default();
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("process backend should resolve");
+        assert!(agent.process_runner().is_ok());
+        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
+    }
+
+    #[test]
+    fn wire_backend_skips_runner_but_keeps_adapter() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Wire;
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("wire backend should resolve");
+        assert!(agent.runner.is_none());
+        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
     }
 }
