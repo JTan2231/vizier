@@ -1,9 +1,10 @@
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFormat, DiffLine, DiffOptions,
-    Error, ErrorClass, ErrorCode, Index, IndexAddOption, MergeOptions as GitMergeOptions, Oid,
-    PushOptions, RemoteCallbacks, Repository, RepositoryState, Signature, Sort, Status,
-    StatusOptions, Tree, WorktreeAddOptions, WorktreePruneOptions,
+    BranchType, CherrypickOptions, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFormat,
+    DiffLine, DiffOptions, Error, ErrorClass, ErrorCode, Index, IndexAddOption,
+    MergeOptions as GitMergeOptions, Oid, PushOptions, RemoteCallbacks, Repository,
+    RepositoryState, ResetType, Signature, Sort, Status, StatusOptions, Tree, WorktreeAddOptions,
+    WorktreePruneOptions,
 };
 use std::cell::RefCell;
 use std::env;
@@ -1074,6 +1075,32 @@ pub enum MergePreparation {
     Conflicted(MergeConflict),
 }
 
+#[derive(Debug, Clone)]
+pub struct SquashPlan {
+    pub target_head: Oid,
+    pub source_tip: Oid,
+    pub merge_base: Oid,
+    pub commits_to_apply: Vec<Oid>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CherryPickApply {
+    pub applied: Vec<Oid>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CherryPickApplyConflict {
+    pub applied: Vec<Oid>,
+    pub remaining: Vec<Oid>,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CherryPickOutcome {
+    Completed(CherryPickApply),
+    Conflicted(CherryPickApplyConflict),
+}
+
 pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
     let repo = Repository::discover(".")?;
     if repo.state() != RepositoryState::Clean {
@@ -1110,6 +1137,155 @@ pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
         source_oid: source_commit.id(),
         tree_oid,
     }))
+}
+
+pub fn build_squash_plan(source_branch: &str) -> Result<SquashPlan, Error> {
+    let repo = Repository::discover(".")?;
+    let head_ref = repo.head()?;
+    if !head_ref.is_branch() {
+        return Err(Error::from_str(
+            "cannot merge into detached HEAD; checkout a branch first",
+        ));
+    }
+
+    let head_commit = head_ref.peel_to_commit()?;
+    let source_ref = repo.find_branch(source_branch, BranchType::Local)?;
+    let source_commit = source_ref.get().peel_to_commit()?;
+    let merge_base = repo.merge_base(head_commit.id(), source_commit.id())?;
+    let commits_to_apply = collect_commits_from_base(&repo, merge_base, source_commit.id())?;
+
+    Ok(SquashPlan {
+        target_head: head_commit.id(),
+        source_tip: source_commit.id(),
+        merge_base,
+        commits_to_apply,
+    })
+}
+
+pub fn apply_cherry_pick_sequence(
+    start_head: Oid,
+    commits: &[Oid],
+    file_favor: Option<git2::FileFavor>,
+) -> Result<CherryPickOutcome, Error> {
+    let repo = Repository::discover(".")?;
+    let current_head = repo.head()?.peel_to_commit()?.id();
+    if current_head != start_head {
+        return Err(Error::from_str(
+            "HEAD moved since the squash plan was prepared; aborting",
+        ));
+    }
+
+    let mut applied = Vec::new();
+    for (idx, oid) in commits.iter().enumerate() {
+        let commit = repo.find_commit(*oid)?;
+        let mut opts = CherrypickOptions::new();
+        let mut checkout = CheckoutBuilder::new();
+        checkout
+            .allow_conflicts(true)
+            .conflict_style_merge(true)
+            .force();
+        opts.checkout_builder(checkout);
+        let mut merge_opts = GitMergeOptions::new();
+        merge_opts.fail_on_conflict(false);
+        if let Some(favor) = file_favor {
+            merge_opts.file_favor(favor);
+        }
+        opts.merge_opts(merge_opts);
+        let result = repo.cherrypick(&commit, Some(&mut opts));
+        if let Err(err) = result {
+            if err.code() != ErrorCode::MergeConflict {
+                return Err(err);
+            }
+        }
+
+        let mut index = repo.index()?;
+        if index.has_conflicts() {
+            let files = collect_conflict_paths(&mut index);
+            return Ok(CherryPickOutcome::Conflicted(CherryPickApplyConflict {
+                applied: applied.clone(),
+                remaining: commits[idx..].to_vec(),
+                files,
+            }));
+        }
+
+        index.write()?;
+        let tree_oid = index.write_tree()?;
+        let tree = repo.find_tree(tree_oid)?;
+        let sig = repo.signature()?;
+        let parent_commit = repo.head()?.peel_to_commit()?;
+        let message = commit.summary().unwrap_or("Apply plan commit");
+        let new_oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?;
+
+        repo.cleanup_state().ok();
+        let mut checkout = CheckoutBuilder::new();
+        checkout.force();
+        repo.checkout_head(Some(&mut checkout))?;
+
+        applied.push(new_oid);
+    }
+
+    Ok(CherryPickOutcome::Completed(CherryPickApply { applied }))
+}
+
+pub fn commit_soft_squash(message: &str, base_oid: Oid, expected_head: Oid) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    if repo.head()?.peel_to_commit()?.id() != expected_head {
+        return Err(Error::from_str(
+            "HEAD moved after applying the plan; aborting squash",
+        ));
+    }
+
+    let base_obj = repo.find_object(base_oid, None)?;
+    repo.reset(&base_obj, ResetType::Soft, None)?;
+
+    let mut index = repo.index()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+    let sig = repo.signature()?;
+    let parent = repo.find_commit(base_oid)?;
+
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
+}
+
+pub fn commit_in_progress_cherry_pick(message: &str, expected_parent: Oid) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    if repo.state() != RepositoryState::CherryPick {
+        return Err(Error::from_str("no cherry-pick in progress to finalize"));
+    }
+
+    let parent_commit = repo.head()?.peel_to_commit()?;
+    if parent_commit.id() != expected_parent {
+        return Err(Error::from_str(
+            "HEAD no longer points to the expected cherry-pick parent",
+        ));
+    }
+
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Err(Error::from_str(
+            "cannot finalize cherry-pick until all conflicts are resolved",
+        ));
+    }
+
+    index.write()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+    let sig = repo.signature()?;
+
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?;
+
+    repo.cleanup_state()?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+
+    Ok(oid)
 }
 
 pub fn commit_ready_merge(message: &str, ready: MergeReady) -> Result<Oid, Error> {
@@ -1220,6 +1396,24 @@ pub fn commit_in_progress_squash(message: &str, head_oid: Oid) -> Result<Oid, Er
     Ok(oid)
 }
 
+fn collect_commits_from_base(
+    repo: &Repository,
+    merge_base: Oid,
+    source_tip: Oid,
+) -> Result<Vec<Oid>, Error> {
+    let mut walk = repo.revwalk()?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::REVERSE)?;
+    walk.push(source_tip)?;
+    walk.hide(merge_base)?;
+
+    let mut commits = Vec::new();
+    for oid in walk {
+        commits.push(oid?);
+    }
+
+    Ok(commits)
+}
+
 pub fn amend_head_commit(message: Option<&str>) -> Result<Oid, Error> {
     let repo = Repository::discover(".")?;
     let head = repo.head()?;
@@ -1260,6 +1454,9 @@ pub fn amend_head_commit(message: Option<&str>) -> Result<Oid, Error> {
 pub fn list_conflicted_paths() -> Result<Vec<String>, Error> {
     let repo = Repository::discover(".")?;
     let mut index = repo.index()?;
+    if !index.has_conflicts() {
+        return Ok(Vec::new());
+    }
     Ok(collect_conflict_paths(&mut index))
 }
 
