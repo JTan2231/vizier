@@ -11,6 +11,8 @@ binary = "/usr/local/bin/agent-cli"
 profile = "default"
 bounds_prompt_path = "/etc/vizier/agent_bounds.md"
 extra_args = ["--log-json"]
+# Process scopes inherit this runner plus Codex's display adapter; swapping to another CLI agent means
+# pointing these fields (or a scoped `[agents.<scope>.process]` table) at the new binary/profile.
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with backend/model overrides for that scope+prompt pairing. Available kinds: base, commit,

@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod auditor;
 pub mod bootstrap;
 pub mod codex;
