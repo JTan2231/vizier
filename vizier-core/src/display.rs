@@ -380,7 +380,7 @@ pub fn render_progress_event(event: &ProgressEvent, verbosity: Verbosity) -> Vec
         primary.push_str(&format!(" [{}]", status));
     }
 
-    let mut summary_lines: Vec<String> = summary
+    let summary_lines: Vec<String> = summary
         .as_ref()
         .map(|value| {
             value
@@ -433,7 +433,17 @@ pub fn value_to_string(value: &Value) -> Option<String> {
 }
 
 pub fn format_number(value: usize) -> String {
-    format!("{value:,}")
+    let digits: Vec<char> = value.to_string().chars().collect();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+
+    for (idx, ch) in digits.iter().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(*ch);
+    }
+
+    formatted.chars().rev().collect()
 }
 
 pub fn format_label_value_block(rows: &[(String, String)], indent: usize) -> String {

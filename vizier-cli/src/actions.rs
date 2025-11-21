@@ -78,7 +78,7 @@ fn latest_usage_rows() -> Vec<(String, String)> {
 }
 
 fn append_agent_and_usage_rows(rows: &mut Vec<(String, String)>, verbosity: Verbosity) {
-    if !matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
+    if matches!(verbosity, Verbosity::Quiet) {
         return;
     }
 
@@ -174,7 +174,7 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
 
 pub fn print_token_usage() {
     let verbosity = display::get_display_config().verbosity;
-    if !matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
+    if matches!(verbosity, Verbosity::Quiet) {
         return;
     }
 
@@ -188,10 +188,8 @@ pub fn print_token_usage() {
         return;
     }
 
-    display::info("Token usage:");
-    for line in block.lines() {
-        display::info(line.to_string());
-    }
+    println!("Token usage:");
+    println!("{block}");
 }
 
 fn prompt_selection<'a>(
@@ -1459,7 +1457,7 @@ pub async fn run_approve(
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
-        let mut rows = vec![
+        let rows = vec![
             ("Outcome".to_string(), "Plan already merged".to_string()),
             ("Plan".to_string(), spec.slug.clone()),
             ("Target".to_string(), spec.target_branch.clone()),
@@ -1605,7 +1603,7 @@ pub async fn run_review(
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
-        let mut rows = vec![
+        let rows = vec![
             ("Outcome".to_string(), "Plan already merged".to_string()),
             ("Plan".to_string(), spec.slug.clone()),
             ("Target".to_string(), spec.target_branch.clone()),
@@ -1682,7 +1680,7 @@ pub async fn run_review(
                 ("Outcome".to_string(), "Review complete".to_string()),
                 ("Plan".to_string(), spec.slug.clone()),
                 ("Branch".to_string(), spec.branch.clone()),
-                ("Critique".to_string(), outcome.critique_label.clone()),
+                ("Critique".to_string(), outcome.critique_label.to_string()),
                 (
                     "Checks".to_string(),
                     format!(
@@ -1700,7 +1698,8 @@ pub async fn run_review(
                         .unwrap_or_else(|| "<unknown>".to_string()),
                 ),
             ];
-            append_agent_and_usage_rows(&mut rows, current_verbosity());
+            let verbosity = current_verbosity();
+            append_agent_and_usage_rows(&mut rows, verbosity);
             println!("{}", format_block(rows));
             Ok(())
         }
@@ -1763,7 +1762,7 @@ pub async fn run_merge(
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
-        let mut rows = vec![
+        let rows = vec![
             ("Outcome".to_string(), "Plan already merged".to_string()),
             ("Plan".to_string(), spec.slug.clone()),
             ("Target".to_string(), spec.target_branch.clone()),
@@ -2341,7 +2340,8 @@ fn finalize_merge(
         }
     }
 
-    append_agent_and_usage_rows(&mut rows, current_verbosity());
+    let verbosity = current_verbosity();
+    append_agent_and_usage_rows(&mut rows, verbosity);
     println!("{}", format_block(rows));
     Ok(())
 }

@@ -301,6 +301,20 @@ fn usage_value_optional(usage: &Value, key: &str) -> Result<usize, Box<dyn std::
     Ok(usage.get(key).and_then(Value::as_u64).unwrap_or(0) as usize)
 }
 
+fn format_number(value: usize) -> String {
+    let digits: Vec<char> = value.to_string().chars().collect();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+
+    for (idx, ch) in digits.iter().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(*ch);
+    }
+
+    formatted.chars().rev().collect()
+}
+
 fn gather_session_logs(repo: &IntegrationRepo) -> io::Result<Vec<PathBuf>> {
     let sessions_root = repo.path().join(".vizier").join("sessions");
     let mut files = Vec::new();
@@ -330,7 +344,7 @@ fn new_session_log<'a>(before: &'a [PathBuf], after: &'a [PathBuf]) -> Option<&'
 fn usage_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
-        .filter(|line| line.contains("[usage] token-usage"))
+        .filter(|line| line.contains("[usage]"))
         .collect()
 }
 
@@ -521,7 +535,7 @@ fn test_save_no_commit_leaves_pending_changes() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("mode=manual"),
+        stdout.contains("Mode       : manual"),
         "expected manual mode indicator in output but saw: {stdout}"
     );
 
@@ -777,14 +791,26 @@ fn test_ask_reports_token_usage_progress() -> TestResult {
         stderr
     );
     assert!(
-        stderr.contains("Input:") && stderr.contains("cached"),
+        stderr.to_ascii_lowercase().contains("input") && stderr.contains("cached"),
         "usage block should include cached input counts:\n{}",
         stderr
     );
     assert!(
-        stderr.contains("Output:") && stderr.to_ascii_lowercase().contains("reasoning"),
+        stderr.to_ascii_lowercase().contains("output")
+            && stderr.to_ascii_lowercase().contains("reasoning"),
         "usage block should include reasoning output counts:\n{}",
         stderr
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Token usage:"),
+        "ask stdout should include token usage block:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Total"),
+        "token usage block should include totals:\n{}",
+        stdout
     );
 
     let quiet_repo = IntegrationRepo::new()?;
@@ -799,6 +825,12 @@ fn test_ask_reports_token_usage_progress() -> TestResult {
         !quiet_stderr.contains("[usage] token-usage"),
         "quiet mode should suppress usage events but printed:\n{}",
         quiet_stderr
+    );
+    let quiet_stdout = String::from_utf8_lossy(&quiet.stdout);
+    assert!(
+        !quiet_stdout.contains("Token usage:"),
+        "quiet mode should suppress token usage block on stdout but printed:\n{}",
+        quiet_stdout
     );
     Ok(())
 }
@@ -824,11 +856,11 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
     let contents = session_log_contents_from_output(&repo, &stdout)?;
     let session_usage = parse_session_usage(&contents)?;
 
-    let fmt = |value: usize| format!("{value:,}");
+    let fmt = format_number;
     assert!(
         usage_lines
             .iter()
-            .any(|line| line.contains(&format!("Total: {}", fmt(session_usage.total)))),
+            .any(|line| line.replace(' ', "").contains(&format!("Total:{}", fmt(session_usage.total)))),
         "CLI usage should report total tokens:\n{stderr}"
     );
     if session_usage.total_delta > 0 {
@@ -842,7 +874,7 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
     assert!(
         usage_lines
             .iter()
-            .any(|line| line.contains(&format!("Input: {}", fmt(session_usage.prompt_total)))),
+            .any(|line| line.replace(' ', "").contains(&format!("Input:{}", fmt(session_usage.prompt_total)))),
         "CLI usage should report prompt tokens:\n{stderr}"
     );
     if session_usage.prompt_delta > 0 {
@@ -854,10 +886,12 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
         );
     }
     assert!(
-        usage_lines.iter().any(|line| line.contains(&format!(
-            "Output: {}",
-            fmt(session_usage.completion_total)
-        ))),
+        usage_lines
+            .iter()
+            .any(|line| line.replace(' ', "").contains(&format!(
+                "Output:{}",
+                fmt(session_usage.completion_total)
+            ))),
         "CLI usage should report completion tokens:\n{stderr}"
     );
     if session_usage.completion_delta > 0 {
@@ -1646,7 +1680,7 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&merge.stdout);
     assert!(
-        stdout.contains("fixes=[") && stdout.contains("amend:"),
+        stdout.contains("Gate fixes") && stdout.contains("amend:"),
         "merge summary should report the amended implementation commit: {stdout}"
     );
     Ok(())
@@ -1762,9 +1796,8 @@ fn test_review_summary_includes_token_suffix() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&review.stdout);
     assert!(
-        stdout.contains(" (tokens: total="),
-        "review summary should include token suffix but was:\n{}",
-        stdout
+        stdout.contains("Total") && stdout.contains("Input") && stdout.contains("Output"),
+        "review summary should include token usage block but was:\n{stdout}"
     );
     Ok(())
 }
