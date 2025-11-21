@@ -72,6 +72,7 @@ pub struct CodexRequest {
     pub extra_args: Vec<String>,
     pub model: CodexModel,
     pub output_mode: CodexOutputMode,
+    pub scope: Option<config::CommandScope>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +104,7 @@ impl CodexEvent {
     /// Vizier currently renders `phase`, `label`, `message`, `detail`, `data.path`/`data.file`,
     /// `progress`, `status`, and `timestamp`. Keep this list updated whenever the Codex event
     /// schema grows to ensure CLI history stays stable.
-    fn to_progress_event(&self) -> ProgressEvent {
+    fn to_progress_event(&self, scope: Option<config::CommandScope>) -> ProgressEvent {
         let payload = &self.payload;
         let phase = value_from(payload, "phase")
             .or_else(|| pointer_value(payload, "/data/phase"))
@@ -127,7 +128,8 @@ impl CodexEvent {
         let timestamp = value_from(payload, "timestamp");
 
         ProgressEvent {
-            kind: ProgressKind::Codex,
+            kind: ProgressKind::Agent,
+            source: scope.map(|s| format!("[agent:{}]", s.as_str())),
             phase,
             label,
             message,
@@ -207,27 +209,27 @@ impl std::fmt::Display for CodexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CodexError::BinaryNotFound(path) => {
-                write!(f, "Codex binary not found at {}", path.display())
+                write!(f, "agent backend binary not found at {}", path.display())
             }
-            CodexError::Spawn(e) => write!(f, "failed spawning Codex: {}", e),
+            CodexError::Spawn(e) => write!(f, "failed spawning agent backend: {}", e),
             CodexError::Io(e) => write!(f, "I/O error: {}", e),
             CodexError::NonZeroExit(code, lines) => {
                 write!(
                     f,
-                    "Codex exited with status {code}; stderr: {}",
+                    "agent backend exited with status {code}; stderr: {}",
                     lines.join("; ")
                 )
             }
-            CodexError::ProfileAuth(msg) => write!(f, "Codex profile/auth failure: {}", msg),
+            CodexError::ProfileAuth(msg) => write!(f, "agent profile/auth failure: {}", msg),
             CodexError::MalformedEvent(line) => {
-                write!(f, "Codex emitted malformed JSON event: {}", line)
+                write!(f, "agent backend emitted malformed JSON event: {}", line)
             }
             CodexError::MissingAssistantMessage => {
-                write!(f, "Codex completed without producing an assistant message")
+                write!(f, "agent backend completed without producing an assistant message")
             }
             CodexError::BoundsRead(path, err) => write!(
                 f,
-                "failed to read Codex bounds prompt at {}: {}",
+                "failed to read agent bounds prompt at {}: {}",
                 path.display(),
                 err
             ),
@@ -629,7 +631,7 @@ fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, CodexErr
         return Ok(contents);
     }
 
-    if let Some(path) = &config::get_config().codex.bounds_prompt_path {
+    if let Some(path) = &config::get_config().process.bounds_prompt_path {
         let contents = std::fs::read_to_string(path)
             .map_err(|err| CodexError::BoundsRead(path.clone(), err))?;
         Ok(contents)
@@ -669,21 +671,23 @@ pub async fn run_exec(
     req: CodexRequest,
     progress: Option<ProgressHook>,
 ) -> Result<CodexResponse, CodexError> {
+    let scope = req.scope;
     #[cfg(feature = "mock_llm")]
     {
         if mock_codex_failure_requested() {
             return Err(CodexError::NonZeroExit(
                 42,
-                vec!["forced mock Codex failure".to_string()],
+                vec!["forced mock agent failure".to_string()],
             ));
         }
         let response = mock_codex_response();
         if let Some(progress_hook) = progress {
             for event in &response.events {
-                progress_hook.send_event(event.to_progress_event()).await;
+                progress_hook
+                    .send_event(event.to_progress_event(scope))
+                    .await;
             }
         }
-        let _ = req;
         return Ok(response);
     }
 
@@ -737,7 +741,7 @@ pub async fn run_exec(
                 if trimmed.is_empty() {
                     continue;
                 }
-                display::debug(format!("[codex] {trimmed}"));
+                display::debug(format!("[agent] {trimmed}"));
                 stderr_lines.lock().await.push(trimmed);
             }
         }))
@@ -775,7 +779,7 @@ pub async fn run_exec(
                     };
 
                     if let Some(ref hook) = progress {
-                        hook.send_event(event.to_progress_event()).await;
+                        hook.send_event(event.to_progress_event(scope)).await;
                     }
 
                     if kind == "turn.completed" && usage.is_none() {
@@ -931,7 +935,7 @@ fn mock_codex_response() -> CodexResponse {
     };
 
     CodexResponse {
-        assistant_text: "mock codex response".to_string(),
+        assistant_text: "mock agent response".to_string(),
         usage,
         events: vec![
             CodexEvent {
@@ -959,13 +963,14 @@ fn mock_codex_response() -> CodexResponse {
 
 #[cfg(feature = "mock_llm")]
 fn mock_codex_failure_requested() -> bool {
-    std::env::var("VIZIER_FORCE_CODEX_ERROR")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
+    fn env_flag(name: &str) -> Option<bool> {
+        std::env::var(name)
+            .ok()
+            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+    }
+
+    env_flag("VIZIER_FORCE_AGENT_ERROR")
+        .or_else(|| env_flag("VIZIER_FORCE_CODEX_ERROR"))
         .unwrap_or(false)
 }
 
@@ -984,6 +989,7 @@ mod tests {
             extra_args: vec!["--foo".to_string()],
             model: CodexModel::Gpt5,
             output_mode: mode,
+            scope: None,
         }
     }
 
@@ -1020,12 +1026,13 @@ mod tests {
             payload,
         };
 
-        let progress = event.to_progress_event();
+        let progress =
+            event.to_progress_event(Some(config::CommandScope::Ask));
         let lines =
             crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
-            lines[0].contains("[codex] thread started"),
+            lines[0].contains("[agent:ask] thread started"),
             "unexpected progress line: {}",
             lines[0]
         );
@@ -1046,12 +1053,13 @@ mod tests {
             payload,
         };
 
-        let progress = event.to_progress_event();
+        let progress =
+            event.to_progress_event(Some(config::CommandScope::Approve));
         let lines =
             crate::display::render_progress_event(&progress, crate::display::Verbosity::Normal);
 
         assert!(
-            lines[0].contains("[codex] item completed"),
+            lines[0].contains("[agent:approve] item completed"),
             "unexpected progress line: {}",
             lines[0]
         );
