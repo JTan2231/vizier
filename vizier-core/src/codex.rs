@@ -94,20 +94,13 @@ impl AgentDisplayAdapter for CodexDisplayAdapter {
     }
 }
 
-fn build_exec_args(req: &CodexRequest, output_path: &Path) -> Vec<OsString> {
+fn build_agent_args(req: &CodexRequest, output_path: &Path) -> Vec<OsString> {
     let mut args = Vec::new();
-    args.push(OsString::from("exec"));
-    if let Some(model) = req.model.as_deref() {
-        args.push(OsString::from("--model"));
-        args.push(OsString::from(model));
-    }
     if matches!(req.output_mode, CodexOutputMode::EventsJson) {
         args.push(OsString::from("--json"));
     }
     args.push(OsString::from("--output-last-message"));
     args.push(output_path.as_os_str().to_os_string());
-    args.push(OsString::from("--cd"));
-    args.push(req.repo_root.clone().into_os_string());
 
     if let Some(profile) = &req.profile {
         args.push(OsString::from("-p"));
@@ -120,6 +113,24 @@ fn build_exec_args(req: &CodexRequest, output_path: &Path) -> Vec<OsString> {
 
     args.push(OsString::from("-"));
     args
+}
+
+fn prepare_agent_command(
+    req: &CodexRequest,
+    output_path: &Path,
+) -> Result<(Command, PathBuf), AgentError> {
+    let (program, base_args) = req
+        .command
+        .split_first()
+        .ok_or(AgentError::MissingCommand)?;
+
+    let mut command = Command::new(program);
+    command.args(base_args);
+    command.current_dir(&req.repo_root);
+    for arg in build_agent_args(req, output_path) {
+        command.arg(arg);
+    }
+    Ok((command, req.repo_root.clone()))
 }
 
 #[cfg_attr(feature = "mock_llm", allow(unused_variables, unreachable_code))]
@@ -150,10 +161,7 @@ pub async fn run_exec(
     let _tempfile_guard = NamedTempFile::new()?;
     let output_path = _tempfile_guard.path().to_path_buf();
 
-    let mut command = Command::new(&req.bin);
-    for arg in build_exec_args(&req, &output_path) {
-        command.arg(arg);
-    }
+    let (mut command, _cwd) = prepare_agent_command(&req, &output_path)?;
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -162,7 +170,12 @@ pub async fn run_exec(
         Ok(child) => child,
         Err(err) => {
             if err.kind() == std::io::ErrorKind::NotFound {
-                return Err(CodexError::BinaryNotFound(req.bin.clone()));
+                let missing = req
+                    .command
+                    .first()
+                    .map(|s| PathBuf::from(s))
+                    .unwrap_or_else(|| PathBuf::from("agent"));
+                return Err(CodexError::BinaryNotFound(missing));
             }
 
             return Err(CodexError::Spawn(err));
@@ -457,9 +470,8 @@ mod tests {
             prompt: "prompt".to_string(),
             repo_root: PathBuf::from("/tmp/repo"),
             profile: None,
-            bin: PathBuf::from("/bin/codex"),
+            command: vec!["/bin/codex".to_string(), "exec".to_string()],
             extra_args: vec!["--foo".to_string()],
-            model: Some("gpt-5.1".to_string()),
             output_mode: mode,
             scope: None,
             metadata: BTreeMap::new(),
@@ -469,7 +481,7 @@ mod tests {
     #[test]
     fn events_mode_includes_json_flag() {
         let req = base_request(CodexOutputMode::EventsJson);
-        let args = build_exec_args(&req, Path::new("/tmp/out"));
+        let args = build_agent_args(&req, Path::new("/tmp/out"));
         let rendered: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -480,7 +492,7 @@ mod tests {
     #[test]
     fn passthrough_mode_skips_json_flag() {
         let req = base_request(CodexOutputMode::PassthroughHuman);
-        let args = build_exec_args(&req, Path::new("/tmp/out"));
+        let args = build_agent_args(&req, Path::new("/tmp/out"));
         let rendered: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -489,10 +501,9 @@ mod tests {
     }
 
     #[test]
-    fn omits_model_flag_when_model_not_set() {
-        let mut req = base_request(CodexOutputMode::EventsJson);
-        req.model = None;
-        let args = build_exec_args(&req, Path::new("/tmp/out"));
+    fn never_emits_model_flag() {
+        let req = base_request(CodexOutputMode::EventsJson);
+        let args = build_agent_args(&req, Path::new("/tmp/out"));
         let rendered: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -500,8 +511,55 @@ mod tests {
 
         assert!(
             !rendered.iter().any(|arg| arg == "--model"),
-            "model flag should be absent when no model is configured: {rendered:?}"
+            "model flag should never be emitted for agent commands: {rendered:?}"
         );
+    }
+
+    #[test]
+    fn args_do_not_include_cd_flag() {
+        let req = base_request(CodexOutputMode::EventsJson);
+        let args = build_agent_args(&req, Path::new("/tmp/out"));
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !rendered.iter().any(|arg| arg == "--cd"),
+            "agent args should rely on current_dir, not --cd: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn args_include_output_last_message_and_trailing_stdin_dash() {
+        let req = base_request(CodexOutputMode::EventsJson);
+        let output_path = Path::new("/tmp/out");
+        let args = build_agent_args(&req, output_path);
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            rendered
+                .windows(2)
+                .any(|pair| pair[0] == "--output-last-message"
+                    && pair[1] == output_path.to_string_lossy()),
+            "agent args should pass --output-last-message with the provided path"
+        );
+        assert_eq!(
+            rendered.last(),
+            Some(&"-".to_string()),
+            "agent args should terminate with stdin dash"
+        );
+    }
+
+    #[test]
+    fn command_prepares_with_repo_root_as_cwd() {
+        let req = base_request(CodexOutputMode::EventsJson);
+        let output_path = Path::new("/tmp/out");
+        let (_command, cwd) =
+            prepare_agent_command(&req, output_path).expect("build command");
+        assert_eq!(cwd.as_path(), req.repo_root.as_path());
     }
 
     #[test]

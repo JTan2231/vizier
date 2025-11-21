@@ -696,7 +696,7 @@ reasoning_effort = "low"
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
         Some("codex"),
-        "save should use the configured process backend runner"
+        "save should use the configured agent backend runner"
     );
     assert_eq!(
         save_json
@@ -1115,7 +1115,7 @@ backend = "codex"
     );
     let stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        stderr.contains("requires the process backend"),
+        stderr.contains("requires the agent backend"),
         "stderr missing backend warning: {}",
         stderr
     );

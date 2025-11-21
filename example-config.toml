@@ -1,33 +1,33 @@
 # Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults.
 # Global defaults (apply unless overridden below)
+# The CLI -p/--model override is wire-only; agent/Codex runs ignore model settings.
 model = "gpt-4.1"
 reasoning_effort = "medium"
-backend = "process"
+backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
 
-# Base process-backend wiring shared by process-backed commands unless a scoped override says otherwise
-[process]
-binary = "/usr/local/bin/agent-cli"
+# Base agent-backend wiring shared by agent-backed commands unless a scoped override says otherwise
+[agent]
+command = ["/usr/local/bin/agent-cli", "exec"]
 profile = "default"
 bounds_prompt_path = "/etc/vizier/agent_bounds.md"
 extra_args = ["--log-json"]
-# Process scopes inherit this runner plus Codex's display adapter; swapping to another CLI agent means
-# pointing these fields (or a scoped `[agents.<scope>.process]` table) at the new binary/profile.
+# Agent scopes inherit this runner plus Codex's display adapter; swapping to another CLI agent means
+# pointing these fields (or a scoped `[agents.<scope>.agent]` table) at the new command/profile.
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with backend/model overrides for that scope+prompt pairing. Available kinds: base, commit,
 # implementation_plan, review, merge_conflict.
 [agents.default.prompts.base]
 path = "./prompts/base.md"
-model = "gpt-4.1"
 
 [agents.draft.prompts.implementation_plan]
 path = "./prompts/plan.md"
-backend = "process"
+backend = "agent"
 
 [agents.review.prompts.review]
 path = "./prompts/review.md"
-[agents.review.prompts.review.process]
+[agents.review.prompts.review.agent]
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
 
@@ -55,15 +55,13 @@ retries = 2
 # When true, assistant-backed commands hold their edits for manual commits until you rerun without --no-commit.
 no_commit_default = false
 
-# Default agent stack inherited by every command before CLI flags are processed
+# Default agent stack inherited by every command before CLI flags are processed (model/reasoning only apply on wire scopes)
 [agents.default]
-backend = "process"
-model = "gpt-4.1"
-reasoning_effort = "medium"
+backend = "agent"
 
-# Fine-tune how the default process backend runs (binary/profile/bounds prompt/extra args)
-[agents.default.process]
-binary_path = "/usr/local/bin/agent-cli"
+# Fine-tune how the default agent backend runs (command/profile/bounds prompt/extra args)
+[agents.default.agent]
+command = ["/usr/local/bin/agent-cli", "exec"]
 profile = "maintainers"
 bounds_prompt_path = "/etc/vizier/agent_bounds.md"
 extra_args = ["--log-json"]
@@ -74,27 +72,27 @@ backend = "wire"
 model = "gpt-4.1-preview"
 reasoning_effort = "high"
 
-# Keep save flows on the process backend so narrative edits always use the same backend
+# Keep save flows on the agent backend so narrative edits always use the same backend
 [agents.save]
-backend = "process"
+backend = "agent"
 
-# Give save flows a stricter process profile and extra arguments when editing the repo
-[agents.save.process]
+# Give save flows a stricter agent profile and extra arguments when editing the repo
+[agents.save.agent]
 profile = "auditor"
 extra_args = ["--max-edits", "200"]
 
-# The remaining plan workflow commands stay on the process backend and inherit the defaults
+# The remaining plan workflow commands stay on the agent backend and inherit the defaults
 [agents.draft]
-backend = "process"
+backend = "agent"
 
 [agents.approve]
-backend = "process"
+backend = "agent"
 
 [agents.review]
-backend = "process"
+backend = "agent"
 
-# Review runs the process backend with a compliance profile and custom bounds prompt
-[agents.review.process]
+# Review runs the agent backend with a compliance profile and custom bounds prompt
+[agents.review.agent]
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
 

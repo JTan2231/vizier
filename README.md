@@ -104,11 +104,12 @@ vizier merge stdout-stderr
 Tune Vizier via repo-local files so settings travel with commits.
 
 - `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan), backend options, and the prompt profiles attached to each command. Every `[agents.<scope>.prompts.<kind>]` table ties a prompt template (inline text or `path`) to backend/model/reasoning overrides so plan/approve/review share a single surface instead of juggling parallel `[prompts.*]` overrides. CLI flags still sit above these scopes.
-- Each process-backed scope now resolves to a concrete `AgentRunner` + `AgentDisplayAdapter` pair. Codex provides the runner today, and its display adapter translates Codex JSON events into Vizier's `[agent:<scope>]` history lines, while a fallback adapter keeps wire/mixed backends readable. Swapping to another CLI agent means registering its runner/adapter once instead of rewriting every workflow.
+- The `-p/--model` flag is wire-only. Agent/Codex runs ignore it; model overrides only apply when a scope uses the wire backend.
+- Each agent-backed scope now resolves to a concrete `AgentRunner` + `AgentDisplayAdapter` pair. Codex provides the runner today, and its display adapter translates Codex JSON events into Vizier's `[agent:<scope>]` history lines, while a fallback adapter keeps wire/mixed backends readable. Swapping to another CLI agent means registering its runner/adapter once instead of rewriting every workflow.
 - Each scope now names a single `backend`. When that backend fails, Vizier aborts the command instead of falling back to wire, so rerun once the configured backend is healthy.
 - `.vizier/*.md` prompt files (BASE_SYSTEM_PROMPT, IMPLEMENTATION_PLAN_PROMPT, REVIEW_PROMPT, MERGE_CONFLICT_PROMPT, etc.) remain the fallback when no scope-specific profile is defined; repositories can keep shipping baked prompt files alongside their `.toml` entries.
 - `.vizier/COMMIT_PROMPT.md` (or `[prompts.commit]` in config) replaces the baked Linux kernel-style commit template if your team prefers a different format.
-- `example-config.toml` documents every knob, precedence rule (`CLI → scoped agent → default agent → legacy`), and now shows how per-scope prompt profiles control backend/model selection.
+- `example-config.toml` documents every knob, precedence rule (`CLI → scoped agent → default agent → legacy`), and now shows how per-scope prompt profiles control backend/reasoning (and model when on wire) selection.
 
 ## Philosophy: Narrative Maintainer
 Vizier treats software development as story editing, not just diff management.
