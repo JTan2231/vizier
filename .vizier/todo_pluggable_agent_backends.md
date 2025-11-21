@@ -3,8 +3,8 @@
 Thread: Agent backend abstraction + pluggable CLI agents
 
 Tension
-- Vizier currently treats `codex exec` as the only agent backend, so config, CLI flags, prompt orchestration, and progress reporting are all hard-wired to that binary (`vizier-core/src/codex.rs`, `vizier-core/src/lib.rs` prompts, `vizier-cli` actions). This makes it fragile and expensive to adopt new CLI agents like Claude or to run multiple agents side-by-side.
-- Agent configuration is underspecified: some options only apply to specific backends (for example, model selection for the wire backend vs Codex), and there is no clear story for where agent config lives (global vs per-command vs workflow-specific) or how unsupported options are handled. Operators can’t easily predict which knobs will be honored, ignored, or rejected for a given agent.
+- Vizier still ships with `codex exec` as the only concrete CLI agent backend: the new `AgentRunner`/`AgentDisplayAdapter` interface sits in front of that binary, but there is no plug-in story for alternate agent binaries yet, and progress/usage wiring still assumes Codex-style JSON events.
+- Agent configuration now lives under `[agents.default]` and per-scope `[agents.<scope>]` tables plus CLI overrides, but there is still no capability-discovery story for future non-Codex backends or a clear way to signal when backend-specific options are unsupported; operators need predictable feedback when configuration knobs are ignored or rejected.
 
 Desired behavior (Product-level)
 - Operators can choose which agent backend Vizier uses (Codex today, additional agents next) via config and/or a small set of CLI flags, without changing the draft → approve → review → merge choreography.
@@ -60,6 +60,11 @@ Update (2025-11-17)
 Update (2025-11-20): Single-backend selection and scoped prompt profiles
 - Agent selection is now a single-backend choice per command: each `[agents.<scope>]` table resolves to exactly one backend, and commands fail fast when that backend rejects the run instead of silently falling back to wire. `fallback_backend`/`fallback-backend` keys are rejected in both root and scoped config with a deprecation error so operators must fix broken backends rather than relying on hidden fallbacks (see `vizier-core/src/config.rs::FALLBACK_BACKEND_DEPRECATION_MESSAGE` and the associated tests).
 - Prompt orchestration is wired through `[agents.<scope>.prompts.<kind>]` profiles in `.vizier/config.toml`, which bind prompt text (inline or via `path`) to backend/model/reasoning overrides for that scope+kind. Repo-level `.vizier/*.md` prompt files and legacy `[prompts.*]` keys remain as fallbacks, but the primary story for plan/approve/review prompts is now the agent-scoped profile. README, AGENTS.md, and `example-config.toml` document the new shape so backends and prompts can be tuned together per command without introducing parallel config surfaces.
+
+Update (2025-11-21): Agent runner/display abstraction wired through Codex
+- `vizier-core/src/agent.rs` now defines a backend-neutral `AgentRunner`/`AgentDisplayAdapter` interface plus a `FallbackDisplayAdapter` for wire events, and `AgentSettings` resolves each scope to a concrete runner/display pair (`CodexRunner` + `CodexDisplayAdapter` for `backend = "agent"`, no runner + fallback adapter for `backend = "wire"`).
+- Auditor flows now call into this interface instead of hard-wiring Codex: agent-backed commands construct `AgentRequest` values (prompt, repo_root, agent runtime command/profile/bounds, extra_args, output mode, scope) and let the selected runner stream `AgentEvent` progress into the display adapter, which turns Codex JSON into `[codex] phase — message` history lines while the fallback adapter renders wire events as `[wire:<scope>]`.
+- Remaining work for this thread focuses on actual pluggability beyond Codex (declaring and enforcing backend capabilities, supporting third-party runners/adapters, and making progress/telemetry fully backend-neutral) plus Outcome/session JSON that consistently reports which agent backend handled each run.
 
 ## Repo-local config precedence (Snapshot: Code state — configuration precedence is still global-only)
 

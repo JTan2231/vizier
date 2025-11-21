@@ -412,7 +412,7 @@ pub fn get_snapshot_tools() -> Vec<Tool> {
 
 pub fn active_tooling_for(agent: &config::AgentSettings) -> Vec<Tool> {
     match agent.backend {
-        config::BackendKind::Process => Vec::new(),
+        config::BackendKind::Agent => Vec::new(),
         config::BackendKind::Wire => get_tools(),
     }
 }
