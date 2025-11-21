@@ -19,7 +19,7 @@ use wire::config::ThinkingLevel;
 use crate::{
     agent::{AgentOutputMode, AgentRequest, ProgressHook},
     config::{self, PromptOrigin, SystemPrompt},
-    display::{self, Verbosity},
+    display::{self, Verbosity, format_label_value_block, format_number},
     file_tracking, tools, vcs,
 };
 
@@ -35,6 +35,40 @@ pub struct TokenUsage {
     pub reasoning_output_tokens: usize,
     pub total_tokens: usize,
     pub known: bool,
+}
+
+impl TokenUsage {
+    pub fn to_rows(&self) -> Vec<(String, String)> {
+        if !self.known {
+            return vec![("Tokens".to_string(), "unknown".to_string())];
+        }
+
+        let mut rows = Vec::new();
+        rows.push((
+            "Total".to_string(),
+            format_number(self.total_tokens),
+        ));
+
+        let mut input = format_number(self.input_tokens);
+        if self.cached_input_tokens > 0 {
+            input.push_str(&format!(
+                " (cached {})",
+                format_number(self.cached_input_tokens)
+            ));
+        }
+        rows.push(("Input".to_string(), input));
+
+        let mut output = format_number(self.output_tokens);
+        if self.reasoning_output_tokens > 0 {
+            output.push_str(&format!(
+                " (reasoning {})",
+                format_number(self.reasoning_output_tokens)
+            ));
+        }
+        rows.push(("Output".to_string(), output));
+
+        rows
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -95,28 +129,57 @@ impl TokenUsageReport {
             .unwrap_or(0)
     }
 
+    pub fn to_rows(&self) -> Vec<(String, String)> {
+        if !self.known {
+            return vec![(
+                "Tokens".to_string(),
+                "unknown (backend omitted token counts)".to_string(),
+            )];
+        }
+
+        let mut rows = Vec::new();
+        rows.push((
+            "Total".to_string(),
+            format!(
+                "{} (+{})",
+                format_number(self.total()),
+                format_number(self.delta_total())
+            ),
+        ));
+
+        let mut input = format!(
+            "{} (+{})",
+            format_number(self.prompt_total),
+            format_number(self.prompt_delta)
+        );
+        if let Some(cached_delta) = self.cached_input_delta {
+            input.push_str(&format!(", cached +{}", format_number(cached_delta)));
+        } else if let Some(cached_total) = self.cached_input_total {
+            input.push_str(&format!(", cached {}", format_number(cached_total)));
+        }
+        rows.push(("Input".to_string(), input));
+
+        let mut output = format!(
+            "{} (+{})",
+            format_number(self.completion_total),
+            format_number(self.completion_delta)
+        );
+        if let Some(reasoning_total) = self.reasoning_output_total {
+            let reasoning_value = self
+                .reasoning_output_delta
+                .unwrap_or(reasoning_total);
+            output.push_str(&format!(
+                ", reasoning {}",
+                format_number(reasoning_value)
+            ));
+        }
+        rows.push(("Output".to_string(), output));
+
+        rows
+    }
+
     fn to_progress_event(&self) -> display::ProgressEvent {
-        let summary = if self.known {
-            let mut parts = vec![
-                format!("prompt={} (+{})", self.prompt_total, self.prompt_delta),
-                format!(
-                    "completion={} (+{})",
-                    self.completion_total, self.completion_delta
-                ),
-                format!("total={} (+{})", self.total(), self.delta_total()),
-            ];
-            if let Some(cached_total) = self.cached_input_total {
-                let delta = self.cached_input_delta.unwrap_or(0);
-                parts.push(format!("cached_input={} (+{})", cached_total, delta));
-            }
-            if let Some(reasoning_total) = self.reasoning_output_total {
-                let delta = self.reasoning_output_delta.unwrap_or(0);
-                parts.push(format!("reasoning_output={} (+{})", reasoning_total, delta));
-            }
-            parts.join(" ")
-        } else {
-            "unknown usage (backend omitted token counts)".to_string()
-        };
+        let summary = format_label_value_block(&self.to_rows(), 0);
 
         display::ProgressEvent {
             kind: display::ProgressKind::TokenUsage,

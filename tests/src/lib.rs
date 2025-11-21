@@ -202,11 +202,18 @@ fn count_commits_from_head(repo: &Repository) -> Result<usize, git2::Error> {
 
 fn find_save_field(output: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
+    let lower_key = key.to_ascii_lowercase();
     for line in output.lines() {
         for part in line.split(';') {
             let trimmed = part.trim();
             if let Some(value) = trimmed.strip_prefix(&prefix) {
                 return Some(value.trim().to_string());
+            }
+            if let Some(index) = trimmed.find(':') {
+                let (label, value) = trimmed.split_at(index);
+                if label.trim().eq_ignore_ascii_case(&lower_key) {
+                    return Some(value.trim_start_matches(':').trim().to_string());
+                }
             }
         }
     }
@@ -252,66 +259,6 @@ struct UsageSnapshot {
     reasoning_output_total: usize,
     reasoning_output_delta: usize,
     known: bool,
-}
-
-fn parse_usage_line(line: &str) -> Option<UsageSnapshot> {
-    if !line.contains("[usage] token-usage") {
-        return None;
-    }
-
-    if line.contains("unknown usage") {
-        return Some(UsageSnapshot {
-            known: false,
-            ..UsageSnapshot::default()
-        });
-    }
-
-    let mut snapshot = UsageSnapshot {
-        known: true,
-        ..UsageSnapshot::default()
-    };
-    let mut last_key: Option<&str> = None;
-
-    for token in line.split_whitespace() {
-        if let Some(value) = token.strip_prefix("prompt=") {
-            snapshot.prompt_total = value.parse().ok()?;
-            last_key = Some("prompt");
-            continue;
-        }
-        if let Some(value) = token.strip_prefix("completion=") {
-            snapshot.completion_total = value.parse().ok()?;
-            last_key = Some("completion");
-            continue;
-        }
-        if let Some(value) = token.strip_prefix("total=") {
-            snapshot.total = value.parse().ok()?;
-            last_key = Some("total");
-            continue;
-        }
-        if let Some(value) = token.strip_prefix("cached_input=") {
-            snapshot.cached_input_total = value.parse().ok()?;
-            last_key = Some("cached_input");
-            continue;
-        }
-        if let Some(value) = token.strip_prefix("reasoning_output=") {
-            snapshot.reasoning_output_total = value.parse().ok()?;
-            last_key = Some("reasoning_output");
-            continue;
-        }
-        if let Some(value) = token.strip_prefix("(+") {
-            let number = value.trim_end_matches(')').parse().ok()?;
-            match last_key {
-                Some("prompt") => snapshot.prompt_delta = number,
-                Some("completion") => snapshot.completion_delta = number,
-                Some("total") => snapshot.total_delta = number,
-                Some("cached_input") => snapshot.cached_input_delta = number,
-                Some("reasoning_output") => snapshot.reasoning_output_delta = number,
-                _ => return None,
-            }
-        }
-    }
-
-    Some(snapshot)
 }
 
 fn parse_session_usage(contents: &str) -> Result<UsageSnapshot, Box<dyn std::error::Error>> {
@@ -380,11 +327,11 @@ fn new_session_log<'a>(before: &'a [PathBuf], after: &'a [PathBuf]) -> Option<&'
     after.iter().find(|path| !before_set.contains(path))
 }
 
-fn last_usage_line(stderr: &str) -> Option<&str> {
+fn usage_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
-        .rev()
-        .find(|line| line.contains("[usage] token-usage"))
+        .filter(|line| line.contains("[usage] token-usage"))
+        .collect()
 }
 
 fn prepare_conflicting_plan(
@@ -830,13 +777,13 @@ fn test_ask_reports_token_usage_progress() -> TestResult {
         stderr
     );
     assert!(
-        stderr.contains("cached_input="),
-        "usage line should include cached input counts:\n{}",
+        stderr.contains("Input:") && stderr.contains("cached"),
+        "usage block should include cached input counts:\n{}",
         stderr
     );
     assert!(
-        stderr.contains("reasoning_output="),
-        "usage line should include reasoning output counts:\n{}",
+        stderr.contains("Output:") && stderr.to_ascii_lowercase().contains("reasoning"),
+        "usage block should include reasoning output counts:\n{}",
         stderr
     );
 
@@ -867,19 +814,75 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let usage_line = last_usage_line(&stderr)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "stderr missing usage line"))?;
-    let cli_usage = parse_usage_line(usage_line)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to parse CLI usage line"))?;
+    let usage_lines = usage_lines(&stderr);
+    assert!(
+        !usage_lines.is_empty(),
+        "stderr missing usage lines:\n{stderr}"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let contents = session_log_contents_from_output(&repo, &stdout)?;
     let session_usage = parse_session_usage(&contents)?;
 
-    assert_eq!(
-        session_usage, cli_usage,
-        "session log usage should match CLI usage"
+    let fmt = |value: usize| format!("{value:,}");
+    assert!(
+        usage_lines
+            .iter()
+            .any(|line| line.contains(&format!("Total: {}", fmt(session_usage.total)))),
+        "CLI usage should report total tokens:\n{stderr}"
     );
+    if session_usage.total_delta > 0 {
+        assert!(
+            usage_lines
+                .iter()
+                .any(|line| line.contains(&format!("(+{})", fmt(session_usage.total_delta)))),
+            "CLI usage should report total deltas:\n{stderr}"
+        );
+    }
+    assert!(
+        usage_lines
+            .iter()
+            .any(|line| line.contains(&format!("Input: {}", fmt(session_usage.prompt_total)))),
+        "CLI usage should report prompt tokens:\n{stderr}"
+    );
+    if session_usage.prompt_delta > 0 {
+        assert!(
+            usage_lines
+                .iter()
+                .any(|line| line.contains(&format!("(+{})", fmt(session_usage.prompt_delta)))),
+            "CLI usage should report prompt deltas:\n{stderr}"
+        );
+    }
+    assert!(
+        usage_lines.iter().any(|line| line.contains(&format!(
+            "Output: {}",
+            fmt(session_usage.completion_total)
+        ))),
+        "CLI usage should report completion tokens:\n{stderr}"
+    );
+    if session_usage.completion_delta > 0 {
+        assert!(
+            usage_lines.iter().any(|line| line.contains(&format!(
+                "(+{})",
+                fmt(session_usage.completion_delta)
+            ))),
+            "CLI usage should report completion deltas:\n{stderr}"
+        );
+    }
+    if session_usage.cached_input_total > 0 || session_usage.cached_input_delta > 0 {
+        assert!(
+            usage_lines.iter().any(|line| line.contains("cached")),
+            "CLI usage should mention cached input when present:\n{stderr}"
+        );
+    }
+    if session_usage.reasoning_output_total > 0 || session_usage.reasoning_output_delta > 0 {
+        assert!(
+            usage_lines
+                .iter()
+                .any(|line| line.to_ascii_lowercase().contains("reasoning")),
+            "CLI usage should mention reasoning output when present:\n{stderr}"
+        );
+    }
     Ok(())
 }
 
@@ -899,12 +902,13 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let usage_line = last_usage_line(&stderr)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "usage line missing in stderr"))?;
+    let usage_lines = usage_lines(&stderr);
     assert!(
-        usage_line.contains("unknown usage"),
-        "usage line should note unknown counts but was:\n{}",
-        usage_line
+        usage_lines
+            .iter()
+            .any(|line| line.to_ascii_lowercase().contains("unknown")),
+        "usage lines should note unknown counts but were:\n{}",
+        stderr
     );
 
     let after = gather_session_logs(&repo)?;

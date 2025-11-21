@@ -28,7 +28,7 @@ use vizier_core::{
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
     config,
-    display::{self, LogLevel, ProgressEvent, Verbosity},
+    display::{self, LogLevel, ProgressEvent, Verbosity, format_label_value_block, format_number},
     file_tracking, tools, vcs,
 };
 
@@ -45,6 +45,55 @@ fn clip_message(msg: &str) -> String {
         clipped.push(ch);
     }
     clipped
+}
+
+fn format_block(rows: Vec<(String, String)>) -> String {
+    format_label_value_block(&rows, 0)
+}
+
+fn format_block_with_indent(rows: Vec<(String, String)>, indent: usize) -> String {
+    format_label_value_block(&rows, indent)
+}
+
+fn format_agent_value() -> Option<String> {
+    auditor::Auditor::latest_agent_context().map(|context| {
+        let mut parts = vec![context.backend_label];
+        parts.push(format!("scope {}", context.scope.as_str()));
+        if context.backend == config::BackendKind::Wire {
+            parts.push(format!("model {}", context.model));
+            if let Some(reasoning) = context.reasoning_effort {
+                parts.push(format!("reasoning {reasoning:?}"));
+            }
+        }
+        parts.join(" • ")
+    })
+}
+
+fn latest_usage_rows() -> Vec<(String, String)> {
+    if let Some(report) = Auditor::latest_usage_report() {
+        report.to_rows()
+    } else {
+        Auditor::get_total_usage().to_rows()
+    }
+}
+
+fn append_agent_and_usage_rows(rows: &mut Vec<(String, String)>, verbosity: Verbosity) {
+    if !matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
+        return;
+    }
+
+    if let Some(agent) = format_agent_value() {
+        rows.push(("Agent".to_string(), agent));
+    }
+
+    let usage_rows = latest_usage_rows();
+    if !usage_rows.is_empty() {
+        rows.extend(usage_rows);
+    }
+}
+
+fn current_verbosity() -> Verbosity {
+    display::get_display_config().verbosity
 }
 
 fn format_credential_attempt(attempt: &CredentialAttempt) -> String {
@@ -124,60 +173,25 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
 }
 
 pub fn print_token_usage() {
-    if let Some(report) = Auditor::latest_usage_report() {
-        let agent_note = format_agent_annotation();
-        if report.known {
-            let mut message = format!("Token usage: {}", describe_usage_report(&report));
-            if let Some(annotation) = agent_note {
-                message.push_str(&format!("; {}", annotation));
-            }
-            display::info(message);
-        } else {
-            let mut message = "Token usage: unknown".to_string();
-            if let Some(annotation) = agent_note {
-                message.push_str(&format!("; {}", annotation));
-            }
-            display::info(message);
-        }
+    let verbosity = display::get_display_config().verbosity;
+    if !matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
         return;
     }
 
-    let usage = Auditor::get_total_usage();
-    if usage.known {
-        let mut message = format!("Token usage: {}", describe_usage_totals(&usage));
-        if let Some(annotation) = format_agent_annotation() {
-            message.push_str(&format!("; {}", annotation));
-        }
-        display::info(message);
-    } else {
-        let mut message = "Token usage: unknown".to_string();
-        if let Some(annotation) = format_agent_annotation() {
-            message.push_str(&format!("; {}", annotation));
-        }
-        display::info(message);
+    let mut rows = latest_usage_rows();
+    if let Some(agent) = format_agent_value() {
+        rows.push(("Agent".to_string(), agent));
     }
-}
 
-fn token_usage_suffix() -> String {
-    let agent_note = format_agent_annotation();
-    let mut detail = if let Some(report) = Auditor::latest_usage_report() {
-        if report.known {
-            describe_usage_report(&report)
-        } else {
-            "unknown".to_string()
-        }
-    } else {
-        let usage = Auditor::get_total_usage();
-        if usage.known {
-            describe_usage_totals(&usage)
-        } else {
-            "unknown".to_string()
-        }
-    };
-    if let Some(annotation) = agent_note {
-        detail.push_str(&format!("; {}", annotation));
+    let block = format_block_with_indent(rows, 2);
+    if block.is_empty() {
+        return;
     }
-    format!(" (tokens: {})", detail)
+
+    display::info("Token usage:");
+    for line in block.lines() {
+        display::info(line.to_string());
+    }
 }
 
 fn prompt_selection<'a>(
@@ -207,20 +221,6 @@ fn require_agent_backend(
     Ok(())
 }
 
-fn format_agent_annotation() -> Option<String> {
-    auditor::Auditor::latest_agent_context().map(|context| {
-        let mut parts = vec![format!("agent={}", context.backend_label)];
-        parts.push(format!("scope={}", context.scope.as_str()));
-        if context.backend == config::BackendKind::Wire {
-            parts.push(format!("model={}", context.model));
-            if let Some(reasoning) = context.reasoning_effort {
-                parts.push(format!("reasoning={reasoning:?}"));
-            }
-        }
-        parts.join(" ")
-    })
-}
-
 fn build_agent_request(
     agent: &config::AgentSettings,
     prompt: String,
@@ -237,52 +237,6 @@ fn build_agent_request(
         scope: Some(agent.scope),
         metadata: BTreeMap::new(),
     }
-}
-
-fn describe_usage_report(report: &auditor::TokenUsageReport) -> String {
-    let mut sections = Vec::new();
-    sections.push(format!(
-        "total={} (+{})",
-        report.total(),
-        report.delta_total()
-    ));
-    let mut input_section = format!("input={} (+{}", report.prompt_total, report.prompt_delta);
-    if let Some(cached_delta) = report.cached_input_delta {
-        input_section.push_str(&format!(", +{} cached", cached_delta));
-    } else if let Some(cached_total) = report.cached_input_total {
-        input_section.push_str(&format!(", {} cached", cached_total));
-    }
-    input_section.push(')');
-    sections.push(input_section);
-    let mut output_section = format!(
-        "output={} (+{}",
-        report.completion_total, report.completion_delta
-    );
-    if report.reasoning_output_total.is_some() || report.reasoning_output_delta.is_some() {
-        let reasoning_value = report
-            .reasoning_output_delta
-            .or(report.reasoning_output_total)
-            .unwrap_or(0);
-        output_section.push_str(&format!(", reasoning {}", reasoning_value));
-    }
-    output_section.push(')');
-    sections.join(" ")
-}
-
-fn describe_usage_totals(usage: &auditor::TokenUsage) -> String {
-    let mut sections = Vec::new();
-    sections.push(format!("total={}", usage.total_tokens));
-    let mut input_section = format!("input={}", usage.input_tokens);
-    if usage.cached_input_tokens > 0 {
-        input_section.push_str(&format!(" (+{} cached)", usage.cached_input_tokens));
-    }
-    sections.push(input_section);
-    let mut output_section = format!("output={}", usage.output_tokens);
-    if usage.reasoning_output_tokens > 0 {
-        output_section.push_str(&format!(" (reasoning {})", usage.reasoning_output_tokens));
-    }
-    sections.push(output_section);
-    sections.join(" ")
 }
 
 fn spawn_plain_progress_logger(mut rx: mpsc::Receiver<ProgressEvent>) -> Option<JoinHandle<()>> {
@@ -602,70 +556,80 @@ pub async fn run_snapshot_init(
         }
     }
 
-    let mut detail_parts = Vec::new();
-    detail_parts.push(format!("analyzed_at={}", report.analysis_timestamp));
-    detail_parts.push(format!(
-        "branch={}",
-        report.branch.as_deref().unwrap_or("<detached HEAD>")
-    ));
-    detail_parts.push(format!(
-        "head_commit={}",
-        report.head_commit.as_deref().unwrap_or("<no HEAD commit>")
-    ));
-    detail_parts.push(format!(
-        "working_tree={}",
-        if report.dirty { "dirty" } else { "clean" }
-    ));
-    detail_parts.push(format!("history_depth_used={}", report.depth_used));
-
-    if !report.scope_includes.is_empty() {
-        detail_parts.push(format!(
-            "scope_includes={}",
-            report.scope_includes.join(", ")
-        ));
-    }
-    if !report.scope_excludes.is_empty() {
-        detail_parts.push(format!(
-            "scope_excludes={}",
-            report.scope_excludes.join(", ")
-        ));
-    }
-    if let Some(provider) = report.issues_provider.as_ref() {
-        detail_parts.push(format!("issues_provider={}", provider));
-    }
-    if !report.issues.is_empty() {
-        detail_parts.push(format!("issues={}", report.issues.join(", ")));
-    }
-    if !report.files_touched.is_empty() {
-        detail_parts.push(format!("files_updated={}", report.files_touched.join(", ")));
-    }
-
-    if !detail_parts.is_empty() {
-        display::info(format!("Snapshot details: {}", detail_parts.join("; ")));
-    }
-
+    let verbosity = current_verbosity();
     if !report.summary.trim().is_empty() {
         display::info(format!("Snapshot summary: {}", report.summary.trim()));
     }
 
     let files_updated = report.files_touched.len();
-    let outcome = if files_updated == 0 {
-        format!(
-            "Snapshot bootstrap complete; depth_used={}; no .vizier changes",
-            report.depth_used
-        )
-    } else {
-        format!(
-            "Snapshot bootstrap complete; updated {} file{}; depth_used={}",
-            files_updated,
-            if files_updated == 1 { "" } else { "s" },
-            report.depth_used
-        )
-    };
+    let mut rows = vec![(
+        "Outcome".to_string(),
+        "Snapshot bootstrap complete".to_string(),
+    )];
+    rows.push((
+        "Depth used".to_string(),
+        format_number(report.depth_used),
+    ));
+    rows.push((
+        "Files".to_string(),
+        if files_updated == 0 {
+            "no .vizier changes".to_string()
+        } else {
+            format!("updated {}", format_number(files_updated))
+        },
+    ));
 
-    println!("{}", outcome);
+    if matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
+        rows.push((
+            "Analyzed at".to_string(),
+            report.analysis_timestamp.clone(),
+        ));
+        rows.push((
+            "Branch".to_string(),
+            report
+                .branch
+                .as_deref()
+                .unwrap_or("<detached HEAD>")
+                .to_string(),
+        ));
+        rows.push((
+            "Head".to_string(),
+            report
+                .head_commit
+                .as_deref()
+                .map(short_hash)
+                .unwrap_or_else(|| "<no HEAD commit>".to_string()),
+        ));
+        rows.push((
+            "Working tree".to_string(),
+            if report.dirty { "dirty" } else { "clean" }.to_string(),
+        ));
+        if !report.scope_includes.is_empty() {
+            rows.push((
+                "Includes".to_string(),
+                report.scope_includes.join(", "),
+            ));
+        }
+        if !report.scope_excludes.is_empty() {
+            rows.push((
+                "Excludes".to_string(),
+                report.scope_excludes.join(", "),
+            ));
+        }
+        if let Some(provider) = report.issues_provider.as_ref() {
+            rows.push(("Issues provider".to_string(), provider.to_string()));
+        }
+        if !report.issues.is_empty() {
+            rows.push(("Issues".to_string(), report.issues.join(", ")));
+        }
+    }
 
-    print_token_usage();
+    append_agent_and_usage_rows(&mut rows, verbosity);
+
+    let outcome = format_block(rows);
+    if !outcome.is_empty() {
+        println!("{}", outcome);
+    }
 
     Ok(())
 }
@@ -691,7 +655,7 @@ pub async fn run_save(
         .await
         {
             Ok(outcome) => {
-                println!("{}", format_save_outcome(&outcome));
+                println!("{}", format_save_outcome(&outcome, current_verbosity()));
                 Ok(())
             }
             Err(e) => {
@@ -718,34 +682,41 @@ pub struct SaveOutcome {
     pub commit_mode: CommitMode,
 }
 
-fn format_save_outcome(outcome: &SaveOutcome) -> String {
-    let mut parts = vec!["Save complete".to_string()];
+fn format_save_outcome(outcome: &SaveOutcome, verbosity: Verbosity) -> String {
+    let mut rows = vec![("Outcome".to_string(), "Save complete".to_string())];
 
     match &outcome.session_log {
-        Some(path) if !path.is_empty() => parts.push(format!("session={}", path)),
-        _ => parts.push("session=none".to_string()),
+        Some(path) if !path.is_empty() => rows.push(("Session".to_string(), path.clone())),
+        _ => rows.push(("Session".to_string(), "none".to_string())),
     }
 
     match &outcome.code_commit {
-        Some(hash) if !hash.is_empty() => parts.push(format!("code_commit={}", short_hash(hash))),
-        _ => parts.push("code_commit=none".to_string()),
+        Some(hash) if !hash.is_empty() => {
+            rows.push(("Code commit".to_string(), short_hash(hash)));
+        }
+        _ => rows.push(("Code commit".to_string(), "none".to_string())),
     }
 
-    parts.push(format!("mode={}", outcome.commit_mode.label()));
-    parts.push(format!(
-        "narrative={}",
+    rows.push((
+        "Mode".to_string(),
+        outcome.commit_mode.label().to_string(),
+    ));
+    rows.push((
+        "Narrative".to_string(),
         match outcome.audit_state {
             auditor::AuditState::Committed => "committed",
             auditor::AuditState::Pending => "pending",
             auditor::AuditState::Clean => "clean",
         }
+        .to_string(),
     ));
 
     if outcome.pushed {
-        parts.push("pushed=true".to_string());
+        rows.push(("Push".to_string(), "pushed".to_string()));
     }
 
-    parts.join("; ")
+    append_agent_and_usage_rows(&mut rows, verbosity);
+    format_block(rows)
 }
 
 fn short_hash(hash: &str) -> String {
@@ -875,12 +846,17 @@ async fn save(
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
     let has_narrative_changes = !narrative_paths.is_empty();
 
-    display::info(format!(
-        "Assistant summary: {}{}",
-        response.content.trim(),
-        token_usage_suffix()
-    ));
-    print_token_usage();
+    let mut summary_rows = vec![(
+        "Assistant summary".to_string(),
+        response.content.trim().to_string(),
+    )];
+    append_agent_and_usage_rows(&mut summary_rows, current_verbosity());
+    let summary_block = format_block(summary_rows);
+    if !summary_block.is_empty() {
+        for line in summary_block.lines() {
+            display::info(line.to_string());
+        }
+    }
 
     let post_tool_diff = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"]))?;
     let has_code_changes = !post_tool_diff.trim().is_empty();
@@ -1386,25 +1362,38 @@ pub async fn run_draft(
                 display::info(format!(
                     "View with: git checkout {branch_name} && $EDITOR {plan_display}"
                 ));
-                println!("Draft ready; plan={plan_display}; branch={branch_name}");
+
+                let mut rows = vec![
+                    ("Outcome".to_string(), "Draft ready".to_string()),
+                    ("Plan".to_string(), plan_display.clone()),
+                    ("Branch".to_string(), branch_name.clone()),
+                ];
+                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                println!("{}", format_block(rows));
             } else {
-                println!(
-                    "Draft pending (manual commit); branch={branch_name}; worktree={}; plan={plan_display}",
-                    worktree_path.display()
-                );
+                let mut rows = vec![
+                    (
+                        "Outcome".to_string(),
+                        "Draft pending (manual commit)".to_string(),
+                    ),
+                    ("Branch".to_string(), branch_name.clone()),
+                    ("Worktree".to_string(), worktree_path.display().to_string()),
+                    ("Plan".to_string(), plan_display.clone()),
+                ];
+                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                println!("{}", format_block(rows));
                 display::info(format!(
                     "Review and commit manually: git -C {} status",
                     worktree_path.display()
                 ));
             }
 
-            if let Some(plan_text) = plan_to_print {
-                println!();
-                println!("{plan_text}");
+                if let Some(plan_text) = plan_to_print {
+                    println!();
+                    println!("{plan_text}");
+                }
+                Ok(())
             }
-            print_token_usage();
-            Ok(())
-        }
         Err(err) => {
             if worktree_created {
                 let _ = remove_worktree(&worktree_name, true);
@@ -1470,10 +1459,16 @@ pub async fn run_approve(
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
-        println!(
-            "Plan {} already merged into {}; latest commit={}",
-            spec.slug, spec.target_branch, source_oid
-        );
+        let mut rows = vec![
+            ("Outcome".to_string(), "Plan already merged".to_string()),
+            ("Plan".to_string(), spec.slug.clone()),
+            ("Target".to_string(), spec.target_branch.clone()),
+            (
+                "Latest commit".to_string(),
+                short_hash(&source_oid.to_string()),
+            ),
+        ];
+        println!("{}", format_block(rows));
         return Ok(());
     }
 
@@ -1528,37 +1523,36 @@ pub async fn run_approve(
                     }
                 }
 
+                let mut rows = vec![
+                    ("Outcome".to_string(), "Plan implemented".to_string()),
+                    ("Plan".to_string(), spec.slug.clone()),
+                    ("Branch".to_string(), spec.branch.clone()),
+                    ("Review".to_string(), spec.diff_command()),
+                ];
                 if let Some(commit_oid) = result.commit_oid.as_ref() {
-                    println!(
-                        "Plan {} implemented on {}; latest commit={}; review with `{}`",
-                        spec.slug,
-                        spec.branch,
-                        commit_oid,
-                        spec.diff_command()
-                    );
-                } else {
-                    println!(
-                        "Plan {} implemented on {}; review with `{}`",
-                        spec.slug,
-                        spec.branch,
-                        spec.diff_command()
-                    );
+                    rows.push(("Latest commit".to_string(), short_hash(commit_oid)));
                 }
+                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                println!("{}", format_block(rows));
             } else {
                 display::info(format!(
                     "Plan worktree preserved at {}; inspect branch {} for pending changes.",
                     worktree_path.display(),
                     spec.branch
                 ));
-                println!(
-                    "Plan {} pending manual commit; branch={} worktree={} diff=\"{}\"",
-                    spec.slug,
-                    spec.branch,
-                    worktree_path.display(),
-                    spec.diff_command()
-                );
+                let mut rows = vec![
+                    (
+                        "Outcome".to_string(),
+                        "Plan pending manual commit".to_string(),
+                    ),
+                    ("Plan".to_string(), spec.slug.clone()),
+                    ("Branch".to_string(), spec.branch.clone()),
+                    ("Worktree".to_string(), worktree_path.display().to_string()),
+                    ("Review".to_string(), spec.diff_command()),
+                ];
+                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                println!("{}", format_block(rows));
             }
-            print_token_usage();
             Ok(())
         }
         Err(err) => {
@@ -1611,10 +1605,16 @@ pub async fn run_review(
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
-        println!(
-            "Plan {} already merged into {}; latest commit={}",
-            spec.slug, spec.target_branch, source_oid
-        );
+        let mut rows = vec![
+            ("Outcome".to_string(), "Plan already merged".to_string()),
+            ("Plan".to_string(), spec.slug.clone()),
+            ("Target".to_string(), spec.target_branch.clone()),
+            (
+                "Latest commit".to_string(),
+                short_hash(&source_oid.to_string()),
+            ),
+        ];
+        println!("{}", format_block(rows));
         return Ok(());
     }
 
@@ -1678,21 +1678,30 @@ pub async fn run_review(
                 ));
             }
 
-            println!(
-                "Review complete; plan={} branch={} critique={} checks={}/{} diff=\"{}\" session={}{}",
-                spec.slug,
-                spec.branch,
-                outcome.critique_label,
-                outcome.checks_passed,
-                outcome.checks_total,
-                outcome.diff_command,
-                outcome
-                    .session_path
-                    .clone()
-                    .unwrap_or_else(|| "<unknown>".to_string()),
-                token_usage_suffix()
-            );
-            print_token_usage();
+            let mut rows = vec![
+                ("Outcome".to_string(), "Review complete".to_string()),
+                ("Plan".to_string(), spec.slug.clone()),
+                ("Branch".to_string(), spec.branch.clone()),
+                ("Critique".to_string(), outcome.critique_label.clone()),
+                (
+                    "Checks".to_string(),
+                    format!(
+                        "{}/{}",
+                        format_number(outcome.checks_passed),
+                        format_number(outcome.checks_total)
+                    ),
+                ),
+                ("Diff".to_string(), outcome.diff_command.clone()),
+                (
+                    "Session".to_string(),
+                    outcome
+                        .session_path
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                ),
+            ];
+            append_agent_and_usage_rows(&mut rows, current_verbosity());
+            println!("{}", format_block(rows));
             Ok(())
         }
         Err(err) => {
@@ -1754,10 +1763,16 @@ pub async fn run_merge(
     let target_oid = target_commit.id();
 
     if repo.graph_descendant_of(target_oid, source_oid)? {
-        println!(
-            "Plan {} already merged into {}; latest commit={}",
-            spec.slug, spec.target_branch, source_oid
-        );
+        let mut rows = vec![
+            ("Outcome".to_string(), "Plan already merged".to_string()),
+            ("Plan".to_string(), spec.slug.clone()),
+            ("Target".to_string(), spec.target_branch.clone()),
+            (
+                "Latest commit".to_string(),
+                short_hash(&source_oid.to_string()),
+            ),
+        ];
+        println!("{}", format_block(rows));
         return Ok(());
     }
 
@@ -2287,19 +2302,17 @@ fn finalize_merge(
     }
 
     push_origin_if_requested(push_after)?;
+    let mut rows = vec![
+        ("Outcome".to_string(), "Merge complete".to_string()),
+        ("Plan".to_string(), spec.slug.clone()),
+        ("Target".to_string(), spec.target_branch.clone()),
+        (
+            "Merge commit".to_string(),
+            short_hash(&merge_oid.to_string()),
+        ),
+    ];
+
     if let Some(summary) = gate.as_ref() {
-        let fix_count = summary.fixes.len();
-        let fix_detail = if summary.fixes.is_empty() {
-            String::new()
-        } else {
-            let labels = summary
-                .fixes
-                .iter()
-                .map(|record| record.describe())
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(" fix_commits={} fixes=[{}]", fix_count, labels)
-        };
         let script_label = repo_root()
             .ok()
             .and_then(|root| {
@@ -2310,26 +2323,26 @@ fn finalize_merge(
                     .map(|p| p.display().to_string())
             })
             .unwrap_or_else(|| summary.script.display().to_string());
-        println!(
-            "Merged plan {} into {}; merge_commit={} cicd_script={} attempts={}{}{}",
-            spec.slug,
-            spec.target_branch,
-            merge_oid,
-            script_label,
-            summary.attempts,
-            fix_detail,
-            token_usage_suffix()
-        );
-    } else {
-        println!(
-            "Merged plan {} into {}; merge_commit={}{}",
-            spec.slug,
-            spec.target_branch,
-            merge_oid,
-            token_usage_suffix()
-        );
+        rows.push(("CI/CD script".to_string(), script_label));
+        rows.push((
+            "Gate attempts".to_string(),
+            format_number(summary.attempts as usize),
+        ));
+        if !summary.fixes.is_empty() {
+            let labels = summary
+                .fixes
+                .iter()
+                .map(|record| record.describe())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !labels.is_empty() {
+                rows.push(("Gate fixes".to_string(), labels));
+            }
+        }
     }
-    print_token_usage();
+
+    append_agent_and_usage_rows(&mut rows, current_verbosity());
+    println!("{}", format_block(rows));
     Ok(())
 }
 
