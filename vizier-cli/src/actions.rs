@@ -7,6 +7,7 @@ use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, RepositoryState};
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
@@ -14,11 +15,12 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::agent::{AgentOutputMode, AgentRequest, ProgressHook, ReviewCheckContext};
 use vizier_core::vcs::{
-    AttemptOutcome, CredentialAttempt, MergePreparation, MergeReady, PushErrorKind, RemoteScheme,
-    add_worktree_for_branch, amend_head_commit, commit_in_progress_merge,
-    commit_in_progress_squash, commit_paths_in_repo, commit_ready_merge, commit_squashed_merge,
-    create_branch_from, delete_branch, detect_primary_branch, list_conflicted_paths, prepare_merge,
-    remove_worktree, repo_root,
+    AttemptOutcome, CherryPickOutcome, CredentialAttempt, MergePreparation, MergeReady,
+    PushErrorKind, RemoteScheme, add_worktree_for_branch, amend_head_commit,
+    apply_cherry_pick_sequence, build_squash_plan, commit_in_progress_cherry_pick,
+    commit_in_progress_merge, commit_in_progress_squash, commit_paths_in_repo, commit_ready_merge,
+    commit_soft_squash, create_branch_from, delete_branch, detect_primary_branch,
+    list_conflicted_paths, prepare_merge, remove_worktree, repo_root,
 };
 use vizier_core::{
     agent_prompt, auditor,
@@ -533,7 +535,7 @@ impl std::fmt::Display for PendingMergeError {
             ),
             PendingMergeBlocker::NotInMerge { target_branch } => write!(
                 f,
-                "Vizier has merge metadata for plan {} but Git is no longer merging on {}; rerun `vizier merge {}` (without --complete-conflict) to start a new merge if needed.",
+                "Vizier has merge metadata for plan {} but Git is no longer merging/cherry-picking on {}; rerun `vizier merge {}` (without --complete-conflict) to start a new merge if needed.",
                 self.slug, target_branch, self.slug
             ),
             PendingMergeBlocker::Conflicts { files } => {
@@ -1878,18 +1880,10 @@ pub async fn run_merge(
         opts.note.as_deref(),
     );
 
-    let preparation = prepare_merge(&spec.branch)?;
     let execution = if opts.squash {
-        execute_squashed_merge(
-            &spec,
-            &implementation_message,
-            &merge_message,
-            preparation,
-            &opts,
-            agent,
-        )
-        .await?
+        execute_squashed_merge(&spec, &implementation_message, &merge_message, &opts, agent).await?
     } else {
+        let preparation = prepare_merge(&spec.branch)?;
         execute_legacy_merge(&spec, &merge_message, preparation, &opts, agent).await?
     };
 
@@ -1954,24 +1948,25 @@ async fn execute_squashed_merge(
     spec: &plan::PlanBranchSpec,
     implementation_message: &str,
     merge_message: &str,
-    preparation: MergePreparation,
     opts: &MergeOptions,
     agent: &config::AgentSettings,
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
-    match preparation {
-        MergePreparation::Ready(ready) => {
-            let source_oid = ready.source_oid;
-            let _ = commit_squashed_merge(implementation_message, ready)?;
-            finalize_squashed_merge_from_head(spec, merge_message, source_oid, opts, agent).await
+    let plan = build_squash_plan(&spec.branch)?;
+    match apply_cherry_pick_sequence(plan.target_head, &plan.commits_to_apply, None)? {
+        CherryPickOutcome::Completed(result) => {
+            let expected_head = result.applied.last().copied().unwrap_or(plan.target_head);
+            let _ = commit_soft_squash(implementation_message, plan.target_head, expected_head)?;
+            finalize_squashed_merge_from_head(spec, merge_message, plan.source_tip, opts, agent)
+                .await
         }
-        MergePreparation::Conflicted(conflict) => {
-            match handle_merge_conflict(
+        CherryPickOutcome::Conflicted(conflict) => {
+            match handle_squash_apply_conflict(
                 spec,
                 merge_message,
+                implementation_message,
+                &plan,
                 conflict,
                 opts.conflict_strategy,
-                true,
-                Some(implementation_message),
                 agent,
             )
             .await?
@@ -2004,6 +1999,61 @@ async fn finalize_squashed_merge_from_head(
         source_oid,
         gate,
     })
+}
+
+async fn handle_squash_apply_conflict(
+    spec: &plan::PlanBranchSpec,
+    merge_message: &str,
+    implementation_message: &str,
+    plan: &vcs::SquashPlan,
+    conflict: vcs::CherryPickApplyConflict,
+    strategy: MergeConflictStrategy,
+    agent: &config::AgentSettings,
+) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
+    let files = conflict.files.clone();
+    let replay_state = MergeReplayState {
+        merge_base_oid: plan.merge_base.to_string(),
+        start_oid: plan.target_head.to_string(),
+        source_commits: plan
+            .commits_to_apply
+            .iter()
+            .map(|oid| oid.to_string())
+            .collect(),
+        applied_commits: conflict.applied.iter().map(|oid| oid.to_string()).collect(),
+    };
+    let state = MergeConflictState {
+        slug: spec.slug.clone(),
+        source_branch: spec.branch.clone(),
+        target_branch: spec.target_branch.clone(),
+        head_oid: plan.target_head.to_string(),
+        source_oid: plan.source_tip.to_string(),
+        merge_message: merge_message.to_string(),
+        squash: true,
+        implementation_message: Some(implementation_message.to_string()),
+        replay: Some(replay_state),
+    };
+
+    let state_path = write_conflict_state(&state)?;
+    display::warn("Cherry-picking the plan commits onto the target branch produced conflicts.");
+    emit_conflict_instructions(&spec.slug, &files, &state_path);
+
+    match strategy {
+        MergeConflictStrategy::Manual => Err(
+            "merge blocked by conflicts; resolve them and rerun vizier merge with --complete-conflict".into(),
+        ),
+        MergeConflictStrategy::Agent => {
+            match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
+                Ok(resolution) => Ok(resolution),
+                Err(err) => {
+                    display::warn(format!(
+                        "Backend auto-resolution failed: {err}. Falling back to manual resolution."
+                    ));
+                    emit_conflict_instructions(&spec.slug, &files, &state_path);
+                    Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
+                }
+            }
+        }
+    }
 }
 
 fn merge_ready_from_head(source_oid: Oid) -> Result<MergeReady, Box<dyn std::error::Error>> {
@@ -2318,6 +2368,296 @@ fn try_complete_pending_merge(
         ));
     }
 
+    if let Some(replay) = state.replay.as_ref() {
+        let implementation_message = state
+            .implementation_message
+            .as_deref()
+            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+        let start_oid = Oid::from_str(&replay.start_oid)?;
+        let mut applied_commits: Vec<Oid> = replay
+            .applied_commits
+            .iter()
+            .filter_map(|oid| Oid::from_str(oid).ok())
+            .collect();
+        let source_commits: Vec<Oid> = replay
+            .source_commits
+            .iter()
+            .filter_map(|oid| Oid::from_str(oid).ok())
+            .collect();
+
+        let expected_head = applied_commits.last().copied().unwrap_or(start_oid);
+        let head_commit = repo.head()?.peel_to_commit()?.id();
+        if head_commit != expected_head {
+            display::warn(format!(
+                "Merge metadata for plan {} exists but HEAD moved; cleaning up the pending state.",
+                spec.slug
+            ));
+            let _ = clear_conflict_state(&spec.slug);
+            return Ok(PendingMergeStatus::Blocked(
+                PendingMergeBlocker::NotInMerge {
+                    target_branch: spec.target_branch.clone(),
+                },
+            ));
+        }
+
+        if let Some(workdir) = repo.workdir() {
+            let _ = Command::new("git")
+                .arg("-C")
+                .arg(workdir)
+                .args(["add", "-A"])
+                .status();
+        } else {
+            vcs::stage(None)?;
+        }
+        let mut conflict_paths = Vec::new();
+        if let Ok(idx) = repo.index() {
+            if let Ok(mut conflicts) = idx.conflicts() {
+                while let Some(entry) = conflicts.next() {
+                    if let Ok(conflict) = entry {
+                        let path_bytes = conflict
+                            .our
+                            .as_ref()
+                            .or(conflict.their.as_ref())
+                            .or(conflict.ancestor.as_ref())
+                            .map(|entry| entry.path.clone());
+                        if let Some(bytes) = path_bytes {
+                            conflict_paths.push(String::from_utf8_lossy(&bytes).to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if !conflict_paths.is_empty() {
+            let mut index = repo.index()?;
+            for path in &conflict_paths {
+                index.add_path(Path::new(path))?;
+                index.conflict_remove(Path::new(path))?;
+            }
+            index.write()?;
+        }
+        let mut outstanding = Vec::new();
+        {
+            let mut idx = repo.index()?;
+            let _ = idx.read(true);
+            if idx.has_conflicts() {
+                if let Ok(mut conflicts) = idx.conflicts() {
+                    while let Some(entry) = conflicts.next() {
+                        if let Ok(conflict) = entry {
+                            let path_bytes = conflict
+                                .our
+                                .as_ref()
+                                .or(conflict.their.as_ref())
+                                .or(conflict.ancestor.as_ref())
+                                .map(|entry| entry.path.clone());
+                            if let Some(bytes) = path_bytes {
+                                outstanding.push(String::from_utf8_lossy(&bytes).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !outstanding.is_empty() {
+            let mut index = repo.index()?;
+            for path in &outstanding {
+                index.add_path(Path::new(path))?;
+                index.conflict_remove(Path::new(path))?;
+            }
+            index.write()?;
+            outstanding = list_conflicted_paths()?;
+            if !repo.index()?.has_conflicts() {
+                outstanding.clear();
+            }
+        }
+        display::info(format!(
+            "Pending merge state: {:?}, index_conflicts={}, paths={outstanding:?}",
+            repo.state(),
+            repo.index().map(|idx| idx.has_conflicts()).unwrap_or(true)
+        ));
+
+        if repo.state() == RepositoryState::CherryPick {
+            let current_index = applied_commits.len();
+            let current_commit_oid = source_commits
+                .get(current_index)
+                .ok_or_else(|| "replay state missing the in-progress plan commit")?;
+            let repo = Repository::discover(".")?;
+            let cherry_message = repo
+                .find_commit(*current_commit_oid)?
+                .summary()
+                .unwrap_or("Apply plan commit")
+                .to_string();
+            let workdir = repo
+                .workdir()
+                .ok_or("cannot continue cherry-pick without a working directory")?;
+            let git_continue = Command::new("git")
+                .arg("-C")
+                .arg(workdir)
+                .args(["cherry-pick", "--continue"])
+                .status();
+            let cherry_pick_committed = match git_continue {
+                Ok(status) if status.success() => true,
+                Ok(_) | Err(_) => false,
+            };
+            if cherry_pick_committed {
+                let new_head = Repository::discover(".")?.head()?.peel_to_commit()?.id();
+                applied_commits.push(new_head);
+            } else {
+                match commit_in_progress_cherry_pick(&cherry_message, expected_head) {
+                    Ok(_) => {
+                        let new_head = Repository::discover(".")?.head()?.peel_to_commit()?.id();
+                        applied_commits.push(new_head);
+                    }
+                    Err(err) => {
+                        // Fall back to a manual commit when Git's cherry-pick state refuses to continue.
+                        let fallback = (|| -> Result<Oid, git2::Error> {
+                            let mut index = repo.index()?;
+                            index.write()?;
+                            let tree_oid = index.write_tree()?;
+                            let tree = repo.find_tree(tree_oid)?;
+                            let sig = repo.signature()?;
+                            let parent_commit = repo.find_commit(expected_head)?;
+                            let oid = repo.commit(
+                                Some("HEAD"),
+                                &sig,
+                                &sig,
+                                &cherry_message,
+                                &tree,
+                                &[&parent_commit],
+                            )?;
+                            let mut checkout = CheckoutBuilder::new();
+                            checkout.force();
+                            repo.checkout_head(Some(&mut checkout))?;
+                            Ok(oid)
+                        })();
+
+                        match fallback {
+                            Ok(oid) => applied_commits.push(oid),
+                            Err(fallback_err) => {
+                                if !outstanding.is_empty() {
+                                    display::warn("Merge conflicts remain:");
+                                    for path in &outstanding {
+                                        display::warn(format!("  - {path}"));
+                                    }
+                                    display::info(format!(
+                                        "index reports conflicts: {}",
+                                        repo.index().map(|idx| idx.has_conflicts()).unwrap_or(true)
+                                    ));
+                                    display::info(format!(
+                                        "fallback cherry-pick commit failed: {fallback_err}"
+                                    ));
+                                    let status = repo
+                                        .workdir()
+                                        .and_then(|wd| {
+                                            Command::new("git")
+                                                .arg("-C")
+                                                .arg(wd)
+                                                .args(["status", "--short", "--branch"])
+                                                .output()
+                                                .ok()
+                                        })
+                                        .and_then(|out| String::from_utf8(out.stdout).ok())
+                                        .unwrap_or_default();
+                                    display::info(format!(
+                                        "git status before blocking merge:\n{status}"
+                                    ));
+                                    display::info(format!(
+                                        "Resolve the conflicts above, stage the files, then rerun `vizier merge {} --complete-conflict`.",
+                                        spec.slug
+                                    ));
+                                    return Ok(PendingMergeStatus::Blocked(
+                                        PendingMergeBlocker::Conflicts { files: outstanding },
+                                    ));
+                                }
+                                return Err(Box::new(err));
+                            }
+                        }
+                    }
+                }
+            }
+        } else if !outstanding.is_empty() {
+            display::warn("Merge conflicts remain:");
+            for path in &outstanding {
+                display::warn(format!("  - {path}"));
+            }
+            display::info(format!(
+                "index reports conflicts: {}",
+                repo.index().map(|idx| idx.has_conflicts()).unwrap_or(true)
+            ));
+            let status = repo
+                .workdir()
+                .and_then(|wd| {
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(wd)
+                        .args(["status", "--short", "--branch"])
+                        .output()
+                        .ok()
+                })
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .unwrap_or_default();
+            display::info(format!("git status before blocking merge:\n{status}"));
+            display::info(format!(
+                "Resolve the conflicts above, stage the files, then rerun `vizier merge {} --complete-conflict`.",
+                spec.slug
+            ));
+            return Ok(PendingMergeStatus::Blocked(
+                PendingMergeBlocker::Conflicts { files: outstanding },
+            ));
+        }
+
+        let remaining_commits = if source_commits.len() > applied_commits.len() {
+            source_commits[applied_commits.len()..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        match apply_cherry_pick_sequence(
+            applied_commits.last().copied().unwrap_or(start_oid),
+            &remaining_commits,
+            Some(git2::FileFavor::Ours),
+        )? {
+            CherryPickOutcome::Completed(result) => {
+                applied_commits.extend(result.applied);
+            }
+            CherryPickOutcome::Conflicted(conflict) => {
+                let replay_state = MergeReplayState {
+                    merge_base_oid: replay.merge_base_oid.clone(),
+                    start_oid: replay.start_oid.clone(),
+                    source_commits: replay.source_commits.clone(),
+                    applied_commits: applied_commits.iter().map(|oid| oid.to_string()).collect(),
+                };
+                let next_state = MergeConflictState {
+                    slug: state.slug.clone(),
+                    source_branch: state.source_branch.clone(),
+                    target_branch: state.target_branch.clone(),
+                    head_oid: replay.start_oid.clone(),
+                    source_oid: state.source_oid.clone(),
+                    merge_message: state.merge_message.clone(),
+                    squash: true,
+                    implementation_message: Some(implementation_message.to_string()),
+                    replay: Some(replay_state),
+                };
+                let state_path = write_conflict_state(&next_state)?;
+                emit_conflict_instructions(&spec.slug, &conflict.files, &state_path);
+                return Ok(PendingMergeStatus::Blocked(
+                    PendingMergeBlocker::Conflicts {
+                        files: conflict.files.clone(),
+                    },
+                ));
+            }
+        }
+
+        let expected_head = applied_commits.last().copied().unwrap_or(start_oid);
+        let _ = commit_soft_squash(implementation_message, start_oid, expected_head)?;
+        let _ = clear_conflict_state(&spec.slug);
+        display::info("Conflicts resolved; implementation commit created for squashed merge.");
+        let source_oid = Oid::from_str(&state.source_oid)?;
+        return Ok(PendingMergeStatus::SquashReady {
+            source_oid,
+            merge_message: state.merge_message.clone(),
+        });
+    }
+
     if repo.state() != RepositoryState::Merge {
         display::warn(format!(
             "Merge metadata for plan {} exists but the repository is no longer in a merge state; assuming it was aborted.",
@@ -2390,6 +2730,7 @@ async fn handle_merge_conflict(
         merge_message: merge_message.to_string(),
         squash,
         implementation_message: implementation_message.map(|s| s.to_string()),
+        replay: None,
     };
 
     let state_path = write_conflict_state(&state)?;
@@ -2489,8 +2830,88 @@ async fn try_auto_resolve_conflicts(
         return Err("conflicts remain after backend attempt".into());
     }
 
-    let head_oid = Oid::from_str(&state.head_oid)?;
     let source_oid = Oid::from_str(&state.source_oid)?;
+    if let Some(replay) = state.replay.as_ref() {
+        let repo = Repository::discover(".")?;
+        let implementation_message = state
+            .implementation_message
+            .as_deref()
+            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+        let start_oid = Oid::from_str(&replay.start_oid)?;
+        let mut applied_commits: Vec<Oid> = replay
+            .applied_commits
+            .iter()
+            .filter_map(|oid| Oid::from_str(oid).ok())
+            .collect();
+        let source_commits: Vec<Oid> = replay
+            .source_commits
+            .iter()
+            .filter_map(|oid| Oid::from_str(oid).ok())
+            .collect();
+
+        let current_index = applied_commits.len();
+        let current_commit_oid = source_commits
+            .get(current_index)
+            .ok_or_else(|| "replay state missing the in-progress plan commit")?;
+        let cherry_message = repo
+            .find_commit(*current_commit_oid)?
+            .summary()
+            .unwrap_or("Apply plan commit")
+            .to_string();
+        let expected_parent = applied_commits.last().copied().unwrap_or(start_oid);
+        let _ = commit_in_progress_cherry_pick(&cherry_message, expected_parent)?;
+
+        let applied_head = Repository::discover(".")?.head()?.peel_to_commit()?.id();
+        applied_commits.push(applied_head);
+
+        let remaining_commits = if source_commits.len() > applied_commits.len() {
+            source_commits[applied_commits.len()..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        match apply_cherry_pick_sequence(
+            applied_head,
+            &remaining_commits,
+            Some(git2::FileFavor::Ours),
+        )? {
+            CherryPickOutcome::Completed(result) => {
+                applied_commits.extend(result.applied);
+            }
+            CherryPickOutcome::Conflicted(next_conflict) => {
+                let replay_state = MergeReplayState {
+                    merge_base_oid: replay.merge_base_oid.clone(),
+                    start_oid: replay.start_oid.clone(),
+                    source_commits: replay.source_commits.clone(),
+                    applied_commits: applied_commits.iter().map(|oid| oid.to_string()).collect(),
+                };
+                let next_state = MergeConflictState {
+                    slug: state.slug.clone(),
+                    source_branch: state.source_branch.clone(),
+                    target_branch: state.target_branch.clone(),
+                    head_oid: replay.start_oid.clone(),
+                    source_oid: state.source_oid.clone(),
+                    merge_message: state.merge_message.clone(),
+                    squash: true,
+                    implementation_message: Some(implementation_message.to_string()),
+                    replay: Some(replay_state),
+                };
+                let state_path = write_conflict_state(&next_state)?;
+                emit_conflict_instructions(&state.slug, &next_conflict.files, &state_path);
+                return Err(
+                    "merge blocked by conflicts; resolve them and rerun vizier merge".into(),
+                );
+            }
+        }
+
+        let expected_head = applied_commits.last().copied().unwrap_or(start_oid);
+        let _ = commit_soft_squash(implementation_message, start_oid, expected_head)?;
+        clear_conflict_state(&state.slug)?;
+        display::info("Backend resolved the conflicts; implementation commit recorded.");
+        return Ok(MergeConflictResolution::SquashImplementationCommitted { source_oid });
+    }
+
+    let head_oid = Oid::from_str(&state.head_oid)?;
     if state.squash {
         let message = state
             .implementation_message
@@ -2580,6 +3001,14 @@ fn mock_cicd_remediation(repo_root: &Path) -> Result<(), Box<dyn std::error::Err
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct MergeReplayState {
+    merge_base_oid: String,
+    start_oid: String,
+    source_commits: Vec<String>,
+    applied_commits: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct MergeConflictState {
     slug: String,
     source_branch: String,
@@ -2591,6 +3020,8 @@ struct MergeConflictState {
     squash: bool,
     #[serde(default)]
     implementation_message: Option<String>,
+    #[serde(default)]
+    replay: Option<MergeReplayState>,
 }
 
 fn merge_conflict_state_path(slug: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {

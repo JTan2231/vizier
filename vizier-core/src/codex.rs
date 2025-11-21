@@ -557,8 +557,7 @@ mod tests {
     fn command_prepares_with_repo_root_as_cwd() {
         let req = base_request(CodexOutputMode::EventsJson);
         let output_path = Path::new("/tmp/out");
-        let (_command, cwd) =
-            prepare_agent_command(&req, output_path).expect("build command");
+        let (_command, cwd) = prepare_agent_command(&req, output_path).expect("build command");
         assert_eq!(cwd.as_path(), req.repo_root.as_path());
     }
 

@@ -1322,6 +1322,47 @@ fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
 }
 
 #[test]
+fn test_merge_squash_replays_plan_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "squash-replay", "replay squash plan"])?;
+
+    repo.git(&["checkout", "draft/squash-replay"])?;
+    repo.write("a", "first replay change\n")?;
+    repo.git(&["commit", "-am", "first replay change"])?;
+    repo.write("a", "second replay change\n")?;
+    repo.git(&["commit", "-am", "second replay change"])?;
+
+    let repo_handle = repo.repo();
+
+    repo.git(&["checkout", "master"])?;
+    clean_workdir(&repo)?;
+    let base_commit = repo_handle.head()?.peel_to_commit()?.id();
+
+    let merge = repo.vizier_output(&["merge", "squash-replay", "--yes"])?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let merge_commit = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        merge_commit.parent_count(),
+        2,
+        "merge commit should keep both parents"
+    );
+    let implementation_commit = merge_commit.parent(0)?;
+    assert_eq!(
+        implementation_commit.parent(0)?.id(),
+        base_commit,
+        "implementation commit should descend from the previous master head"
+    );
+    let plan_tree = merge_commit.parent(1)?.tree_id();
+    assert_eq!(implementation_commit.tree_id(), plan_tree);
+    Ok(())
+}
+
+#[test]
 fn test_merge_no_squash_matches_legacy_parentage() -> TestResult {
     let repo = IntegrationRepo::new()?;
     repo.vizier_output(&["draft", "--name", "legacy-merge", "legacy merge spec"])?;
@@ -1344,6 +1385,42 @@ fn test_merge_no_squash_matches_legacy_parentage() -> TestResult {
         head.parent(0)?.id(),
         base_commit,
         "legacy merge should point directly to the previous master head"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_squash_allows_zero_diff_range() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "zero-diff", "plan with no code changes"])?;
+    clean_workdir(&repo)?;
+
+    let repo_handle = repo.repo();
+    let base_commit = repo_handle.head()?.peel_to_commit()?;
+
+    let merge = repo.vizier_output(&["merge", "zero-diff", "--yes"])?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let head = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        head.parent_count(),
+        2,
+        "merge commit should keep both parents"
+    );
+    let implementation_commit = head.parent(0)?;
+    assert_eq!(
+        implementation_commit.parent(0)?.id(),
+        base_commit.id(),
+        "implementation commit should still descend from the previous master head"
+    );
+    assert_eq!(
+        implementation_commit.tree_id(),
+        head.parent(1)?.tree_id(),
+        "implementation commit tree should match the plan tip even when the range is effectively a no-op"
     );
     Ok(())
 }
@@ -1664,9 +1741,31 @@ fn test_merge_conflict_complete_flag() -> TestResult {
 
     repo.write("a", "manual resolution wins\n")?;
     repo.git(&["add", "a"])?;
+    let status = Command::new("git")
+        .args(["-C", repo.path().to_str().unwrap(), "status", "--porcelain"])
+        .output()?;
+    let status_out = String::from_utf8_lossy(&status.stdout);
+    println!("status before resume:\n{status_out}");
+    let idx_conflicts = repo.repo().index()?.has_conflicts();
+    println!("index.has_conflicts before resume: {idx_conflicts}");
+    let conflicts = Command::new("git")
+        .args(["-C", repo.path().to_str().unwrap(), "ls-files", "-u"])
+        .output()?;
+    println!(
+        "ls-files -u before resume:\n{}",
+        String::from_utf8_lossy(&conflicts.stdout)
+    );
+    assert!(
+        !status_out.contains("U "),
+        "expected conflicts to be resolved before --complete-conflict, got:\n{status_out}"
+    );
 
     let resume =
         repo.vizier_output(&["merge", "conflict-complete", "--yes", "--complete-conflict"])?;
+    println!(
+        "resume stderr:\n{}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
     assert!(
         resume.status.success(),
         "vizier merge --complete-conflict failed after manual resolution: {}",
