@@ -191,7 +191,12 @@ Both commands should show the plan commit sitting one commit ahead of the primar
    ```bash
    vizier draft --file specs/ingest.md
    ```
-   - Output shows `Draft ready; plan=.vizier/implementation-plans/ingest-backpressure.md; branch=draft/ingest-backpressure`.
+   - Output shows a label/value block, for example:
+     ```
+     Outcome: Draft ready
+     Plan: .vizier/implementation-plans/ingest-backpressure.md
+     Branch: draft/ingest-backpressure
+     ```
    - Reviewer opens the printed plan file on the draft branch and edits if needed.
 2. **Approve**
    ```bash
@@ -205,7 +210,13 @@ Both commands should show the plan commit sitting one commit ahead of the primar
    vizier merge ingest-backpressure
    ```
    - Vizier refreshes `.vizier/.snapshot`, removes the plan doc, and merges into the detected primary branch (e.g., `main`).
-   - Final output looks like `Merged plan ingest-backpressure into main; merge_commit=<sha>`.
+   - Final output is a block such as:
+     ```
+     Outcome: Merge complete
+     Plan: ingest-backpressure
+     Target: main
+     Merge commit: <sha>
+     ```
    - Need the branch for a follow-up? Append `--keep-branch` to suppress the default deletion step.
    - Hit a conflict? Resolve it on `main`, stage the changes, and rerun `vizier merge ingest-backpressure --complete-conflict` to finish the stored merge without creating ad-hoc commits.
 
