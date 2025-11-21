@@ -1970,6 +1970,22 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn apply_cherry_pick_sequence_errors_when_head_moves() {
+        let repo = TestRepo::new();
+        append(repo.join("a").as_path(), "base\n");
+        let base = raw_commit(repo.repo(), "base");
+
+        append(repo.join("a").as_path(), "second\n");
+        let second = raw_commit(repo.repo(), "second");
+
+        let result = apply_cherry_pick_sequence(base, &[second], None);
+        assert!(
+            result.is_err(),
+            "expected apply_cherry_pick_sequence to fail when HEAD moved off the recorded start"
+        );
+    }
+
     fn raw_stage(repo: &Repository, rel: &str) {
         let mut idx = repo.index().unwrap();
         idx.add_path(Path::new(rel)).unwrap();
