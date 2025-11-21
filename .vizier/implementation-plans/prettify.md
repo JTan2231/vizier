@@ -34,3 +34,8 @@ Reformat Vizier’s human-facing epilogues and token/agent summaries into a read
 
 ## Notes
 - Keep alignment with the stdout/stderr contract and pending Outcome work; avoid introducing new ad-hoc epilogue shapes outside the shared formatter.
+
+## Amendments (post-implementation)
+- Status: implemented/reviewed on the draft branch as of 2025-11-21; not yet merged.
+- Delivery summary: Shared block + thousand-separator formatter now lives in `vizier-core/src/display`, progress events render multi-line token blocks, token/agent rows appear in CLI outcomes for ask/save/draft/approve/review/merge and init-snapshot, token usage also prints as a stdout block after agent responses, and `vizier list` intentionally keeps its single-line inventory format.
+- Discrepancies vs plan: the original plan gated token/agent rows to `-v/-vv`; the shipped behavior surfaces them at normal verbosity (quiet mode still suppresses). Token-usage blocks emit to stdout in addition to progress events to keep usage visible.
