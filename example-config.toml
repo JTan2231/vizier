@@ -16,10 +16,10 @@ extra_args = ["--log-json"]
 # pointing these fields (or a scoped `[agents.<scope>.agent]` table) at the new command/profile.
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
-# together with backend/model overrides for that scope+prompt pairing. Available kinds: base, commit,
+# together with backend/model overrides for that scope+prompt pairing. Available kinds: documentation, commit,
 # implementation_plan, review, merge_conflict.
-[agents.default.prompts.base]
-path = "./prompts/base.md"
+[agents.default.prompts.documentation]
+path = "./prompts/documentation.md"
 
 [agents.draft.prompts.implementation_plan]
 path = "./prompts/plan.md"
@@ -95,6 +95,12 @@ backend = "agent"
 [agents.review.agent]
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
+
+# Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts
+[agents.merge.documentation]
+enabled = false
+include_snapshot = false
+include_todo_threads = false
 
 # Merge cleanup runs on wire to avoid editing worktrees directly
 [agents.merge]

@@ -70,39 +70,83 @@ fn read_thread_files(dir: &Path) -> Result<Vec<ThreadArtifact>, AgentError> {
     Ok(threads)
 }
 
-fn build_prompt(
-    prompt_selection: &config::PromptSelection,
-    snapshot: &str,
-    threads: &[ThreadArtifact],
+fn load_context_if_needed(
+    include_snapshot: bool,
+    include_todo_threads: bool,
+) -> Result<Option<PromptContext>, AgentError> {
+    if !include_snapshot && !include_todo_threads {
+        return Ok(None);
+    }
+
+    gather_prompt_context().map(Some)
+}
+
+fn append_bounds_section(prompt: &mut String, bounds: &str) {
+    prompt.push_str(&format!("<{AGENT_BOUNDS_TAG}>\n"));
+    prompt.push_str(bounds);
+    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
+}
+
+fn append_snapshot_section(prompt: &mut String, context: Option<&PromptContext>) {
+    prompt.push_str("<snapshot>\n");
+    if let Some(ctx) = context {
+        if ctx.snapshot.trim().is_empty() {
+            prompt.push_str("(snapshot is currently empty)\n");
+        } else {
+            prompt.push_str(ctx.snapshot.trim());
+            prompt.push('\n');
+        }
+    } else {
+        prompt.push_str("(snapshot is currently empty)\n");
+    }
+    prompt.push_str("</snapshot>\n\n");
+}
+
+fn append_todo_threads_section(prompt: &mut String, context: Option<&PromptContext>) {
+    prompt.push_str("<todoThreads>\n");
+    if let Some(ctx) = context {
+        if ctx.threads.is_empty() {
+            prompt.push_str("(no active TODO threads)\n");
+        } else {
+            for thread in &ctx.threads {
+                prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
+            }
+        }
+    } else {
+        prompt.push_str("(no active TODO threads)\n");
+    }
+    prompt.push_str("</todoThreads>\n\n");
+}
+
+pub fn build_documentation_prompt(
+    prompt_selection: Option<&config::PromptSelection>,
     user_input: &str,
+    documentation: &config::DocumentationSettings,
     bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
+    let context = load_context_if_needed(
+        documentation.include_snapshot,
+        documentation.include_todo_threads,
+    )?;
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
-    prompt.push_str(&prompt_selection.text);
-    prompt.push_str(&format!("\n\n<{AGENT_BOUNDS_TAG}>\n"));
-    prompt.push_str(&bounds);
-    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
-
-    prompt.push_str("<snapshot>\n");
-    if snapshot.trim().is_empty() {
-        prompt.push_str("(snapshot is currently empty)\n");
-    } else {
-        prompt.push_str(snapshot.trim());
-        prompt.push('\n');
+    if documentation.use_documentation_prompt {
+        let selection = prompt_selection
+            .ok_or_else(|| AgentError::MissingPrompt(config::PromptKind::Documentation))?;
+        prompt.push_str(&selection.text);
+        prompt.push_str("\n\n");
     }
-    prompt.push_str("</snapshot>\n\n");
 
-    prompt.push_str("<todoThreads>\n");
-    if threads.is_empty() {
-        prompt.push_str("(no active TODO threads)\n");
-    } else {
-        for thread in threads {
-            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
-        }
+    append_bounds_section(&mut prompt, &bounds);
+
+    if documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</todoThreads>\n\n");
+
+    if documentation.include_todo_threads {
+        append_todo_threads_section(&mut prompt, context.as_ref());
+    }
 
     prompt.push_str("<task>\n");
     prompt.push_str(user_input.trim());
@@ -111,36 +155,24 @@ fn build_prompt(
     Ok(prompt)
 }
 
-pub fn build_base_prompt(
-    prompt_selection: &config::PromptSelection,
-    user_input: &str,
-    bounds_override: Option<&Path>,
-) -> Result<String, AgentError> {
-    let context = gather_prompt_context()?;
-    build_prompt(
-        prompt_selection,
-        &context.snapshot,
-        &context.threads,
-        user_input,
-        bounds_override,
-    )
-}
-
 pub fn build_implementation_plan_prompt(
     prompt_selection: &config::PromptSelection,
     plan_slug: &str,
     branch_name: &str,
     operator_spec: &str,
+    documentation: &config::DocumentationSettings,
     bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
-    let context = gather_prompt_context()?;
+    let context = load_context_if_needed(
+        documentation.include_snapshot,
+        documentation.include_todo_threads,
+    )?;
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
-    prompt.push_str(&format!("\n\n<{AGENT_BOUNDS_TAG}>\n"));
-    prompt.push_str(&bounds);
-    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
+    prompt.push_str("\n\n");
+    append_bounds_section(&mut prompt, &bounds);
 
     prompt.push_str("<planMetadata>\n");
     prompt.push_str(&format!(
@@ -148,24 +180,13 @@ pub fn build_implementation_plan_prompt(
     ));
     prompt.push_str("</planMetadata>\n\n");
 
-    prompt.push_str("<snapshot>\n");
-    if context.snapshot.trim().is_empty() {
-        prompt.push_str("(snapshot is currently empty)\n");
-    } else {
-        prompt.push_str(context.snapshot.trim());
-        prompt.push('\n');
+    if documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</snapshot>\n\n");
 
-    prompt.push_str("<todoThreads>\n");
-    if context.threads.is_empty() {
-        prompt.push_str("(no active TODO threads)\n");
-    } else {
-        for thread in &context.threads {
-            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
-        }
+    if documentation.include_todo_threads {
+        append_todo_threads_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</todoThreads>\n\n");
 
     prompt.push_str("<operatorSpec>\n");
     prompt.push_str(operator_spec.trim());
@@ -183,16 +204,19 @@ pub fn build_review_prompt(
     plan_document: &str,
     diff_summary: &str,
     check_results: &[crate::agent::ReviewCheckContext],
+    documentation: &config::DocumentationSettings,
     bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
-    let context = gather_prompt_context()?;
+    let context = load_context_if_needed(
+        documentation.include_snapshot,
+        documentation.include_todo_threads,
+    )?;
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
-    prompt.push_str(&format!("\n\n<{AGENT_BOUNDS_TAG}>\n"));
-    prompt.push_str(&bounds);
-    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
+    prompt.push_str("\n\n");
+    append_bounds_section(&mut prompt, &bounds);
 
     prompt.push_str("<planMetadata>\n");
     prompt.push_str(&format!(
@@ -200,24 +224,13 @@ pub fn build_review_prompt(
     ));
     prompt.push_str("</planMetadata>\n\n");
 
-    prompt.push_str("<snapshot>\n");
-    if context.snapshot.trim().is_empty() {
-        prompt.push_str("(snapshot is currently empty)\n");
-    } else {
-        prompt.push_str(context.snapshot.trim());
-        prompt.push('\n');
+    if documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</snapshot>\n\n");
 
-    prompt.push_str("<todoThreads>\n");
-    if context.threads.is_empty() {
-        prompt.push_str("(no active TODO threads)\n");
-    } else {
-        for thread in &context.threads {
-            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
-        }
+    if documentation.include_todo_threads {
+        append_todo_threads_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</todoThreads>\n\n");
 
     prompt.push_str("<planDocument>\n");
     if plan_document.trim().is_empty() {
@@ -268,16 +281,19 @@ pub fn build_merge_conflict_prompt(
     target_branch: &str,
     source_branch: &str,
     conflicts: &[String],
+    documentation: &config::DocumentationSettings,
     bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
-    let context = gather_prompt_context()?;
+    let context = load_context_if_needed(
+        documentation.include_snapshot,
+        documentation.include_todo_threads,
+    )?;
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
-    prompt.push_str(&format!("\n\n<{AGENT_BOUNDS_TAG}>\n"));
-    prompt.push_str(&bounds);
-    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
+    prompt.push_str("\n\n");
+    append_bounds_section(&mut prompt, &bounds);
 
     prompt.push_str("<mergeContext>\n");
     prompt.push_str(&format!(
@@ -293,24 +309,13 @@ pub fn build_merge_conflict_prompt(
     }
     prompt.push_str("</mergeContext>\n\n");
 
-    prompt.push_str("<snapshot>\n");
-    if context.snapshot.trim().is_empty() {
-        prompt.push_str("(snapshot is currently empty)\n");
-    } else {
-        prompt.push_str(context.snapshot.trim());
-        prompt.push('\n');
+    if documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</snapshot>\n\n");
 
-    prompt.push_str("<todoThreads>\n");
-    if context.threads.is_empty() {
-        prompt.push_str("(no active TODO threads)\n");
-    } else {
-        for thread in &context.threads {
-            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
-        }
+    if documentation.include_todo_threads {
+        append_todo_threads_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</todoThreads>\n");
 
     Ok(prompt)
 }
@@ -325,9 +330,13 @@ pub fn build_cicd_failure_prompt(
     exit_code: Option<i32>,
     stdout: &str,
     stderr: &str,
+    documentation: &config::DocumentationSettings,
     bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
-    let context = gather_prompt_context()?;
+    let context = load_context_if_needed(
+        documentation.include_snapshot,
+        documentation.include_todo_threads,
+    )?;
     let bounds = load_bounds_prompt(bounds_override)?;
 
     let mut prompt = String::new();
@@ -371,24 +380,13 @@ pub fn build_cicd_failure_prompt(
     }
     prompt.push_str("</gateOutput>\n\n");
 
-    prompt.push_str("<snapshot>\n");
-    if context.snapshot.trim().is_empty() {
-        prompt.push_str("(snapshot is currently empty)\n");
-    } else {
-        prompt.push_str(context.snapshot.trim());
-        prompt.push('\n');
+    if documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</snapshot>\n\n");
 
-    prompt.push_str("<todoThreads>\n");
-    if context.threads.is_empty() {
-        prompt.push_str("(no active TODO threads)\n");
-    } else {
-        for thread in &context.threads {
-            prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
-        }
+    if documentation.include_todo_threads {
+        append_todo_threads_section(&mut prompt, context.as_ref());
     }
-    prompt.push_str("</todoThreads>\n\n");
 
     Ok(prompt)
 }
@@ -412,7 +410,7 @@ fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, AgentErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{self, CommandScope, PromptKind};
+    use crate::config::{self, CommandScope, DocumentationSettings, PromptKind};
     use std::sync::Mutex;
 
     static CONFIG_LOCK: Mutex<()> = Mutex::new(());
@@ -427,9 +425,15 @@ mod tests {
 
         let selection =
             config::get_config().prompt_for(CommandScope::Draft, PromptKind::ImplementationPlan);
-        let prompt =
-            build_implementation_plan_prompt(&selection, "slug", "draft/slug", "spec", None)
-                .unwrap();
+        let prompt = build_implementation_plan_prompt(
+            &selection,
+            "slug",
+            "draft/slug",
+            "spec",
+            &DocumentationSettings::default(),
+            None,
+        )
+        .unwrap();
 
         assert!(prompt.starts_with("custom plan"));
         assert!(prompt.contains("<agentBounds>"));
@@ -454,6 +458,7 @@ mod tests {
             "plan",
             "diff",
             &[],
+            &DocumentationSettings::default(),
             None,
         )
         .unwrap();
@@ -475,13 +480,53 @@ mod tests {
         let conflicts = vec!["src/lib.rs".to_string()];
         let selection =
             config::get_config().prompt_for(CommandScope::Merge, PromptKind::MergeConflict);
-        let prompt =
-            build_merge_conflict_prompt(&selection, "main", "draft/slug", &conflicts, None)
-                .unwrap();
+        let prompt = build_merge_conflict_prompt(
+            &selection,
+            "main",
+            "draft/slug",
+            &conflicts,
+            &DocumentationSettings::default(),
+            None,
+        )
+        .unwrap();
 
         assert!(prompt.starts_with("custom merge"));
         assert!(prompt.contains("<mergeContext>"));
 
         config::set_config(original);
+    }
+
+    #[test]
+    fn documentation_prompt_can_skip_snapshot_and_threads() {
+        let settings = DocumentationSettings {
+            use_documentation_prompt: true,
+            include_snapshot: false,
+            include_todo_threads: false,
+        };
+        let selection =
+            config::get_config().prompt_for(CommandScope::Ask, PromptKind::Documentation);
+        let prompt = build_documentation_prompt(Some(&selection), "do the thing", &settings, None)
+            .expect("prompt builds");
+
+        assert!(prompt.contains("<mainInstruction>"));
+        assert!(prompt.contains("<task>\ndo the thing\n</task>"));
+        assert!(!prompt.contains("<snapshot>"));
+        assert!(!prompt.contains("<todoThreads>"));
+    }
+
+    #[test]
+    fn documentation_prompt_respects_disabled_template() {
+        let settings = DocumentationSettings {
+            use_documentation_prompt: false,
+            include_snapshot: false,
+            include_todo_threads: false,
+        };
+
+        let prompt =
+            build_documentation_prompt(None, "just do it", &settings, None).expect("build prompt");
+
+        assert!(!prompt.contains("<mainInstruction>"));
+        assert!(prompt.contains("<agentBounds>"));
+        assert!(prompt.contains("<task>\njust do it\n</task>"));
     }
 }
