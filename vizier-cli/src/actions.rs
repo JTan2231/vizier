@@ -77,7 +77,45 @@ fn latest_usage_rows() -> Vec<(String, String)> {
     }
 }
 
+fn copy_session_log_to_repo_root(repo_root: &Path, artifact: &auditor::SessionArtifact) {
+    let dest_dir = repo_root
+        .join(".vizier")
+        .join("sessions")
+        .join(&artifact.id);
+    let dest_path = dest_dir.join("session.json");
+
+    if artifact.path == dest_path {
+        return;
+    }
+
+    if let Err(err) = fs::create_dir_all(&dest_dir) {
+        display::debug(format!(
+            "unable to prepare session log directory {}: {}",
+            dest_dir.display(),
+            err
+        ));
+        return;
+    }
+
+    if let Err(err) = fs::copy(&artifact.path, &dest_path) {
+        display::debug(format!(
+            "unable to copy session log from {} to {}: {}",
+            artifact.path.display(),
+            dest_path.display(),
+            err
+        ));
+    }
+}
+
 fn append_agent_and_usage_rows(rows: &mut Vec<(String, String)>, verbosity: Verbosity) {
+    append_agent_and_usage_rows_with_usage(rows, verbosity, None);
+}
+
+fn append_agent_and_usage_rows_with_usage(
+    rows: &mut Vec<(String, String)>,
+    verbosity: Verbosity,
+    usage_rows: Option<&[(String, String)]>,
+) {
     if matches!(verbosity, Verbosity::Quiet) {
         return;
     }
@@ -86,7 +124,9 @@ fn append_agent_and_usage_rows(rows: &mut Vec<(String, String)>, verbosity: Verb
         rows.push(("Agent".to_string(), agent));
     }
 
-    let usage_rows = latest_usage_rows();
+    let usage_rows = usage_rows
+        .map(|rows| rows.to_vec())
+        .unwrap_or_else(latest_usage_rows);
     if !usage_rows.is_empty() {
         rows.extend(usage_rows);
     }
@@ -1216,6 +1256,8 @@ pub async fn run_draft(
     ));
 
     let mut plan_document_preview: Option<String> = None;
+    let mut session_artifact: Option<auditor::SessionArtifact> = None;
+    let mut usage_rows: Option<Vec<(String, String)>> = None;
 
     let primary_branch = detect_primary_branch()
         .ok_or_else(|| "unable to detect a primary branch (tried origin/HEAD, main, master)")?;
@@ -1307,7 +1349,9 @@ pub async fn run_draft(
                 Box::from(format!("commit_plan({}): {err}", worktree_path.display()))
             })?;
             plan_committed = true;
-            if Auditor::persist_session_log().is_some() {
+            if let Some(artifact) = Auditor::persist_session_log() {
+                usage_rows = Some(latest_usage_rows());
+                session_artifact = Some(artifact);
                 Auditor::clear_messages();
             }
         } else {
@@ -1326,6 +1370,10 @@ pub async fn run_draft(
                 .clone()
                 .or_else(|| fs::read_to_string(&plan_in_worktree).ok());
 
+            if let Some(artifact) = session_artifact.as_ref() {
+                copy_session_log_to_repo_root(&repo_root, artifact);
+            }
+
             if worktree_created && commit_mode.should_commit() {
                 if let Err(err) = remove_worktree(&worktree_name, true) {
                     display::warn(format!(
@@ -1343,14 +1391,16 @@ pub async fn run_draft(
                     "View with: git checkout {branch_name} && $EDITOR {plan_display}"
                 ));
 
+                let usage_rows = usage_rows.as_deref();
                 let mut rows = vec![
                     ("Outcome".to_string(), "Draft ready".to_string()),
                     ("Plan".to_string(), plan_display.clone()),
                     ("Branch".to_string(), branch_name.clone()),
                 ];
-                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                append_agent_and_usage_rows_with_usage(&mut rows, current_verbosity(), usage_rows);
                 println!("{}", format_block(rows));
             } else {
+                let usage_rows = usage_rows.as_deref();
                 let mut rows = vec![
                     (
                         "Outcome".to_string(),
@@ -1360,7 +1410,7 @@ pub async fn run_draft(
                     ("Worktree".to_string(), worktree_path.display().to_string()),
                     ("Plan".to_string(), plan_display.clone()),
                 ];
-                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                append_agent_and_usage_rows_with_usage(&mut rows, current_verbosity(), usage_rows);
                 println!("{}", format_block(rows));
                 display::info(format!(
                     "Review and commit manually: git -C {} status",
