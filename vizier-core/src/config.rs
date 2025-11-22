@@ -231,6 +231,20 @@ impl DocumentationSettingsOverride {
             && self.include_todo_threads.is_none()
     }
 
+    fn merge(&mut self, other: &DocumentationSettingsOverride) {
+        if let Some(enabled) = other.use_documentation_prompt {
+            self.use_documentation_prompt = Some(enabled);
+        }
+
+        if let Some(include_snapshot) = other.include_snapshot {
+            self.include_snapshot = Some(include_snapshot);
+        }
+
+        if let Some(include_threads) = other.include_todo_threads {
+            self.include_todo_threads = Some(include_threads);
+        }
+    }
+
     fn apply_to(&self, settings: &mut DocumentationSettings) {
         if let Some(enabled) = self.use_documentation_prompt {
             settings.use_documentation_prompt = enabled;
@@ -283,6 +297,34 @@ impl AgentOverrides {
             && self.documentation.is_empty()
             && self.prompt_overrides.is_empty()
     }
+
+    pub fn merge(&mut self, other: &AgentOverrides) {
+        if let Some(backend) = other.backend {
+            self.backend = Some(backend);
+        }
+
+        if let Some(model) = other.model.as_ref() {
+            self.model = Some(model.clone());
+        }
+
+        if let Some(level) = other.reasoning_effort {
+            self.reasoning_effort = Some(level);
+        }
+
+        if let Some(runtime) = other.agent_runtime.as_ref() {
+            if let Some(existing) = self.agent_runtime.as_mut() {
+                existing.merge(runtime);
+            } else {
+                self.agent_runtime = Some(runtime.clone());
+            }
+        }
+
+        self.documentation.merge(&other.documentation);
+
+        for (kind, overrides) in other.prompt_overrides.iter() {
+            self.prompt_overrides.insert(*kind, overrides.clone());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -332,6 +374,30 @@ pub struct AgentRuntimeOverride {
     pub extra_args: Option<Vec<String>>,
 }
 
+impl AgentRuntimeOverride {
+    fn merge(&mut self, other: &AgentRuntimeOverride) {
+        if let Some(backend) = other.backend {
+            self.backend = Some(backend);
+        }
+
+        if let Some(command) = other.command.as_ref() {
+            self.command = Some(command.clone());
+        }
+
+        if let Some(profile) = other.profile.as_ref() {
+            self.profile = Some(profile.clone());
+        }
+
+        if let Some(bounds) = other.bounds_prompt_path.as_ref() {
+            self.bounds_prompt_path = Some(bounds.clone());
+        }
+
+        if let Some(extra_args) = other.extra_args.as_ref() {
+            self.extra_args = Some(extra_args.clone());
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentRuntimeOptions {
     pub backend: Option<AgentBackendKind>,
@@ -339,6 +405,30 @@ pub struct AgentRuntimeOptions {
     pub profile: Option<String>,
     pub bounds_prompt_path: Option<PathBuf>,
     pub extra_args: Vec<String>,
+}
+
+impl AgentRuntimeOptions {
+    fn apply_override(&mut self, overrides: &AgentRuntimeOverride) {
+        if let Some(backend) = overrides.backend {
+            self.backend = Some(backend);
+        }
+
+        if let Some(command) = overrides.command.as_ref() {
+            self.command = command.clone();
+        }
+
+        if let Some(profile) = overrides.profile.as_ref() {
+            self.profile = profile.clone();
+        }
+
+        if let Some(bounds) = overrides.bounds_prompt_path.as_ref() {
+            self.bounds_prompt_path = Some(bounds.clone());
+        }
+
+        if let Some(extra_args) = overrides.extra_args.as_ref() {
+            self.extra_args = extra_args.clone();
+        }
+    }
 }
 
 impl Default for AgentRuntimeOptions {
@@ -492,6 +582,20 @@ impl Default for MergeConfig {
     }
 }
 
+impl MergeConfig {
+    fn apply_layer(&mut self, layer: &MergeLayer) {
+        self.cicd_gate.apply_layer(&layer.cicd_gate);
+
+        if let Some(default_squash) = layer.squash_default {
+            self.squash_default = default_squash;
+        }
+
+        if let Some(mainline) = layer.squash_mainline {
+            self.squash_mainline = Some(mainline);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WorkflowConfig {
     pub no_commit_default: bool,
@@ -501,6 +605,14 @@ impl Default for WorkflowConfig {
     fn default() -> Self {
         Self {
             no_commit_default: false,
+        }
+    }
+}
+
+impl WorkflowConfig {
+    fn apply_layer(&mut self, layer: &WorkflowLayer) {
+        if let Some(no_commit) = layer.no_commit_default {
+            self.no_commit_default = no_commit;
         }
     }
 }
@@ -520,6 +632,61 @@ impl Default for MergeCicdGateConfig {
             retries: 1,
         }
     }
+}
+
+impl MergeCicdGateConfig {
+    fn apply_layer(&mut self, layer: &MergeCicdGateLayer) {
+        if let Some(script) = layer.script.as_ref() {
+            self.script = Some(script.clone());
+        }
+
+        if let Some(auto_resolve) = layer.auto_resolve {
+            self.auto_resolve = auto_resolve;
+        }
+
+        if let Some(retries) = layer.retries {
+            self.retries = retries;
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeCicdGateLayer {
+    pub script: Option<PathBuf>,
+    pub auto_resolve: Option<bool>,
+    pub retries: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeLayer {
+    pub cicd_gate: MergeCicdGateLayer,
+    pub squash_default: Option<bool>,
+    pub squash_mainline: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReviewLayer {
+    pub checks: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkflowLayer {
+    pub no_commit_default: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigLayer {
+    pub provider_model: Option<String>,
+    pub reasoning_effort: Option<ThinkingLevel>,
+    pub backend: Option<BackendKind>,
+    pub agent_runtime: Option<AgentRuntimeOverride>,
+    pub review: ReviewLayer,
+    pub merge: MergeLayer,
+    pub workflow: WorkflowLayer,
+    pub global_prompts: HashMap<SystemPrompt, String>,
+    pub scoped_prompts: HashMap<(CommandScope, SystemPrompt), String>,
+    pub agent_defaults: Option<AgentOverrides>,
+    pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
 }
 
 impl Config {
@@ -554,6 +721,62 @@ impl Config {
             repo_prompts,
             global_prompts: HashMap::new(),
             scoped_prompts: HashMap::new(),
+        }
+    }
+
+    pub fn from_layers(layers: &[ConfigLayer]) -> Self {
+        let mut config = Self::default();
+        for layer in layers {
+            config.apply_layer(layer);
+        }
+        config
+    }
+
+    pub fn apply_layer(&mut self, layer: &ConfigLayer) {
+        if let Some(model) = layer.provider_model.as_ref() {
+            self.provider_model = model.clone();
+        }
+
+        if let Some(level) = layer.reasoning_effort {
+            self.reasoning_effort = Some(level);
+        }
+
+        if let Some(backend) = layer.backend {
+            self.backend = backend;
+        }
+
+        if let Some(runtime) = layer.agent_runtime.as_ref() {
+            self.agent_runtime.apply_override(runtime);
+        }
+
+        if let Some(commands) = layer.review.checks.as_ref() {
+            self.review.checks.commands = commands.clone();
+        }
+
+        self.merge.apply_layer(&layer.merge);
+        self.workflow.apply_layer(&layer.workflow);
+
+        if let Some(defaults) = layer.agent_defaults.as_ref() {
+            if self.agent_defaults.is_empty() {
+                self.agent_defaults = defaults.clone();
+            } else {
+                self.agent_defaults.merge(defaults);
+            }
+        }
+
+        for (scope, overrides) in layer.agent_scopes.iter() {
+            self.agent_scopes
+                .entry(*scope)
+                .and_modify(|existing| existing.merge(overrides))
+                .or_insert_with(|| overrides.clone());
+        }
+
+        for (prompt, value) in layer.global_prompts.iter() {
+            self.set_prompt(*prompt, value.clone());
+        }
+
+        for ((scope, prompt), value) in layer.scoped_prompts.iter() {
+            self.set_scoped_prompt(*scope, *prompt, value.clone());
         }
     }
 
@@ -604,190 +827,8 @@ impl Config {
         format: FileFormat,
         base_dir: Option<&Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file_config: serde_json::Value = match format {
-            FileFormat::Json => serde_json::from_str(contents)?,
-            FileFormat::Toml => toml::from_str(contents)?,
-        };
-
-        Self::from_value(file_config, base_dir)
-    }
-
-    fn from_value(
-        file_config: serde_json::Value,
-        base_dir: Option<&Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut config = Self::default();
-
-        if let Some(model) = find_string(&file_config, MODEL_KEY_PATHS) {
-            let model = model.trim();
-            if !model.is_empty() {
-                config.provider_model = model.to_owned();
-            }
-        }
-
-        if let Some(level) = find_string(&file_config, REASONING_EFFORT_KEY_PATHS) {
-            let level = level.trim();
-            if !level.is_empty() {
-                config.reasoning_effort = Some(ThinkingLevel::from_string(level)?);
-            }
-        }
-
-        if let Some(backend) = find_string(&file_config, BACKEND_KEY_PATHS)
-            .and_then(|value| BackendKind::from_str(value.trim()))
-        {
-            config.backend = backend;
-        }
-
-        if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                FALLBACK_BACKEND_DEPRECATION_MESSAGE,
-            )));
-        }
-
-        if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
-            if let Some(agent_object) = agent_value.as_object() {
-                if let Some(kind) = agent_object
-                    .get("backend")
-                    .or_else(|| agent_object.get("kind"))
-                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
-                    .and_then(AgentBackendKind::from_str)
-                {
-                    config.agent_runtime.backend = Some(kind);
-                }
-
-                if let Some(command) = parse_agent_command(agent_object) {
-                    config.agent_runtime.command = command;
-                }
-
-                if let Some(profile_val) = agent_object.get("profile") {
-                    if profile_val.is_null() {
-                        config.agent_runtime.profile = None;
-                    } else if let Some(profile) = profile_val.as_str() {
-                        let trimmed = profile.trim();
-                        config.agent_runtime.profile = if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        };
-                    }
-                }
-
-                if let Some(bounds_val) = agent_object
-                    .get("bounds_prompt_path")
-                    .or_else(|| agent_object.get("bounds_prompt"))
-                {
-                    if let Some(path) = bounds_val
-                        .as_str()
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                    {
-                        config.agent_runtime.bounds_prompt_path = Some(PathBuf::from(path));
-                    }
-                }
-
-                if let Some(args) = parse_string_array(agent_object.get("extra_args")) {
-                    config.agent_runtime.extra_args = args;
-                }
-            }
-        }
-
-        if let Some(commands) = parse_string_array(value_at_path(
-            &file_config,
-            &["review", "checks", "commands"],
-        )) {
-            config.review.checks.commands = commands;
-        } else if let Some(commands) =
-            parse_string_array(value_at_path(&file_config, &["review", "checks"]))
-        {
-            config.review.checks.commands = commands;
-        }
-
-        if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"]) {
-            if let Some(gate_object) = cicd_gate.as_object() {
-                if let Some(script_value) = gate_object
-                    .get("script")
-                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
-                {
-                    config.merge.cicd_gate.script = Some(PathBuf::from(script_value));
-                }
-
-                if let Some(auto_value) = parse_bool(gate_object.get("auto_resolve")) {
-                    config.merge.cicd_gate.auto_resolve = auto_value;
-                } else if let Some(auto_value) = parse_bool(gate_object.get("auto-fix")) {
-                    config.merge.cicd_gate.auto_resolve = auto_value;
-                }
-
-                if let Some(retries) = parse_u32(gate_object.get("retries")) {
-                    config.merge.cicd_gate.retries = retries;
-                } else if let Some(retries) = parse_u32(gate_object.get("max_retries")) {
-                    config.merge.cicd_gate.retries = retries;
-                } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
-                    config.merge.cicd_gate.retries = retries;
-                }
-            }
-        }
-
-        if let Some(merge_table) = value_at_path(&file_config, &["merge"]) {
-            if let Some(table) = merge_table.as_object() {
-                if let Some(squash) = parse_bool(
-                    table
-                        .get("squash")
-                        .or_else(|| table.get("squash_default"))
-                        .or_else(|| table.get("squash-default")),
-                ) {
-                    config.merge.squash_default = squash;
-                }
-
-                if let Some(mainline) = parse_u32(
-                    table
-                        .get("squash_mainline")
-                        .or_else(|| table.get("squash-mainline")),
-                ) {
-                    config.merge.squash_mainline = Some(mainline);
-                }
-            }
-        }
-
-        if let Some(workflow_value) = value_at_path(&file_config, &["workflow"]) {
-            if let Some(workflow_table) = workflow_value.as_object() {
-                if let Some(no_commit) = parse_bool(workflow_table.get("no_commit_default"))
-                    .or_else(|| parse_bool(workflow_table.get("no-commit-default")))
-                {
-                    config.workflow.no_commit_default = no_commit;
-                }
-            }
-        }
-
-        if let Some(prompt) = find_string(&file_config, DOCUMENTATION_PROMPT_KEY_PATHS) {
-            config.set_prompt(PromptKind::Documentation, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
-            config.set_prompt(PromptKind::Commit, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS) {
-            config.set_prompt(PromptKind::ImplementationPlan, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, REVIEW_PROMPT_KEY_PATHS) {
-            config.set_prompt(PromptKind::Review, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, MERGE_CONFLICT_PROMPT_KEY_PATHS) {
-            config.set_prompt(PromptKind::MergeConflict, prompt);
-        }
-
-        if let Some(prompts_table) = value_at_path(&file_config, &["prompts"]) {
-            config.parse_scoped_prompt_sections(prompts_table)?;
-        }
-
-        if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
-            config.parse_agent_sections(agent_value, base_dir)?;
-        }
-
-        Ok(config)
+        let layer = ConfigLayer::from_str(contents, format, base_dir)?;
+        Ok(Config::from_layers(&[layer]))
     }
 
     pub fn set_prompt<S: Into<String>>(&mut self, prompt: SystemPrompt, value: S) {
@@ -801,75 +842,6 @@ impl Config {
         value: S,
     ) {
         self.scoped_prompts.insert((scope, prompt), value.into());
-    }
-
-    fn parse_agent_sections(
-        &mut self,
-        agents_value: &serde_json::Value,
-        base_dir: Option<&Path>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let table = agents_value.as_object().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "[agents] must be a table")
-        })?;
-
-        for (key, value) in table.iter() {
-            let Some(overrides) = parse_agent_overrides(value, true, base_dir)? else {
-                continue;
-            };
-
-            if key.eq_ignore_ascii_case("default") {
-                self.agent_defaults = overrides;
-                continue;
-            }
-
-            let scope = key.parse::<CommandScope>().map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("unknown [agents.{key}] section: {err}"),
-                )
-            })?;
-            self.agent_scopes.insert(scope, overrides);
-        }
-
-        Ok(())
-    }
-
-    fn parse_scoped_prompt_sections(
-        &mut self,
-        prompts_value: &serde_json::Value,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let Some(table) = prompts_value.as_object() else {
-            return Ok(());
-        };
-
-        for (key, value) in table {
-            let Ok(scope) = key.parse::<CommandScope>() else {
-                continue;
-            };
-
-            let Some(scope_table) = value.as_object() else {
-                // Global prompt overrides (like `review = "..."`) share the same keys as
-                // command scopes. Skip them here; they are handled by the global prompt parser.
-                continue;
-            };
-
-            for (prompt_key, prompt_value) in scope_table {
-                let Some(kind) = prompt_kind_from_key(prompt_key) else {
-                    continue;
-                };
-
-                let Some(text) = prompt_value.as_str().filter(|s| !s.trim().is_empty()) else {
-                    return Err(Box::new(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("[prompts.{key}.{prompt_key}] must be a non-empty string"),
-                    )));
-                };
-
-                self.set_scoped_prompt(scope, kind, text.to_string());
-            }
-        }
-
-        Ok(())
     }
 
     pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
@@ -1657,6 +1629,261 @@ fn parse_agent_command(table: &serde_json::Map<String, serde_json::Value>) -> Op
     None
 }
 
+fn parse_scoped_prompt_sections_into_layer(
+    scoped_prompts: &mut HashMap<(CommandScope, SystemPrompt), String>,
+    prompts_value: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(table) = prompts_value.as_object() else {
+        return Ok(());
+    };
+
+    for (key, value) in table {
+        let Ok(scope) = key.parse::<CommandScope>() else {
+            continue;
+        };
+
+        let Some(scope_table) = value.as_object() else {
+            continue;
+        };
+
+        for (prompt_key, prompt_value) in scope_table {
+            let Some(kind) = prompt_kind_from_key(prompt_key) else {
+                continue;
+            };
+
+            let Some(text) = prompt_value.as_str().filter(|s| !s.trim().is_empty()) else {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("[prompts.{key}.{prompt_key}] must be a non-empty string"),
+                )));
+            };
+
+            scoped_prompts.insert((scope, kind), text.to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_agent_sections_into_layer(
+    layer: &mut ConfigLayer,
+    agents_value: &serde_json::Value,
+    base_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = agents_value
+        .as_object()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "[agents] must be a table"))?;
+
+    for (key, value) in table.iter() {
+        let Some(overrides) = parse_agent_overrides(value, true, base_dir)? else {
+            continue;
+        };
+
+        if key.eq_ignore_ascii_case("default") {
+            layer.agent_defaults = Some(overrides);
+            continue;
+        }
+
+        let scope = key.parse::<CommandScope>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown [agents.{key}] section: {err}"),
+            )
+        })?;
+        layer.agent_scopes.insert(scope, overrides);
+    }
+
+    Ok(())
+}
+
+impl ConfigLayer {
+    pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_reader(filepath.as_path(), FileFormat::Json)
+    }
+
+    pub fn from_toml(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_reader(filepath.as_path(), FileFormat::Toml)
+    }
+
+    pub fn from_path<P: AsRef<Path>>(filepath: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = filepath.as_ref();
+
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+
+        match ext.as_deref() {
+            Some("json") => Self::from_reader(path, FileFormat::Json),
+            Some("toml") => Self::from_reader(path, FileFormat::Toml),
+            _ => Self::from_reader(path, FileFormat::Toml)
+                .or_else(|_| Self::from_reader(path, FileFormat::Json)),
+        }
+    }
+
+    fn from_reader(path: &Path, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = std::fs::read_to_string(path)?;
+        let base_dir = path.parent();
+        Self::from_str(&contents, format, base_dir)
+    }
+
+    fn from_str(
+        contents: &str,
+        format: FileFormat,
+        base_dir: Option<&Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let file_config: serde_json::Value = match format {
+            FileFormat::Json => serde_json::from_str(contents)?,
+            FileFormat::Toml => toml::from_str(contents)?,
+        };
+
+        Self::from_value(file_config, base_dir)
+    }
+
+    fn from_value(
+        file_config: serde_json::Value,
+        base_dir: Option<&Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut layer = ConfigLayer::default();
+
+        if let Some(model) = find_string(&file_config, MODEL_KEY_PATHS) {
+            let model = model.trim();
+            if !model.is_empty() {
+                layer.provider_model = Some(model.to_owned());
+            }
+        }
+
+        if let Some(level) = find_string(&file_config, REASONING_EFFORT_KEY_PATHS) {
+            let level = level.trim();
+            if !level.is_empty() {
+                layer.reasoning_effort = Some(ThinkingLevel::from_string(level)?);
+            }
+        }
+
+        if let Some(backend) = find_string(&file_config, BACKEND_KEY_PATHS)
+            .and_then(|value| BackendKind::from_str(value.trim()))
+        {
+            layer.backend = Some(backend);
+        }
+
+        if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                FALLBACK_BACKEND_DEPRECATION_MESSAGE,
+            )));
+        }
+
+        if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
+            if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
+                layer.agent_runtime = Some(parsed);
+            }
+        }
+
+        if let Some(commands) = parse_string_array(value_at_path(
+            &file_config,
+            &["review", "checks", "commands"],
+        )) {
+            layer.review.checks = Some(commands);
+        } else if let Some(commands) =
+            parse_string_array(value_at_path(&file_config, &["review", "checks"]))
+        {
+            layer.review.checks = Some(commands);
+        }
+
+        if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"]) {
+            if let Some(gate_object) = cicd_gate.as_object() {
+                if let Some(script_value) = gate_object
+                    .get("script")
+                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+                {
+                    layer.merge.cicd_gate.script = Some(PathBuf::from(script_value));
+                }
+
+                if let Some(auto_value) = parse_bool(gate_object.get("auto_resolve")) {
+                    layer.merge.cicd_gate.auto_resolve = Some(auto_value);
+                } else if let Some(auto_value) = parse_bool(gate_object.get("auto-fix")) {
+                    layer.merge.cicd_gate.auto_resolve = Some(auto_value);
+                }
+
+                if let Some(retries) = parse_u32(gate_object.get("retries")) {
+                    layer.merge.cicd_gate.retries = Some(retries);
+                } else if let Some(retries) = parse_u32(gate_object.get("max_retries")) {
+                    layer.merge.cicd_gate.retries = Some(retries);
+                } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
+                    layer.merge.cicd_gate.retries = Some(retries);
+                }
+            }
+        }
+
+        if let Some(merge_table) = value_at_path(&file_config, &["merge"]) {
+            if let Some(table) = merge_table.as_object() {
+                if let Some(squash) = parse_bool(
+                    table
+                        .get("squash")
+                        .or_else(|| table.get("squash_default"))
+                        .or_else(|| table.get("squash-default")),
+                ) {
+                    layer.merge.squash_default = Some(squash);
+                }
+
+                if let Some(mainline) = parse_u32(
+                    table
+                        .get("squash_mainline")
+                        .or_else(|| table.get("squash-mainline")),
+                ) {
+                    layer.merge.squash_mainline = Some(mainline);
+                }
+            }
+        }
+
+        if let Some(workflow_value) = value_at_path(&file_config, &["workflow"]) {
+            if let Some(workflow_table) = workflow_value.as_object() {
+                if let Some(no_commit) = parse_bool(workflow_table.get("no_commit_default"))
+                    .or_else(|| parse_bool(workflow_table.get("no-commit-default")))
+                {
+                    layer.workflow.no_commit_default = Some(no_commit);
+                }
+            }
+        }
+
+        if let Some(prompt) = find_string(&file_config, DOCUMENTATION_PROMPT_KEY_PATHS) {
+            layer
+                .global_prompts
+                .insert(PromptKind::Documentation, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
+            layer.global_prompts.insert(PromptKind::Commit, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS) {
+            layer
+                .global_prompts
+                .insert(PromptKind::ImplementationPlan, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, REVIEW_PROMPT_KEY_PATHS) {
+            layer.global_prompts.insert(PromptKind::Review, prompt);
+        }
+
+        if let Some(prompt) = find_string(&file_config, MERGE_CONFLICT_PROMPT_KEY_PATHS) {
+            layer
+                .global_prompts
+                .insert(PromptKind::MergeConflict, prompt);
+        }
+
+        if let Some(prompts_table) = value_at_path(&file_config, &["prompts"]) {
+            parse_scoped_prompt_sections_into_layer(&mut layer.scoped_prompts, prompts_table)?;
+        }
+
+        if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
+            parse_agent_sections_into_layer(&mut layer, agent_value, base_dir)?;
+        }
+
+        Ok(layer)
+    }
+}
+
 fn parse_agent_runtime_override(
     value: &serde_json::Value,
 ) -> Result<Option<AgentRuntimeOverride>, Box<dyn std::error::Error>> {
@@ -1957,7 +2184,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use tempfile::{NamedTempFile, tempdir};
     use wire::config::ThinkingLevel;
 
@@ -2266,6 +2493,84 @@ retries = 3
         );
         assert!(!cfg.merge.cicd_gate.auto_resolve);
         assert_eq!(cfg.merge.cicd_gate.retries, 5);
+    }
+
+    #[test]
+    fn layered_config_merges_global_and_repo_overrides() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let global_path = temp_dir.path().join("global.toml");
+        fs::write(
+            &global_path,
+            r#"
+backend = "agent"
+
+[agents.default]
+backend = "wire"
+
+[merge.cicd_gate]
+script = "./scripts/global-ci.sh"
+retries = 4
+
+[review.checks]
+commands = ["echo global"]
+"#,
+        )
+        .expect("write global config");
+
+        let repo_path = temp_dir.path().join("repo.toml");
+        fs::write(
+            &repo_path,
+            r#"
+[agents.default]
+model = "wire-local"
+
+[merge.cicd_gate]
+auto_resolve = true
+
+[prompts]
+documentation = "repo documentation prompt"
+"#,
+        )
+        .expect("write repo config");
+
+        let cfg = Config::from_layers(&[
+            ConfigLayer::from_toml(global_path).expect("global layer"),
+            ConfigLayer::from_toml(repo_path).expect("repo layer"),
+        ]);
+
+        assert_eq!(
+            cfg.agent_defaults.backend,
+            Some(BackendKind::Wire),
+            "global backend should carry into repo config"
+        );
+        assert_eq!(
+            cfg.agent_defaults.model.as_deref(),
+            Some("wire-local"),
+            "repo model override should layer onto global defaults"
+        );
+        assert_eq!(
+            cfg.merge.cicd_gate.script,
+            Some(PathBuf::from("./scripts/global-ci.sh")),
+            "global merge script should be preserved when repo omits it"
+        );
+        assert!(
+            cfg.merge.cicd_gate.auto_resolve,
+            "repo boolean override should apply"
+        );
+        assert_eq!(
+            cfg.merge.cicd_gate.retries, 4,
+            "numeric config should fall back to the global layer when repo omits it"
+        );
+        assert_eq!(
+            cfg.review.checks.commands,
+            vec!["echo global"],
+            "global review checks should populate when repo config omits them"
+        );
+        assert_eq!(
+            cfg.get_prompt(PromptKind::Documentation),
+            "repo documentation prompt",
+            "repo prompt overrides should win over inherited/global templates"
+        );
     }
 
     #[test]
