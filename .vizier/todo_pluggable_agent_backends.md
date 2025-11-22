@@ -70,21 +70,21 @@ Update (2025-11-24): Gemini backend adapter + defaults
 - Added `BackendKind::Gemini` with a `GeminiRunner`/`GeminiDisplayAdapter` pair that runs the `gemini` CLI in `--output-format stream-json` mode, feeds prompts on stdin, adapts JSONL events into `[gemini]` progress lines, aggregates assistant text/usage (falling back to stderr JSON when needed), and fails fast on missing binaries, non-zero exits, or empty assistant output. Passthrough still mirrors backend stdout/stderr to the CLI’s stderr while capturing the final message.
 - Agent runtime normalization now defaults the command to `gemini` whenever a scope sets `backend = "gemini"` but leaves the command empty or at the Codex default; CLI help and agent-style enforcement strings now advertise `agent|gemini` as the supported backends. Agent/Gemini backends ignore CLI `--model` overrides (wire remains the only backend honoring that flag). Tests cover runner/display resolution and the default command behavior, and README/example-config show how to pin a scope to Gemini.
 
-## Repo-local config precedence (Snapshot: Code state — configuration precedence is still global-only)
+## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 
 Tension
-- Operators cannot pin `[agents.*]`, gates, or prompt overrides to a repository because the CLI only honors `--config-file` or the env/global paths; per the Snapshot, there is no `.vizier/config.{toml,json}` fallback, so automation must keep exporting `VIZIER_CONFIG_FILE` and loses reproducibility when multiple repos need different defaults.
+- Config now layers global defaults with repo overrides; we need the precedence to stay predictable for agent/prompt/gate settings and to ensure env-driven config only comes into play when no config files exist so operators keep reproducible defaults across machines.
 
 Desired behavior (Product-level)
-- After CLI flag resolution, Vizier probes `.vizier/config.toml` (falling back to `.vizier/config.json`) inside the detected project root and loads it when present; this repo-level config outranks user-global defaults but still yields to explicit CLI flags.
-- The global config under `$XDG_CONFIG_HOME/vizier/config.toml` (or platform equivalent) remains the next fallback, while `VIZIER_CONFIG_FILE` moves to the end of the chain so repo defaults are not silently replaced by stale env overrides.
-- Docs (README + AGENTS.md) and `example-config.toml` describe the new precedence so agents, humans, and CI runners know where to place repo-scoped settings.
+- After CLI flag resolution, Vizier loads the global config as a base (when present) and overlays `.vizier/config.toml` (or `.json`) while preserving unset defaults; env paths should only be used when no config files exist so stale overrides do not mask repo/global settings.
+- Docs (README + AGENTS.md) and `example-config.toml` explain the merged precedence and show how agent/prompt/gate settings inherit from global when repo keys are absent while allowing CLI overrides to win.
 
 Acceptance criteria
-- `vizier-core/src/config.rs` exposes helpers such as `project_config_path(root: &Path)`, `global_config_path()`, and `env_config_path()` so discovery order is explicit and unit-tested (TOML preferred over JSON, blank env vars ignored).
-- `vizier-cli/src/main.rs` (config bootstrap) reuses the existing `project_root` to load `.vizier/config.*` whenever `--config-file` is absent, logs the chosen path at Info/Debug, and only consults user-global paths or `VIZIER_CONFIG_FILE` afterward.
-- README.md, AGENTS.md, and `example-config.toml` document the repo-level config affordance plus the final order: CLI flag → `.vizier/config.toml`/`.json` → global config dir → `VIZIER_CONFIG_FILE`.
-- Tests: integration coverage proves repo config wins over env/global values when both exist, env path is used when no repo config is present, and helpers properly skip missing files. (`tests/src/lib.rs`, new unit tests in `vizier-core/src/config.rs`)
+- `vizier-core/src/config.rs` exposes helpers such as `project_config_path(root: &Path)`, `global_config_path()`, and `env_config_path()` so discovery order and layering are explicit and unit-tested (TOML preferred over JSON, blank env vars ignored).
+- `vizier-cli/src/main.rs` (config bootstrap) reuses the existing `project_root` to load the global layer (if present) and the repo layer, logs both, and only consults `VIZIER_CONFIG_FILE` when no config files exist.
+- README.md, AGENTS.md, and `example-config.toml` document the merged order: CLI flag → global + repo layers (both when present) → `VIZIER_CONFIG_FILE` fallback only when no config files exist.
+- Tests cover inheritance across layers (agent defaults, review checks, gate options) and the env fallback path when repo/global configs are missing. (`tests/src/lib.rs`, unit tests in `vizier-core/src/config.rs`)
 
 Status
-- Shipped via `.vizier/implementation-plans/we-need-to-allow-project-level-c.md` (2025-11-17). `vizier-core::config` gained `project_config_path`/`global_config_path`/`env_config_path`, the CLI now logs and loads `.vizier/config.toml` (or `.json`) before falling back to `~/.config/vizier/config.toml` and finally `VIZIER_CONFIG_FILE`, README/AGENTS/example-config.md describe the precedence, and unit + integration tests cover repo-vs-env behavior.
+- Update (2025-11-22): Config loading now merges global defaults then overlays repo overrides when `--config-file` is absent, logs each source, and only reads `VIZIER_CONFIG_FILE` when no config files exist; docs/examples reflect the merged precedence and tests guard agent/gate/review inheritance under the layered story.
+- Shipped via `.vizier/implementation-plans/we-need-to-allow-project-level-c.md` (2025-11-17) with repo/global discovery helpers; the layering/env fallback tightening landed subsequently.

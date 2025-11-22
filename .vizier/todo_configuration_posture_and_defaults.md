@@ -4,7 +4,7 @@ Thread: Configuration posture + defaults (cross: Agent workflow orchestration, A
 
 Snapshot anchor
 - Narrative theme — Config-first posture (Running Snapshot — updated).
-- Code state — Repo-level configs are now first-class with `.vizier/config.toml` precedence.
+- Code state — Repo/global configs now layer: global defaults load first, repo `.vizier/config.*` overlays, and env `VIZIER_CONFIG_FILE` only applies when no config files exist.
 
 Tension
 - As Vizier evolves as a layer above Git and external agents, new features can feel over-opinionated or opaque when they hard-code behaviors instead of offering configuration levers.
@@ -29,3 +29,4 @@ Pointers
 - Stdout/stderr contract + verbosity TODO in `.vizier/todo_stdout_stderr_contract_and_verbosity`.
 - README, AGENTS.md, and workflow docs that describe `[agents.*]`, `[merge.cicd_gate]`, and the draft → approve → review → merge flags.
 
+Update (2025-11-22): Config loading now layers global defaults with repo overrides when `--config-file` is absent, logs both sources, and only consults `VIZIER_CONFIG_FILE` when no config files exist; docs/examples/tests cover agent/gate/review inheritance under the merged precedence.

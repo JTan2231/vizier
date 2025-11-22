@@ -22,6 +22,8 @@ profile = "compliance"
 backend = "wire"             # keep merge cleanup on the wire stack
 ```
 
+Config precedence: when you skip `--config-file`, Vizier loads the user/global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) as a base and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
+
 If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier no longer falls back to wire automatically; rerun the command once the configured backend is healthy.
 
 CLI overrides (`--backend`, `--agent-bin`, `--agent-profile`, `--agent-bounds`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. The `-p/--model` flag is wire-only: agent/Codex backends ignore it, so model overrides only affect scopes running on wire.

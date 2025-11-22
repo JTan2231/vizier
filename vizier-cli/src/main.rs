@@ -986,36 +986,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cfg = if let Some(ref config_file) = cli.global.config_file {
         config::Config::from_path(std::path::PathBuf::from(config_file))?
     } else {
-        let repo_config = config::project_config_path(&project_root);
-        if let Some(path) = repo_config {
+        let mut layers = Vec::new();
+
+        if let Some(path) = config::global_config_path().filter(|path| path.exists()) {
+            display::emit(
+                LogLevel::Info,
+                format!("Loading global config from {}", path.display()),
+            );
+            layers.push(config::ConfigLayer::from_path(path)?);
+        }
+
+        if let Some(path) = config::project_config_path(&project_root) {
             display::emit(
                 LogLevel::Info,
                 format!("Loading repo config from {}", path.display()),
             );
+            layers.push(config::ConfigLayer::from_path(path)?);
+        }
+
+        if !layers.is_empty() {
+            config::Config::from_layers(&layers)
+        } else if let Some(path) = config::env_config_path().filter(|path| path.exists()) {
+            display::emit(
+                LogLevel::Info,
+                format!("Loading env config from {}", path.display()),
+            );
             config::Config::from_path(path)?
         } else {
-            let mut resolved = None;
-            for (path, source) in [
-                (config::global_config_path(), "global"),
-                (config::env_config_path(), "env"),
-            ] {
-                if let Some(path) = path {
-                    if path.exists() {
-                        resolved = Some((path, source));
-                        break;
-                    }
-                }
-            }
-
-            if let Some((path, source)) = resolved {
-                display::emit(
-                    LogLevel::Info,
-                    format!("Loading {source} config from {}", path.display()),
-                );
-                config::Config::from_path(path)?
-            } else {
-                config::get_config()
-            }
+            config::get_config()
         }
     };
 
