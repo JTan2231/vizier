@@ -443,7 +443,11 @@ impl Auditor {
                 scope: settings.scope,
                 model: match settings.backend {
                     config::BackendKind::Wire => settings.provider_model.clone(),
-                    config::BackendKind::Agent => "n/a".to_string(),
+                    _ => settings
+                        .agent_runtime
+                        .profile
+                        .clone()
+                        .unwrap_or_else(|| "n/a".to_string()),
                 },
                 reasoning_effort: settings.reasoning_effort,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
@@ -986,7 +990,7 @@ impl Auditor {
             config::BackendKind::Wire => {
                 model_override.or_else(|| Some(agent.provider_model.clone()))
             }
-            config::BackendKind::Agent => None,
+            _ => None,
         };
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
@@ -1011,7 +1015,7 @@ impl Auditor {
                 .await?;
                 Ok(response.last().unwrap().clone())
             }
-            config::BackendKind::Agent => {
+            _ => {
                 simulate_integration_changes()?;
                 let runner = Arc::clone(agent.agent_runner()?);
                 let display_adapter = agent.display_adapter.clone();
@@ -1096,7 +1100,7 @@ impl Auditor {
             config::BackendKind::Wire => {
                 model_override.or_else(|| Some(agent.provider_model.clone()))
             }
-            config::BackendKind::Agent => None,
+            _ => None,
         };
 
         let _ = Self::add_message(provider.new_message(user_message).as_user().build());
@@ -1130,7 +1134,7 @@ impl Auditor {
                 }
                 Ok(last)
             }
-            config::BackendKind::Agent => {
+            _ => {
                 simulate_integration_changes()?;
                 let runner = Arc::clone(agent.agent_runner()?);
                 let display_adapter = agent.display_adapter.clone();

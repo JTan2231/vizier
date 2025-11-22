@@ -6,6 +6,7 @@ pub mod codex;
 pub mod config;
 pub mod display;
 pub mod file_tracking;
+pub mod gemini;
 pub mod observer;
 pub mod tools;
 pub mod tree;

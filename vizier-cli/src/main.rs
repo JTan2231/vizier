@@ -69,7 +69,7 @@ struct GlobalOpts {
     #[arg(short = 'p', long, global = true)]
     model: Option<String>,
 
-    /// Backend to use for edit orchestration (`agent` or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
+    /// Backend to use for edit orchestration (`agent`, `gemini`, or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
@@ -156,6 +156,7 @@ enum ProgressArg {
 enum BackendArg {
     #[value(alias = "codex")]
     Agent,
+    Gemini,
     Wire,
 }
 
@@ -163,6 +164,7 @@ impl From<BackendArg> for config::BackendKind {
     fn from(value: BackendArg) -> Self {
         match value {
             BackendArg::Agent => config::BackendKind::Agent,
+            BackendArg::Gemini => config::BackendKind::Gemini,
             BackendArg::Wire => config::BackendKind::Wire,
         }
     }
