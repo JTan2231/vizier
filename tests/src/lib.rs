@@ -962,13 +962,81 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
 }
 
 #[test]
+fn test_draft_reports_token_usage() -> TestResult {
+    fn parse_usage_total(summary: &str) -> Option<usize> {
+        summary
+            .lines()
+            .find(|line| line.trim_start().starts_with("Total"))
+            .and_then(|line| line.split(':').nth(1))
+            .map(str::trim)
+            .and_then(|value| value.split_whitespace().next())
+            .map(|value| value.replace(',', ""))
+            .and_then(|value| value.parse::<usize>().ok())
+    }
+
+    let repo = IntegrationRepo::new()?;
+    let sessions_root = repo.path().join(".vizier/sessions");
+    if sessions_root.exists() {
+        fs::remove_dir_all(&sessions_root)?;
+    }
+    let before_logs = gather_session_logs(&repo)?;
+
+    let output = repo.vizier_output(&[
+        "draft",
+        "--name",
+        "token-usage",
+        "capture usage for draft plans",
+    ])?;
+    assert!(
+        output.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let summary = stdout
+        .split("\n\n")
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing draft summary block"))?;
+    let stdout_total = parse_usage_total(summary).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("usage total missing from summary:\n{summary}"),
+        )
+    })?;
+    assert!(
+        stdout_total > 0,
+        "draft stdout should report non-zero token usage but was {stdout_total}:\n{summary}"
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    let session_path = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "expected session log for draft"))?;
+    let contents = fs::read_to_string(&session_path)?;
+    let session_usage = parse_session_usage(&contents)?;
+    assert!(
+        session_usage.total > 0,
+        "session log should record non-zero token usage but was {}",
+        session_usage.total
+    );
+    assert!(
+        session_usage.known,
+        "session log should mark token usage as known"
+    );
+    assert_eq!(
+        session_usage.total, stdout_total,
+        "stdout total should match session log total (log: {}, stdout: {})",
+        session_usage.total, stdout_total
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_draft_creates_branch_and_plan() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let before = count_commits_from_head(&repo.repo())?;
-    let sessions_dir = repo.path().join(".vizier/sessions");
-    if sessions_dir.exists() {
-        fs::remove_dir_all(&sessions_dir)?;
-    }
+    let before_logs = gather_session_logs(&repo)?;
 
     let output = repo.vizier_output(&["draft", "--name", "smoke", "ship the draft flow"])?;
     assert!(
@@ -977,22 +1045,21 @@ fn test_draft_creates_branch_and_plan() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    let after_logs = gather_session_logs(&repo)?;
+    let session_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier draft to create a session log")?;
+    assert!(
+        session_log.exists(),
+        "session log should exist at {}",
+        session_log.display()
+    );
+
     assert!(
         !repo
             .path()
             .join(".vizier/implementation-plans/smoke.md")
             .exists(),
         "plan should not appear in the operator’s working tree"
-    );
-    let sessions_clean = if sessions_dir.exists() {
-        let mut entries = fs::read_dir(&sessions_dir)?;
-        entries.next().is_none()
-    } else {
-        true
-    };
-    assert!(
-        sessions_clean,
-        "session logs should not be created in the operator's working tree"
     );
 
     let repo_handle = repo.repo();
