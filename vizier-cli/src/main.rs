@@ -390,6 +390,10 @@ struct MergeCmd {
     /// Preserve implementation commits (legacy behavior)
     #[arg(long = "no-squash", action = ArgAction::SetTrue, conflicts_with = "squash")]
     no_squash: bool,
+
+    /// Parent index to use when cherry-picking merge commits in squash mode (1-based)
+    #[arg(long = "squash-mainline", value_name = "PARENT_INDEX")]
+    squash_mainline: Option<u32>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -617,6 +621,15 @@ fn resolve_merge_options(
     if cmd.no_squash {
         squash = false;
     }
+    let mut squash_mainline = config::get_config().merge.squash_mainline;
+    if let Some(mainline) = cmd.squash_mainline {
+        squash_mainline = Some(mainline);
+    }
+    if let Some(mainline) = squash_mainline {
+        if mainline == 0 {
+            return Err("squash mainline parent index must be at least 1".into());
+        }
+    }
 
     Ok(MergeOptions {
         plan,
@@ -630,6 +643,7 @@ fn resolve_merge_options(
         complete_conflict: cmd.complete_conflict,
         cicd_gate,
         squash,
+        squash_mainline,
     })
 }
 

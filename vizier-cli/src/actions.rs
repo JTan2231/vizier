@@ -430,6 +430,7 @@ pub struct MergeOptions {
     pub complete_conflict: bool,
     pub cicd_gate: CicdGateOptions,
     pub squash: bool,
+    pub squash_mainline: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1963,15 +1964,123 @@ pub async fn run_merge(
         plan_document.as_deref(),
         opts.note.as_deref(),
     );
+    let mut squash_plan = None;
+    if opts.squash {
+        squash_plan = Some(resolve_squash_plan_and_mainline(&spec, &opts)?);
+    }
 
     let execution = if opts.squash {
-        execute_squashed_merge(&spec, &implementation_message, &merge_message, &opts, agent).await?
+        let (plan, mainline) = squash_plan.expect("missing squash plan despite squash=true");
+        execute_squashed_merge(
+            &spec,
+            &implementation_message,
+            &merge_message,
+            &opts,
+            plan,
+            mainline,
+            agent,
+        )
+        .await?
     } else {
         let preparation = prepare_merge(&spec.branch)?;
         execute_legacy_merge(&spec, &merge_message, preparation, &opts, agent).await?
     };
 
     finalize_merge(&spec, execution, opts.delete_branch, opts.push_after)?;
+    Ok(())
+}
+
+fn resolve_squash_plan_and_mainline(
+    spec: &plan::PlanBranchSpec,
+    opts: &MergeOptions,
+) -> Result<(vcs::SquashPlan, Option<u32>), Box<dyn std::error::Error>> {
+    let plan = build_squash_plan(&spec.branch)?;
+    if plan.merge_commits.is_empty() {
+        return Ok((plan, opts.squash_mainline));
+    }
+
+    display::warn(
+        "Plan branch contains merge commits; squash mode requires choosing a mainline parent.",
+    );
+    for merge in &plan.merge_commits {
+        let parents = merge
+            .parents
+            .iter()
+            .map(|oid| short_hash(&oid.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let summary = merge.summary.as_deref().unwrap_or("no subject");
+        display::warn(format!(
+            "  - {} (parents: {}) - {}",
+            short_hash(&merge.oid.to_string()),
+            parents,
+            summary
+        ));
+    }
+
+    if plan
+        .merge_commits
+        .iter()
+        .any(|merge| merge.parents.len() > 2)
+    {
+        return Err(format!(
+            "Plan branch {} contains octopus merges; rerun vizier merge {} with --no-squash or rewrite the branch history.",
+            spec.slug, spec.slug
+        )
+        .into());
+    }
+
+    if let Some(mainline) = opts.squash_mainline {
+        validate_squash_mainline(mainline, &plan.merge_commits)?;
+        if plan.mainline_ambiguous {
+            display::warn(
+                "Merge history is ambiguous; proceeding with the provided --squash-mainline value.",
+            );
+        } else if let Some(inferred) = plan.inferred_mainline {
+            if inferred != mainline {
+                display::warn(format!(
+                    "Inferred mainline {} differs from provided {}; continuing with the provided value.",
+                    inferred, mainline
+                ));
+            }
+        }
+        return Ok((plan, Some(mainline)));
+    }
+
+    let hint = plan
+        .inferred_mainline
+        .map(|hint| format!(" (suggested mainline: {hint})"))
+        .unwrap_or_default();
+    let mut guidance = format!(
+        "Plan branch {} includes merge commits; rerun with --squash-mainline <parent index>{hint} or use --no-squash to keep the branch history.",
+        spec.slug
+    );
+    if plan.mainline_ambiguous {
+        guidance.push_str(" Merge history appears ambiguous; --no-squash is safest.");
+    }
+
+    Err(guidance.into())
+}
+
+fn validate_squash_mainline(
+    mainline: u32,
+    merges: &[vcs::MergeCommitSummary],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if mainline == 0 {
+        return Err("squash mainline parent index must be at least 1".into());
+    }
+
+    for merge in merges {
+        if mainline as usize > merge.parents.len() {
+            return Err(format!(
+                "squash mainline parent {} is out of range for merge commit {}",
+                mainline,
+                short_hash(&merge.oid.to_string())
+            )
+            .into());
+        }
+    }
+
     Ok(())
 }
 
@@ -2028,10 +2137,16 @@ async fn execute_squashed_merge(
     implementation_message: &str,
     merge_message: &str,
     opts: &MergeOptions,
+    plan: vcs::SquashPlan,
+    squash_mainline: Option<u32>,
     agent: &config::AgentSettings,
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
-    let plan = build_squash_plan(&spec.branch)?;
-    match apply_cherry_pick_sequence(plan.target_head, &plan.commits_to_apply, None)? {
+    match apply_cherry_pick_sequence(
+        plan.target_head,
+        &plan.commits_to_apply,
+        None,
+        squash_mainline,
+    )? {
         CherryPickOutcome::Completed(result) => {
             let expected_head = result.applied.last().copied().unwrap_or(plan.target_head);
             let implementation_oid =
@@ -2052,6 +2167,7 @@ async fn execute_squashed_merge(
                 merge_message,
                 implementation_message,
                 &plan,
+                squash_mainline,
                 conflict,
                 opts.conflict_strategy,
                 agent,
@@ -2116,6 +2232,7 @@ async fn handle_squash_apply_conflict(
     merge_message: &str,
     implementation_message: &str,
     plan: &vcs::SquashPlan,
+    mainline: Option<u32>,
     conflict: vcs::CherryPickApplyConflict,
     strategy: MergeConflictStrategy,
     agent: &config::AgentSettings,
@@ -2130,6 +2247,7 @@ async fn handle_squash_apply_conflict(
             .map(|oid| oid.to_string())
             .collect(),
         applied_commits: conflict.applied.iter().map(|oid| oid.to_string()).collect(),
+        squash_mainline: mainline,
     };
     let state = MergeConflictState {
         slug: spec.slug.clone(),
@@ -2141,6 +2259,7 @@ async fn handle_squash_apply_conflict(
         squash: true,
         implementation_message: Some(implementation_message.to_string()),
         replay: Some(replay_state),
+        squash_mainline: mainline,
     };
 
     let state_path = write_conflict_state(&state)?;
@@ -2751,11 +2870,13 @@ fn try_complete_pending_merge(
         } else {
             Vec::new()
         };
+        let replay_mainline = replay.squash_mainline.or(state.squash_mainline);
 
         match apply_cherry_pick_sequence(
             applied_commits.last().copied().unwrap_or(start_oid),
             &remaining_commits,
             Some(git2::FileFavor::Ours),
+            replay_mainline,
         )? {
             CherryPickOutcome::Completed(result) => {
                 applied_commits.extend(result.applied);
@@ -2766,6 +2887,7 @@ fn try_complete_pending_merge(
                     start_oid: replay.start_oid.clone(),
                     source_commits: replay.source_commits.clone(),
                     applied_commits: applied_commits.iter().map(|oid| oid.to_string()).collect(),
+                    squash_mainline: state.squash_mainline,
                 };
                 let next_state = MergeConflictState {
                     slug: state.slug.clone(),
@@ -2777,6 +2899,7 @@ fn try_complete_pending_merge(
                     squash: true,
                     implementation_message: Some(implementation_message.to_string()),
                     replay: Some(replay_state),
+                    squash_mainline: state.squash_mainline,
                 };
                 let state_path = write_conflict_state(&next_state)?;
                 emit_conflict_instructions(&spec.slug, &conflict.files, &state_path);
@@ -2872,6 +2995,7 @@ async fn handle_merge_conflict(
         squash,
         implementation_message: implementation_message.map(|s| s.to_string()),
         replay: None,
+        squash_mainline: None,
     };
 
     let state_path = write_conflict_state(&state)?;
@@ -3011,11 +3135,13 @@ async fn try_auto_resolve_conflicts(
         } else {
             Vec::new()
         };
+        let replay_mainline = replay.squash_mainline.or(state.squash_mainline);
 
         match apply_cherry_pick_sequence(
             applied_head,
             &remaining_commits,
             Some(git2::FileFavor::Ours),
+            replay_mainline,
         )? {
             CherryPickOutcome::Completed(result) => {
                 applied_commits.extend(result.applied);
@@ -3026,6 +3152,7 @@ async fn try_auto_resolve_conflicts(
                     start_oid: replay.start_oid.clone(),
                     source_commits: replay.source_commits.clone(),
                     applied_commits: applied_commits.iter().map(|oid| oid.to_string()).collect(),
+                    squash_mainline: state.squash_mainline,
                 };
                 let next_state = MergeConflictState {
                     slug: state.slug.clone(),
@@ -3037,6 +3164,7 @@ async fn try_auto_resolve_conflicts(
                     squash: true,
                     implementation_message: Some(implementation_message.to_string()),
                     replay: Some(replay_state),
+                    squash_mainline: state.squash_mainline,
                 };
                 let state_path = write_conflict_state(&next_state)?;
                 emit_conflict_instructions(&state.slug, &next_conflict.files, &state_path);
@@ -3155,6 +3283,8 @@ struct MergeReplayState {
     start_oid: String,
     source_commits: Vec<String>,
     applied_commits: Vec<String>,
+    #[serde(default)]
+    squash_mainline: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3171,6 +3301,8 @@ struct MergeConflictState {
     implementation_message: Option<String>,
     #[serde(default)]
     replay: Option<MergeReplayState>,
+    #[serde(default)]
+    squash_mainline: Option<u32>,
 }
 
 fn merge_conflict_state_path(slug: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {

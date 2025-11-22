@@ -1744,29 +1744,36 @@ fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() 
     Ok(())
 }
 
-#[test]
-fn test_merge_squash_replay_handles_plan_branch_merge_history() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+fn prepare_plan_branch_with_merge_history(repo: &IntegrationRepo, slug: &str) -> TestResult {
+    let plan_branch = format!("draft/{slug}");
+    let side_branch = format!("{slug}-side");
+
     repo.vizier_output(&[
         "draft",
         "--name",
-        "replay-merge-history",
+        slug,
         "plan branch includes merge history",
     ])?;
-
-    repo.git(&["checkout", "draft/replay-merge-history"])?;
+    repo.git(&["checkout", &plan_branch])?;
     repo.write("a", "main path change\n")?;
     repo.git(&["commit", "-am", "main path change"])?;
 
-    repo.git(&["checkout", "HEAD^", "-b", "plan-side"])?;
+    repo.git(&["checkout", "HEAD^", "-b", &side_branch])?;
     repo.write("b", "side path change\n")?;
     repo.git(&["commit", "-am", "side path change"])?;
 
-    repo.git(&["checkout", "draft/replay-merge-history"])?;
-    repo.git(&["merge", "plan-side"])?;
+    repo.git(&["checkout", &plan_branch])?;
+    repo.git(&["merge", &side_branch])?;
 
     repo.git(&["checkout", "master"])?;
-    clean_workdir(&repo)?;
+    clean_workdir(repo)?;
+    Ok(())
+}
+
+#[test]
+fn test_merge_squash_requires_mainline_for_merge_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_plan_branch_with_merge_history(&repo, "replay-merge-history")?;
 
     let merge = repo.vizier_output(&["merge", "replay-merge-history", "--yes"])?;
     assert!(
@@ -1775,11 +1782,106 @@ fn test_merge_squash_replay_handles_plan_branch_merge_history() -> TestResult {
     );
     let stderr = String::from_utf8_lossy(&merge.stderr);
     assert!(
-        stderr.contains("mainline branch is not specified"),
-        "merge failure should surface mainline/merge commit limitation; stderr:\n{stderr}"
+        stderr.contains("--squash-mainline") && stderr.contains("merge commits"),
+        "merge failure should request --squash-mainline when merge commits exist; stderr:\n{stderr}"
     );
 
     repo.git(&["reset", "--hard"])?;
+    Ok(())
+}
+
+#[test]
+fn test_merge_squash_mainline_replays_merge_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_plan_branch_with_merge_history(&repo, "replay-merge-history-mainline")?;
+
+    let merge = repo.vizier_output(&[
+        "merge",
+        "replay-merge-history-mainline",
+        "--yes",
+        "--squash-mainline",
+        "1",
+    ])?;
+    assert!(
+        merge.status.success(),
+        "expected merge to succeed when squash mainline is provided: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    assert!(
+        repo.read("a")?.contains("main path change"),
+        "target branch should include main path change after merge"
+    );
+    assert!(
+        repo.read("b")?.contains("side path change"),
+        "target branch should include side path change after merge"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_no_squash_handles_merge_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_plan_branch_with_merge_history(&repo, "replay-merge-history-no-squash")?;
+
+    let merge = repo.vizier_output(&[
+        "merge",
+        "replay-merge-history-no-squash",
+        "--yes",
+        "--no-squash",
+    ])?;
+    assert!(
+        merge.status.success(),
+        "expected --no-squash merge to succeed even when plan history contains merges: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    assert!(
+        repo.read("a")?.contains("main path change"),
+        "target branch should include main path change after legacy merge"
+    );
+    assert!(
+        repo.read("b")?.contains("side path change"),
+        "target branch should include side path change after legacy merge"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_squash_rejects_octopus_merge_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "octopus", "octopus merge history"])?;
+    let plan_branch = "draft/octopus".to_string();
+    let side_one = "octopus-side-1".to_string();
+    let side_two = "octopus-side-2".to_string();
+
+    repo.git(&["checkout", &plan_branch])?;
+    repo.write("a", "base change\n")?;
+    repo.git(&["commit", "-am", "base change"])?;
+    let base_oid = oid_for_spec(&repo.repo(), "HEAD")?.to_string();
+
+    repo.git(&["checkout", "-b", &side_one])?;
+    repo.write("b", "side one\n")?;
+    repo.git(&["commit", "-am", "side one change"])?;
+
+    repo.git(&["checkout", "-b", &side_two, &base_oid])?;
+    repo.write("c", "side two\n")?;
+    repo.git(&["commit", "-am", "side two change"])?;
+
+    repo.git(&["checkout", &plan_branch])?;
+    repo.git(&["merge", &side_one, &side_two])?;
+    repo.git(&["checkout", "master"])?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&["merge", "octopus", "--yes"])?;
+    assert!(
+        !merge.status.success(),
+        "expected squash merge to abort on octopus history"
+    );
+    let stderr = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        stderr.contains("octopus") && stderr.contains("--no-squash"),
+        "stderr should explain octopus history and suggest --no-squash: {stderr}"
+    );
+
     Ok(())
 }
 

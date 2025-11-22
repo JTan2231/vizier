@@ -46,6 +46,8 @@ commands = [
 [merge]
 # When true, Vizier squashes implementation commits before creating the merge commit.
 squash = true
+# Optional default mainline parent (1-based) when squashing plan branches that contain merge commits.
+# squash_mainline = 2
 
 # Optional CI/CD gate script run during `vizier merge`
 [merge.cicd_gate]

@@ -7,6 +7,7 @@ use git2::{
     WorktreePruneOptions,
 };
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -1076,11 +1077,21 @@ pub enum MergePreparation {
 }
 
 #[derive(Debug, Clone)]
+pub struct MergeCommitSummary {
+    pub oid: Oid,
+    pub parents: Vec<Oid>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SquashPlan {
     pub target_head: Oid,
     pub source_tip: Oid,
     pub merge_base: Oid,
     pub commits_to_apply: Vec<Oid>,
+    pub merge_commits: Vec<MergeCommitSummary>,
+    pub inferred_mainline: Option<u32>,
+    pub mainline_ambiguous: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1153,12 +1164,76 @@ pub fn build_squash_plan(source_branch: &str) -> Result<SquashPlan, Error> {
     let source_commit = source_ref.get().peel_to_commit()?;
     let merge_base = repo.merge_base(head_commit.id(), source_commit.id())?;
     let commits_to_apply = collect_commits_from_base(&repo, merge_base, source_commit.id())?;
+    let mut merge_commits = Vec::new();
+    let mut possible_mainlines: Option<HashSet<u32>> = None;
+    let mut ambiguous = false;
+
+    for oid in &commits_to_apply {
+        let commit = repo.find_commit(*oid)?;
+        let parent_count = commit.parent_count();
+        if parent_count > 1 {
+            let mut parents = Vec::with_capacity(parent_count as usize);
+            for idx in 0..parent_count {
+                parents.push(commit.parent_id(idx as usize)?);
+            }
+            merge_commits.push(MergeCommitSummary {
+                oid: *oid,
+                parents: parents.clone(),
+                summary: commit.summary().map(|s| s.to_string()),
+            });
+
+            if parent_count > 2 {
+                ambiguous = true;
+                continue;
+            }
+
+            let mut candidates = HashSet::new();
+            for (idx, parent) in parents.iter().enumerate() {
+                if repo.graph_descendant_of(head_commit.id(), *parent)? {
+                    candidates.insert((idx + 1) as u32);
+                }
+            }
+
+            if candidates.is_empty() {
+                ambiguous = true;
+                continue;
+            }
+
+            possible_mainlines = Some(match possible_mainlines {
+                None => candidates,
+                Some(existing) => existing.intersection(&candidates).copied().collect(),
+            });
+            if let Some(ref set) = possible_mainlines {
+                if set.is_empty() {
+                    ambiguous = true;
+                }
+            }
+        }
+    }
+
+    let inferred_mainline = if !ambiguous {
+        possible_mainlines.as_ref().and_then(|set| {
+            if set.len() == 1 {
+                set.iter().copied().next()
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+
+    let mainline_ambiguous = ambiguous
+        || matches!(possible_mainlines, Some(ref set) if !set.is_empty() && set.len() != 1);
 
     Ok(SquashPlan {
         target_head: head_commit.id(),
         source_tip: source_commit.id(),
         merge_base,
         commits_to_apply,
+        merge_commits,
+        inferred_mainline,
+        mainline_ambiguous,
     })
 }
 
@@ -1166,6 +1241,7 @@ pub fn apply_cherry_pick_sequence(
     start_head: Oid,
     commits: &[Oid],
     file_favor: Option<git2::FileFavor>,
+    mainline: Option<u32>,
 ) -> Result<CherryPickOutcome, Error> {
     let repo = Repository::discover(".")?;
     let current_head = repo.head()?.peel_to_commit()?.id();
@@ -1179,6 +1255,22 @@ pub fn apply_cherry_pick_sequence(
     for (idx, oid) in commits.iter().enumerate() {
         let commit = repo.find_commit(*oid)?;
         let mut opts = CherrypickOptions::new();
+        let parent_count = commit.parent_count();
+        if parent_count > 1 {
+            let Some(mainline_parent) = mainline else {
+                return Err(Error::from_str(
+                    "plan branch includes merge commits; rerun vizier merge with --squash-mainline <parent> or --no-squash",
+                ));
+            };
+            if mainline_parent == 0 || mainline_parent as usize > parent_count as usize {
+                return Err(Error::from_str(&format!(
+                    "squash mainline parent {} is out of range for merge commit {}",
+                    mainline_parent,
+                    commit.id()
+                )));
+            }
+            opts.mainline(mainline_parent);
+        }
         let mut checkout = CheckoutBuilder::new();
         checkout
             .allow_conflicts(true)
@@ -1979,7 +2071,7 @@ mod tests {
         append(repo.join("a").as_path(), "second\n");
         let second = raw_commit(repo.repo(), "second");
 
-        let result = apply_cherry_pick_sequence(base, &[second], None);
+        let result = apply_cherry_pick_sequence(base, &[second], None, None);
         assert!(
             result.is_err(),
             "expected apply_cherry_pick_sequence to fail when HEAD moved off the recorded start"
