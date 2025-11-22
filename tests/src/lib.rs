@@ -6,6 +6,7 @@ use git2::{
 };
 use serde_json::Value;
 use std::collections::HashSet;
+use std::env;
 use std::fs;
 use std::io::{self, Write};
 #[cfg(unix)]
@@ -66,6 +67,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 
 struct IntegrationRepo {
     dir: TempDir,
+    agent_bin_dir: PathBuf,
 }
 
 impl IntegrationRepo {
@@ -76,7 +78,8 @@ impl IntegrationRepo {
         ensure_gitignore(dir.path())?;
         write_default_cicd_script(dir.path())?;
         init_repo_at(dir.path())?;
-        Ok(Self { dir })
+        let agent_bin_dir = create_agent_shims(dir.path())?;
+        Ok(Self { dir, agent_bin_dir })
     }
 
     fn path(&self) -> &Path {
@@ -90,6 +93,13 @@ impl IntegrationRepo {
     fn vizier_cmd(&self) -> Command {
         let mut cmd = Command::new(vizier_binary());
         cmd.current_dir(self.path());
+        let mut paths = vec![self.agent_bin_dir.clone()];
+        if let Some(existing) = env::var_os("PATH") {
+            paths.extend(env::split_paths(&existing));
+        }
+        if let Ok(joined) = env::join_paths(paths) {
+            cmd.env("PATH", joined);
+        }
         cmd
     }
 
@@ -389,6 +399,22 @@ fn write_cicd_script(repo: &IntegrationRepo, name: &str, contents: &str) -> io::
     let path = scripts_dir.join(name);
     fs::write(&path, contents)?;
     Ok(path)
+}
+
+fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
+    let bin_dir = root.join("bin");
+    fs::create_dir_all(&bin_dir)?;
+    for name in ["codex", "gemini"] {
+        let path = bin_dir.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n")?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms)?;
+        }
+    }
+    Ok(bin_dir)
 }
 
 fn write_default_cicd_script(repo_root: &Path) -> io::Result<()> {

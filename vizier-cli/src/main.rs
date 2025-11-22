@@ -73,7 +73,11 @@ struct GlobalOpts {
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
-    /// Path to the agent backend binary (defaults to resolving `codex` on PATH)
+    /// Agent backend flavor to resolve when using the agent runner (`auto`, `codex`, or `gemini`)
+    #[arg(long = "agent-backend", value_enum, global = true)]
+    agent_backend: Option<AgentBackendArg>,
+
+    /// Path to the agent backend binary (otherwise Vizier auto-discovers a supported agent on PATH)
     #[arg(
         long = "agent-bin",
         value_name = "PATH",
@@ -133,6 +137,7 @@ impl Default for GlobalOpts {
             no_session: false,
             model: None,
             backend: None,
+            agent_backend: None,
             agent_bin: None,
             agent_profile: None,
             agent_bounds_prompt: None,
@@ -166,6 +171,23 @@ impl From<BackendArg> for config::BackendKind {
             BackendArg::Agent => config::BackendKind::Agent,
             BackendArg::Gemini => config::BackendKind::Gemini,
             BackendArg::Wire => config::BackendKind::Wire,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AgentBackendArg {
+    Auto,
+    Codex,
+    Gemini,
+}
+
+impl From<AgentBackendArg> for config::AgentBackendKind {
+    fn from(value: AgentBackendArg) -> Self {
+        match value {
+            AgentBackendArg::Auto => config::AgentBackendKind::Auto,
+            AgentBackendArg::Codex => config::AgentBackendKind::Codex,
+            AgentBackendArg::Gemini => config::AgentBackendKind::Gemini,
         }
     }
 }
@@ -630,6 +652,13 @@ fn build_cli_agent_overrides(
         overrides.backend = Some(backend.into());
     }
 
+    if let Some(agent_backend) = opts.agent_backend {
+        overrides
+            .agent_runtime
+            .get_or_insert_with(Default::default)
+            .backend = Some(agent_backend.into());
+    }
+
     if let Some(model) = opts.model.as_ref() {
         let trimmed = model.trim();
         if trimmed.is_empty() {
@@ -647,10 +676,18 @@ fn build_cli_agent_overrides(
     }
 
     if let Some(bin) = opts.agent_bin.as_ref() {
+        let backend = opts
+            .agent_backend
+            .map(|value| config::AgentBackendKind::from(value))
+            .unwrap_or(config::AgentBackendKind::Codex);
         overrides
             .agent_runtime
             .get_or_insert_with(Default::default)
-            .command = Some(vec![bin.to_string_lossy().into_owned(), "exec".to_string()]);
+            .command = Some(config::default_command_for_backend(backend, bin.as_path()));
+        overrides
+            .agent_runtime
+            .get_or_insert_with(Default::default)
+            .backend = Some(backend);
     }
 
     if let Some(profile) = opts.agent_profile.as_ref() {
@@ -692,6 +729,34 @@ fn warn_if_model_override_ignored(
             agent.backend,
             scope.as_str()
         ));
+    }
+}
+
+fn log_agent_runtime_resolution(agent: &config::AgentSettings) {
+    if agent.backend != config::BackendKind::Agent {
+        return;
+    }
+
+    match &agent.agent_runtime.resolution {
+        config::AgentRuntimeResolution::Autodiscovered {
+            backend,
+            binary_path,
+        } => {
+            display::info(format!(
+                "Resolved {} agent binary at {} (command: {})",
+                backend.as_str(),
+                binary_path.display(),
+                agent.agent_runtime.command.join(" ")
+            ));
+        }
+        config::AgentRuntimeResolution::InferredFromCommand { backend } => {
+            display::debug(format!(
+                "Inferred {} agent backend from configured command `{}`",
+                backend.as_str(),
+                agent.agent_runtime.command.join(" ")
+            ));
+        }
+        config::AgentRuntimeResolution::Configured => {}
     }
 }
 
@@ -971,15 +1036,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.backend = backend_arg.into();
     }
 
+    if let Some(agent_backend) = cli.global.agent_backend {
+        cfg.agent_runtime.backend = Some(agent_backend.into());
+    }
+
     if let Some(ref bin_override) = cli.global.agent_bin {
-        let bin_str = bin_override.to_string_lossy().into_owned();
+        let runtime_backend = cli
+            .global
+            .agent_backend
+            .map(|value| config::AgentBackendKind::from(value))
+            .or(cfg.agent_runtime.backend)
+            .unwrap_or(config::AgentBackendKind::Codex);
         if cfg.agent_runtime.command.is_empty() {
-            cfg.agent_runtime.command = vec![bin_str, "exec".to_string()];
+            cfg.agent_runtime.command =
+                config::default_command_for_backend(runtime_backend, bin_override.as_path());
         } else {
             let mut command = cfg.agent_runtime.command.clone();
-            command[0] = bin_str;
+            command[0] = bin_override.to_string_lossy().into_owned();
             cfg.agent_runtime.command = command;
         }
+        cfg.agent_runtime.backend = Some(runtime_backend);
     }
 
     if let Some(profile_override) = &cli.global.agent_profile {
@@ -1060,6 +1136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Save, cli_agent_override.as_ref())?;
+            log_agent_runtime_resolution(&agent);
             warn_if_model_override_ignored(
                 model_override_requested,
                 config::CommandScope::Save,
@@ -1081,6 +1158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let message = resolve_ask_message(&cmd)?;
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Ask, cli_agent_override.as_ref())?;
+            log_agent_runtime_resolution(&agent);
             warn_if_model_override_ignored(
                 model_override_requested,
                 config::CommandScope::Ask,
@@ -1093,6 +1171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let resolved = resolve_draft_spec(&cmd)?;
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Draft, cli_agent_override.as_ref())?;
+            log_agent_runtime_resolution(&agent);
             warn_if_model_override_ignored(
                 model_override_requested,
                 config::CommandScope::Draft,
@@ -1118,6 +1197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config::CommandScope::Approve,
                 cli_agent_override.as_ref(),
             )?;
+            log_agent_runtime_resolution(&agent);
             warn_if_model_override_ignored(
                 model_override_requested,
                 config::CommandScope::Approve,
@@ -1131,6 +1211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config::CommandScope::Review,
                 cli_agent_override.as_ref(),
             )?;
+            log_agent_runtime_resolution(&agent);
             warn_if_model_override_ignored(
                 model_override_requested,
                 config::CommandScope::Review,
@@ -1142,6 +1223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let opts = resolve_merge_options(&cmd, push_after)?;
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Merge, cli_agent_override.as_ref())?;
+            log_agent_runtime_resolution(&agent);
             warn_if_model_override_ignored(
                 model_override_requested,
                 config::CommandScope::Merge,
