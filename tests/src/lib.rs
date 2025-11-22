@@ -1229,7 +1229,7 @@ backend = "codex"
     );
     let stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        stderr.contains("requires the agent backend"),
+        stderr.contains("approve requires an agent-style backend"),
         "stderr missing backend warning: {}",
         stderr
     );
