@@ -16,12 +16,10 @@ as we start adding more agents to be natively supported, we should start resolvi
 - **Define resolution strategy**: Specify a deterministic resolution order for agent runtime commands (CLI overrides → scoped config overrides → repo/global config → autodiscovery). Document which binaries/subcommands are tried for Codex vs Gemini and how ties are broken (e.g., prefer explicit backend selection, otherwise first supported binary found).
 - **Extend backend identification**: Introduce a way to express the target agent flavor (Codex vs Gemini) in config/CLI resolution (e.g., backend enum or agent-kind field) so runner/adapter selection and default commands match the chosen agent. Preserve existing `agent`/`wire` semantics for backward compatibility.
 - **Autodiscovery implementation**: Add a resolver that inspects PATH (and any repo-local hints) to locate supported binaries and compute the default command vector for each (handling non-`exec` entrypoints). Integrate this resolver into `Config::default`/`resolve_agent_settings` so `AgentRuntimeOptions.command` is populated lazily when empty.
-- **Runner/adapter wiring**: Wire the resolved agent kind to the appropriate `AgentRunner`/`AgentDisplayAdapter` (Codex existing; add Gemini runner/adapter if event shape differs). Ensure errors for unsupported capability requests remain clear.
 - **CLI integration**: Update `vizier` entrypoint to display which agent binary was resolved, honor `--agent-bin`/profile/bounds overrides, and emit actionable errors when no supported agent is discoverable. Keep session logs/outcome metadata reflecting the resolved backend/binary.
-- **Docs/examples alignment**: Refresh `README.md`, `AGENTS.md`, `example-config.toml`, and any agent-related docs to describe the new discovery behavior, supported agents, override precedence, and fallback/error stories.
+- **Docs/examples alignment**: Refresh `README.md`, `example-config.toml`, and any agent-related docs to describe the new discovery behavior, supported agents, override precedence, and fallback/error stories.
 
 ## Risks & Unknowns
-- Gemini CLI shape and event format may diverge from Codex; may require a bespoke runner/adapter. Need to inspect the referenced `~/ts/gemini-cli` to confirm invocation and output contracts.
 - Changing defaults could surprise environments relying on implicit Codex; must ensure compatibility or clear messaging when resolution picks a different agent or fails.
 - PATH-based discovery must avoid picking unrelated binaries with conflicting names; may need validation probes.
 - Outcome/session logging fields may need expansion to carry agent-kind/binary details without breaking existing consumers.
@@ -29,9 +27,9 @@ as we start adding more agents to be natively supported, we should start resolvi
 ## Testing & Verification
 - Unit tests for runtime resolution: empty command + PATH containing Codex → resolves to Codex default; only Gemini available → resolves to Gemini default; no supported binary → clear error.
 - Config/CLI precedence tests: explicit `agent.command` or `--agent-bin` must override discovery; per-scope overrides respected.
-- Runner/adapter selection tests: correct runner bound for each agent kind; failures when requesting unsupported capabilities.
 - Integration tests for a simple agent-backed command (mocked runners if needed) verifying resolved command in session logs/outcome metadata and honoring verbosity/quiet flags.
 - Documentation sanity checks: help output and example configs match the new resolution story.
 
 ## Notes
 - Narrative change: default agent selection becomes “discover Codex or Gemini” instead of hard-coding Codex, advancing the pluggable-agent thread while keeping config-first precedence.
+- The Gemini runner/adapter is being developed in parallel elsewhere--assume a placeholder if necessary for completing this
