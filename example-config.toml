@@ -5,6 +5,7 @@ model = "gpt-4.1"
 reasoning_effort = "medium"
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
+# Supported backends: `agent` (Codex), `gemini` (Gemini CLI), or `wire`.
 
 # Base agent-backend wiring shared by agent-backed commands unless a scoped override says otherwise
 [agent]
@@ -95,6 +96,12 @@ backend = "agent"
 [agents.review.agent]
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
+
+# Example: route review through Gemini instead of Codex
+# [agents.review]
+# backend = "gemini"
+# [agents.review.agent]
+# command = ["gemini"] # optional; defaults to gemini when backend is set
 
 # Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts
 [agents.merge.documentation]

@@ -213,7 +213,7 @@ fn require_agent_backend(
     error_message: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let derived = agent.for_prompt(prompt)?;
-    if derived.backend != config::BackendKind::Agent {
+    if !derived.backend.requires_agent_runner() {
         return Err(error_message.into());
     }
     Ok(())
@@ -418,7 +418,10 @@ struct MergeExecutionResult {
 
 #[derive(Debug)]
 enum MergeConflictResolution {
-    MergeCommitted { merge_oid: Oid, source_oid: Oid },
+    MergeCommitted {
+        merge_oid: Oid,
+        source_oid: Oid,
+    },
     SquashImplementationCommitted {
         source_oid: Oid,
         implementation_oid: Oid,
@@ -1177,7 +1180,7 @@ pub async fn run_draft(
     require_agent_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier draft requires the agent backend; update [agents.draft] or pass --backend agent",
+        "vizier draft requires an agent-style backend; update [agents.draft] or pass --backend agent|gemini",
     )?;
 
     let DraftArgs {
@@ -1407,7 +1410,7 @@ pub async fn run_approve(
     require_agent_backend(
         agent,
         config::PromptKind::Documentation,
-        "vizier approve requires the agent backend; update [agents.approve] or pass --backend agent",
+        "vizier approve requires an agent-style backend; update [agents.approve] or pass --backend agent|gemini",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1553,7 +1556,7 @@ pub async fn run_review(
     require_agent_backend(
         agent,
         config::PromptKind::Review,
-        "vizier review requires the agent backend; update [agents.review] or pass --backend agent",
+        "vizier review requires an agent-style backend; update [agents.review] or pass --backend agent|gemini",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -1714,15 +1717,15 @@ pub async fn run_merge(
         require_agent_backend(
             agent,
             config::PromptKind::MergeConflict,
-            "Agent-based conflict resolution requires the agent backend; update [agents.merge] or rerun with --backend agent",
+            "Agent-based conflict resolution requires an agent-style backend; update [agents.merge] or rerun with --backend agent|gemini",
         )?;
     }
 
     if opts.cicd_gate.auto_resolve && opts.cicd_gate.script.is_some() {
         let review_agent = agent.for_prompt(config::PromptKind::Review)?;
-        if review_agent.backend != config::BackendKind::Agent {
+        if !review_agent.backend.requires_agent_runner() {
             display::warn(
-                "CI/CD auto-remediation requested but [agents.merge] is not set to the agent backend; gate failures will abort without auto fixes.",
+                "CI/CD auto-remediation requested but [agents.merge] is not set to an agent-style backend; gate failures will abort without auto fixes.",
             );
         }
     }
@@ -2121,9 +2124,9 @@ async fn run_cicd_gate_for_merge(
             return Err(cicd_gate_failure_error(script, &result));
         }
 
-        if agent.backend != config::BackendKind::Agent {
+        if !agent.backend.requires_agent_runner() {
             display::warn(
-                "CI/CD gate auto-remediation requires the agent backend; skipping automatic fixes.",
+                "CI/CD gate auto-remediation requires an agent-style backend; skipping automatic fixes.",
             );
             return Err(cicd_gate_failure_error(script, &result));
         }
