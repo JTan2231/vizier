@@ -15,6 +15,7 @@ use crate::{
     REVIEW_PROMPT,
     agent::{AgentDisplayAdapter, AgentRunner, FallbackDisplayAdapter},
     codex::{CodexDisplayAdapter, CodexRunner},
+    gemini::{GeminiDisplayAdapter, GeminiRunner},
     tools, tree,
 };
 
@@ -83,6 +84,7 @@ impl PromptKind {
 pub enum BackendKind {
     Agent,
     Wire,
+    Gemini,
 }
 
 impl BackendKind {
@@ -90,8 +92,13 @@ impl BackendKind {
         match value.to_ascii_lowercase().as_str() {
             "agent" | "codex" => Some(Self::Agent),
             "wire" => Some(Self::Wire),
+            "gemini" => Some(Self::Gemini),
             _ => None,
         }
+    }
+
+    pub fn requires_agent_runner(&self) -> bool {
+        matches!(self, BackendKind::Agent | BackendKind::Gemini)
     }
 }
 
@@ -100,6 +107,7 @@ impl std::fmt::Display for BackendKind {
         match self {
             BackendKind::Agent => write!(f, "agent"),
             BackendKind::Wire => write!(f, "wire"),
+            BackendKind::Gemini => write!(f, "gemini"),
         }
     }
 }
@@ -291,7 +299,7 @@ pub struct AgentRuntimeOverride {
     pub extra_args: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentRuntimeOptions {
     pub command: Vec<String>,
     pub profile: Option<String>,
@@ -301,12 +309,44 @@ pub struct AgentRuntimeOptions {
 
 impl Default for AgentRuntimeOptions {
     fn default() -> Self {
+        Self::default_for_backend(BackendKind::Agent)
+    }
+}
+
+impl AgentRuntimeOptions {
+    pub fn default_for_backend(backend: BackendKind) -> Self {
         Self {
-            command: vec!["codex".to_string(), "exec".to_string()],
+            command: match backend {
+                BackendKind::Agent => vec!["codex".to_string(), "exec".to_string()],
+                BackendKind::Wire => vec!["codex".to_string(), "exec".to_string()],
+                BackendKind::Gemini => vec!["gemini".to_string()],
+            },
             profile: None,
             bounds_prompt_path: None,
             extra_args: Vec::new(),
         }
+    }
+
+    pub fn normalized_for_backend(&self, backend: BackendKind) -> Self {
+        let mut runtime = self.clone();
+        let codex_default = AgentRuntimeOptions::default_for_backend(BackendKind::Agent).command;
+        let gemini_default = AgentRuntimeOptions::default_for_backend(BackendKind::Gemini).command;
+
+        match backend {
+            BackendKind::Gemini => {
+                if runtime.command.is_empty() || runtime.command == codex_default {
+                    runtime.command = gemini_default;
+                }
+            }
+            BackendKind::Agent => {
+                if runtime.command.is_empty() {
+                    runtime.command = codex_default;
+                }
+            }
+            BackendKind::Wire => {}
+        }
+
+        runtime
     }
 }
 
@@ -1107,6 +1147,7 @@ impl AgentSettingsBuilder {
         } else {
             Config::provider_from_settings(&self.provider_model, self.reasoning_effort)?
         };
+        let agent_runtime = self.agent_runtime.normalized_for_backend(self.backend);
 
         Ok(AgentSettings {
             scope,
@@ -1116,7 +1157,7 @@ impl AgentSettingsBuilder {
             display_adapter: resolve_display_adapter(self.backend),
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
-            agent_runtime: self.agent_runtime.clone(),
+            agent_runtime,
             documentation: self.documentation.clone(),
             prompt,
             cli_override: cli_override.cloned(),
@@ -1130,6 +1171,7 @@ fn resolve_agent_runner(
     match backend {
         BackendKind::Wire => Ok(None),
         BackendKind::Agent => Ok(Some(Arc::new(CodexRunner))),
+        BackendKind::Gemini => Ok(Some(Arc::new(GeminiRunner))),
     }
 }
 
@@ -1137,6 +1179,7 @@ fn resolve_display_adapter(backend: BackendKind) -> Arc<dyn AgentDisplayAdapter>
     match backend {
         BackendKind::Wire => Arc::new(FallbackDisplayAdapter::default()),
         BackendKind::Agent => Arc::new(CodexDisplayAdapter::default()),
+        BackendKind::Gemini => Arc::new(GeminiDisplayAdapter::default()),
     }
 }
 
@@ -2113,6 +2156,24 @@ binary = "/opt/custom-codex"
     }
 
     #[test]
+    fn gemini_backend_exposes_runner_and_defaults_command() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Gemini;
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("gemini backend should resolve");
+
+        assert_eq!(
+            agent.agent_runtime.command,
+            AgentRuntimeOptions::default_for_backend(BackendKind::Gemini).command,
+            "gemini backend should default to the gemini CLI when no command is provided"
+        );
+        assert!(agent.agent_runner().is_ok());
+        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
+    }
+
+    #[test]
     fn wire_backend_skips_runner_but_keeps_adapter() {
         let mut cfg = Config::default();
         cfg.backend = BackendKind::Wire;
@@ -2165,6 +2226,24 @@ binary = "/opt/custom-codex"
         assert_eq!(
             agent.provider_model, DEFAULT_MODEL,
             "agent backends should ignore CLI model overrides"
+        );
+    }
+
+    #[test]
+    fn cli_model_override_is_ignored_for_gemini_backend() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Gemini;
+
+        let mut cli_override = AgentOverrides::default();
+        cli_override.model = Some("gpt-4o-mini".to_string());
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
+            .expect("ask scope should resolve");
+        assert_eq!(agent.backend, BackendKind::Gemini);
+        assert_eq!(
+            agent.provider_model, DEFAULT_MODEL,
+            "gemini backends should ignore CLI model overrides"
         );
     }
 

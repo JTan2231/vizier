@@ -66,6 +66,10 @@ Update (2025-11-21): Agent runner/display abstraction wired through Codex
 - Auditor flows now call into this interface instead of hard-wiring Codex: agent-backed commands construct `AgentRequest` values (prompt, repo_root, agent runtime command/profile/bounds, extra_args, output mode, scope) and let the selected runner stream `AgentEvent` progress into the display adapter, which turns Codex JSON into `[codex] phase — message` history lines while the fallback adapter renders wire events as `[wire:<scope>]`.
 - Remaining work for this thread focuses on actual pluggability beyond Codex (declaring and enforcing backend capabilities, supporting third-party runners/adapters, and making progress/telemetry fully backend-neutral) plus Outcome/session JSON that consistently reports which agent backend handled each run.
 
+Update (2025-11-24): Gemini backend adapter + defaults
+- Added `BackendKind::Gemini` with a `GeminiRunner`/`GeminiDisplayAdapter` pair that runs the `gemini` CLI in `--output-format stream-json` mode, feeds prompts on stdin, adapts JSONL events into `[gemini]` progress lines, aggregates assistant text/usage (falling back to stderr JSON when needed), and fails fast on missing binaries, non-zero exits, or empty assistant output. Passthrough still mirrors backend stdout/stderr to the CLI’s stderr while capturing the final message.
+- Agent runtime normalization now defaults the command to `gemini` whenever a scope sets `backend = "gemini"` but leaves the command empty or at the Codex default; CLI help and agent-style enforcement strings now advertise `agent|gemini` as the supported backends. Agent/Gemini backends ignore CLI `--model` overrides (wire remains the only backend honoring that flag). Tests cover runner/display resolution and the default command behavior, and README/example-config show how to pin a scope to Gemini.
+
 ## Repo-local config precedence (Snapshot: Code state — configuration precedence is still global-only)
 
 Tension
