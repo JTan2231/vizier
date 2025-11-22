@@ -26,6 +26,8 @@ If the selected backend crashes or rejects the request, the command fails immedi
 
 CLI overrides (`--backend`, `--agent-bin`, `--agent-profile`, `--agent-bounds`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. The `-p/--model` flag is wire-only: agent/Codex backends ignore it, so model overrides only affect scopes running on wire.
 
+Agent binaries auto-discover when no `agent.command` is configured: Vizier searches `PATH` for supported CLIs (preferring Codex, then Gemini) and builds the right startup command for the selected backend. Pin the backend with `--agent-backend` or `[agent] kind`, and use `--agent-bin` to point at a specific binary without forcing the Codex-only `exec` shape.
+
 ## High-Level Timeline
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.

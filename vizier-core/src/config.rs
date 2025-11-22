@@ -112,6 +112,38 @@ impl std::fmt::Display for BackendKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
+pub enum AgentBackendKind {
+    Auto,
+    Codex,
+    Gemini,
+}
+
+impl AgentBackendKind {
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "codex" => Some(Self::Codex),
+            "gemini" => Some(Self::Gemini),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentBackendKind::Auto => "auto",
+            AgentBackendKind::Codex => "codex",
+            AgentBackendKind::Gemini => "gemini",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CommandScope {
     Ask,
@@ -262,7 +294,7 @@ pub struct AgentSettings {
     pub display_adapter: Arc<dyn AgentDisplayAdapter>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
-    pub agent_runtime: AgentRuntimeOptions,
+    pub agent_runtime: ResolvedAgentRuntime,
     pub documentation: DocumentationSettings,
     pub prompt: Option<PromptSelection>,
     pub cli_override: Option<AgentOverrides>,
@@ -293,6 +325,7 @@ impl AgentSettings {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentRuntimeOverride {
+    pub backend: Option<AgentBackendKind>,
     pub command: Option<Vec<String>>,
     pub profile: Option<Option<String>>,
     pub bounds_prompt_path: Option<PathBuf>,
@@ -301,6 +334,7 @@ pub struct AgentRuntimeOverride {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentRuntimeOptions {
+    pub backend: Option<AgentBackendKind>,
     pub command: Vec<String>,
     pub profile: Option<String>,
     pub bounds_prompt_path: Option<PathBuf>,
@@ -316,11 +350,11 @@ impl Default for AgentRuntimeOptions {
 impl AgentRuntimeOptions {
     pub fn default_for_backend(backend: BackendKind) -> Self {
         Self {
-            command: match backend {
-                BackendKind::Agent => vec!["codex".to_string(), "exec".to_string()],
-                BackendKind::Wire => vec!["codex".to_string(), "exec".to_string()],
-                BackendKind::Gemini => vec!["gemini".to_string()],
+            backend: match backend {
+                BackendKind::Gemini => Some(AgentBackendKind::Gemini),
+                BackendKind::Agent | BackendKind::Wire => None,
             },
+            command: Vec::new(),
             profile: None,
             bounds_prompt_path: None,
             extra_args: Vec::new(),
@@ -329,25 +363,38 @@ impl AgentRuntimeOptions {
 
     pub fn normalized_for_backend(&self, backend: BackendKind) -> Self {
         let mut runtime = self.clone();
-        let codex_default = AgentRuntimeOptions::default_for_backend(BackendKind::Agent).command;
-        let gemini_default = AgentRuntimeOptions::default_for_backend(BackendKind::Gemini).command;
 
-        match backend {
-            BackendKind::Gemini => {
-                if runtime.command.is_empty() || runtime.command == codex_default {
-                    runtime.command = gemini_default;
-                }
-            }
-            BackendKind::Agent => {
-                if runtime.command.is_empty() {
-                    runtime.command = codex_default;
-                }
-            }
-            BackendKind::Wire => {}
+        if matches!(backend, BackendKind::Gemini)
+            && (runtime.backend.is_none()
+                || matches!(runtime.backend, Some(AgentBackendKind::Auto)))
+        {
+            runtime.backend = Some(AgentBackendKind::Gemini);
         }
 
         runtime
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentRuntimeResolution {
+    Configured,
+    InferredFromCommand {
+        backend: AgentBackendKind,
+    },
+    Autodiscovered {
+        backend: AgentBackendKind,
+        binary_path: PathBuf,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedAgentRuntime {
+    pub backend: AgentBackendKind,
+    pub command: Vec<String>,
+    pub profile: Option<String>,
+    pub bounds_prompt_path: Option<PathBuf>,
+    pub extra_args: Vec<String>,
+    pub resolution: AgentRuntimeResolution,
 }
 
 #[derive(Clone, Debug)]
@@ -598,6 +645,15 @@ impl Config {
 
         if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
             if let Some(agent_object) = agent_value.as_object() {
+                if let Some(kind) = agent_object
+                    .get("backend")
+                    .or_else(|| agent_object.get("kind"))
+                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+                    .and_then(AgentBackendKind::from_str)
+                {
+                    config.agent_runtime.backend = Some(kind);
+                }
+
                 if let Some(command) = parse_agent_command(agent_object) {
                     config.agent_runtime.command = command;
                 }
@@ -1071,6 +1127,10 @@ impl AgentSettingsBuilder {
         }
 
         if let Some(runtime) = overrides.agent_runtime.as_ref() {
+            if let Some(backend) = runtime.backend {
+                self.agent_runtime.backend = Some(backend);
+            }
+
             if let Some(command) = runtime.command.as_ref() {
                 self.agent_runtime.command = command.clone();
             }
@@ -1107,6 +1167,10 @@ impl AgentSettingsBuilder {
         }
 
         if let Some(runtime) = overrides.agent_runtime.as_ref() {
+            if let Some(backend) = runtime.backend {
+                self.agent_runtime.backend = Some(backend);
+            }
+
             if let Some(command) = runtime.command.as_ref() {
                 self.agent_runtime.command = command.clone();
             }
@@ -1149,15 +1213,28 @@ impl AgentSettingsBuilder {
         };
         let agent_runtime = self.agent_runtime.normalized_for_backend(self.backend);
 
+        let resolved_runtime = if self.backend.requires_agent_runner() {
+            resolve_agent_runtime(agent_runtime.clone())?
+        } else {
+            ResolvedAgentRuntime {
+                backend: normalize_backend_preference(agent_runtime.backend),
+                command: agent_runtime.command,
+                profile: agent_runtime.profile,
+                bounds_prompt_path: agent_runtime.bounds_prompt_path,
+                extra_args: agent_runtime.extra_args,
+                resolution: AgentRuntimeResolution::Configured,
+            }
+        };
+
         Ok(AgentSettings {
             scope,
             backend: self.backend,
             provider,
-            runner: resolve_agent_runner(self.backend)?,
-            display_adapter: resolve_display_adapter(self.backend),
+            runner: resolve_agent_runner(self.backend, resolved_runtime.backend)?,
+            display_adapter: resolve_display_adapter(self.backend, resolved_runtime.backend),
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
-            agent_runtime,
+            agent_runtime: resolved_runtime,
             documentation: self.documentation.clone(),
             prompt,
             cli_override: cli_override.cloned(),
@@ -1165,21 +1242,178 @@ impl AgentSettingsBuilder {
     }
 }
 
-fn resolve_agent_runner(
-    backend: BackendKind,
-) -> Result<Option<Arc<dyn AgentRunner>>, Box<dyn std::error::Error>> {
-    match backend {
-        BackendKind::Wire => Ok(None),
-        BackendKind::Agent => Ok(Some(Arc::new(CodexRunner))),
-        BackendKind::Gemini => Ok(Some(Arc::new(GeminiRunner))),
+fn normalize_backend_preference(preference: Option<AgentBackendKind>) -> AgentBackendKind {
+    match preference {
+        Some(AgentBackendKind::Codex) => AgentBackendKind::Codex,
+        Some(AgentBackendKind::Gemini) => AgentBackendKind::Gemini,
+        _ => AgentBackendKind::Codex,
     }
 }
 
-fn resolve_display_adapter(backend: BackendKind) -> Arc<dyn AgentDisplayAdapter> {
+fn resolve_agent_runtime(
+    runtime: AgentRuntimeOptions,
+) -> Result<ResolvedAgentRuntime, Box<dyn std::error::Error>> {
+    resolve_agent_runtime_internal(runtime, None)
+}
+
+#[cfg(test)]
+fn resolve_agent_runtime_with_search_paths(
+    runtime: AgentRuntimeOptions,
+    search_paths: Option<Vec<PathBuf>>,
+) -> Result<ResolvedAgentRuntime, Box<dyn std::error::Error>> {
+    resolve_agent_runtime_internal(runtime, search_paths.as_deref())
+}
+
+fn resolve_agent_runtime_internal(
+    runtime: AgentRuntimeOptions,
+    search_paths: Option<&[PathBuf]>,
+) -> Result<ResolvedAgentRuntime, Box<dyn std::error::Error>> {
+    if !runtime.command.is_empty() {
+        let backend = runtime
+            .backend
+            .or_else(|| infer_backend_from_command(&runtime.command))
+            .unwrap_or(AgentBackendKind::Codex);
+
+        let resolution = if runtime.backend.is_some() {
+            AgentRuntimeResolution::Configured
+        } else {
+            AgentRuntimeResolution::InferredFromCommand { backend }
+        };
+
+        return Ok(ResolvedAgentRuntime {
+            backend,
+            command: runtime.command,
+            profile: runtime.profile,
+            bounds_prompt_path: runtime.bounds_prompt_path,
+            extra_args: runtime.extra_args,
+            resolution,
+        });
+    }
+
+    let target_backends: Vec<AgentBackendKind> =
+        match runtime.backend.unwrap_or(AgentBackendKind::Auto) {
+            AgentBackendKind::Codex => vec![AgentBackendKind::Codex],
+            AgentBackendKind::Gemini => vec![AgentBackendKind::Gemini],
+            AgentBackendKind::Auto => vec![AgentBackendKind::Codex, AgentBackendKind::Gemini],
+        };
+
+    let mut attempted = Vec::new();
+    for backend in target_backends {
+        if let Some((command, binary_path)) = autodiscover_agent_command(backend, search_paths) {
+            return Ok(ResolvedAgentRuntime {
+                backend,
+                command,
+                profile: runtime.profile,
+                bounds_prompt_path: runtime.bounds_prompt_path,
+                extra_args: runtime.extra_args,
+                resolution: AgentRuntimeResolution::Autodiscovered {
+                    backend,
+                    binary_path,
+                },
+            });
+        }
+        attempted.push(backend);
+    }
+
+    let labels: Vec<String> = attempted
+        .into_iter()
+        .map(|b| b.as_str().to_string())
+        .collect();
+    Err(format!(
+        "no supported agent backend found on PATH; looked for {}",
+        labels.join(", ")
+    )
+    .into())
+}
+
+fn autodiscover_agent_command(
+    backend: AgentBackendKind,
+    search_paths: Option<&[PathBuf]>,
+) -> Option<(Vec<String>, PathBuf)> {
+    let names: &[&str] = match backend {
+        AgentBackendKind::Codex | AgentBackendKind::Auto => &["codex"],
+        AgentBackendKind::Gemini => &["gemini", "gemini-cli"],
+    };
+
+    for name in names {
+        let Some(path) = find_on_path(name, search_paths) else {
+            continue;
+        };
+
+        let command = default_command_for_backend(backend, &path);
+        return Some((command, path));
+    }
+
+    None
+}
+
+pub fn default_command_for_backend(backend: AgentBackendKind, binary: &Path) -> Vec<String> {
+    let program = binary.to_string_lossy().into_owned();
     match backend {
-        BackendKind::Wire => Arc::new(FallbackDisplayAdapter::default()),
-        BackendKind::Agent => Arc::new(CodexDisplayAdapter::default()),
-        BackendKind::Gemini => Arc::new(GeminiDisplayAdapter::default()),
+        AgentBackendKind::Codex | AgentBackendKind::Auto => {
+            vec![program, "exec".to_string()]
+        }
+        AgentBackendKind::Gemini => vec![program, "agents".to_string(), "run".to_string()],
+    }
+}
+
+fn find_on_path(name: &str, search_paths: Option<&[PathBuf]>) -> Option<PathBuf> {
+    let entries: Vec<PathBuf> = match search_paths {
+        Some(paths) => paths.to_vec(),
+        None => std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default(),
+    };
+
+    for entry in entries {
+        let candidate = entry.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn infer_backend_from_command(command: &[String]) -> Option<AgentBackendKind> {
+    let candidate = PathBuf::from(command.first()?);
+    let label = candidate
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())?;
+
+    match label.as_str() {
+        "codex" => Some(AgentBackendKind::Codex),
+        "gemini" | "gemini-cli" => Some(AgentBackendKind::Gemini),
+        _ => None,
+    }
+}
+
+fn resolve_agent_runner(
+    backend: BackendKind,
+    agent_backend: AgentBackendKind,
+) -> Result<Option<Arc<dyn AgentRunner>>, Box<dyn std::error::Error>> {
+    if !backend.requires_agent_runner() {
+        return Ok(None);
+    }
+
+    match agent_backend {
+        AgentBackendKind::Gemini => Ok(Some(Arc::new(GeminiRunner))),
+        AgentBackendKind::Codex | AgentBackendKind::Auto => Ok(Some(Arc::new(CodexRunner))),
+    }
+}
+
+fn resolve_display_adapter(
+    backend: BackendKind,
+    agent_backend: AgentBackendKind,
+) -> Arc<dyn AgentDisplayAdapter> {
+    if !backend.requires_agent_runner() {
+        return Arc::new(FallbackDisplayAdapter::default());
+    }
+
+    match agent_backend {
+        AgentBackendKind::Gemini => Arc::new(GeminiDisplayAdapter::default()),
+        AgentBackendKind::Codex | AgentBackendKind::Auto => {
+            Arc::new(CodexDisplayAdapter::default())
+        }
     }
 }
 
@@ -1422,6 +1656,15 @@ fn parse_agent_runtime_override(
     };
 
     let mut overrides = AgentRuntimeOverride::default();
+
+    if let Some(kind) = object
+        .get("backend")
+        .or_else(|| object.get("kind"))
+        .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+        .and_then(AgentBackendKind::from_str)
+    {
+        overrides.backend = Some(kind);
+    }
 
     if let Some(command) = parse_agent_command(object) {
         overrides.command = Some(command);
@@ -1704,6 +1947,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::path::Path;
     use tempfile::{NamedTempFile, tempdir};
     use wire::config::ThinkingLevel;
 
@@ -1712,6 +1956,10 @@ mod tests {
         file.write_all(contents.as_bytes())
             .expect("failed to write temp file");
         file
+    }
+
+    fn codex_command() -> Vec<String> {
+        default_command_for_backend(AgentBackendKind::Codex, Path::new("codex"))
     }
 
     #[test]
@@ -1850,7 +2098,10 @@ include_snapshot = true
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
+        let mut cfg =
+            Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
+        cfg.agent_runtime.command = codex_command();
+        cfg.agent_runtime.backend = Some(AgentBackendKind::Codex);
 
         let ask_settings = cfg
             .resolve_prompt_profile(CommandScope::Ask, PromptKind::Documentation, None)
@@ -2146,8 +2397,91 @@ binary = "/opt/custom-codex"
     }
 
     #[test]
+    fn autodiscovery_uses_codex_when_available_on_path() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let codex_path = temp_dir.path().join("codex");
+        fs::write(&codex_path, "stub codex").expect("write codex stub");
+
+        let runtime = AgentRuntimeOptions::default();
+        let resolved = resolve_agent_runtime_with_search_paths(
+            runtime,
+            Some(vec![temp_dir.path().to_path_buf()]),
+        )
+        .expect("codex binary should be discovered");
+
+        assert_eq!(resolved.backend, AgentBackendKind::Codex);
+        assert_eq!(
+            resolved.command,
+            default_command_for_backend(AgentBackendKind::Codex, &codex_path)
+        );
+        assert!(matches!(
+            resolved.resolution,
+            AgentRuntimeResolution::Autodiscovered {
+                backend: AgentBackendKind::Codex,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn autodiscovery_falls_back_to_gemini_when_codex_absent() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let gemini_path = temp_dir.path().join("gemini");
+        fs::write(&gemini_path, "stub gemini").expect("write gemini stub");
+
+        let runtime = AgentRuntimeOptions::default();
+        let resolved = resolve_agent_runtime_with_search_paths(
+            runtime,
+            Some(vec![temp_dir.path().to_path_buf()]),
+        )
+        .expect("gemini binary should be discovered");
+
+        assert_eq!(resolved.backend, AgentBackendKind::Gemini);
+        assert_eq!(
+            resolved.command,
+            default_command_for_backend(AgentBackendKind::Gemini, &gemini_path)
+        );
+        assert!(matches!(
+            resolved.resolution,
+            AgentRuntimeResolution::Autodiscovered {
+                backend: AgentBackendKind::Gemini,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn autodiscovery_errors_when_no_supported_binary_found() {
+        let runtime = AgentRuntimeOptions::default();
+        let err = resolve_agent_runtime_with_search_paths(runtime, Some(vec![]))
+            .expect_err("resolution should fail without binaries");
+        assert!(
+            err.to_string().contains("no supported agent backend found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn inference_from_command_sets_backend_hint() {
+        let mut runtime = AgentRuntimeOptions::default();
+        runtime.command = vec!["/usr/local/bin/gemini".to_string(), "run".to_string()];
+
+        let resolved = resolve_agent_runtime_with_search_paths(runtime, Some(vec![]))
+            .expect("command should bypass discovery");
+        assert_eq!(resolved.backend, AgentBackendKind::Gemini);
+        assert!(matches!(
+            resolved.resolution,
+            AgentRuntimeResolution::InferredFromCommand {
+                backend: AgentBackendKind::Gemini
+            }
+        ));
+    }
+
+    #[test]
     fn agent_backend_exposes_runner_and_adapter() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = codex_command();
+        cfg.agent_runtime.backend = Some(AgentBackendKind::Codex);
         let agent = cfg
             .resolve_agent_settings(CommandScope::Ask, None)
             .expect("agent backend should resolve");
@@ -2156,20 +2490,28 @@ binary = "/opt/custom-codex"
     }
 
     #[test]
-    fn gemini_backend_exposes_runner_and_defaults_command() {
+    fn gemini_flavor_routes_to_runner_on_agent_backend() {
         let mut cfg = Config::default();
-        cfg.backend = BackendKind::Gemini;
+        cfg.backend = BackendKind::Agent;
+        cfg.agent_runtime.backend = Some(AgentBackendKind::Gemini);
+        cfg.agent_runtime.command =
+            default_command_for_backend(AgentBackendKind::Gemini, Path::new("gemini"));
 
         let agent = cfg
             .resolve_agent_settings(CommandScope::Ask, None)
-            .expect("gemini backend should resolve");
+            .expect("gemini flavor should resolve");
 
+        assert_eq!(agent.agent_runtime.backend, AgentBackendKind::Gemini);
+        assert_eq!(agent.backend, BackendKind::Agent);
         assert_eq!(
             agent.agent_runtime.command,
-            AgentRuntimeOptions::default_for_backend(BackendKind::Gemini).command,
-            "gemini backend should default to the gemini CLI when no command is provided"
+            default_command_for_backend(AgentBackendKind::Gemini, Path::new("gemini"))
         );
-        assert!(agent.agent_runner().is_ok());
+        assert_eq!(
+            agent.agent_runner().unwrap().backend_name(),
+            "gemini",
+            "agent lane should dispatch to the gemini runner when the runtime resolves to gemini"
+        );
         assert!(Arc::strong_count(&agent.display_adapter) >= 1);
     }
 
@@ -2188,6 +2530,8 @@ binary = "/opt/custom-codex"
     fn scoped_agent_backend_overrides_wire_default() {
         let mut cfg = Config::default();
         cfg.backend = BackendKind::Wire;
+        cfg.agent_runtime.command = codex_command();
+        cfg.agent_runtime.backend = Some(AgentBackendKind::Codex);
 
         let mut overrides = AgentOverrides::default();
         overrides.backend = Some(BackendKind::Agent);
@@ -2214,7 +2558,9 @@ binary = "/opt/custom-codex"
 
     #[test]
     fn cli_model_override_is_ignored_for_agent_backend() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = codex_command();
+        cfg.agent_runtime.backend = Some(AgentBackendKind::Codex);
 
         let mut cli_override = AgentOverrides::default();
         cli_override.model = Some("gpt-4o-mini".to_string());
@@ -2233,6 +2579,9 @@ binary = "/opt/custom-codex"
     fn cli_model_override_is_ignored_for_gemini_backend() {
         let mut cfg = Config::default();
         cfg.backend = BackendKind::Gemini;
+        cfg.agent_runtime.backend = Some(AgentBackendKind::Gemini);
+        cfg.agent_runtime.command =
+            default_command_for_backend(AgentBackendKind::Gemini, Path::new("gemini"));
 
         let mut cli_override = AgentOverrides::default();
         cli_override.model = Some("gpt-4o-mini".to_string());
@@ -2241,6 +2590,7 @@ binary = "/opt/custom-codex"
             .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
             .expect("ask scope should resolve");
         assert_eq!(agent.backend, BackendKind::Gemini);
+        assert_eq!(agent.agent_runtime.backend, AgentBackendKind::Gemini);
         assert_eq!(
             agent.provider_model, DEFAULT_MODEL,
             "gemini backends should ignore CLI model overrides"

@@ -265,6 +265,45 @@ fn build_agent_request(
     repo_root: PathBuf,
     output_mode: AgentOutputMode,
 ) -> AgentRequest {
+    let mut metadata = BTreeMap::new();
+    metadata.insert(
+        "agent_backend".to_string(),
+        agent.agent_runtime.backend.as_str().to_string(),
+    );
+    metadata.insert(
+        "agent_command".to_string(),
+        agent.agent_runtime.command.join(" "),
+    );
+    match &agent.agent_runtime.resolution {
+        config::AgentRuntimeResolution::Autodiscovered {
+            backend,
+            binary_path,
+        } => {
+            metadata.insert(
+                "agent_command_source".to_string(),
+                "autodiscovered".to_string(),
+            );
+            metadata.insert(
+                "agent_binary".to_string(),
+                binary_path.display().to_string(),
+            );
+            metadata.insert(
+                "agent_backend_resolved".to_string(),
+                backend.as_str().to_string(),
+            );
+        }
+        config::AgentRuntimeResolution::InferredFromCommand { backend } => {
+            metadata.insert("agent_command_source".to_string(), "inferred".to_string());
+            metadata.insert(
+                "agent_backend_resolved".to_string(),
+                backend.as_str().to_string(),
+            );
+        }
+        config::AgentRuntimeResolution::Configured => {
+            metadata.insert("agent_command_source".to_string(), "configured".to_string());
+        }
+    }
+
     AgentRequest {
         prompt,
         repo_root,
@@ -273,7 +312,7 @@ fn build_agent_request(
         extra_args: agent.agent_runtime.extra_args.clone(),
         output_mode,
         scope: Some(agent.scope),
-        metadata: BTreeMap::new(),
+        metadata,
     }
 }
 
