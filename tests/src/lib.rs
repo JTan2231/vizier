@@ -402,7 +402,8 @@ fn write_cicd_script(repo: &IntegrationRepo, name: &str, contents: &str) -> io::
 }
 
 fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
-    let bin_dir = root.join("bin");
+    // Keep shims under .vizier/tmp so they stay ignored when commands require a clean tree.
+    let bin_dir = root.join(".vizier/tmp/bin");
     fs::create_dir_all(&bin_dir)?;
     for name in ["codex", "gemini"] {
         let path = bin_dir.join(name);
