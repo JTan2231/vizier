@@ -479,6 +479,7 @@ impl Default for ReviewChecksConfig {
 pub struct MergeConfig {
     pub cicd_gate: MergeCicdGateConfig,
     pub squash_default: bool,
+    pub squash_mainline: Option<u32>,
 }
 
 impl Default for MergeConfig {
@@ -486,6 +487,7 @@ impl Default for MergeConfig {
         Self {
             cicd_gate: MergeCicdGateConfig::default(),
             squash_default: true,
+            squash_mainline: None,
         }
     }
 }
@@ -735,6 +737,14 @@ impl Config {
                         .or_else(|| table.get("squash-default")),
                 ) {
                     config.merge.squash_default = squash;
+                }
+
+                if let Some(mainline) = parse_u32(
+                    table
+                        .get("squash_mainline")
+                        .or_else(|| table.get("squash-mainline")),
+                ) {
+                    config.merge.squash_mainline = Some(mainline);
                 }
             }
         }
