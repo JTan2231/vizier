@@ -87,6 +87,7 @@ vizier init-snapshot
 
 # Everyday commands
 vizier help
+vizier plan --json                 # print the resolved config (global + repo + CLI)
 vizier ask "add retry logic to the API client"
 vizier save -m "feat: capture retry rationale"
 vizier draft --name stdout-stderr "refresh stdout/stderr contract"
@@ -104,6 +105,7 @@ vizier merge stdout-stderr
 Tune Vizier via repo-local files so settings travel with commits.
 
 - `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan, `[merge] squash_mainline = 2` to preselect a mainline for merge-heavy plan branches), backend options, and the prompt profiles attached to each command. Every `[agents.<scope>.prompts.<kind>]` table ties a prompt template (inline text or `path`) to backend/model/reasoning overrides so plan/approve/review share a single surface instead of juggling parallel `[prompts.*]` overrides. CLI flags still sit above these scopes.
+- `vizier plan` prints the fully resolved configuration (global + repo + CLI overrides) with per-scope agent/runtime selection; pass `--json` for a structured view. The command is read-only and does not start an Auditor session.
 - If you do not pass `--config-file`, Vizier now loads global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your personal defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
 - Agent backends now run through shell scripts: stdout is the final assistant response, stderr carries progress/usage/errors, and the exit code sets status. Point `[agents.<scope>.agent].command` at your script (see `examples/agents/codex.sh` and `examples/agents/gemini.sh`), and use the backend label (`agent`/`gemini`) purely as metadata.
 - The `-p/--model` flag is wire-only. Agent runs ignore it; model overrides only apply when a scope uses the wire backend.

@@ -213,6 +213,9 @@ enum Commands {
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
 
+    /// Print the resolved configuration and exit
+    Plan(PlanCmd),
+
     /// Generate shell completion scripts
     Completions(CompletionsCmd),
 
@@ -274,6 +277,9 @@ struct ListCmd {
     #[arg(long = "target", value_name = "BRANCH")]
     target: Option<String>,
 }
+
+#[derive(ClapArgs, Debug)]
+struct PlanCmd {}
 
 #[derive(ClapArgs, Debug)]
 struct ApproveCmd {
@@ -1202,6 +1208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
+        Commands::Plan(_) => run_plan_summary(cli_agent_override.as_ref(), cli.global.json),
 
         Commands::Approve(cmd) => {
             let opts = resolve_approve_options(&cmd, push_after)?;

@@ -845,6 +845,172 @@ backend = "wire"
 }
 
 #[test]
+fn test_plan_command_outputs_resolved_config() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before_logs = gather_session_logs(&repo)?;
+    let output = repo.vizier_output(&["plan"])?;
+    assert!(
+        output.status.success(),
+        "vizier plan failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let compact = stdout.replace(' ', "");
+    assert!(
+        stdout.contains("Resolved configuration:"),
+        "plan should print a resolved config header:\n{stdout}"
+    );
+    assert!(
+        compact.contains("Backend:agent"),
+        "plan output should include the resolved backend:\n{stdout}"
+    );
+    assert!(
+        compact.contains("CI/CDscript:./cicd.sh"),
+        "plan output should include merge.cicd_gate.script:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("autodiscovered codex"),
+        "plan output should describe agent runtime resolution:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Per-scope agents:"),
+        "plan output should render per-scope agent settings:\n{stdout}"
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    assert_eq!(
+        before_logs.len(),
+        after_logs.len(),
+        "vizier plan should not create session logs"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_json_respects_config_file_and_overrides() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let config_path = repo.path().join("custom-config.toml");
+    fs::write(
+        &config_path,
+        r#"
+backend = "agent"
+[merge.cicd_gate]
+script = "./alt-cicd.sh"
+auto_resolve = false
+retries = 5
+[review.checks]
+commands = ["echo alt-review"]
+[workflow]
+no_commit_default = true
+"#,
+    )?;
+
+    let output = repo
+        .vizier_cmd_with_config(&config_path)
+        .args([
+            "--backend",
+            "wire",
+            "--model",
+            "gpt-4o-mini",
+            "--reasoning-effort",
+            "high",
+            "plan",
+            "--json",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier plan --json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+
+    assert_eq!(
+        json.get("backend").and_then(Value::as_str),
+        Some("wire"),
+        "CLI backend override should win even when config file is provided"
+    );
+    assert_eq!(
+        json.get("model").and_then(Value::as_str),
+        Some("gpt-4o-mini"),
+        "wire model override should flow into the report"
+    );
+    assert_eq!(
+        json.get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(|value| value.to_ascii_lowercase()),
+        Some("high".to_string()),
+        "reasoning effort should honor CLI override"
+    );
+    assert_eq!(
+        json.pointer("/workflow/no_commit_default")
+            .and_then(Value::as_bool),
+        Some(true),
+        "workflow.no_commit_default from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/merge/cicd_gate/script")
+            .and_then(Value::as_str),
+        Some("./alt-cicd.sh"),
+        "merge.cicd_gate.script from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/merge/cicd_gate/retries")
+            .and_then(Value::as_u64),
+        Some(5),
+        "merge.cicd_gate.retries from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/review/checks/0").and_then(Value::as_str),
+        Some("echo alt-review"),
+        "review checks from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/scopes/ask/backend").and_then(Value::as_str),
+        Some("wire"),
+        "per-scope backend should reflect CLI overrides"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_reports_agent_bin_override() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let bin_dir = repo.path().join("bin");
+    fs::create_dir_all(&bin_dir)?;
+    let custom_bin = bin_dir.join("codex-custom");
+    fs::write(&custom_bin, "#!/bin/sh\nexit 0\n")?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&custom_bin)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&custom_bin, perms)?;
+    }
+
+    let output = repo
+        .vizier_cmd()
+        .args(["--agent-bin", custom_bin.to_str().unwrap(), "plan"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier plan with agent bin override failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let compact = stdout.replace(' ', "");
+    assert!(
+        compact.contains(&format!("Command:{}exec", custom_bin.display())),
+        "plan output should surface the overridden agent command:\n{stdout}"
+    );
+    assert!(
+        compact.contains("Resolution:configured"),
+        "plan output should mark the agent runtime as configured when CLI overrides are provided:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_global_review_checks_fill_repo_defaults() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let repo_config = repo.path().join(".vizier").join("config.toml");
