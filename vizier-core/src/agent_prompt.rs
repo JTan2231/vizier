@@ -122,13 +122,12 @@ pub fn build_documentation_prompt(
     prompt_selection: Option<&config::PromptSelection>,
     user_input: &str,
     documentation: &config::DocumentationSettings,
-    bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
         documentation.include_todo_threads,
     )?;
-    let bounds = load_bounds_prompt(bounds_override)?;
+    let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
     if documentation.use_documentation_prompt {
@@ -161,13 +160,12 @@ pub fn build_implementation_plan_prompt(
     branch_name: &str,
     operator_spec: &str,
     documentation: &config::DocumentationSettings,
-    bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
         documentation.include_todo_threads,
     )?;
-    let bounds = load_bounds_prompt(bounds_override)?;
+    let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
@@ -205,13 +203,12 @@ pub fn build_review_prompt(
     diff_summary: &str,
     check_results: &[crate::agent::ReviewCheckContext],
     documentation: &config::DocumentationSettings,
-    bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
         documentation.include_todo_threads,
     )?;
-    let bounds = load_bounds_prompt(bounds_override)?;
+    let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
@@ -282,13 +279,12 @@ pub fn build_merge_conflict_prompt(
     source_branch: &str,
     conflicts: &[String],
     documentation: &config::DocumentationSettings,
-    bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
         documentation.include_todo_threads,
     )?;
-    let bounds = load_bounds_prompt(bounds_override)?;
+    let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
@@ -331,13 +327,12 @@ pub fn build_cicd_failure_prompt(
     stdout: &str,
     stderr: &str,
     documentation: &config::DocumentationSettings,
-    bounds_override: Option<&Path>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
         documentation.include_todo_threads,
     )?;
-    let bounds = load_bounds_prompt(bounds_override)?;
+    let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
     prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/.snapshot` plus TODO threads when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
@@ -391,20 +386,8 @@ pub fn build_cicd_failure_prompt(
     Ok(prompt)
 }
 
-fn load_bounds_prompt(bounds_override: Option<&Path>) -> Result<String, AgentError> {
-    if let Some(path) = bounds_override {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|err| AgentError::BoundsRead(path.to_path_buf(), err))?;
-        return Ok(contents);
-    }
-
-    if let Some(path) = &config::get_config().agent_runtime.bounds_prompt_path {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|err| AgentError::BoundsRead(path.clone(), err))?;
-        Ok(contents)
-    } else {
-        Ok(DEFAULT_AGENT_BOUNDS.to_string())
-    }
+fn load_bounds_prompt() -> Result<String, AgentError> {
+    Ok(DEFAULT_AGENT_BOUNDS.to_string())
 }
 
 #[cfg(test)]
@@ -431,7 +414,6 @@ mod tests {
             "draft/slug",
             "spec",
             &DocumentationSettings::default(),
-            None,
         )
         .unwrap();
 
@@ -459,7 +441,6 @@ mod tests {
             "diff",
             &[],
             &DocumentationSettings::default(),
-            None,
         )
         .unwrap();
 
@@ -486,7 +467,6 @@ mod tests {
             "draft/slug",
             &conflicts,
             &DocumentationSettings::default(),
-            None,
         )
         .unwrap();
 
@@ -505,7 +485,7 @@ mod tests {
         };
         let selection =
             config::get_config().prompt_for(CommandScope::Ask, PromptKind::Documentation);
-        let prompt = build_documentation_prompt(Some(&selection), "do the thing", &settings, None)
+        let prompt = build_documentation_prompt(Some(&selection), "do the thing", &settings)
             .expect("prompt builds");
 
         assert!(prompt.contains("<mainInstruction>"));
@@ -523,7 +503,7 @@ mod tests {
         };
 
         let prompt =
-            build_documentation_prompt(None, "just do it", &settings, None).expect("build prompt");
+            build_documentation_prompt(None, "just do it", &settings).expect("build prompt");
 
         assert!(!prompt.contains("<mainInstruction>"));
         assert!(prompt.contains("<agentBounds>"));

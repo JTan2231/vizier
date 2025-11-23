@@ -26,11 +26,11 @@ Config precedence: when you skip `--config-file`, Vizier loads the user/global c
 
 If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier no longer falls back to wire automatically; rerun the command once the configured backend is healthy.
 
-CLI overrides (`--backend`, `--agent-bin`, `--agent-profile`, `--agent-bounds`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. The `-p/--model` flag is wire-only: agent/Codex backends ignore it, so model overrides only affect scopes running on wire.
+CLI overrides (`--backend`, `--agent-label`, `--agent-command`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. The `-p/--model` flag is wire-only: agent/Codex backends ignore it, so model overrides only affect scopes running on wire.
 
 Need to sanity-check how those layers resolve before you kick off the workflow? Run `vizier plan` (or `vizier plan --json` for structured output) to print the effective configuration, per-scope backend, and resolved agent runtime without mutating the repo or starting a session.
 
-Agent binaries auto-discover when no `agent.command` is configured: Vizier searches `PATH` for supported CLIs (preferring Codex, then Gemini) and builds the right startup command for the selected backend. Pin the backend with `--agent-backend` or `[agent] kind`, and use `--agent-bin` to point at a specific binary without forcing the Codex-only `exec` shape.
+Agent runs require either a bundled shim label (`agent.label = "codex"`/`"gemini"`) or an explicit script path (`agent.command = ["/path/to/script.sh"]`). Bundled shims install under `share/vizier/agents/` and follow the runner contract: stdout is the assistant text, stderr is progress/errors, and the exit code sets status. There is no autodiscovery fallback when no script is provided.
 
 ## High-Level Timeline
 

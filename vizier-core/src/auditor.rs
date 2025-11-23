@@ -266,7 +266,7 @@ impl Auditor {
         if let Ok(mut auditor) = AUDITOR.lock() {
             let backend_label = match settings.backend {
                 config::BackendKind::Wire => settings.backend.to_string(),
-                _ => settings.agent_runtime.backend.as_str().to_string(),
+                _ => settings.agent_runtime.label.clone(),
             };
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
@@ -274,11 +274,7 @@ impl Auditor {
                 scope: settings.scope,
                 model: match settings.backend {
                     config::BackendKind::Wire => settings.provider_model.clone(),
-                    _ => settings
-                        .agent_runtime
-                        .profile
-                        .clone()
-                        .unwrap_or_else(|| "n/a".to_string()),
+                    _ => settings.agent_runtime.label.clone(),
                 },
                 reasoning_effort: settings.reasoning_effort,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
@@ -573,13 +569,8 @@ impl Auditor {
                 .as_ref()
                 .map(|level| format!("{level:?}")),
             "agent": {
+                "label": cfg.agent_runtime.label.clone(),
                 "command": cfg.agent_runtime.command.clone(),
-                "profile": cfg.agent_runtime.profile.clone(),
-                "bounds_prompt": cfg
-                    .agent_runtime
-                    .bounds_prompt_path
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
             },
         })
     }
@@ -761,21 +752,29 @@ impl Auditor {
                 let opts_clone = runtime_opts.clone();
                 let prompt_clone = system_prompt.clone();
                 let mut metadata = BTreeMap::new();
-                metadata.insert(
-                    "agent_label".to_string(),
-                    opts_clone.backend.as_str().to_string(),
-                );
-                if let Some(cmd) = opts_clone.command.first() {
-                    metadata.insert("agent_command".to_string(), cmd.clone());
+                metadata.insert("agent_label".to_string(), opts_clone.label.clone());
+                if !opts_clone.command.is_empty() {
+                    metadata.insert("agent_command".to_string(), opts_clone.command.join(" "));
+                }
+                match &opts_clone.resolution {
+                    config::AgentRuntimeResolution::BundledShim { path, .. } => {
+                        metadata.insert(
+                            "agent_command_source".to_string(),
+                            "bundled-shim".to_string(),
+                        );
+                        metadata.insert("agent_shim_path".to_string(), path.display().to_string());
+                    }
+                    config::AgentRuntimeResolution::ProvidedCommand => {
+                        metadata
+                            .insert("agent_command_source".to_string(), "configured".to_string());
+                    }
                 }
 
                 let codex_run = display::call_with_status(async move |tx| {
                     let request = AgentRequest {
                         prompt: prompt_clone.clone(),
                         repo_root: repo_root.clone(),
-                        profile: opts_clone.profile.clone(),
                         command: opts_clone.command.clone(),
-                        extra_args: opts_clone.extra_args.clone(),
                         scope: Some(agent_scope),
                         metadata,
                         timeout: Some(Duration::from_secs(9000)),
@@ -881,19 +880,27 @@ impl Auditor {
                     RequestStream::Status { events, .. } => events.clone().map(ProgressHook::Plain),
                 };
                 let mut metadata = BTreeMap::new();
-                metadata.insert(
-                    "agent_label".to_string(),
-                    runtime_opts.backend.as_str().to_string(),
-                );
-                if let Some(cmd) = runtime_opts.command.first() {
-                    metadata.insert("agent_command".to_string(), cmd.clone());
+                metadata.insert("agent_label".to_string(), runtime_opts.label.clone());
+                if !runtime_opts.command.is_empty() {
+                    metadata.insert("agent_command".to_string(), runtime_opts.command.join(" "));
+                }
+                match &runtime_opts.resolution {
+                    config::AgentRuntimeResolution::BundledShim { path, .. } => {
+                        metadata.insert(
+                            "agent_command_source".to_string(),
+                            "bundled-shim".to_string(),
+                        );
+                        metadata.insert("agent_shim_path".to_string(), path.display().to_string());
+                    }
+                    config::AgentRuntimeResolution::ProvidedCommand => {
+                        metadata
+                            .insert("agent_command_source".to_string(), "configured".to_string());
+                    }
                 }
                 let request = AgentRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
-                    profile: runtime_opts.profile.clone(),
                     command: runtime_opts.command.clone(),
-                    extra_args: runtime_opts.extra_args.clone(),
                     scope: Some(agent_scope),
                     metadata,
                     timeout: Some(Duration::from_secs(9000)),

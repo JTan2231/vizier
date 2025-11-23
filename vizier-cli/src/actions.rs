@@ -679,44 +679,21 @@ fn build_agent_request(
     repo_root: PathBuf,
 ) -> AgentRequest {
     let mut metadata = BTreeMap::new();
-    metadata.insert(
-        "agent_backend".to_string(),
-        agent.agent_runtime.backend.as_str().to_string(),
-    );
-    metadata.insert(
-        "agent_label".to_string(),
-        agent.agent_runtime.backend.as_str().to_string(),
-    );
+    metadata.insert("agent_backend".to_string(), agent.backend.to_string());
+    metadata.insert("agent_label".to_string(), agent.agent_runtime.label.clone());
     metadata.insert(
         "agent_command".to_string(),
         agent.agent_runtime.command.join(" "),
     );
     match &agent.agent_runtime.resolution {
-        config::AgentRuntimeResolution::Autodiscovered {
-            backend,
-            binary_path,
-        } => {
+        config::AgentRuntimeResolution::BundledShim { path, .. } => {
             metadata.insert(
                 "agent_command_source".to_string(),
-                "autodiscovered".to_string(),
+                "bundled-shim".to_string(),
             );
-            metadata.insert(
-                "agent_binary".to_string(),
-                binary_path.display().to_string(),
-            );
-            metadata.insert(
-                "agent_backend_resolved".to_string(),
-                backend.as_str().to_string(),
-            );
+            metadata.insert("agent_shim_path".to_string(), path.display().to_string());
         }
-        config::AgentRuntimeResolution::InferredFromCommand { backend } => {
-            metadata.insert("agent_command_source".to_string(), "inferred".to_string());
-            metadata.insert(
-                "agent_backend_resolved".to_string(),
-                backend.as_str().to_string(),
-            );
-        }
-        config::AgentRuntimeResolution::Configured => {
+        config::AgentRuntimeResolution::ProvidedCommand => {
             metadata.insert("agent_command_source".to_string(), "configured".to_string());
         }
     }
@@ -724,9 +701,7 @@ fn build_agent_request(
     AgentRequest {
         prompt,
         repo_root,
-        profile: agent.agent_runtime.profile.clone(),
         command: agent.agent_runtime.command.clone(),
-        extra_args: agent.agent_runtime.extra_args.clone(),
         scope: Some(agent.scope),
         metadata,
         timeout: Some(Duration::from_secs(9000)),
@@ -1310,7 +1285,6 @@ async fn save(
         prompt_agent.prompt_selection(),
         &save_instruction,
         &prompt_agent.documentation,
-        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
@@ -1552,7 +1526,6 @@ pub async fn inline_command(
         prompt_agent.prompt_selection(),
         &user_message,
         &prompt_agent.documentation,
-        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     ) {
         Ok(prompt) => prompt,
         Err(e) => {
@@ -1758,7 +1731,6 @@ pub async fn run_draft(
             &branch_name,
             &spec_text,
             &prompt_agent.documentation,
-            prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
         )
         .map_err(|err| -> Box<dyn std::error::Error> {
             Box::from(format!("build_prompt: {err}"))
@@ -2820,7 +2792,6 @@ async fn attempt_cicd_auto_fix(
         stdout,
         stderr,
         &fix_agent.documentation,
-        fix_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let instruction = format!(
@@ -3437,7 +3408,6 @@ async fn try_auto_resolve_conflicts(
         &spec.branch,
         files,
         &prompt_agent.documentation,
-        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let request = build_agent_request(&prompt_agent, prompt, repo_root);
@@ -3813,7 +3783,6 @@ async fn perform_review_workflow(
         &diff_summary,
         &check_contexts,
         &critique_agent.documentation,
-        critique_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -4178,7 +4147,6 @@ async fn apply_review_fixes(
         prompt_agent.prompt_selection(),
         &instruction,
         &prompt_agent.documentation,
-        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -4331,7 +4299,6 @@ async fn apply_plan_in_worktree(
         prompt_agent.prompt_selection(),
         &instruction,
         &prompt_agent.documentation,
-        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -4424,7 +4391,6 @@ async fn refresh_plan_branch(
         prompt_agent.prompt_selection(),
         &instruction,
         &prompt_agent.documentation,
-        prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -4660,8 +4626,7 @@ Tidy merge message bodies.
             "exec".to_string(),
             "--mode".to_string(),
         ];
-        cfg.agent_runtime.profile = Some("merge-profile".to_string());
-        cfg.agent_runtime.extra_args = vec!["--trace".to_string(), "--audit".to_string()];
+        cfg.agent_runtime.label = Some("merge-script".to_string());
 
         let agent = cfg
             .resolve_agent_settings(CommandScope::Merge, None)
@@ -4681,11 +4646,6 @@ Tidy merge message bodies.
                 "--mode".to_string()
             ]
         );
-        assert_eq!(request.profile.as_deref(), Some("merge-profile"));
-        assert_eq!(
-            request.extra_args,
-            vec!["--trace".to_string(), "--audit".to_string()]
-        );
         assert_eq!(
             request.scope,
             Some(config::CommandScope::Merge),
@@ -4698,7 +4658,18 @@ Tidy merge message bodies.
                 .get("agent_label")
                 .map(|s| s.as_str())
                 .unwrap_or(""),
-            agent.agent_runtime.backend.as_str()
+            agent.agent_runtime.label
+        );
+        assert_eq!(
+            request.metadata.get("agent_command").map(|s| s.as_str()),
+            Some("/opt/backend exec --mode")
+        );
+        assert_eq!(
+            request
+                .metadata
+                .get("agent_command_source")
+                .map(|s| s.as_str()),
+            Some("configured")
         );
     }
 

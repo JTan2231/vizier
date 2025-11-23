@@ -5,17 +5,14 @@ model = "gpt-4.1"
 reasoning_effort = "medium"
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
-# Supported backends: `agent` (auto-resolves Codex or Gemini) or `wire`.
-# When no agent command is configured, Vizier auto-discovers a supported agent CLI on PATH (preferring Codex, then Gemini) and builds the right startup command per backend. For clean stdout (assistant text only), point the command at a script shim that filters events; raw CLIs may emit JSON directly.
+# Supported backends: `agent` (runs a shell script) or `wire`.
+# Agent runs expect stdout to contain the final assistant text and stderr to carry progress/errors. Bundled shims (`codex.sh`, `gemini.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
 
-# Base agent-backend wiring shared by agent-backed commands unless a scoped override says otherwise
+# Base agent runtime wiring shared by agent-backed commands unless a scoped override says otherwise
 [agent]
-kind = "codex" # Pin the agent backend; omit to auto-detect a supported CLI from PATH
-command = ["/usr/local/bin/agent-cli", "exec"]
-profile = "default"
-bounds_prompt_path = "/etc/vizier/agent_bounds.md"
-extra_args = ["--log-json"]
-# Agent scopes inherit this runner; the command should produce final assistant text on stdout and progress/errors on stderr. Swap to another script or CLI by updating these fields (or a scoped `[agents.<scope>.agent]` table).
+label = "codex"                      # Use a bundled shim by label (codex.sh or gemini.sh)
+# command = ["/usr/local/share/vizier/agents/codex.sh"] # Or point directly at a custom script
+# Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with backend/model overrides for that scope+prompt pairing. Available kinds: documentation, commit,
@@ -30,8 +27,7 @@ backend = "agent"
 [agents.review.prompts.review]
 path = "./prompts/review.md"
 [agents.review.prompts.review.agent]
-profile = "compliance"
-bounds_prompt_path = "./prompts/review-bounds.md"
+label = "codex"
 
 # Order of operations the configured backend will run during `vizier review` unless `--skip-checks` is passed
 [review.checks]
@@ -63,15 +59,11 @@ no_commit_default = false
 [agents.default]
 backend = "agent"
 
-# Fine-tune how the default agent backend runs (command/profile/bounds prompt/extra args)
+# Fine-tune how the default agent backend runs (label or explicit command)
 [agents.default.agent]
-kind = "codex"
-command = ["./examples/agents/codex.sh"]
+label = "codex"
+# command = ["./examples/agents/codex.sh"]
 # stdout is the final assistant response; stderr carries progress/usage/errors.
-# profile/bounds/extra_args are optional and can be trimmed when using scripts.
-# profile = "maintainers"
-# bounds_prompt_path = "/etc/vizier/agent_bounds.md"
-# extra_args = ["--log-json"]
 
 # Force conversational asks onto the wire backend with a higher-effort reasoning profile
 [agents.ask]
@@ -83,11 +75,6 @@ reasoning_effort = "high"
 [agents.save]
 backend = "agent"
 
-# Give save flows a stricter agent profile and extra arguments when editing the repo
-[agents.save.agent]
-profile = "auditor"
-extra_args = ["--max-edits", "200"]
-
 # The remaining plan workflow commands stay on the agent backend and inherit the defaults
 [agents.draft]
 backend = "agent"
@@ -97,11 +84,6 @@ backend = "agent"
 
 [agents.review]
 backend = "agent"
-
-# Review runs the agent backend with a compliance profile and custom bounds prompt
-[agents.review.agent]
-profile = "compliance"
-bounds_prompt_path = "./prompts/review-bounds.md"
 
 # Example: route review through Gemini instead of Codex via a script shim
 # [agents.review]

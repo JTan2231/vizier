@@ -30,9 +30,7 @@ use crate::{
 pub struct AgentRequest {
     pub prompt: String,
     pub repo_root: PathBuf,
-    pub profile: Option<String>,
     pub command: Vec<String>,
-    pub extra_args: Vec<String>,
     pub scope: Option<config::CommandScope>,
     pub metadata: BTreeMap<String, String>,
     pub timeout: Option<Duration>,
@@ -43,9 +41,7 @@ impl AgentRequest {
         Self {
             prompt,
             repo_root,
-            profile: None,
             command: Vec::new(),
-            extra_args: Vec::new(),
             scope: None,
             metadata: BTreeMap::new(),
             timeout: None,
@@ -300,7 +296,6 @@ impl AgentRunner for ScriptRunner {
 
                 let mut command = Command::new(program);
                 command.args(base_args);
-                command.args(&request.extra_args);
                 command.current_dir(&request.repo_root);
                 command.stdin(std::process::Stdio::piped());
                 command.stdout(std::process::Stdio::piped());
@@ -435,9 +430,10 @@ mod tests {
         let request = AgentRequest {
             prompt: "ignored".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            profile: None,
-            command: vec![script.display().to_string()],
-            extra_args: vec![tmp.path().join("out.txt").display().to_string()],
+            command: vec![
+                script.display().to_string(),
+                tmp.path().join("out.txt").display().to_string(),
+            ],
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(5)),
@@ -460,9 +456,7 @@ mod tests {
         let request = AgentRequest {
             prompt: "ignored".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            profile: None,
             command: Vec::new(),
-            extra_args: Vec::new(),
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
@@ -484,9 +478,7 @@ mod tests {
         let request = AgentRequest {
             prompt: "run".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            profile: None,
             command: vec![script.display().to_string()],
-            extra_args: Vec::new(),
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
@@ -517,9 +509,7 @@ mod tests {
         let request = AgentRequest {
             prompt: "run".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            profile: None,
             command: vec![script.display().to_string()],
-            extra_args: Vec::new(),
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(2)),
@@ -556,9 +546,7 @@ mod tests {
         let request = AgentRequest {
             prompt: "timeout".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            profile: None,
             command: vec![script.display().to_string()],
-            extra_args: Vec::new(),
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),

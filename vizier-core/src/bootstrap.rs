@@ -104,7 +104,6 @@ pub async fn bootstrap_snapshot(
         agent.prompt_selection(),
         &instruction,
         &agent.documentation,
-        agent.agent_runtime.bounds_prompt_path.as_deref(),
     )?;
 
     let response = Auditor::llm_request_with_tools(

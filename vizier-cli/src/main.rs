@@ -73,36 +73,13 @@ struct GlobalOpts {
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
-    /// Agent backend flavor to resolve when using the agent runner (`auto`, `codex`, or `gemini`)
-    #[arg(long = "agent-backend", value_enum, global = true)]
-    agent_backend: Option<AgentBackendArg>,
+    /// Bundled agent shim label to run (for example, `codex` or `gemini`)
+    #[arg(long = "agent-label", value_name = "LABEL", global = true)]
+    agent_label: Option<String>,
 
-    /// Path to the agent backend binary (otherwise Vizier auto-discovers a supported agent on PATH)
-    #[arg(
-        long = "agent-bin",
-        value_name = "PATH",
-        global = true,
-        alias = "codex-bin"
-    )]
-    agent_bin: Option<PathBuf>,
-
-    /// Agent profile to load (pass empty to unset)
-    #[arg(
-        long = "agent-profile",
-        value_name = "NAME",
-        global = true,
-        alias = "codex-profile"
-    )]
-    agent_profile: Option<String>,
-
-    /// Override the agent bounds prompt with a file on disk
-    #[arg(
-        long = "agent-bounds-prompt",
-        value_name = "PATH",
-        global = true,
-        alias = "codex-bounds-prompt"
-    )]
-    agent_bounds_prompt: Option<PathBuf>,
+    /// Path to a custom agent script (stdout = assistant text; stderr = progress/errors)
+    #[arg(long = "agent-command", value_name = "PATH", global = true)]
+    agent_command: Option<String>,
 
     /// Emit the audit as JSON to stdout
     #[arg(short = 'j', long, global = true)]
@@ -137,10 +114,8 @@ impl Default for GlobalOpts {
             no_session: false,
             model: None,
             backend: None,
-            agent_backend: None,
-            agent_bin: None,
-            agent_profile: None,
-            agent_bounds_prompt: None,
+            agent_label: None,
+            agent_command: None,
             json: false,
             config_file: None,
             reasoning_effort: None,
@@ -171,23 +146,6 @@ impl From<BackendArg> for config::BackendKind {
             BackendArg::Agent => config::BackendKind::Agent,
             BackendArg::Gemini => config::BackendKind::Gemini,
             BackendArg::Wire => config::BackendKind::Wire,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum AgentBackendArg {
-    Auto,
-    Codex,
-    Gemini,
-}
-
-impl From<AgentBackendArg> for config::AgentBackendKind {
-    fn from(value: AgentBackendArg) -> Self {
-        match value {
-            AgentBackendArg::Auto => config::AgentBackendKind::Auto,
-            AgentBackendArg::Codex => config::AgentBackendKind::Codex,
-            AgentBackendArg::Gemini => config::AgentBackendKind::Gemini,
         }
     }
 }
@@ -672,13 +630,6 @@ fn build_cli_agent_overrides(
         overrides.backend = Some(backend.into());
     }
 
-    if let Some(agent_backend) = opts.agent_backend {
-        overrides
-            .agent_runtime
-            .get_or_insert_with(Default::default)
-            .backend = Some(agent_backend.into());
-    }
-
     if let Some(model) = opts.model.as_ref() {
         let trimmed = model.trim();
         if trimmed.is_empty() {
@@ -695,39 +646,28 @@ fn build_cli_agent_overrides(
         overrides.reasoning_effort = Some(wire::config::ThinkingLevel::from_string(trimmed)?);
     }
 
-    if let Some(bin) = opts.agent_bin.as_ref() {
-        let backend = opts
-            .agent_backend
-            .map(|value| config::AgentBackendKind::from(value))
-            .unwrap_or(config::AgentBackendKind::Codex);
+    if let Some(label) = opts
+        .agent_label
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         overrides
             .agent_runtime
             .get_or_insert_with(Default::default)
-            .command = Some(config::default_command_for_backend(backend, bin.as_path()));
-        overrides
-            .agent_runtime
-            .get_or_insert_with(Default::default)
-            .backend = Some(backend);
+            .label = Some(label.to_ascii_lowercase());
     }
 
-    if let Some(profile) = opts.agent_profile.as_ref() {
-        let trimmed = profile.trim();
-        let value = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
+    if let Some(command) = opts
+        .agent_command
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         overrides
             .agent_runtime
             .get_or_insert_with(Default::default)
-            .profile = Some(value);
-    }
-
-    if let Some(bounds) = opts.agent_bounds_prompt.as_ref() {
-        overrides
-            .agent_runtime
-            .get_or_insert_with(Default::default)
-            .bounds_prompt_path = Some(bounds.clone());
+            .command = Some(vec![command.to_string()]);
     }
 
     if overrides.is_empty() {
@@ -753,30 +693,25 @@ fn warn_if_model_override_ignored(
 }
 
 fn log_agent_runtime_resolution(agent: &config::AgentSettings) {
-    if agent.backend != config::BackendKind::Agent {
+    if !agent.backend.requires_agent_runner() {
         return;
     }
 
     match &agent.agent_runtime.resolution {
-        config::AgentRuntimeResolution::Autodiscovered {
-            backend,
-            binary_path,
-        } => {
+        config::AgentRuntimeResolution::BundledShim { label, path } => {
             display::info(format!(
-                "Resolved {} agent binary at {} (command: {})",
-                backend.as_str(),
-                binary_path.display(),
+                "Using bundled `{label}` agent shim at {} (command: {})",
+                path.display(),
                 agent.agent_runtime.command.join(" ")
             ));
         }
-        config::AgentRuntimeResolution::InferredFromCommand { backend } => {
+        config::AgentRuntimeResolution::ProvidedCommand => {
             display::debug(format!(
-                "Inferred {} agent backend from configured command `{}`",
-                backend.as_str(),
-                agent.agent_runtime.command.join(" ")
+                "Using configured agent command `{}` (label `{}`)",
+                agent.agent_runtime.command.join(" "),
+                agent.agent_runtime.label
             ));
         }
-        config::AgentRuntimeResolution::Configured => {}
     }
 }
 
@@ -1054,39 +989,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.backend = backend_arg.into();
     }
 
-    if let Some(agent_backend) = cli.global.agent_backend {
-        cfg.agent_runtime.backend = Some(agent_backend.into());
+    if let Some(label) = cli
+        .global
+        .agent_label
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.agent_runtime.label = Some(label.to_ascii_lowercase());
     }
 
-    if let Some(ref bin_override) = cli.global.agent_bin {
-        let runtime_backend = cli
-            .global
-            .agent_backend
-            .map(|value| config::AgentBackendKind::from(value))
-            .or(cfg.agent_runtime.backend)
-            .unwrap_or(config::AgentBackendKind::Codex);
-        if cfg.agent_runtime.command.is_empty() {
-            cfg.agent_runtime.command =
-                config::default_command_for_backend(runtime_backend, bin_override.as_path());
-        } else {
-            let mut command = cfg.agent_runtime.command.clone();
-            command[0] = bin_override.to_string_lossy().into_owned();
-            cfg.agent_runtime.command = command;
-        }
-        cfg.agent_runtime.backend = Some(runtime_backend);
-    }
-
-    if let Some(profile_override) = &cli.global.agent_profile {
-        let trimmed = profile_override.trim();
-        if trimmed.is_empty() {
-            cfg.agent_runtime.profile = None;
-        } else {
-            cfg.agent_runtime.profile = Some(trimmed.to_owned());
-        }
-    }
-
-    if let Some(ref bounds_override) = cli.global.agent_bounds_prompt {
-        cfg.agent_runtime.bounds_prompt_path = Some(bounds_override.clone());
+    if let Some(command) = cli
+        .global
+        .agent_command
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.agent_runtime.command = vec![command.to_string()];
     }
 
     let mut provider_needs_rebuild =
