@@ -16,7 +16,8 @@ label = "codex"                      # Use a bundled shim by label (codex.sh or 
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with backend/model overrides for that scope+prompt pairing. Available kinds: documentation, commit,
-# implementation_plan, review, merge_conflict.
+# implementation_plan, review, merge_conflict. See `docs/prompt-config-matrix.md` for the full scope×prompt-kind
+# matrix, fallback order, and documentation toggles.
 [agents.default.prompts.documentation]
 path = "./prompts/documentation.md"
 

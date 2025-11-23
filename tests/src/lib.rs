@@ -116,6 +116,7 @@ impl IntegrationRepo {
     fn vizier_cmd(&self) -> Command {
         let mut cmd = Command::new(&self.vizier_bin);
         cmd.current_dir(self.path());
+        cmd.env("VIZIER_AGENT_SHIMS_DIR", &self.agent_bin_dir);
         let mut paths = vec![self.agent_bin_dir.clone()];
         if let Some(existing) = env::var_os("PATH") {
             paths.extend(env::split_paths(&existing));
@@ -353,7 +354,7 @@ fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
     let bin_dir = root.join(".vizier/tmp/bin");
     fs::create_dir_all(&bin_dir)?;
     for name in ["codex", "gemini"] {
-        let path = bin_dir.join(name);
+        let path = bin_dir.join(format!("{name}.sh"));
         fs::write(
             &path,
             "#!/bin/sh\ncat >/dev/null\nprintf 'mock agent response\n'\nprintf 'mock agent running\n' 1>&2\n",
@@ -656,19 +657,24 @@ fn test_missing_agent_binary_blocks_run() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let mut cmd = repo.vizier_cmd();
     cmd.env("PATH", "/nonexistent");
-    cmd.args(["ask", "missing agent should fail"]);
+    cmd.args([
+        "--agent-label",
+        "missing-agent",
+        "ask",
+        "missing agent should fail",
+    ]);
 
     let output = cmd.output()?;
     assert!(
         !output.status.success(),
-        "ask should fail when no agent runner is discoverable"
+        "ask should fail when the requested agent shim is missing"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr
             .to_ascii_lowercase()
-            .contains("no supported agent backend found"),
-        "stderr should explain missing agent runner: {stderr}"
+            .contains("no bundled agent shim named `missing-agent`"),
+        "stderr should explain missing agent shim: {stderr}"
     );
 
     Ok(())
@@ -870,7 +876,7 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
         "plan output should include merge.cicd_gate.script:\n{stdout}"
     );
     assert!(
-        stdout.contains("autodiscovered codex"),
+        stdout.contains("bundled `codex` shim"),
         "plan output should describe agent runtime resolution:\n{stdout}"
     );
     assert!(
@@ -975,7 +981,7 @@ no_commit_default = true
 }
 
 #[test]
-fn test_plan_reports_agent_bin_override() -> TestResult {
+fn test_plan_reports_agent_command_override() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let bin_dir = repo.path().join("bin");
     fs::create_dir_all(&bin_dir)?;
@@ -990,22 +996,22 @@ fn test_plan_reports_agent_bin_override() -> TestResult {
 
     let output = repo
         .vizier_cmd()
-        .args(["--agent-bin", custom_bin.to_str().unwrap(), "plan"])
+        .args(["--agent-command", custom_bin.to_str().unwrap(), "plan"])
         .output()?;
     assert!(
         output.status.success(),
-        "vizier plan with agent bin override failed: {}",
+        "vizier plan with agent command override failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let compact = stdout.replace(' ', "");
     assert!(
-        compact.contains(&format!("Command:{}exec", custom_bin.display())),
+        compact.contains(&format!("Command:{}", custom_bin.display())),
         "plan output should surface the overridden agent command:\n{stdout}"
     );
     assert!(
-        compact.contains("Resolution:configured"),
-        "plan output should mark the agent runtime as configured when CLI overrides are provided:\n{stdout}"
+        compact.contains("Resolution:providedcommand"),
+        "plan output should mark the agent runtime as a provided command when CLI overrides are supplied:\n{stdout}"
     );
     Ok(())
 }

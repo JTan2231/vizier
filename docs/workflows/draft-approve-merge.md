@@ -4,7 +4,7 @@ This guide explains how Vizier’s plan workflow turns a high-level spec into au
 
 ### Agent configuration
 
-The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing backends and the wire transport as needed:
+The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing backends and the wire transport as needed (see also `docs/prompt-config-matrix.md` for the full scope×prompt-kind matrix and config levers):
 
 ```toml
 [agents.default]
@@ -15,8 +15,6 @@ backend = "agent"            # enforce an editing-capable implementation backend
 
 [agents.review]
 backend = "agent"
-[agents.review.agent]
-profile = "compliance"
 
 [agents.merge]
 backend = "wire"             # keep merge cleanup on the wire stack
@@ -59,7 +57,7 @@ Use this when you want to inspect agent output locally before history changes. O
 
 ### Customizing the plan/review/merge prompts
 
-Repositories can tune every agent instruction involved in this workflow without recompiling Vizier. Define `[agents.<scope>.prompts.<kind>]` tables (for example, `[agents.draft.prompts.implementation_plan]`, `[agents.review.prompts.review]`, `[agents.merge.prompts.merge_conflict]`) inside `.vizier/config.toml` to point at custom Markdown templates via `path` or inline text and to pin backend/model/reasoning overrides for that specific scope. Vizier loads those profiles before each run, so prompt updates take effect immediately; `.vizier/DOCUMENTATION_PROMPT.md` (legacy `BASE_SYSTEM_PROMPT.md`), `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is defined. Per-scope documentation toggles live under `[agents.<scope>.documentation]` (`enabled`, `include_snapshot`, `include_todo_threads`) so scopes like merge/approve/review-fix can opt out of the documentation prompt or drop snapshot/TODO attachments when they need a leaner context.
+Repositories can tune every agent instruction involved in this workflow without recompiling Vizier. Define `[agents.<scope>.prompts.<kind>]` tables (for example, `[agents.draft.prompts.implementation_plan]`, `[agents.review.prompts.review]`, `[agents.merge.prompts.merge_conflict]`) inside `.vizier/config.toml` to point at custom Markdown templates via `path` or inline text and to pin backend/model/reasoning overrides for that specific scope. Vizier loads those profiles before each run, so prompt updates take effect immediately; `.vizier/DOCUMENTATION_PROMPT.md` (legacy `BASE_SYSTEM_PROMPT.md`), `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is defined. Per-scope documentation toggles live under `[agents.<scope>.documentation]` (`enabled`, `include_snapshot`, `include_todo_threads`) so scopes like merge/approve/review-fix can opt out of the documentation prompt or drop snapshot/TODO attachments when they need a leaner context. For a complete matrix of scopes, prompt kinds, and fallback order, refer to `docs/prompt-config-matrix.md`.
 
 ## `vizier draft`: create the plan branch
 

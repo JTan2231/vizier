@@ -82,23 +82,14 @@ struct ScopeReport {
 struct AgentRuntimeReport {
     backend: String,
     command: Vec<String>,
-    profile: Option<String>,
-    bounds_prompt: Option<String>,
-    extra_args: Vec<String>,
     resolution: RuntimeResolutionReport,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RuntimeResolutionReport {
-    Configured,
-    Inferred {
-        backend: String,
-    },
-    Autodiscovered {
-        backend: String,
-        binary_path: String,
-    },
+    BundledShim { label: String, path: String },
+    ProvidedCommand,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,28 +134,18 @@ fn resolve_default_agent_settings(
 
 fn runtime_report(runtime: &config::ResolvedAgentRuntime) -> AgentRuntimeReport {
     AgentRuntimeReport {
-        backend: runtime.backend.as_str().to_string(),
+        backend: runtime.label.clone(),
         command: runtime.command.clone(),
-        profile: runtime.profile.clone(),
-        bounds_prompt: runtime
-            .bounds_prompt_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
-        extra_args: runtime.extra_args.clone(),
         resolution: match &runtime.resolution {
-            config::AgentRuntimeResolution::Configured => RuntimeResolutionReport::Configured,
-            config::AgentRuntimeResolution::InferredFromCommand { backend } => {
-                RuntimeResolutionReport::Inferred {
-                    backend: backend.as_str().to_string(),
+            config::AgentRuntimeResolution::BundledShim { label, path } => {
+                RuntimeResolutionReport::BundledShim {
+                    label: label.clone(),
+                    path: path.display().to_string(),
                 }
             }
-            config::AgentRuntimeResolution::Autodiscovered {
-                backend,
-                binary_path,
-            } => RuntimeResolutionReport::Autodiscovered {
-                backend: backend.as_str().to_string(),
-                binary_path: binary_path.display().to_string(),
-            },
+            config::AgentRuntimeResolution::ProvidedCommand => {
+                RuntimeResolutionReport::ProvidedCommand
+            }
         },
     }
 }
@@ -259,46 +240,28 @@ fn value_or_unset(value: Option<String>, fallback: &str) -> String {
     value.unwrap_or_else(|| fallback.to_string())
 }
 
-fn format_extra_args(extra_args: &[String]) -> String {
-    if extra_args.is_empty() {
-        "none".to_string()
+fn format_command(command: &[String]) -> String {
+    let joined = command.join(" ").trim().to_string();
+    if joined.is_empty() {
+        "unset".to_string()
     } else {
-        extra_args.join(" ")
+        joined
     }
 }
 
 fn format_runtime_resolution(resolution: &RuntimeResolutionReport) -> String {
     match resolution {
-        RuntimeResolutionReport::Configured => "configured".to_string(),
-        RuntimeResolutionReport::Inferred { backend } => {
-            format!("inferred backend {backend}")
+        RuntimeResolutionReport::BundledShim { label, path } => {
+            format!("bundled `{label}` shim at {path}")
         }
-        RuntimeResolutionReport::Autodiscovered {
-            backend,
-            binary_path,
-        } => format!("autodiscovered {backend} at {binary_path}"),
+        RuntimeResolutionReport::ProvidedCommand => "provided command".to_string(),
     }
 }
 
 fn runtime_rows(runtime: &AgentRuntimeReport) -> Vec<(String, String)> {
     vec![
         ("Agent backend".to_string(), runtime.backend.clone()),
-        (
-            "Command".to_string(),
-            runtime.command.join(" ").trim().to_string(),
-        ),
-        (
-            "Profile".to_string(),
-            value_or_unset(runtime.profile.clone(), "unset"),
-        ),
-        (
-            "Bounds prompt".to_string(),
-            value_or_unset(runtime.bounds_prompt.clone(), "unset"),
-        ),
-        (
-            "Extra args".to_string(),
-            format_extra_args(&runtime.extra_args),
-        ),
+        ("Command".to_string(), format_command(&runtime.command)),
         (
             "Resolution".to_string(),
             format_runtime_resolution(&runtime.resolution),

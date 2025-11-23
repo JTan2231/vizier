@@ -3,7 +3,7 @@
 Thread: Agent backend abstraction + pluggable CLI agents
 
 Tension
-- Vizier still ships with `codex exec` as the only concrete CLI agent backend: the new `AgentRunner`/`AgentDisplayAdapter` interface sits in front of that binary, but there is no plug-in story for alternate agent binaries yet, and progress/usage wiring still assumes Codex-style JSON events.
+- Agent/Gemini scopes now run through a generic script runner with bundled `codex`/`gemini` shims (or a custom `agent.command`), but there is still no plug-in story for additional backends or capability discovery, and telemetry assumes stderr line events without backend-declared usage details.
 - Agent configuration now lives under `[agents.default]` and per-scope `[agents.<scope>]` tables plus CLI overrides, but there is still no capability-discovery story for future non-Codex backends or a clear way to signal when backend-specific options are unsupported; operators need predictable feedback when configuration knobs are ignored or rejected.
 
 Desired behavior (Product-level)
@@ -49,7 +49,7 @@ Update (2025-11-17): Prompt orchestration already flows through the shared confi
 
 Pointers
 - Snapshot thread: Agent backend abstraction + pluggable CLI agents (Running Snapshot — updated; Pluggable agent posture).
-- Existing Codex wiring: `vizier-core/src/codex.rs`, `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE`, `vizier-core/src/lib.rs::IMPLEMENTATION_PLAN_PROMPT`, `vizier-cli/src/actions.rs`.
+- Current agent wiring: `vizier-core/src/agent.rs`, `vizier-core/src/agent_prompt.rs`, `vizier-core/src/lib.rs::SYSTEM_PROMPT_BASE`, `vizier-cli/src/actions.rs`.
 - Related threads: Agent workflow orchestration, stdout/stderr contract + verbosity, Outcome summaries, Session logging JSON store.
 
 Update (2025-11-17)
@@ -69,6 +69,9 @@ Update (2025-11-21): Agent runner/display abstraction wired through Codex
 Update (2025-11-24): Gemini backend adapter + defaults
 - Added `BackendKind::Gemini` with a `GeminiRunner`/`GeminiDisplayAdapter` pair that runs the `gemini` CLI in `--output-format stream-json` mode, feeds prompts on stdin, adapts JSONL events into `[gemini]` progress lines, aggregates assistant text/usage (falling back to stderr JSON when needed), and fails fast on missing binaries, non-zero exits, or empty assistant output. Passthrough still mirrors backend stdout/stderr to the CLI’s stderr while capturing the final message.
 - Agent runtime normalization now defaults the command to `gemini` whenever a scope sets `backend = "gemini"` but leaves the command empty or at the Codex default; CLI help and agent-style enforcement strings now advertise `agent|gemini` as the supported backends. Agent/Gemini backends ignore CLI `--model` overrides (wire remains the only backend honoring that flag). Tests cover runner/display resolution and the default command behavior, and README/example-config show how to pin a scope to Gemini.
+
+Update (2025-11-25): Script-runner shims replace per-backend binaries
+- Agent/Gemini scopes now rely on the `ScriptRunner`, which resolves `agent.label` (defaulting to `codex`/`gemini`, bundled under `examples/agents/`) or a custom `agent.command`/`--agent-command` and reports runtime resolution as bundled shim vs provided command. Autodiscovery of CLI binaries was removed alongside the Codex/Gemini runner/display adapters; progress/usage now flows from stderr lines emitted by the shim, and CLI overrides use `--agent-label`/`--agent-command` instead of the older bin flag.
 
 ## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 
