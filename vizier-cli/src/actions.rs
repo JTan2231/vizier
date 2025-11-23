@@ -309,7 +309,7 @@ fn build_agent_request(
         extra_args: agent.agent_runtime.extra_args.clone(),
         scope: Some(agent.scope),
         metadata,
-        timeout: Some(Duration::from_secs(900)),
+        timeout: Some(Duration::from_secs(9000)),
     }
 }
 
