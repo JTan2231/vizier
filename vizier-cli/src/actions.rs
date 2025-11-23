@@ -2652,14 +2652,10 @@ fn try_complete_pending_merge(
             ));
         }
 
-        if let Some(workdir) = repo.workdir() {
-            let _ = Command::new("git")
-                .arg("-C")
-                .arg(workdir)
-                .args(["add", "-A"])
-                .status();
-        } else {
-            vcs::stage(None)?;
+        if let Err(err) = vcs::stage_all_in(repo.path()) {
+            display::warn(format!(
+                "Unable to stage merge replay changes via libgit2: {err}"
+            ));
         }
         let mut conflict_paths = Vec::new();
         if let Ok(idx) = repo.index() {
@@ -2732,96 +2728,76 @@ fn try_complete_pending_merge(
             let current_commit_oid = source_commits
                 .get(current_index)
                 .ok_or_else(|| "replay state missing the in-progress plan commit")?;
-            let repo = Repository::discover(".")?;
             let cherry_message = repo
                 .find_commit(*current_commit_oid)?
                 .summary()
                 .unwrap_or("Apply plan commit")
                 .to_string();
-            let workdir = repo
-                .workdir()
-                .ok_or("cannot continue cherry-pick without a working directory")?;
-            let git_continue = Command::new("git")
-                .arg("-C")
-                .arg(workdir)
-                .args(["cherry-pick", "--continue"])
-                .status();
-            let cherry_pick_committed = match git_continue {
-                Ok(status) if status.success() => true,
-                Ok(_) | Err(_) => false,
-            };
-            if cherry_pick_committed {
-                let new_head = Repository::discover(".")?.head()?.peel_to_commit()?.id();
-                applied_commits.push(new_head);
-            } else {
-                match commit_in_progress_cherry_pick(&cherry_message, expected_head) {
-                    Ok(_) => {
-                        let new_head = Repository::discover(".")?.head()?.peel_to_commit()?.id();
-                        applied_commits.push(new_head);
+            match vcs::commit_in_progress_cherry_pick_in(
+                repo.path(),
+                &cherry_message,
+                expected_head,
+            ) {
+                Ok(new_head) => {
+                    applied_commits.push(new_head);
+                }
+                Err(err) => {
+                    if !outstanding.is_empty() {
+                        display::warn("Merge conflicts remain:");
+                        for path in &outstanding {
+                            display::warn(format!("  - {path}"));
+                        }
+                        display::info(format!(
+                            "index reports conflicts: {}",
+                            repo.index().map(|idx| idx.has_conflicts()).unwrap_or(true)
+                        ));
+                        let status = repo
+                            .workdir()
+                            .map(|wd| vcs::status_with_branch(wd).unwrap_or_default())
+                            .unwrap_or_default();
+                        if !status.is_empty() {
+                            display::info(format!(
+                                "Repository status before blocking merge:\n{status}"
+                            ));
+                        }
+                        display::info(format!(
+                            "Resolve the conflicts above, stage the files, then rerun `vizier merge {} --complete-conflict`.",
+                            spec.slug
+                        ));
+                        return Ok(PendingMergeStatus::Blocked(
+                            PendingMergeBlocker::Conflicts { files: outstanding },
+                        ));
                     }
-                    Err(err) => {
-                        // Fall back to a manual commit when Git's cherry-pick state refuses to continue.
-                        let fallback = (|| -> Result<Oid, git2::Error> {
-                            let mut index = repo.index()?;
-                            index.write()?;
-                            let tree_oid = index.write_tree()?;
-                            let tree = repo.find_tree(tree_oid)?;
-                            let sig = repo.signature()?;
-                            let parent_commit = repo.find_commit(expected_head)?;
-                            let oid = repo.commit(
-                                Some("HEAD"),
-                                &sig,
-                                &sig,
-                                &cherry_message,
-                                &tree,
-                                &[&parent_commit],
-                            )?;
-                            let mut checkout = CheckoutBuilder::new();
-                            checkout.force();
-                            repo.checkout_head(Some(&mut checkout))?;
-                            Ok(oid)
-                        })();
 
-                        match fallback {
-                            Ok(oid) => applied_commits.push(oid),
-                            Err(fallback_err) => {
-                                if !outstanding.is_empty() {
-                                    display::warn("Merge conflicts remain:");
-                                    for path in &outstanding {
-                                        display::warn(format!("  - {path}"));
-                                    }
-                                    display::info(format!(
-                                        "index reports conflicts: {}",
-                                        repo.index().map(|idx| idx.has_conflicts()).unwrap_or(true)
-                                    ));
-                                    display::info(format!(
-                                        "fallback cherry-pick commit failed: {fallback_err}"
-                                    ));
-                                    let status = repo
-                                        .workdir()
-                                        .and_then(|wd| {
-                                            Command::new("git")
-                                                .arg("-C")
-                                                .arg(wd)
-                                                .args(["status", "--short", "--branch"])
-                                                .output()
-                                                .ok()
-                                        })
-                                        .and_then(|out| String::from_utf8(out.stdout).ok())
-                                        .unwrap_or_default();
-                                    display::info(format!(
-                                        "git status before blocking merge:\n{status}"
-                                    ));
-                                    display::info(format!(
-                                        "Resolve the conflicts above, stage the files, then rerun `vizier merge {} --complete-conflict`.",
-                                        spec.slug
-                                    ));
-                                    return Ok(PendingMergeStatus::Blocked(
-                                        PendingMergeBlocker::Conflicts { files: outstanding },
-                                    ));
-                                }
-                                return Err(Box::new(err));
-                            }
+                    let fallback = (|| -> Result<Oid, git2::Error> {
+                        let mut index = repo.index()?;
+                        index.write()?;
+                        let tree_oid = index.write_tree()?;
+                        let tree = repo.find_tree(tree_oid)?;
+                        let sig = repo.signature()?;
+                        let parent_commit = repo.find_commit(expected_head)?;
+                        let oid = repo.commit(
+                            Some("HEAD"),
+                            &sig,
+                            &sig,
+                            &cherry_message,
+                            &tree,
+                            &[&parent_commit],
+                        )?;
+                        repo.cleanup_state().ok();
+                        let mut checkout = CheckoutBuilder::new();
+                        checkout.force();
+                        repo.checkout_head(Some(&mut checkout))?;
+                        Ok(oid)
+                    })();
+
+                    match fallback {
+                        Ok(oid) => applied_commits.push(oid),
+                        Err(fallback_err) => {
+                            display::info(format!(
+                                "fallback cherry-pick commit failed: {fallback_err}"
+                            ));
+                            return Err(Box::new(err));
                         }
                     }
                 }
@@ -2837,17 +2813,13 @@ fn try_complete_pending_merge(
             ));
             let status = repo
                 .workdir()
-                .and_then(|wd| {
-                    Command::new("git")
-                        .arg("-C")
-                        .arg(wd)
-                        .args(["status", "--short", "--branch"])
-                        .output()
-                        .ok()
-                })
-                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .map(|wd| vcs::status_with_branch(wd).unwrap_or_default())
                 .unwrap_or_default();
-            display::info(format!("git status before blocking merge:\n{status}"));
+            if !status.is_empty() {
+                display::info(format!(
+                    "Repository status before blocking merge:\n{status}"
+                ));
+            }
             display::info(format!(
                 "Resolve the conflicts above, stage the files, then rerun `vizier merge {} --complete-conflict`.",
                 spec.slug
@@ -3727,38 +3699,18 @@ fn collect_diff_summary(
     spec: &plan::PlanBranchSpec,
     worktree_path: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let range = format!("{}...HEAD", spec.target_branch);
-    let stat = run_git_capture(
-        worktree_path,
-        &["--no-pager", "diff", "--stat=2000", &range],
-    )
-    .unwrap_or_else(|err| format!("Unable to compute diff stats: {err}"));
-    let names = run_git_capture(
-        worktree_path,
-        &["--no-pager", "diff", "--name-status", &range],
-    )
-    .unwrap_or_else(|err| format!("Unable to list changed files: {err}"));
-
-    Ok(format!(
-        "Diff command: {}\n\n{}\n\n{}",
-        spec.diff_command(),
-        stat.trim(),
-        names.trim()
-    ))
-}
-
-fn run_git_capture(
-    worktree_path: &Path,
-    args: &[&str],
-) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(worktree_path)
-        .output()?;
-    if !output.status.success() {
-        return Err(format!("git {:?} exited with {:?}", args, output.status.code()).into());
+    match vcs::diff_summary_against_target(worktree_path, &spec.target_branch) {
+        Ok(summary) => Ok(format!(
+            "Diff command: {}\n\n{}\n\n{}",
+            spec.diff_command(),
+            summary.stats.trim(),
+            summary.name_status.trim()
+        )),
+        Err(err) => Ok(format!(
+            "Diff command: {}\n\nUnable to compute diff via libgit2: {err}",
+            spec.diff_command()
+        )),
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn emit_review_critique(plan_slug: &str, critique: &str) {
@@ -4207,8 +4159,11 @@ impl Drop for WorkdirGuard {
 mod tests {
     use super::{build_agent_request, build_merge_commit_message};
     use crate::plan::{PlanBranchSpec, PlanMetadata};
+    use git2::Repository;
+    use std::fs;
     use std::path::PathBuf;
     use vizier_core::config::{self, CommandScope};
+    use vizier_core::vcs;
 
     fn sample_spec() -> PlanBranchSpec {
         PlanBranchSpec {
@@ -4324,6 +4279,53 @@ Tidy merge message bodies.
                 .map(|s| s.as_str())
                 .unwrap_or(""),
             agent.agent_runtime.backend.as_str()
+        );
+    }
+
+    #[test]
+    fn collect_diff_summary_reports_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = Repository::init(dir.path()).expect("init repo");
+
+        fs::write(dir.path().join("one.txt"), "one\n").unwrap();
+        fs::write(dir.path().join("two.txt"), "two\n").unwrap();
+        vcs::add_and_commit_in(dir.path(), Some(vec!["."]), "init", false).expect("init commit");
+
+        repo.branch(
+            "target",
+            &repo.head().unwrap().peel_to_commit().unwrap(),
+            true,
+        )
+        .expect("create target branch");
+
+        fs::write(dir.path().join("one.txt"), "one\nchanged\n").unwrap();
+        fs::remove_file(dir.path().join("two.txt")).unwrap();
+        fs::write(dir.path().join("three.txt"), "three\n").unwrap();
+        vcs::stage_all_in(dir.path()).expect("stage all changes");
+        vcs::commit_staged_in(dir.path(), "topic", false).expect("topic commit");
+
+        let spec = PlanBranchSpec {
+            slug: "diff-test".to_string(),
+            branch: "draft/diff-test".to_string(),
+            target_branch: "target".to_string(),
+        };
+
+        let summary = super::collect_diff_summary(&spec, dir.path()).expect("summary");
+        assert!(
+            summary.contains("Diff command:"),
+            "summary should include diff command:\n{summary}"
+        );
+        assert!(
+            summary.contains("one.txt"),
+            "modified file should be mentioned:\n{summary}"
+        );
+        assert!(
+            summary.contains("three.txt"),
+            "added file should be mentioned:\n{summary}"
+        );
+        assert!(
+            summary.contains("two.txt"),
+            "deleted file should be mentioned:\n{summary}"
         );
     }
 }

@@ -1,10 +1,10 @@
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, CherrypickOptions, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFormat,
-    DiffLine, DiffOptions, Error, ErrorClass, ErrorCode, Index, IndexAddOption,
-    MergeOptions as GitMergeOptions, Oid, PushOptions, RemoteCallbacks, Repository,
-    RepositoryState, ResetType, Signature, Sort, Status, StatusOptions, Tree, WorktreeAddOptions,
-    WorktreePruneOptions,
+    BranchType, CherrypickOptions, Commit, Cred, CredentialType, Diff, DiffDelta, DiffFindOptions,
+    DiffFormat, DiffLine, DiffOptions, DiffStatsFormat, Error, ErrorClass, ErrorCode, Index,
+    IndexAddOption, MergeOptions as GitMergeOptions, Oid, PushOptions, RemoteCallbacks, Repository,
+    RepositoryState, ResetType, Signature, Sort, Status, StatusEntry, StatusOptions, StatusShow,
+    Tree, WorktreeAddOptions, WorktreePruneOptions,
 };
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -566,6 +566,258 @@ pub fn get_diff(
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+fn repo_state_label(state: RepositoryState) -> Option<&'static str> {
+    match state {
+        RepositoryState::Clean => None,
+        RepositoryState::Merge => Some("merge in progress"),
+        RepositoryState::Revert | RepositoryState::RevertSequence => Some("revert in progress"),
+        RepositoryState::CherryPick | RepositoryState::CherryPickSequence => {
+            Some("cherry-pick in progress")
+        }
+        RepositoryState::Bisect => Some("bisecting"),
+        RepositoryState::Rebase
+        | RepositoryState::RebaseInteractive
+        | RepositoryState::RebaseMerge => Some("rebase in progress"),
+        RepositoryState::ApplyMailbox | RepositoryState::ApplyMailboxOrRebase => {
+            Some("apply mailbox in progress")
+        }
+    }
+}
+
+fn short_oid(oid: Oid) -> String {
+    let text = oid.to_string();
+    text.chars().take(7).collect()
+}
+
+fn branch_status_line(repo: &Repository) -> String {
+    let mut line = match repo.head() {
+        Ok(head) if head.is_branch() => {
+            let name = head.shorthand().unwrap_or("HEAD");
+            let mut out = format!("## {name}");
+            if let Ok(branch) = repo.find_branch(name, BranchType::Local) {
+                if let Ok(upstream) = branch.upstream() {
+                    if let Ok(Some(up_name)) = upstream.name() {
+                        out.push_str("...");
+                        out.push_str(up_name);
+                    }
+
+                    if let (Some(local_oid), Some(upstream_oid)) =
+                        (head.target(), upstream.get().target())
+                    {
+                        if let Ok((ahead, behind)) =
+                            repo.graph_ahead_behind(local_oid, upstream_oid)
+                        {
+                            if ahead > 0 || behind > 0 {
+                                out.push_str(&format!(" [ahead {ahead}, behind {behind}]"));
+                            }
+                        }
+                    }
+                }
+            }
+            out
+        }
+        Ok(head) => {
+            let desc = head
+                .target()
+                .map(short_oid)
+                .map(|oid| format!("detached {oid}"))
+                .unwrap_or_else(|| "detached".to_string());
+            format!("## HEAD ({desc})")
+        }
+        Err(_) => "## HEAD (no branch)".to_string(),
+    };
+
+    if let Some(label) = repo_state_label(repo.state()) {
+        line.push_str(&format!(" ({label})"));
+    }
+
+    line
+}
+
+fn format_status_entry(entry: StatusEntry) -> Option<String> {
+    let status = entry.status();
+    if status.contains(Status::IGNORED) || status.is_empty() {
+        return None;
+    }
+
+    let path = entry
+        .head_to_index()
+        .or_else(|| entry.index_to_workdir())
+        .and_then(|d| d.new_file().path().or(d.old_file().path()))
+        .and_then(|p| p.to_str())
+        .or_else(|| entry.path())
+        .unwrap_or_default()
+        .to_string();
+
+    if status.contains(Status::CONFLICTED) {
+        return Some(format!("UU {path}"));
+    }
+
+    if status.contains(Status::WT_NEW) && !status.intersects(Status::INDEX_NEW) {
+        return Some(format!("?? {path}"));
+    }
+
+    let index_code = if status.contains(Status::INDEX_NEW) {
+        'A'
+    } else if status.contains(Status::INDEX_MODIFIED) {
+        'M'
+    } else if status.contains(Status::INDEX_DELETED) {
+        'D'
+    } else if status.contains(Status::INDEX_RENAMED) {
+        'R'
+    } else if status.contains(Status::INDEX_TYPECHANGE) {
+        'T'
+    } else {
+        ' '
+    };
+
+    let mut worktree_code = if status.contains(Status::WT_MODIFIED) {
+        'M'
+    } else if status.contains(Status::WT_DELETED) {
+        'D'
+    } else if status.contains(Status::WT_RENAMED) {
+        'R'
+    } else if status.contains(Status::WT_TYPECHANGE) {
+        'T'
+    } else {
+        ' '
+    };
+
+    if status.contains(Status::WT_NEW) {
+        worktree_code = '?';
+    }
+
+    let path_display = if status.contains(Status::INDEX_RENAMED) {
+        let from = entry
+            .head_to_index()
+            .and_then(|d| d.old_file().path())
+            .and_then(|p| p.to_str())
+            .unwrap_or(path.as_str());
+        let to = entry
+            .head_to_index()
+            .and_then(|d| d.new_file().path())
+            .and_then(|p| p.to_str())
+            .unwrap_or(path.as_str());
+        format!("{from} -> {to}")
+    } else if status.contains(Status::WT_RENAMED) {
+        let from = entry
+            .index_to_workdir()
+            .and_then(|d| d.old_file().path())
+            .and_then(|p| p.to_str())
+            .unwrap_or(path.as_str());
+        let to = entry
+            .index_to_workdir()
+            .and_then(|d| d.new_file().path())
+            .and_then(|p| p.to_str())
+            .unwrap_or(path.as_str());
+        format!("{from} -> {to}")
+    } else {
+        path
+    };
+
+    Some(format!("{index_code}{worktree_code} {path_display}"))
+}
+
+/// Summarize repository status in a `git status --short --branch`-style format.
+pub fn status_with_branch<P: AsRef<Path>>(repo_path: P) -> Result<String, Error> {
+    let repo = Repository::discover(repo_path)?;
+    if repo.workdir().is_none() {
+        return Ok("## status unavailable (bare repository)".to_string());
+    }
+
+    let mut opts = StatusOptions::new();
+    opts.show(StatusShow::IndexAndWorkdir)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false)
+        .include_ignored(false)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true);
+
+    let statuses = repo.statuses(Some(&mut opts))?;
+    let mut entries: Vec<String> = statuses.iter().filter_map(format_status_entry).collect();
+    entries.sort();
+
+    let mut lines = vec![branch_status_line(&repo)];
+    if !entries.is_empty() {
+        lines.extend(entries);
+    }
+
+    Ok(lines.join("\n"))
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffSummary {
+    pub stats: String,
+    pub name_status: String,
+}
+
+/// Compute diff stats and name-status between `target...HEAD`, mirroring `git diff --stat` /
+/// `--name-status` while relying solely on libgit2.
+pub fn diff_summary_against_target<P: AsRef<Path>>(
+    repo_path: P,
+    target: &str,
+) -> Result<DiffSummary, Error> {
+    let repo = Repository::discover(repo_path)?;
+    let head = repo.head()?.peel_to_commit()?;
+    let target_commit = repo.revparse_single(target)?.peel_to_commit()?;
+    let base_oid = repo.merge_base(target_commit.id(), head.id())?;
+    let base_tree = repo.find_commit(base_oid)?.tree()?;
+    let head_tree = head.tree()?;
+
+    let mut opts = DiffOptions::new();
+    opts.id_abbrev(40);
+
+    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut opts))?;
+    let mut find_opts = DiffFindOptions::new();
+    diff.find_similar(Some(&mut find_opts))?;
+
+    let stats_buf = diff.stats()?.to_buf(DiffStatsFormat::FULL, 80)?;
+    let stats = String::from_utf8_lossy(stats_buf.as_ref())
+        .trim_end()
+        .to_string();
+
+    let mut entries = Vec::new();
+    for delta in diff.deltas() {
+        use git2::Delta::*;
+        let code = match delta.status() {
+            Added => "A",
+            Copied => "C",
+            Deleted => "D",
+            Modified => "M",
+            Renamed => "R",
+            Typechange => "T",
+            Conflicted => "U",
+            Untracked => "A",
+            Unmodified | Ignored | Unreadable => continue,
+        };
+
+        let old_path = delta
+            .old_file()
+            .path()
+            .and_then(|p| p.to_str())
+            .unwrap_or_default();
+        let new_path = delta
+            .new_file()
+            .path()
+            .and_then(|p| p.to_str())
+            .unwrap_or(old_path);
+
+        let line = match delta.status() {
+            Renamed | Copied => format!("{code}\t{old_path}\t{new_path}"),
+            _ => format!("{code}\t{new_path}"),
+        };
+        entries.push(line);
+    }
+
+    entries.sort();
+
+    Ok(DiffSummary {
+        stats,
+        name_status: entries.join("\n").trim().to_string(),
+    })
+}
+
 /// Stage changes (index-only), mirroring `git add` / `git add -u` (no commit).
 ///
 /// - `Some(paths)`: for each normalized path:
@@ -607,6 +859,29 @@ pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
 pub fn stage_in<P: AsRef<Path>>(repo_path: P, paths: Option<Vec<&str>>) -> Result<(), Error> {
     let repo = Repository::open(repo_path)?;
     stage_impl(&repo, paths)
+}
+
+fn stage_all_impl(repo: &Repository) -> Result<(), Error> {
+    if repo.workdir().is_none() {
+        return Ok(());
+    }
+
+    let mut index = repo.index()?;
+    index.add_all(["."], IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    Ok(())
+}
+
+/// Stage tracked + untracked changes and deletions, mirroring `git add -A`.
+pub fn stage_all() -> Result<(), Error> {
+    let repo = Repository::open(".")?;
+    stage_all_impl(&repo)
+}
+
+/// Stage tracked + untracked changes and deletions, mirroring `git add -A`.
+pub fn stage_all_in<P: AsRef<Path>>(repo_path: P) -> Result<(), Error> {
+    let repo = Repository::open(repo_path)?;
+    stage_all_impl(&repo)
 }
 
 // TODO: Remove the `add` portion from this
@@ -1345,8 +1620,11 @@ pub fn commit_soft_squash(message: &str, base_oid: Oid, expected_head: Oid) -> R
     Ok(oid)
 }
 
-pub fn commit_in_progress_cherry_pick(message: &str, expected_parent: Oid) -> Result<Oid, Error> {
-    let repo = Repository::discover(".")?;
+fn commit_in_progress_cherry_pick_repo(
+    repo: &Repository,
+    message: &str,
+    expected_parent: Oid,
+) -> Result<Oid, Error> {
     if repo.state() != RepositoryState::CherryPick {
         return Err(Error::from_str("no cherry-pick in progress to finalize"));
     }
@@ -1378,6 +1656,20 @@ pub fn commit_in_progress_cherry_pick(message: &str, expected_parent: Oid) -> Re
     repo.checkout_head(Some(&mut checkout))?;
 
     Ok(oid)
+}
+
+pub fn commit_in_progress_cherry_pick(message: &str, expected_parent: Oid) -> Result<Oid, Error> {
+    let repo = Repository::discover(".")?;
+    commit_in_progress_cherry_pick_repo(&repo, message, expected_parent)
+}
+
+pub fn commit_in_progress_cherry_pick_in<P: AsRef<Path>>(
+    repo_path: P,
+    message: &str,
+    expected_parent: Oid,
+) -> Result<Oid, Error> {
+    let repo = Repository::open(repo_path)?;
+    commit_in_progress_cherry_pick_repo(&repo, message, expected_parent)
 }
 
 pub fn commit_ready_merge(message: &str, ready: MergeReady) -> Result<Oid, Error> {
@@ -1970,9 +2262,9 @@ pub fn origin_owner_repo(repo_path: &str) -> Result<(String, String), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git2::{IndexAddOption, Repository, Signature};
+    use git2::{IndexAddOption, Repository, RepositoryState, Signature};
     use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -2391,6 +2683,48 @@ mod tests {
         assert!(!out_dd_ex.contains("vendor/ignored.txt"));
     }
 
+    #[test]
+    fn diff_summary_reports_stats_and_name_status() {
+        let repo = TestRepo::new();
+
+        repo.write("modify.txt", "base\n");
+        repo.write("remove.txt", "gone\n");
+        raw_commit(repo.repo(), "base");
+
+        let head_commit = repo.repo().head().unwrap().peel_to_commit().unwrap();
+        repo.repo()
+            .branch("target", &head_commit, true)
+            .expect("create target branch");
+
+        repo.append("modify.txt", "change\n");
+        fs::remove_file(repo.join("remove.txt")).unwrap();
+        repo.write("added.txt", "new\n");
+        raw_commit(repo.repo(), "topic");
+
+        let summary =
+            super::diff_summary_against_target(repo.path(), "target").expect("diff summary");
+        assert!(
+            summary.stats.contains("files changed") || summary.stats.contains("modify.txt"),
+            "stats should mention changes:\n{}",
+            summary.stats
+        );
+        assert!(
+            summary.name_status.contains("M\tmodify.txt"),
+            "name-status should include modification: {}",
+            summary.name_status
+        );
+        assert!(
+            summary.name_status.contains("D\tremove.txt"),
+            "name-status should include deletion: {}",
+            summary.name_status
+        );
+        assert!(
+            summary.name_status.contains("A\tadded.txt"),
+            "name-status should include addition: {}",
+            summary.name_status
+        );
+    }
+
     // --- unborn HEAD (no untracked): stage-only then diff --------------------
 
     #[test]
@@ -2406,6 +2740,46 @@ mod tests {
         println!("OUT: {}", out);
         assert!(out.contains("z.txt"));
         assert!(out.contains("hello"));
+    }
+
+    #[test]
+    fn stage_all_tracks_untracked_and_deletions() {
+        let repo = TestRepo::new();
+
+        repo.write("tracked.txt", "base\n");
+        repo.write("remove.txt", "gone\n");
+        raw_commit(repo.repo(), "base");
+
+        repo.append("tracked.txt", "change\n");
+        fs::remove_file(repo.join("remove.txt")).unwrap();
+        repo.write("untracked.txt", "fresh\n");
+
+        stage_all_in(repo.path()).expect("stage all");
+        let staged = snapshot_staged(repo.path_str()).expect("snapshot staged after stage_all");
+        let mut kinds: HashMap<String, super::StagedKind> = HashMap::new();
+        for item in staged {
+            kinds.insert(item.path, item.kind);
+        }
+
+        assert!(
+            matches!(kinds.get("tracked.txt"), Some(super::StagedKind::Modified)),
+            "tracked modification should be staged"
+        );
+        assert!(
+            matches!(kinds.get("remove.txt"), Some(super::StagedKind::Deleted)),
+            "tracked deletion should be staged"
+        );
+        assert!(
+            matches!(kinds.get("untracked.txt"), Some(super::StagedKind::Added)),
+            "untracked file should be staged as Added"
+        );
+    }
+
+    #[test]
+    fn stage_all_no_workdir_is_noop() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        Repository::init_bare(tempdir.path()).expect("init bare");
+        stage_all_in(tempdir.path()).expect("stage_all should tolerate bare repo");
     }
 
     // --- stage (index-only) --------------------------------------------------
@@ -2614,5 +2988,97 @@ mod tests {
             lhs, rhs,
             "restored staged set should equal original snapshot"
         );
+    }
+
+    #[test]
+    fn status_with_branch_formats_branch_and_entries() {
+        let repo = TestRepo::new();
+
+        repo.write("keep.txt", "keep\n");
+        repo.write("remove.txt", "gone\n");
+        raw_commit(repo.repo(), "base");
+
+        repo.append("keep.txt", "change\n");
+        fs::remove_file(repo.join("remove.txt")).unwrap();
+        repo.write("new.txt", "fresh\n");
+
+        let status = super::status_with_branch(repo.path()).expect("status summary");
+        assert!(
+            status.starts_with("## "),
+            "status should include branch header: {status}"
+        );
+        assert!(
+            status.contains(" M keep.txt"),
+            "modified tracked file should appear: {status}"
+        );
+        assert!(
+            status.contains(" D remove.txt"),
+            "deleted file should appear: {status}"
+        );
+        assert!(
+            status.contains("?? new.txt"),
+            "untracked file should appear: {status}"
+        );
+    }
+
+    #[test]
+    fn commit_in_progress_cherry_pick_completes_and_cleans_state() {
+        let repo = TestRepo::new();
+
+        repo.write("file.txt", "base\n");
+        raw_commit(repo.repo(), "base");
+        let base_branch = repo
+            .repo()
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+
+        // Create a topic branch with one commit.
+        let base_tip = repo.repo().head().unwrap().peel_to_commit().unwrap();
+        repo.repo()
+            .branch("topic", &base_tip, true)
+            .expect("create topic branch");
+        {
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            repo.repo().set_head("refs/heads/topic").unwrap();
+            repo.repo()
+                .checkout_head(Some(&mut checkout.force()))
+                .unwrap();
+        }
+        repo.append("file.txt", "topic change\n");
+        let topic_commit = raw_commit(repo.repo(), "topic change");
+
+        // Return to the base branch and start a cherry-pick.
+        {
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            repo.repo()
+                .set_head(&format!("refs/heads/{base_branch}"))
+                .unwrap();
+            repo.repo()
+                .checkout_head(Some(&mut checkout.force()))
+                .unwrap();
+        }
+        repo.repo()
+            .cherrypick(&repo.repo().find_commit(topic_commit).unwrap(), None)
+            .expect("cherry-pick applies");
+        assert_eq!(
+            repo.repo().state(),
+            RepositoryState::CherryPick,
+            "cherry-pick should leave repository in cherry-pick state"
+        );
+
+        let committed =
+            super::commit_in_progress_cherry_pick_in(repo.path(), "topic change", base_tip.id())
+                .expect("commit cherry-pick");
+        assert_eq!(
+            repo.repo().state(),
+            RepositoryState::Clean,
+            "state should be cleaned after cherry-pick commit"
+        );
+
+        let new_head = repo.repo().head().unwrap().peel_to_commit().unwrap().id();
+        assert_eq!(new_head, committed, "HEAD should advance to cherry-pick");
     }
 }
