@@ -648,17 +648,11 @@ impl Auditor {
 
     /// Basic LLM request without tool usage
     pub async fn llm_request(
-        #[cfg_attr(feature = "integration_testing", allow(unused_variables))]
-        system_prompt: String,
+        #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
         user_message: String,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
         let provider = crate::config::get_config().provider.clone();
-        let _ = Self::add_message(
-            provider
-                .new_message(user_message.clone())
-                .as_user()
-                .build(),
-        );
+        let _ = Self::add_message(provider.new_message(user_message.clone()).as_user().build());
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
@@ -784,7 +778,7 @@ impl Auditor {
                         extra_args: opts_clone.extra_args.clone(),
                         scope: Some(agent_scope),
                         metadata,
-                        timeout: Some(Duration::from_secs(900)),
+                        timeout: Some(Duration::from_secs(9000)),
                     };
 
                     let response = runner
@@ -902,7 +896,7 @@ impl Auditor {
                     extra_args: runtime_opts.extra_args.clone(),
                     scope: Some(agent_scope),
                     metadata,
-                    timeout: Some(Duration::from_secs(900)),
+                    timeout: Some(Duration::from_secs(9000)),
                 };
 
                 match runner.execute(request, progress_hook).await {
