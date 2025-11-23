@@ -1,5 +1,7 @@
 ## Gemini output consumer (vizier-style)
 
+Update (2025-11-26): The Rust Codex/Gemini adapters were removed in favor of script shims (see `examples/agents/gemini.sh`); this document remains as a historical reference for the old JSON-stream adapter shape.
+
 Background from `~/rust/vizier`: `vizier-core/src/codex.rs` adapts Codex agent
 events into UI-friendly progress updates. It runs `codex exec --json --output-last-message <tmp> -`
 in the repo root, streams newline-delimited JSON events, and uses
@@ -44,4 +46,3 @@ Proposed Gemini consumer (mirroring the Codex adapter):
   `convertToStreamStats`) and `events` is the raw stream for audit/logging.
 - UI hook: forward each adapted progress event to the display system and surface
   the final `assistant_text` (or a structured error) once `result` arrives.
-

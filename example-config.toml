@@ -6,7 +6,7 @@ reasoning_effort = "medium"
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
 # Supported backends: `agent` (auto-resolves Codex or Gemini) or `wire`.
-# When no agent command is configured, Vizier auto-discovers a supported agent CLI on PATH (preferring Codex, then Gemini) and builds the right startup command per backend.
+# When no agent command is configured, Vizier auto-discovers a supported agent CLI on PATH (preferring Codex, then Gemini) and builds the right startup command per backend. For clean stdout (assistant text only), point the command at a script shim that filters events; raw CLIs may emit JSON directly.
 
 # Base agent-backend wiring shared by agent-backed commands unless a scoped override says otherwise
 [agent]
@@ -15,8 +15,7 @@ command = ["/usr/local/bin/agent-cli", "exec"]
 profile = "default"
 bounds_prompt_path = "/etc/vizier/agent_bounds.md"
 extra_args = ["--log-json"]
-# Agent scopes inherit this runner plus Codex's display adapter; swapping to another CLI agent means
-# pointing these fields (or a scoped `[agents.<scope>.agent]` table) at the new command/profile.
+# Agent scopes inherit this runner; the command should produce final assistant text on stdout and progress/errors on stderr. Swap to another script or CLI by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with backend/model overrides for that scope+prompt pairing. Available kinds: documentation, commit,
@@ -67,10 +66,12 @@ backend = "agent"
 # Fine-tune how the default agent backend runs (command/profile/bounds prompt/extra args)
 [agents.default.agent]
 kind = "codex"
-command = ["/usr/local/bin/agent-cli", "exec"]
-profile = "maintainers"
-bounds_prompt_path = "/etc/vizier/agent_bounds.md"
-extra_args = ["--log-json"]
+command = ["./examples/agents/codex.sh"]
+# stdout is the final assistant response; stderr carries progress/usage/errors.
+# profile/bounds/extra_args are optional and can be trimmed when using scripts.
+# profile = "maintainers"
+# bounds_prompt_path = "/etc/vizier/agent_bounds.md"
+# extra_args = ["--log-json"]
 
 # Force conversational asks onto the wire backend with a higher-effort reasoning profile
 [agents.ask]
@@ -102,11 +103,11 @@ backend = "agent"
 profile = "compliance"
 bounds_prompt_path = "./prompts/review-bounds.md"
 
-# Example: route review through Gemini instead of Codex
+# Example: route review through Gemini instead of Codex via a script shim
 # [agents.review]
 # backend = "gemini"
 # [agents.review.agent]
-# command = ["gemini"] # optional; defaults to gemini when backend is set
+# command = ["./examples/agents/gemini.sh"]
 
 # Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts
 [agents.merge.documentation]

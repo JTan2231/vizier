@@ -27,27 +27,41 @@ fn repo_root() -> PathBuf {
 
 fn vizier_binary() -> &'static PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        let root = repo_root();
-        let status = Command::new("cargo")
-            .current_dir(&root)
-            .args([
-                "build",
-                "--release",
-                "--features",
-                "mock_llm,integration_testing",
-            ])
-            .status()
-            .expect("failed to invoke cargo build for vizier");
-        if !status.success() {
-            panic!("cargo build for vizier failed with status {status:?}");
-        }
-        let path = root.join("target/release/vizier");
-        if !path.exists() {
-            panic!("expected vizier binary at {}", path.display());
-        }
-        path
-    })
+    BIN.get_or_init(|| build_vizier_binary(&["mock_llm", "integration_testing"]))
+}
+
+fn vizier_binary_no_mock() -> &'static PathBuf {
+    static BIN_NO_MOCK: OnceLock<PathBuf> = OnceLock::new();
+    BIN_NO_MOCK.get_or_init(|| build_vizier_binary(&["integration_testing"]))
+}
+
+fn build_vizier_binary(features: &[&str]) -> PathBuf {
+    let root = repo_root();
+    let label = if features.is_empty() {
+        "base".to_string()
+    } else {
+        features.join("_")
+    };
+    let target_dir = root.join("target").join(format!("tests-{label}"));
+    let mut args = vec!["build".to_string(), "--release".to_string()];
+    if !features.is_empty() {
+        args.push("--features".to_string());
+        args.push(features.join(","));
+    }
+    let status = Command::new("cargo")
+        .current_dir(&root)
+        .args(&args)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .status()
+        .expect("failed to invoke cargo build for vizier");
+    if !status.success() {
+        panic!("cargo build for vizier failed with status {status:?}");
+    }
+    let path = target_dir.join("release/vizier");
+    if !path.exists() {
+        panic!("expected vizier binary at {}", path.display());
+    }
+    path
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
@@ -68,10 +82,15 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 struct IntegrationRepo {
     dir: TempDir,
     agent_bin_dir: PathBuf,
+    vizier_bin: PathBuf,
 }
 
 impl IntegrationRepo {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_binary(vizier_binary().clone())
+    }
+
+    fn with_binary(bin: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let dir = TempDir::new()?;
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
@@ -79,7 +98,11 @@ impl IntegrationRepo {
         write_default_cicd_script(dir.path())?;
         init_repo_at(dir.path())?;
         let agent_bin_dir = create_agent_shims(dir.path())?;
-        Ok(Self { dir, agent_bin_dir })
+        Ok(Self {
+            dir,
+            agent_bin_dir,
+            vizier_bin: bin,
+        })
     }
 
     fn path(&self) -> &Path {
@@ -91,7 +114,7 @@ impl IntegrationRepo {
     }
 
     fn vizier_cmd(&self) -> Command {
-        let mut cmd = Command::new(vizier_binary());
+        let mut cmd = Command::new(&self.vizier_bin);
         cmd.current_dir(self.path());
         let mut paths = vec![self.agent_bin_dir.clone()];
         if let Some(existing) = env::var_os("PATH") {
@@ -256,75 +279,6 @@ fn session_log_contents_from_output(
     Ok(contents)
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct UsageSnapshot {
-    prompt_total: usize,
-    completion_total: usize,
-    total: usize,
-    prompt_delta: usize,
-    completion_delta: usize,
-    total_delta: usize,
-    cached_input_total: usize,
-    cached_input_delta: usize,
-    reasoning_output_total: usize,
-    reasoning_output_delta: usize,
-    known: bool,
-}
-
-fn parse_session_usage(contents: &str) -> Result<UsageSnapshot, Box<dyn std::error::Error>> {
-    let value: Value = serde_json::from_str(contents)?;
-    let usage = value
-        .get("outcome")
-        .and_then(|outcome| outcome.get("token_usage"))
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "session outcome missing token usage")
-        })?;
-
-    let mut snapshot = UsageSnapshot::default();
-    snapshot.prompt_total = usage_value(usage, "prompt_total")?;
-    snapshot.completion_total = usage_value(usage, "completion_total")?;
-    snapshot.total = usage_value(usage, "total")?;
-    snapshot.prompt_delta = usage_value(usage, "prompt_delta")?;
-    snapshot.completion_delta = usage_value(usage, "completion_delta")?;
-    snapshot.total_delta = usage_value(usage, "delta_total")?;
-    snapshot.cached_input_total = usage_value_optional(usage, "cached_input_total")?;
-    snapshot.cached_input_delta = usage_value_optional(usage, "cached_input_delta")?;
-    snapshot.reasoning_output_total = usage_value_optional(usage, "reasoning_output_total")?;
-    snapshot.reasoning_output_delta = usage_value_optional(usage, "reasoning_output_delta")?;
-    snapshot.known = usage
-        .get("known")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "token_usage.known missing"))?;
-    Ok(snapshot)
-}
-
-fn usage_value(usage: &Value, key: &str) -> Result<usize, Box<dyn std::error::Error>> {
-    usage
-        .get(key)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("token_usage.{key} missing")))
-        .map(|value| value as usize)
-        .map_err(|err| err.into())
-}
-
-fn usage_value_optional(usage: &Value, key: &str) -> Result<usize, Box<dyn std::error::Error>> {
-    Ok(usage.get(key).and_then(Value::as_u64).unwrap_or(0) as usize)
-}
-
-fn format_number(value: usize) -> String {
-    let digits: Vec<char> = value.to_string().chars().collect();
-    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
-
-    for (idx, ch) in digits.iter().rev().enumerate() {
-        if idx > 0 && idx % 3 == 0 {
-            formatted.push(',');
-        }
-        formatted.push(*ch);
-    }
-
-    formatted.chars().rev().collect()
-}
-
 fn gather_session_logs(repo: &IntegrationRepo) -> io::Result<Vec<PathBuf>> {
     let sessions_root = repo.path().join(".vizier").join("sessions");
     let mut files = Vec::new();
@@ -349,13 +303,6 @@ fn gather_session_logs(repo: &IntegrationRepo) -> io::Result<Vec<PathBuf>> {
 fn new_session_log<'a>(before: &'a [PathBuf], after: &'a [PathBuf]) -> Option<&'a PathBuf> {
     let before_set: HashSet<_> = before.iter().collect();
     after.iter().find(|path| !before_set.contains(path))
-}
-
-fn usage_lines(stderr: &str) -> Vec<&str> {
-    stderr
-        .lines()
-        .filter(|line| line.contains("[usage]"))
-        .collect()
 }
 
 fn prepare_conflicting_plan(
@@ -407,7 +354,10 @@ fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(&bin_dir)?;
     for name in ["codex", "gemini"] {
         let path = bin_dir.join(name);
-        fs::write(&path, "#!/bin/sh\nexit 0\n")?;
+        fs::write(
+            &path,
+            "#!/bin/sh\ncat >/dev/null\nprintf 'mock agent response\n'\nprintf 'mock agent running\n' 1>&2\n",
+        )?;
         #[cfg(unix)]
         {
             let mut perms = fs::metadata(&path)?.permissions();
@@ -702,6 +652,29 @@ reasoning_effort = "low"
 }
 
 #[test]
+fn test_missing_agent_binary_blocks_run() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let mut cmd = repo.vizier_cmd();
+    cmd.env("PATH", "/nonexistent");
+    cmd.args(["ask", "missing agent should fail"]);
+
+    let output = cmd.output()?;
+    assert!(
+        !output.status.success(),
+        "ask should fail when no agent runner is discoverable"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .to_ascii_lowercase()
+            .contains("no supported agent backend found"),
+        "stderr should explain missing agent runner: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_repo_config_overrides_env_config() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let repo_config = repo.path().join(".vizier").join("config.toml");
@@ -966,30 +939,19 @@ fn test_ask_reports_token_usage_progress() -> TestResult {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("[usage] token-usage"),
-        "expected usage progress line, stderr was:\n{}",
+        stderr.contains("[codex:ask] agent — mock agent running"),
+        "expected agent progress line, stderr was:\n{}",
         stderr
     );
     assert!(
-        stderr.to_ascii_lowercase().contains("input") && stderr.contains("cached"),
-        "usage block should include cached input counts:\n{}",
-        stderr
-    );
-    assert!(
-        stderr.to_ascii_lowercase().contains("output")
-            && stderr.to_ascii_lowercase().contains("reasoning"),
-        "usage block should include reasoning output counts:\n{}",
+        !stderr.to_ascii_lowercase().contains("token usage"),
+        "token usage progress should not be emitted anymore:\n{}",
         stderr
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Token usage:"),
-        "ask stdout should include token usage block:\n{}",
-        stdout
-    );
-    assert!(
-        stdout.contains("Total"),
-        "token usage block should include totals:\n{}",
+        stdout.contains("Agent run:"),
+        "ask stdout should include agent run summary:\n{}",
         stdout
     );
 
@@ -1002,15 +964,30 @@ fn test_ask_reports_token_usage_progress() -> TestResult {
     );
     let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
     assert!(
-        !quiet_stderr.contains("[usage] token-usage"),
-        "quiet mode should suppress usage events but printed:\n{}",
+        quiet_stderr.is_empty(),
+        "quiet mode should suppress agent progress but printed:\n{}",
         quiet_stderr
     );
-    let quiet_stdout = String::from_utf8_lossy(&quiet.stdout);
+    Ok(())
+}
+
+#[test]
+fn test_no_ansi_suppresses_escape_sequences() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_output(&["--no-ansi", "ask", "ansi suppression check"])?;
     assert!(
-        !quiet_stdout.contains("Token usage:"),
-        "quiet mode should suppress token usage block on stdout but printed:\n{}",
-        quiet_stdout
+        output.status.success(),
+        "vizier ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !combined.contains('\u{1b}'),
+        "output should not include ANSI escapes when --no-ansi is set: {combined}"
     );
     Ok(())
 }
@@ -1026,73 +1003,40 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let usage_lines = usage_lines(&stderr);
     assert!(
-        !usage_lines.is_empty(),
-        "stderr missing usage lines:\n{stderr}"
+        stderr.contains("[codex:save] agent — mock agent running"),
+        "stderr missing agent progress lines:\n{}",
+        stderr
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let contents = session_log_contents_from_output(&repo, &stdout)?;
-    let session_usage = parse_session_usage(&contents)?;
-
-    let fmt = format_number;
-    assert!(
-        usage_lines.iter().any(|line| line
-            .replace(' ', "")
-            .contains(&format!("Total:{}", fmt(session_usage.total)))),
-        "CLI usage should report total tokens:\n{stderr}"
+    let session_json: Value = serde_json::from_str(&contents)?;
+    let agent = session_json.get("agent").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "session log missing agent run data")
+    })?;
+    assert_eq!(
+        agent.get("exit_code").and_then(Value::as_i64),
+        Some(0),
+        "session log should record agent exit status"
     );
-    if session_usage.total_delta > 0 {
-        assert!(
-            usage_lines
-                .iter()
-                .any(|line| line.contains(&format!("(+{})", fmt(session_usage.total_delta)))),
-            "CLI usage should report total deltas:\n{stderr}"
-        );
-    }
+    let stderr_lines = agent
+        .get("stderr")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     assert!(
-        usage_lines.iter().any(|line| line
-            .replace(' ', "")
-            .contains(&format!("Input:{}", fmt(session_usage.prompt_total)))),
-        "CLI usage should report prompt tokens:\n{stderr}"
+        !stderr_lines.is_empty(),
+        "agent stderr should be captured in session log"
     );
-    if session_usage.prompt_delta > 0 {
-        assert!(
-            usage_lines
-                .iter()
-                .any(|line| line.contains(&format!("(+{})", fmt(session_usage.prompt_delta)))),
-            "CLI usage should report prompt deltas:\n{stderr}"
-        );
-    }
+    let stdout_value = agent
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        usage_lines.iter().any(|line| line
-            .replace(' ', "")
-            .contains(&format!("Output:{}", fmt(session_usage.completion_total)))),
-        "CLI usage should report completion tokens:\n{stderr}"
+        !stdout_value.trim().is_empty(),
+        "agent stdout should be captured in session log"
     );
-    if session_usage.completion_delta > 0 {
-        assert!(
-            usage_lines
-                .iter()
-                .any(|line| line.contains(&format!("(+{})", fmt(session_usage.completion_delta)))),
-            "CLI usage should report completion deltas:\n{stderr}"
-        );
-    }
-    if session_usage.cached_input_total > 0 || session_usage.cached_input_delta > 0 {
-        assert!(
-            usage_lines.iter().any(|line| line.contains("cached")),
-            "CLI usage should mention cached input when present:\n{stderr}"
-        );
-    }
-    if session_usage.reasoning_output_total > 0 || session_usage.reasoning_output_delta > 0 {
-        assert!(
-            usage_lines
-                .iter()
-                .any(|line| line.to_ascii_lowercase().contains("reasoning")),
-            "CLI usage should mention reasoning output when present:\n{stderr}"
-        );
-    }
     Ok(())
 }
 
@@ -1102,8 +1046,7 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
     let before = gather_session_logs(&repo)?;
 
     let mut cmd = repo.vizier_cmd();
-    cmd.args(["ask", "suppress usage event"]);
-    cmd.env("VIZIER_SUPPRESS_TOKEN_USAGE", "1");
+    cmd.args(["-q", "ask", "suppress usage event"]);
     let output = cmd.output()?;
     assert!(
         output.status.success(),
@@ -1112,13 +1055,9 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let usage_lines = usage_lines(&stderr);
     assert!(
-        usage_lines
-            .iter()
-            .any(|line| line.to_ascii_lowercase().contains("unknown")),
-        "usage lines should note unknown counts but were:\n{}",
-        stderr
+        stderr.trim().is_empty(),
+        "quiet ask should not emit stderr: {stderr}"
     );
 
     let after = gather_session_logs(&repo)?;
@@ -1126,34 +1065,139 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing new session log"))?
         .clone();
     let contents = fs::read_to_string(&session_path)?;
-    let usage = parse_session_usage(&contents)?;
-    assert!(
-        !usage.known,
-        "session log should mark token usage unknown when backend omits counts"
+    let session_json: Value = serde_json::from_str(&contents)?;
+    let agent = session_json.get("agent").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "session log missing agent run data")
+    })?;
+    assert_eq!(
+        agent.get("exit_code").and_then(Value::as_i64),
+        Some(0),
+        "session log should still record agent exit even when output is quiet"
     );
-    assert_eq!(usage.prompt_total, 0);
-    assert_eq!(usage.completion_total, 0);
-    assert_eq!(usage.total, 0);
-    assert_eq!(usage.cached_input_total, 0);
-    assert_eq!(usage.cached_input_delta, 0);
-    assert_eq!(usage.reasoning_output_total, 0);
-    assert_eq!(usage.reasoning_output_delta, 0);
+    Ok(())
+}
+
+#[test]
+fn test_script_runner_session_logs_io_across_commands() -> TestResult {
+    let repo = IntegrationRepo::with_binary(vizier_binary_no_mock().clone())?;
+
+    let capture_agent_log =
+        |args: &[&str], label: &str| -> Result<Value, Box<dyn std::error::Error>> {
+            let before = gather_session_logs(&repo)?;
+            let mut cmd = repo.vizier_cmd();
+            cmd.env("OPENAI_API_KEY", "test-key");
+            cmd.env("ANTHROPIC_API_KEY", "test-key");
+            cmd.args(args);
+            let output = cmd.output()?;
+            assert!(
+                output.status.success(),
+                "vizier {label} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let after = gather_session_logs(&repo)?;
+            let session_path = new_session_log(&before, &after)
+                .ok_or_else(|| format!("missing session log for {label}"))?
+                .clone();
+            let contents = fs::read_to_string(session_path)?;
+            let json: Value = serde_json::from_str(&contents)?;
+            Ok(json)
+        };
+
+    let assert_agent_io = |json: &Value, label: &str| {
+        let agent = json
+            .get("agent")
+            .unwrap_or_else(|| panic!("session log missing agent run for {label}"));
+        let command: Vec<String> = agent
+            .get("command")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            command.iter().any(|entry| entry.contains("codex")),
+            "{label} session log should capture agent command, got {command:?}"
+        );
+        assert!(
+            agent
+                .get("stdout")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .contains("mock agent response"),
+            "{label} session log should persist agent stdout"
+        );
+        let stderr_lines: Vec<String> = agent
+            .get("stderr")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            stderr_lines
+                .iter()
+                .any(|line| line.contains("mock agent running")),
+            "{label} session log should capture agent stderr, found {stderr_lines:?}"
+        );
+        assert!(
+            agent
+                .get("duration_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0,
+            "{label} session log should record duration"
+        );
+    };
+
+    let ask = capture_agent_log(&["ask", "script runner smoke"], "ask")?;
+    assert_agent_io(&ask, "ask");
+
+    let save = capture_agent_log(&["save"], "save")?;
+    assert_agent_io(&save, "save");
+
+    let draft = capture_agent_log(
+        &["draft", "--name", "script-runner", "script runner plan"],
+        "draft",
+    )?;
+    assert_agent_io(&draft, "draft");
+
+    clean_workdir(&repo)?;
+
+    let approve = capture_agent_log(&["approve", "script-runner", "--yes"], "approve")?;
+    assert_agent_io(&approve, "approve");
+
+    clean_workdir(&repo)?;
+
+    let review = capture_agent_log(
+        &["review", "script-runner", "--review-only", "--skip-checks"],
+        "review",
+    )?;
+    assert_agent_io(&review, "review");
+
+    clean_workdir(&repo)?;
+
+    let mut merge_cmd = repo.vizier_cmd();
+    merge_cmd.env("OPENAI_API_KEY", "test-key");
+    merge_cmd.env("ANTHROPIC_API_KEY", "test-key");
+    merge_cmd.args(["merge", "script-runner", "--yes"]);
+    let merge = merge_cmd.output()?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed with real script runner: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
     Ok(())
 }
 
 #[test]
 fn test_draft_reports_token_usage() -> TestResult {
-    fn parse_usage_total(summary: &str) -> Option<usize> {
-        summary
-            .lines()
-            .find(|line| line.trim_start().starts_with("Total"))
-            .and_then(|line| line.split(':').nth(1))
-            .map(str::trim)
-            .and_then(|value| value.split_whitespace().next())
-            .map(|value| value.replace(',', ""))
-            .and_then(|value| value.parse::<usize>().ok())
-    }
-
     let repo = IntegrationRepo::new()?;
     let sessions_root = repo.path().join(".vizier/sessions");
     if sessions_root.exists() {
@@ -1174,39 +1218,36 @@ fn test_draft_reports_token_usage() -> TestResult {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let summary = stdout
-        .split("\n\n")
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing draft summary block"))?;
-    let stdout_total = parse_usage_total(summary).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("usage total missing from summary:\n{summary}"),
-        )
-    })?;
     assert!(
-        stdout_total > 0,
-        "draft stdout should report non-zero token usage but was {stdout_total}:\n{summary}"
+        stdout.contains("Agent") && stdout.contains("codex"),
+        "draft summary should include agent metadata:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Exit code"),
+        "draft summary should include the agent exit code:\n{stdout}"
     );
 
     let after_logs = gather_session_logs(&repo)?;
     let session_path = new_session_log(&before_logs, &after_logs)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "expected session log for draft"))?;
     let contents = fs::read_to_string(&session_path)?;
-    let session_usage = parse_session_usage(&contents)?;
+    let session_json: Value = serde_json::from_str(&contents)?;
+    let agent = session_json.get("agent").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "session log missing agent run data")
+    })?;
+    let exit_code = agent
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "agent.exit_code missing"))?;
+    assert_eq!(exit_code, 0, "agent exit code should be recorded");
+    let stderr = agent
+        .get("stderr")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     assert!(
-        session_usage.total > 0,
-        "session log should record non-zero token usage but was {}",
-        session_usage.total
-    );
-    assert!(
-        session_usage.known,
-        "session log should mark token usage as known"
-    );
-    assert_eq!(
-        session_usage.total, stdout_total,
-        "stdout total should match session log total (log: {}, stdout: {})",
-        session_usage.total, stdout_total
+        !stderr.is_empty(),
+        "session log should include agent stderr lines"
     );
 
     Ok(())
@@ -1319,7 +1360,7 @@ fn test_approve_merges_plan() -> TestResult {
     );
     let approve_stderr = String::from_utf8_lossy(&approve.stderr);
     assert!(
-        approve_stderr.contains("[codex] apply plan"),
+        approve_stderr.contains("[codex:approve] agent — mock agent running"),
         "Agent progress log missing expected line: {}",
         approve_stderr
     );
@@ -1485,6 +1526,35 @@ backend = "codex"
 }
 
 #[test]
+fn test_merge_auto_resolve_rejects_wire_backend() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "wire-merge", "wire backend check"])?;
+    clean_workdir(&repo)?;
+    repo.vizier_output(&["approve", "wire-merge", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&[
+        "--backend",
+        "wire",
+        "merge",
+        "wire-merge",
+        "--yes",
+        "--auto-resolve-conflicts",
+    ])?;
+    assert!(
+        !merge.status.success(),
+        "merge should fail when auto-resolve is requested on the wire backend"
+    );
+    let stderr = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        stderr.contains("Agent-based conflict resolution requires an agent-style backend"),
+        "stderr should surface backend requirement: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_draft_fails_when_codex_errors() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let mut cmd = repo.vizier_cmd();
@@ -1497,12 +1567,12 @@ fn test_draft_fails_when_codex_errors() -> TestResult {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("agent backend"),
-        "stderr should mention backend failure, got: {stderr}"
+        stderr.to_ascii_lowercase().contains("agent command exited"),
+        "stderr should mention agent command failure, got: {stderr}"
     );
     assert!(
-        !stderr.to_ascii_lowercase().contains("wire backend"),
-        "stderr hinted at a wire fallback: {stderr}"
+        stderr.contains("42"),
+        "stderr should include the exit status, got: {stderr}"
     );
     let plan_path = repo
         .path()
@@ -2147,6 +2217,45 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
 }
 
 #[test]
+fn test_merge_cicd_auto_fix_warns_on_wire_backend() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "cicd-wire", "wire backend ci gate"])?;
+    repo.vizier_output(&["approve", "cicd-wire", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let script_path = write_cicd_script(
+        &repo,
+        "gate-wire.sh",
+        "#!/bin/sh\necho \"gate fails\" >&2\nexit 1\n",
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+    let merge = repo.vizier_output(&[
+        "--backend",
+        "wire",
+        "merge",
+        "cicd-wire",
+        "--yes",
+        "--cicd-script",
+        &script_flag,
+        "--auto-cicd-fix",
+    ])?;
+    assert!(
+        !merge.status.success(),
+        "merge should fail when CI/CD gate fails without agent auto-remediation"
+    );
+    let stderr = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        stderr.contains("CI/CD auto-remediation requested"),
+        "stderr should warn about missing agent backend for auto fixes: {stderr}"
+    );
+    assert!(
+        stderr.contains("gate fails"),
+        "stderr should include CI/CD gate output: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_review_streams_critique() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let draft = repo.vizier_output(&["draft", "--name", "review-smoke", "review smoke spec"])?;
@@ -2256,8 +2365,16 @@ fn test_review_summary_includes_token_suffix() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&review.stdout);
     assert!(
-        stdout.contains("Total") && stdout.contains("Input") && stdout.contains("Output"),
-        "review summary should include token usage block but was:\n{stdout}"
+        stdout.contains("Agent    : codex"),
+        "review summary should include agent details but was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Exit code"),
+        "review summary should include agent exit code:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("mock agent response"),
+        "review summary should surface the critique text:\n{stdout}"
     );
     Ok(())
 }

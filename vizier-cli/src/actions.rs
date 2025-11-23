@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use vizier_core::agent::{AgentOutputMode, AgentRequest, ProgressHook, ReviewCheckContext};
+use vizier_core::agent::{AgentRequest, ProgressHook, ReviewCheckContext};
 use vizier_core::vcs::{
     AttemptOutcome, CherryPickOutcome, CredentialAttempt, MergePreparation, MergeReady,
     PushErrorKind, RemoteScheme, add_worktree_for_branch, amend_head_commit,
@@ -65,16 +65,27 @@ fn format_agent_value() -> Option<String> {
                 parts.push(format!("reasoning {reasoning:?}"));
             }
         }
+        if let Some(code) = context.exit_code {
+            parts.push(format!("exit {}", code));
+        }
+        if let Some(duration) = context.duration_ms {
+            parts.push(format!("elapsed {:.2}s", duration as f64 / 1000.0));
+        }
         parts.join(" • ")
     })
 }
 
-fn latest_usage_rows() -> Vec<(String, String)> {
-    if let Some(report) = Auditor::latest_usage_report() {
-        report.to_rows()
-    } else {
-        Auditor::get_total_usage().to_rows()
+fn latest_agent_rows() -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if let Some(agent) = format_agent_value() {
+        rows.push(("Agent".to_string(), agent));
     }
+
+    if let Some(run) = Auditor::latest_agent_run() {
+        rows.extend(run.to_rows());
+    }
+
+    rows
 }
 
 fn copy_session_log_to_repo_root(repo_root: &Path, artifact: &auditor::SessionArtifact) {
@@ -107,28 +118,14 @@ fn copy_session_log_to_repo_root(repo_root: &Path, artifact: &auditor::SessionAr
     }
 }
 
-fn append_agent_and_usage_rows(rows: &mut Vec<(String, String)>, verbosity: Verbosity) {
-    append_agent_and_usage_rows_with_usage(rows, verbosity, None);
-}
-
-fn append_agent_and_usage_rows_with_usage(
-    rows: &mut Vec<(String, String)>,
-    verbosity: Verbosity,
-    usage_rows: Option<&[(String, String)]>,
-) {
+fn append_agent_rows(rows: &mut Vec<(String, String)>, verbosity: Verbosity) {
     if matches!(verbosity, Verbosity::Quiet) {
         return;
     }
 
-    if let Some(agent) = format_agent_value() {
-        rows.push(("Agent".to_string(), agent));
-    }
-
-    let usage_rows = usage_rows
-        .map(|rows| rows.to_vec())
-        .unwrap_or_else(latest_usage_rows);
-    if !usage_rows.is_empty() {
-        rows.extend(usage_rows);
+    let agent_rows = latest_agent_rows();
+    if !agent_rows.is_empty() {
+        rows.extend(agent_rows);
     }
 }
 
@@ -212,23 +209,20 @@ fn push_origin_if_requested(should_push: bool) -> Result<(), Box<dyn std::error:
     }
 }
 
-pub fn print_token_usage() {
+pub fn print_agent_summary() {
     let verbosity = display::get_display_config().verbosity;
     if matches!(verbosity, Verbosity::Quiet) {
         return;
     }
 
-    let mut rows = latest_usage_rows();
-    if let Some(agent) = format_agent_value() {
-        rows.push(("Agent".to_string(), agent));
-    }
+    let rows = latest_agent_rows();
 
     let block = format_block_with_indent(rows, 2);
     if block.is_empty() {
         return;
     }
 
-    println!("Token usage:");
+    println!("Agent run:");
     println!("{block}");
 }
 
@@ -263,11 +257,14 @@ fn build_agent_request(
     agent: &config::AgentSettings,
     prompt: String,
     repo_root: PathBuf,
-    output_mode: AgentOutputMode,
 ) -> AgentRequest {
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "agent_backend".to_string(),
+        agent.agent_runtime.backend.as_str().to_string(),
+    );
+    metadata.insert(
+        "agent_label".to_string(),
         agent.agent_runtime.backend.as_str().to_string(),
     );
     metadata.insert(
@@ -310,9 +307,9 @@ fn build_agent_request(
         profile: agent.agent_runtime.profile.clone(),
         command: agent.agent_runtime.command.clone(),
         extra_args: agent.agent_runtime.extra_args.clone(),
-        output_mode,
         scope: Some(agent.scope),
         metadata,
+        timeout: Some(Duration::from_secs(900)),
     }
 }
 
@@ -698,7 +695,7 @@ pub async fn run_snapshot_init(
         }
     }
 
-    append_agent_and_usage_rows(&mut rows, verbosity);
+    append_agent_rows(&mut rows, verbosity);
 
     let outcome = format_block(rows);
     if !outcome.is_empty() {
@@ -786,7 +783,7 @@ fn format_save_outcome(outcome: &SaveOutcome, verbosity: Verbosity) -> String {
         rows.push(("Push".to_string(), "pushed".to_string()));
     }
 
-    append_agent_and_usage_rows(&mut rows, verbosity);
+    append_agent_rows(&mut rows, verbosity);
     format_block(rows)
 }
 
@@ -917,7 +914,7 @@ async fn save(
         "Assistant summary".to_string(),
         response.content.trim().to_string(),
     )];
-    append_agent_and_usage_rows(&mut summary_rows, current_verbosity());
+    append_agent_rows(&mut summary_rows, current_verbosity());
     let summary_block = format_block(summary_rows);
     if !summary_block.is_empty() {
         for line in summary_block.lines() {
@@ -1247,7 +1244,7 @@ pub async fn inline_command(
     }
 
     println!("{}", response.content.trim_end());
-    print_token_usage();
+    print_agent_summary();
 
     Ok(())
 }
@@ -1297,8 +1294,6 @@ pub async fn run_draft(
 
     let mut plan_document_preview: Option<String> = None;
     let mut session_artifact: Option<auditor::SessionArtifact> = None;
-    let mut usage_rows: Option<Vec<(String, String)>> = None;
-
     let primary_branch = detect_primary_branch()
         .ok_or_else(|| "unable to detect a primary branch (tried origin/HEAD, main, master)")?;
 
@@ -1390,7 +1385,6 @@ pub async fn run_draft(
             })?;
             plan_committed = true;
             if let Some(artifact) = Auditor::persist_session_log() {
-                usage_rows = Some(latest_usage_rows());
                 session_artifact = Some(artifact);
                 Auditor::clear_messages();
             }
@@ -1431,16 +1425,14 @@ pub async fn run_draft(
                     "View with: git checkout {branch_name} && $EDITOR {plan_display}"
                 ));
 
-                let usage_rows = usage_rows.as_deref();
                 let mut rows = vec![
                     ("Outcome".to_string(), "Draft ready".to_string()),
                     ("Plan".to_string(), plan_display.clone()),
                     ("Branch".to_string(), branch_name.clone()),
                 ];
-                append_agent_and_usage_rows_with_usage(&mut rows, current_verbosity(), usage_rows);
+                append_agent_rows(&mut rows, current_verbosity());
                 println!("{}", format_block(rows));
             } else {
-                let usage_rows = usage_rows.as_deref();
                 let mut rows = vec![
                     (
                         "Outcome".to_string(),
@@ -1450,7 +1442,7 @@ pub async fn run_draft(
                     ("Worktree".to_string(), worktree_path.display().to_string()),
                     ("Plan".to_string(), plan_display.clone()),
                 ];
-                append_agent_and_usage_rows_with_usage(&mut rows, current_verbosity(), usage_rows);
+                append_agent_rows(&mut rows, current_verbosity());
                 println!("{}", format_block(rows));
                 display::info(format!(
                     "Review and commit manually: git -C {} status",
@@ -1602,7 +1594,7 @@ pub async fn run_approve(
                 if let Some(commit_oid) = result.commit_oid.as_ref() {
                     rows.push(("Latest commit".to_string(), short_hash(commit_oid)));
                 }
-                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                append_agent_rows(&mut rows, current_verbosity());
                 println!("{}", format_block(rows));
             } else {
                 display::info(format!(
@@ -1620,7 +1612,7 @@ pub async fn run_approve(
                     ("Worktree".to_string(), worktree_path.display().to_string()),
                     ("Review".to_string(), spec.diff_command()),
                 ];
-                append_agent_and_usage_rows(&mut rows, current_verbosity());
+                append_agent_rows(&mut rows, current_verbosity());
                 println!("{}", format_block(rows));
             }
             Ok(())
@@ -1771,7 +1763,7 @@ pub async fn run_review(
                 ),
             ];
             let verbosity = current_verbosity();
-            append_agent_and_usage_rows(&mut rows, verbosity);
+            append_agent_rows(&mut rows, verbosity);
             println!("{}", format_block(rows));
             Ok(())
         }
@@ -2588,7 +2580,7 @@ fn finalize_merge(
     }
 
     let verbosity = current_verbosity();
-    append_agent_and_usage_rows(&mut rows, verbosity);
+    append_agent_rows(&mut rows, verbosity);
     println!("{}", format_block(rows));
     Ok(())
 }
@@ -3056,23 +3048,13 @@ async fn try_auto_resolve_conflicts(
         prompt_agent.agent_runtime.bounds_prompt_path.as_deref(),
     )?;
     let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-    let request = build_agent_request(
-        &prompt_agent,
-        prompt,
-        repo_root,
-        AgentOutputMode::EventsJson,
-    );
+    let request = build_agent_request(&prompt_agent, prompt, repo_root);
 
     let runner = Arc::clone(prompt_agent.agent_runner()?);
-    let adapter = prompt_agent.display_adapter.clone();
     let (progress_tx, progress_rx) = mpsc::channel(64);
     let progress_handle = spawn_plain_progress_logger(progress_rx);
     let result = runner
-        .execute(
-            request,
-            adapter.clone(),
-            Some(ProgressHook::Plain(progress_tx)),
-        )
+        .execute(request, Some(ProgressHook::Plain(progress_tx)))
         .await;
     if let Some(handle) = progress_handle {
         let _ = handle.await;
@@ -4226,10 +4208,7 @@ mod tests {
     use super::{build_agent_request, build_merge_commit_message};
     use crate::plan::{PlanBranchSpec, PlanMetadata};
     use std::path::PathBuf;
-    use vizier_core::{
-        agent::AgentOutputMode,
-        config::{self, CommandScope},
-    };
+    use vizier_core::config::{self, CommandScope};
 
     fn sample_spec() -> PlanBranchSpec {
         PlanBranchSpec {
@@ -4317,7 +4296,6 @@ Tidy merge message bodies.
             &agent,
             "prompt body".to_string(),
             PathBuf::from("/repo/root"),
-            AgentOutputMode::EventsJson,
         );
 
         assert_eq!(
@@ -4339,6 +4317,13 @@ Tidy merge message bodies.
             "request should carry the originating scope"
         );
         assert_eq!(request.repo_root, PathBuf::from("/repo/root"));
-        assert_eq!(request.output_mode, AgentOutputMode::EventsJson);
+        assert_eq!(
+            request
+                .metadata
+                .get("agent_label")
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+            agent.agent_runtime.backend.as_str()
+        );
     }
 }

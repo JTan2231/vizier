@@ -10,6 +10,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::{
     sync::mpsc::{Sender, channel},
     task::JoinHandle,
@@ -17,10 +18,9 @@ use tokio::{
 use wire::config::ThinkingLevel;
 
 use crate::{
-    agent::{AgentOutputMode, AgentRequest, ProgressHook},
+    agent::{AgentRequest, ProgressHook},
     config::{self, PromptOrigin, SystemPrompt},
-    display::{self, Verbosity, format_label_value_block, format_number},
-    file_tracking, tools, vcs,
+    display, file_tracking, tools, vcs,
 };
 
 lazy_static! {
@@ -28,187 +28,35 @@ lazy_static! {
 }
 
 #[derive(Clone, Debug)]
-pub struct TokenUsage {
-    pub input_tokens: usize,
-    pub cached_input_tokens: usize,
-    pub output_tokens: usize,
-    pub reasoning_output_tokens: usize,
-    pub total_tokens: usize,
-    pub known: bool,
+pub struct AgentRunRecord {
+    pub command: Vec<String>,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: Vec<String>,
+    pub duration_ms: u128,
 }
 
-impl TokenUsage {
+impl AgentRunRecord {
     pub fn to_rows(&self) -> Vec<(String, String)> {
-        if !self.known {
-            return vec![("Tokens".to_string(), "unknown".to_string())];
-        }
-
         let mut rows = Vec::new();
-        rows.push(("Total".to_string(), format_number(self.total_tokens)));
-
-        let mut input = format_number(self.input_tokens);
-        if self.cached_input_tokens > 0 {
-            input.push_str(&format!(
-                " (cached {})",
-                format_number(self.cached_input_tokens)
-            ));
-        }
-        rows.push(("Input".to_string(), input));
-
-        let mut output = format_number(self.output_tokens);
-        if self.reasoning_output_tokens > 0 {
-            output.push_str(&format!(
-                " (reasoning {})",
-                format_number(self.reasoning_output_tokens)
-            ));
-        }
-        rows.push(("Output".to_string(), output));
-
-        rows
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct BackendUsageTotals {
-    cached_input_total: usize,
-    reasoning_output_total: usize,
-    billed_total: usize,
-    has_data: bool,
-}
-
-impl BackendUsageTotals {
-    fn record(&mut self, usage: &TokenUsage) {
-        self.cached_input_total = self
-            .cached_input_total
-            .saturating_add(usage.cached_input_tokens);
-        self.reasoning_output_total = self
-            .reasoning_output_total
-            .saturating_add(usage.reasoning_output_tokens);
-        self.billed_total = self.billed_total.saturating_add(
-            usage
-                .total_tokens
-                .max(usage.input_tokens + usage.output_tokens),
-        );
-        self.has_data = true;
-    }
-
-    fn clear(&mut self) {
-        *self = BackendUsageTotals::default();
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct TokenUsageReport {
-    pub prompt_total: usize,
-    pub completion_total: usize,
-    pub prompt_delta: usize,
-    pub completion_delta: usize,
-    pub cached_input_total: Option<usize>,
-    pub cached_input_delta: Option<usize>,
-    pub reasoning_output_total: Option<usize>,
-    pub reasoning_output_delta: Option<usize>,
-    pub backend_total: Option<usize>,
-    pub backend_delta: Option<usize>,
-    pub known: bool,
-    pub timestamp: String,
-}
-
-impl TokenUsageReport {
-    pub fn total(&self) -> usize {
-        self.backend_total
-            .or_else(|| Some(self.prompt_total + self.completion_total))
-            .unwrap_or(0)
-    }
-
-    pub fn delta_total(&self) -> usize {
-        self.backend_delta
-            .or_else(|| Some(self.prompt_delta + self.completion_delta))
-            .unwrap_or(0)
-    }
-
-    pub fn to_rows(&self) -> Vec<(String, String)> {
-        if !self.known {
-            return vec![(
-                "Tokens".to_string(),
-                "unknown (backend omitted token counts)".to_string(),
-            )];
-        }
-
-        let mut rows = Vec::new();
+        rows.push(("Exit code".to_string(), self.exit_code.to_string()));
         rows.push((
-            "Total".to_string(),
-            format!(
-                "{} (+{})",
-                format_number(self.total()),
-                format_number(self.delta_total())
-            ),
+            "Duration".to_string(),
+            format!("{:.2}s", self.duration_ms as f64 / 1000.0),
         ));
-
-        let mut input = format!(
-            "{} (+{})",
-            format_number(self.prompt_total),
-            format_number(self.prompt_delta)
-        );
-        if let Some(cached_delta) = self.cached_input_delta {
-            input.push_str(&format!(", cached +{}", format_number(cached_delta)));
-        } else if let Some(cached_total) = self.cached_input_total {
-            input.push_str(&format!(", cached {}", format_number(cached_total)));
+        if !self.stderr.is_empty() {
+            let last = self.stderr.last().cloned().unwrap_or_default();
+            rows.push(("Stderr".to_string(), last));
         }
-        rows.push(("Input".to_string(), input));
-
-        let mut output = format!(
-            "{} (+{})",
-            format_number(self.completion_total),
-            format_number(self.completion_delta)
-        );
-        if let Some(reasoning_total) = self.reasoning_output_total {
-            let reasoning_value = self.reasoning_output_delta.unwrap_or(reasoning_total);
-            output.push_str(&format!(", reasoning {}", format_number(reasoning_value)));
+        if !self.stdout.trim().is_empty() {
+            let mut snippet = self.stdout.trim().lines().next().unwrap_or("").to_string();
+            if snippet.len() > 120 {
+                snippet.truncate(119);
+                snippet.push('…');
+            }
+            rows.push(("Stdout".to_string(), snippet));
         }
-        rows.push(("Output".to_string(), output));
-
         rows
-    }
-
-    fn to_progress_event(&self) -> display::ProgressEvent {
-        let summary = format_label_value_block(&self.to_rows(), 0);
-
-        display::ProgressEvent {
-            kind: display::ProgressKind::TokenUsage,
-            source: None,
-            phase: None,
-            label: Some("token-usage".to_string()),
-            message: Some(summary),
-            detail: None,
-            path: None,
-            progress: None,
-            status: None,
-            timestamp: Some(self.timestamp.clone()),
-            raw: None,
-        }
-    }
-}
-
-fn emit_token_usage_line(report: &TokenUsageReport) {
-    let cfg = display::get_display_config();
-    if matches!(cfg.verbosity, Verbosity::Quiet) {
-        return;
-    }
-
-    for line in display::render_progress_event(&report.to_progress_event(), cfg.verbosity) {
-        eprintln!("{}", line);
-    }
-}
-
-async fn forward_usage_report(report: &TokenUsageReport, stream: &RequestStream) {
-    match stream {
-        RequestStream::Status {
-            events: Some(events),
-            ..
-        } => {
-            let _ = events.send(report.to_progress_event()).await;
-        }
-        _ => emit_token_usage_line(report),
     }
 }
 
@@ -218,7 +66,6 @@ pub enum RequestStream {
         text: Sender<String>,
         events: Option<Sender<display::ProgressEvent>>,
     },
-    PassthroughStderr,
 }
 
 pub struct AuditorCleanup {
@@ -234,6 +81,9 @@ pub struct AgentInvocationContext {
     pub model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub prompt_kind: SystemPrompt,
+    pub command: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u128>,
 }
 
 impl Drop for AuditorCleanup {
@@ -365,11 +215,6 @@ fn channel_for_stream(
 ) -> (tokio::sync::mpsc::Sender<String>, Option<JoinHandle<()>>) {
     match stream {
         RequestStream::Status { text, .. } => (text.clone(), None),
-        RequestStream::PassthroughStderr => {
-            let (silent_tx, mut silent_rx) = channel(32);
-            let handle = tokio::spawn(async move { while silent_rx.recv().await.is_some() {} });
-            (silent_tx, Some(handle))
-        }
     }
 }
 
@@ -381,15 +226,11 @@ pub struct Auditor {
     session_start: String,
     session_id: String,
     #[serde(skip)]
-    usage_unknown: bool,
-    #[serde(skip)]
     last_session_artifact: Option<SessionArtifact>,
-    #[serde(skip)]
-    last_usage_report: Option<TokenUsageReport>,
     #[serde(skip)]
     last_agent: Option<AgentInvocationContext>,
     #[serde(skip)]
-    backend_usage_totals: BackendUsageTotals,
+    last_run: Option<AgentRunRecord>,
 }
 
 impl Auditor {
@@ -400,11 +241,9 @@ impl Auditor {
             messages: Vec::new(),
             session_start: now.to_string(),
             session_id: uuid::Uuid::new_v4().to_string(),
-            usage_unknown: false,
             last_session_artifact: None,
-            last_usage_report: None,
             last_agent: None,
-            backend_usage_totals: BackendUsageTotals::default(),
+            last_run: None,
         }
     }
 
@@ -413,30 +252,22 @@ impl Auditor {
         AUDITOR.lock().unwrap().messages.clone()
     }
 
-    pub fn add_message(message: wire::types::Message) -> Option<TokenUsageReport> {
+    pub fn add_message(message: wire::types::Message) {
         let mut auditor = AUDITOR.lock().unwrap();
-        let should_emit = message.message_type == wire::types::MessageType::Assistant;
         auditor.messages.push(message);
-        if should_emit {
-            return Auditor::capture_usage_report_locked(&mut auditor);
-        }
-
-        None
     }
 
-    pub fn replace_messages(messages: &Vec<wire::types::Message>) -> Option<TokenUsageReport> {
+    pub fn replace_messages(messages: &Vec<wire::types::Message>) {
         let mut auditor = AUDITOR.lock().unwrap();
         auditor.messages = messages.clone();
-        Auditor::capture_usage_report_locked(&mut auditor)
     }
 
     fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
         if let Ok(mut auditor) = AUDITOR.lock() {
-            let backend_label = settings
-                .runner
-                .as_ref()
-                .map(|runner| runner.backend_name().to_string())
-                .unwrap_or_else(|| settings.backend.to_string());
+            let backend_label = match settings.backend {
+                config::BackendKind::Wire => settings.backend.to_string(),
+                _ => settings.agent_runtime.backend.as_str().to_string(),
+            };
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
                 backend_label,
@@ -451,13 +282,21 @@ impl Auditor {
                 },
                 reasoning_effort: settings.reasoning_effort,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
+                command: settings.agent_runtime.command.clone(),
+                exit_code: None,
+                duration_ms: None,
             });
+            auditor.last_run = None;
         }
     }
 
-    fn record_backend_usage(usage: &TokenUsage) {
+    pub fn record_agent_run(run: AgentRunRecord) {
         if let Ok(mut auditor) = AUDITOR.lock() {
-            auditor.backend_usage_totals.record(usage);
+            auditor.last_run = Some(run.clone());
+            if let Some(agent) = auditor.last_agent.as_mut() {
+                agent.exit_code = Some(run.exit_code);
+                agent.duration_ms = Some(run.duration_ms);
+            }
         }
     }
 
@@ -468,77 +307,11 @@ impl Auditor {
             .and_then(|auditor| auditor.last_agent.clone())
     }
 
-    fn capture_usage_report_locked(auditor: &mut Auditor) -> Option<TokenUsageReport> {
-        let mut totals = TokenUsage {
-            input_tokens: 0,
-            cached_input_tokens: 0,
-            output_tokens: 0,
-            reasoning_output_tokens: 0,
-            total_tokens: 0,
-            known: !auditor.usage_unknown,
-        };
-
-        for message in auditor.messages.iter() {
-            totals.input_tokens += message.input_tokens;
-            totals.output_tokens += message.output_tokens;
-        }
-        totals.total_tokens = totals.input_tokens + totals.output_tokens;
-
-        let (prev_prompt, prev_completion, prev_known, prev_cached, prev_reasoning, prev_billed) =
-            auditor
-                .last_usage_report
-                .as_ref()
-                .map(|report| {
-                    (
-                        report.prompt_total,
-                        report.completion_total,
-                        report.known,
-                        report.cached_input_total.unwrap_or(0),
-                        report.reasoning_output_total.unwrap_or(0),
-                        report.total(),
-                    )
-                })
-                .unwrap_or((0, 0, true, 0, 0, 0));
-
-        if totals.input_tokens == prev_prompt
-            && totals.output_tokens == prev_completion
-            && totals.known == prev_known
-        {
-            return None;
-        }
-
-        let backend_totals = auditor.backend_usage_totals.clone();
-        let cached_total = backend_totals
-            .has_data
-            .then_some(backend_totals.cached_input_total);
-        let cached_delta = cached_total.map(|value| value.saturating_sub(prev_cached));
-        let reasoning_total = backend_totals
-            .has_data
-            .then_some(backend_totals.reasoning_output_total);
-        let reasoning_delta = reasoning_total.map(|value| value.saturating_sub(prev_reasoning));
-        let billed_total = backend_totals
-            .has_data
-            .then_some(backend_totals.billed_total.max(totals.total_tokens));
-        let billed_delta = billed_total.map(|value| value.saturating_sub(prev_billed));
-
-        let report = TokenUsageReport {
-            prompt_total: totals.input_tokens,
-            completion_total: totals.output_tokens,
-            prompt_delta: totals.input_tokens.saturating_sub(prev_prompt),
-            completion_delta: totals.output_tokens.saturating_sub(prev_completion),
-            cached_input_total: cached_total,
-            cached_input_delta: cached_delta,
-            reasoning_output_total: reasoning_total,
-            reasoning_output_delta: reasoning_delta,
-            backend_total: billed_total,
-            backend_delta: billed_delta,
-            known: totals.known,
-            timestamp: Utc::now().to_rfc3339(),
-        };
-
-        auditor.last_usage_report = Some(report.clone());
-
-        Some(report)
+    pub fn latest_agent_run() -> Option<AgentRunRecord> {
+        AUDITOR
+            .lock()
+            .ok()
+            .and_then(|auditor| auditor.last_run.clone())
     }
 
     pub fn conversation_to_string() -> String {
@@ -562,51 +335,6 @@ impl Auditor {
     pub fn clear_messages() {
         if let Ok(mut auditor) = AUDITOR.lock() {
             auditor.messages.clear();
-            auditor.last_usage_report = None;
-            auditor.backend_usage_totals.clear();
-            auditor.usage_unknown = false;
-        }
-    }
-
-    pub fn get_total_usage() -> TokenUsage {
-        let auditor = AUDITOR.lock().unwrap();
-        let mut usage = TokenUsage {
-            input_tokens: 0,
-            cached_input_tokens: 0,
-            output_tokens: 0,
-            reasoning_output_tokens: 0,
-            total_tokens: 0,
-            known: !auditor.usage_unknown,
-        };
-
-        for message in auditor.messages.iter() {
-            usage.input_tokens += message.input_tokens;
-            usage.output_tokens += message.output_tokens;
-        }
-
-        usage.total_tokens = usage.input_tokens + usage.output_tokens;
-        if auditor.backend_usage_totals.has_data {
-            usage.cached_input_tokens = auditor.backend_usage_totals.cached_input_total;
-            usage.reasoning_output_tokens = auditor.backend_usage_totals.reasoning_output_total;
-            usage.total_tokens = auditor
-                .backend_usage_totals
-                .billed_total
-                .max(usage.total_tokens);
-        }
-
-        usage
-    }
-
-    pub fn latest_usage_report() -> Option<TokenUsageReport> {
-        AUDITOR
-            .lock()
-            .ok()
-            .and_then(|auditor| auditor.last_usage_report.clone())
-    }
-
-    fn mark_usage_unknown() {
-        if let Ok(mut auditor) = AUDITOR.lock() {
-            auditor.usage_unknown = true;
         }
     }
 
@@ -755,12 +483,12 @@ impl Auditor {
             system_prompt: Self::prompt_info(project_root, &cfg, self.last_agent.as_ref()),
             model: Self::model_snapshot(self.last_agent.as_ref(), &cfg),
             messages: self.messages.clone(),
+            agent: self.last_run.as_ref().map(SessionAgentRun::from),
             operations: Vec::new(),
             artifacts: Vec::new(),
             outcome: SessionOutcome {
                 status: "completed".to_string(),
                 summary: Self::summarize_assistant(&self.messages),
-                token_usage: self.last_usage_report.as_ref().map(SessionTokenUsage::from),
             },
         })
     }
@@ -920,53 +648,65 @@ impl Auditor {
 
     /// Basic LLM request without tool usage
     pub async fn llm_request(
+        #[cfg_attr(feature = "integration_testing", allow(unused_variables))]
         system_prompt: String,
         user_message: String,
     ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
+        let provider = crate::config::get_config().provider.clone();
         let _ = Self::add_message(
-            crate::config::get_config()
-                .provider
-                .new_message(user_message)
+            provider
+                .new_message(user_message.clone())
                 .as_user()
                 .build(),
         );
 
         let messages = AUDITOR.lock().unwrap().messages.clone();
 
-        let response = display::call_with_status(async move |tx| {
-            tx.send(display::Status::Working("Thinking...".into()))
+        #[cfg(feature = "integration_testing")]
+        {
+            let mut updated = messages.clone();
+            let assistant_message = provider
+                .new_message("mock response".to_string())
+                .as_assistant()
+                .build();
+            updated.push(assistant_message.clone());
+            Self::replace_messages(&updated);
+            return Ok(assistant_message);
+        }
+
+        #[cfg(not(feature = "integration_testing"))]
+        {
+            let response = display::call_with_status(async move |tx| {
+                tx.send(display::Status::Working("Thinking...".into()))
+                    .await?;
+
+                let (request_tx, mut request_rx) = channel(10);
+                let status_tx = tx.clone();
+
+                tokio::spawn(async move {
+                    while let Some(msg) = request_rx.recv().await {
+                        status_tx.send(display::Status::Working(msg)).await.unwrap();
+                    }
+                });
+
+                let response = prompt_wire_with_tools(
+                    &*crate::config::get_config().provider,
+                    request_tx.clone(),
+                    &system_prompt,
+                    messages.clone(),
+                    vec![],
+                )
                 .await?;
 
-            let (request_tx, mut request_rx) = channel(10);
-            let status_tx = tx.clone();
+                Self::replace_messages(&response);
 
-            tokio::spawn(async move {
-                while let Some(msg) = request_rx.recv().await {
-                    status_tx.send(display::Status::Working(msg)).await.unwrap();
-                }
-            });
+                Ok(response)
+            })
+            .await
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
 
-            let response = prompt_wire_with_tools(
-                &*crate::config::get_config().provider,
-                request_tx.clone(),
-                &system_prompt,
-                messages.clone(),
-                vec![],
-            )
-            .await?;
-
-            if let Some(report) = Self::replace_messages(&response) {
-                let _ = tx
-                    .send(display::Status::Event(report.to_progress_event()))
-                    .await;
-            }
-
-            Ok(response)
-        })
-        .await
-        .map_err(|e| e as Box<dyn std::error::Error>)?;
-
-        Ok(response.last().unwrap().clone())
+            Ok(response.last().unwrap().clone())
+        }
     }
 
     /// Basic LLM request with tool usage
@@ -1018,7 +758,6 @@ impl Auditor {
             _ => {
                 simulate_integration_changes()?;
                 let runner = Arc::clone(agent.agent_runner()?);
-                let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
@@ -1027,6 +766,14 @@ impl Auditor {
                 let provider_clone = provider.clone();
                 let opts_clone = runtime_opts.clone();
                 let prompt_clone = system_prompt.clone();
+                let mut metadata = BTreeMap::new();
+                metadata.insert(
+                    "agent_label".to_string(),
+                    opts_clone.backend.as_str().to_string(),
+                );
+                if let Some(cmd) = opts_clone.command.first() {
+                    metadata.insert("agent_command".to_string(), cmd.clone());
+                }
 
                 let codex_run = display::call_with_status(async move |tx| {
                     let request = AgentRequest {
@@ -1035,38 +782,35 @@ impl Auditor {
                         profile: opts_clone.profile.clone(),
                         command: opts_clone.command.clone(),
                         extra_args: opts_clone.extra_args.clone(),
-                        output_mode: AgentOutputMode::EventsJson,
                         scope: Some(agent_scope),
-                        metadata: BTreeMap::new(),
+                        metadata,
+                        timeout: Some(Duration::from_secs(900)),
                     };
 
                     let response = runner
-                        .execute(
-                            request,
-                            display_adapter.clone(),
-                            Some(ProgressHook::Display(tx.clone())),
-                        )
+                        .execute(request, Some(ProgressHook::Display(tx.clone())))
                         .await
                         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
                     let mut updated = messages_clone.clone();
-                    let mut assistant_message = provider_clone
-                        .new_message(response.assistant_text.clone())
+                    let message_text = if response.assistant_text.trim().is_empty() {
+                        " ".to_string()
+                    } else {
+                        response.assistant_text.clone()
+                    };
+                    let assistant_message = provider_clone
+                        .new_message(message_text)
                         .as_assistant()
                         .build();
-                    if let Some(usage) = response.usage {
-                        assistant_message.input_tokens = usage.input_tokens;
-                        assistant_message.output_tokens = usage.output_tokens;
-                        Auditor::record_backend_usage(&usage);
-                    } else {
-                        Auditor::mark_usage_unknown();
-                    }
                     updated.push(assistant_message);
-                    if let Some(report) = Self::replace_messages(&updated) {
-                        let _ = tx
-                            .send(display::Status::Event(report.to_progress_event()))
-                            .await;
-                    }
+                    Self::replace_messages(&updated);
+                    Auditor::record_agent_run(AgentRunRecord {
+                        command: opts_clone.command.clone(),
+                        exit_code: response.exit_code,
+                        stdout: response.assistant_text.clone(),
+                        stderr: response.stderr.clone(),
+                        duration_ms: response.duration_ms,
+                    });
                     Ok(updated)
                 })
                 .await;
@@ -1129,56 +873,55 @@ impl Auditor {
                 }
 
                 let last = response.last().unwrap().clone();
-                if let Some(report) = Self::add_message(last.clone()) {
-                    forward_usage_report(&report, &stream).await;
-                }
+                Self::add_message(last.clone());
                 Ok(last)
             }
             _ => {
                 simulate_integration_changes()?;
                 let runner = Arc::clone(agent.agent_runner()?);
-                let display_adapter = agent.display_adapter.clone();
                 let repo_root = match repo_root_override {
                     Some(path) => path,
                     None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
                 };
-                let (output_mode, progress_hook) = match &stream {
-                    RequestStream::Status { events, .. } => (
-                        AgentOutputMode::EventsJson,
-                        events.clone().map(ProgressHook::Plain),
-                    ),
-                    RequestStream::PassthroughStderr => (AgentOutputMode::PassthroughHuman, None),
+                let progress_hook = match &stream {
+                    RequestStream::Status { events, .. } => events.clone().map(ProgressHook::Plain),
                 };
+                let mut metadata = BTreeMap::new();
+                metadata.insert(
+                    "agent_label".to_string(),
+                    runtime_opts.backend.as_str().to_string(),
+                );
+                if let Some(cmd) = runtime_opts.command.first() {
+                    metadata.insert("agent_command".to_string(), cmd.clone());
+                }
                 let request = AgentRequest {
                     prompt: system_prompt.clone(),
                     repo_root,
                     profile: runtime_opts.profile.clone(),
                     command: runtime_opts.command.clone(),
                     extra_args: runtime_opts.extra_args.clone(),
-                    output_mode,
                     scope: Some(agent_scope),
-                    metadata: BTreeMap::new(),
+                    metadata,
+                    timeout: Some(Duration::from_secs(900)),
                 };
 
-                match runner
-                    .execute(request, display_adapter.clone(), progress_hook)
-                    .await
-                {
+                match runner.execute(request, progress_hook).await {
                     Ok(response) => {
-                        let mut assistant_message = provider
-                            .new_message(response.assistant_text.clone())
-                            .as_assistant()
-                            .build();
-                        if let Some(usage) = response.usage {
-                            assistant_message.input_tokens = usage.input_tokens;
-                            assistant_message.output_tokens = usage.output_tokens;
-                            Auditor::record_backend_usage(&usage);
+                        let message_text = if response.assistant_text.trim().is_empty() {
+                            " ".to_string()
                         } else {
-                            Auditor::mark_usage_unknown();
-                        }
-                        if let Some(report) = Self::add_message(assistant_message.clone()) {
-                            forward_usage_report(&report, &stream).await;
-                        }
+                            response.assistant_text.clone()
+                        };
+                        let assistant_message =
+                            provider.new_message(message_text).as_assistant().build();
+                        Self::add_message(assistant_message.clone());
+                        Auditor::record_agent_run(AgentRunRecord {
+                            command: runtime_opts.command.clone(),
+                            exit_code: response.exit_code,
+                            stdout: response.assistant_text.clone(),
+                            stderr: response.stderr.clone(),
+                            duration_ms: response.duration_ms,
+                        });
                         Ok(assistant_message)
                     }
                     Err(err) => Err(Box::new(err)),
@@ -1196,7 +939,7 @@ async fn run_wire_with_status<F>(
     mut on_response: F,
 ) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>
 where
-    F: FnMut(&Vec<wire::types::Message>) -> Option<TokenUsageReport> + Send + 'static,
+    F: FnMut(&Vec<wire::types::Message>) + Send + 'static,
 {
     display::call_with_status(async move |tx| {
         tx.send(display::Status::Working("Thinking...".into()))
@@ -1221,11 +964,7 @@ where
         )
         .await?;
 
-        if let Some(report) = on_response(&response) {
-            let _ = tx
-                .send(display::Status::Event(report.to_progress_event()))
-                .await;
-        }
+        on_response(&response);
 
         Ok(response)
     })
@@ -1295,38 +1034,22 @@ struct SessionModelInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct SessionTokenUsage {
-    prompt_total: usize,
-    completion_total: usize,
-    total: usize,
-    prompt_delta: usize,
-    completion_delta: usize,
-    delta_total: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cached_input_total: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cached_input_delta: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_output_total: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_output_delta: Option<usize>,
-    known: bool,
+struct SessionAgentRun {
+    command: Vec<String>,
+    exit_code: i32,
+    stdout: String,
+    stderr: Vec<String>,
+    duration_ms: u128,
 }
 
-impl From<&TokenUsageReport> for SessionTokenUsage {
-    fn from(report: &TokenUsageReport) -> Self {
-        SessionTokenUsage {
-            prompt_total: report.prompt_total,
-            completion_total: report.completion_total,
-            total: report.total(),
-            prompt_delta: report.prompt_delta,
-            completion_delta: report.completion_delta,
-            delta_total: report.delta_total(),
-            cached_input_total: report.cached_input_total,
-            cached_input_delta: report.cached_input_delta,
-            reasoning_output_total: report.reasoning_output_total,
-            reasoning_output_delta: report.reasoning_output_delta,
-            known: report.known,
+impl From<&AgentRunRecord> for SessionAgentRun {
+    fn from(run: &AgentRunRecord) -> Self {
+        SessionAgentRun {
+            command: run.command.clone(),
+            exit_code: run.exit_code,
+            stdout: run.stdout.clone(),
+            stderr: run.stderr.clone(),
+            duration_ms: run.duration_ms,
         }
     }
 }
@@ -1335,7 +1058,6 @@ impl From<&TokenUsageReport> for SessionTokenUsage {
 struct SessionOutcome {
     status: String,
     summary: Option<String>,
-    token_usage: Option<SessionTokenUsage>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1352,6 +1074,7 @@ struct SessionLog {
     system_prompt: SessionPromptInfo,
     model: SessionModelInfo,
     messages: Vec<wire::types::Message>,
+    agent: Option<SessionAgentRun>,
     operations: Vec<serde_json::Value>,
     artifacts: Vec<String>,
     outcome: SessionOutcome,
@@ -1392,13 +1115,9 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::{AUDITOR, Auditor, CommitMessageBuilder, CommitMessageType, find_project_root};
+    use super::{CommitMessageBuilder, CommitMessageType, find_project_root};
     use std::fs;
     use tempfile::tempdir;
-    use wire::{
-        api::{API, OpenAIModel},
-        types::MessageBuilder,
-    };
 
     #[test]
     fn detects_worktree_root_with_git_file() {
@@ -1424,60 +1143,6 @@ mod tests {
             worktree.canonicalize().unwrap()
         );
         std::env::set_current_dir(prev).unwrap();
-    }
-
-    #[test]
-    fn usage_reports_accumulate_and_suppress_duplicates() {
-        let mut auditor = Auditor::new();
-
-        assert!(
-            add_message_for_test(&mut auditor, user_message("hello")).is_none(),
-            "user messages should not emit usage reports"
-        );
-
-        let first = add_message_for_test(&mut auditor, assistant_message("one", 10, 5))
-            .expect("first assistant message should produce a report");
-        assert_eq!(first.prompt_total, 10);
-        assert_eq!(first.prompt_delta, 10);
-        assert_eq!(first.completion_total, 5);
-        assert_eq!(first.completion_delta, 5);
-        assert!(first.known, "first report should mark usage as known");
-
-        let second = add_message_for_test(&mut auditor, assistant_message("two", 3, 7))
-            .expect("second assistant message should produce a report");
-        assert_eq!(second.prompt_total, 13);
-        assert_eq!(second.prompt_delta, 3);
-        assert_eq!(second.completion_total, 12);
-        assert_eq!(second.completion_delta, 7);
-
-        let history = auditor.messages.clone();
-        assert!(
-            replay_messages(&mut auditor, &history).is_none(),
-            "replaying the same messages should not emit duplicate reports"
-        );
-    }
-
-    #[test]
-    fn usage_reports_mark_unknown_usage() {
-        let mut auditor = Auditor::new();
-        auditor.usage_unknown = true;
-
-        let report = add_message_for_test(&mut auditor, assistant_message("unknown", 0, 0))
-            .expect("unknown usage should still create a report");
-        assert!(
-            !report.known,
-            "report should mark usage as unknown when backend omits counts"
-        );
-        assert_eq!(report.prompt_total, 0);
-        assert_eq!(report.completion_total, 0);
-
-        let history = auditor.messages.clone();
-        assert!(
-            replay_messages(&mut auditor, &history).is_none(),
-            "duplicate unknown-usage snapshots should be suppressed"
-        );
-
-        reset_auditor_state();
     }
 
     #[test]
@@ -1513,49 +1178,6 @@ mod tests {
             message.starts_with("VIZIER NARRATIVE CHANGE"),
             "missing summary should keep generic header"
         );
-    }
-
-    fn reset_auditor_state() {
-        let mut auditor = AUDITOR.lock().unwrap();
-        auditor.messages.clear();
-        auditor.last_usage_report = None;
-        auditor.usage_unknown = false;
-        auditor.backend_usage_totals.clear();
-    }
-
-    fn assistant_message(content: &str, input: usize, output: usize) -> wire::types::Message {
-        MessageBuilder::new(API::OpenAI(OpenAIModel::GPT5), content)
-            .as_assistant()
-            .with_usage(input, output)
-            .build()
-    }
-
-    fn user_message(content: &str) -> wire::types::Message {
-        MessageBuilder::new(API::OpenAI(OpenAIModel::GPT5), content)
-            .as_user()
-            .with_usage(0, 0)
-            .build()
-    }
-
-    fn add_message_for_test(
-        auditor: &mut Auditor,
-        message: wire::types::Message,
-    ) -> Option<super::TokenUsageReport> {
-        let should_emit = message.message_type == wire::types::MessageType::Assistant;
-        auditor.messages.push(message);
-        if should_emit {
-            Auditor::capture_usage_report_locked(auditor)
-        } else {
-            None
-        }
-    }
-
-    fn replay_messages(
-        auditor: &mut Auditor,
-        messages: &[wire::types::Message],
-    ) -> Option<super::TokenUsageReport> {
-        auditor.messages = messages.to_vec();
-        Auditor::capture_usage_report_locked(auditor)
     }
 }
 

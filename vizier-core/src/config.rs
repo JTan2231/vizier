@@ -13,9 +13,7 @@ use wire::{
 use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
     REVIEW_PROMPT,
-    agent::{AgentDisplayAdapter, AgentRunner, FallbackDisplayAdapter},
-    codex::{CodexDisplayAdapter, CodexRunner},
-    gemini::{GeminiDisplayAdapter, GeminiRunner},
+    agent::{AgentRunner, ScriptRunner},
     tools, tree,
 };
 
@@ -333,7 +331,6 @@ pub struct AgentSettings {
     pub backend: BackendKind,
     pub provider: Arc<dyn Prompt>,
     pub runner: Option<Arc<dyn AgentRunner>>,
-    pub display_adapter: Arc<dyn AgentDisplayAdapter>,
     pub provider_model: String,
     pub reasoning_effort: Option<ThinkingLevel>,
     pub agent_runtime: ResolvedAgentRuntime,
@@ -1213,7 +1210,6 @@ impl AgentSettingsBuilder {
             backend: self.backend,
             provider,
             runner: resolve_agent_runner(self.backend, resolved_runtime.backend)?,
-            display_adapter: resolve_display_adapter(self.backend, resolved_runtime.backend),
             provider_model: self.provider_model.clone(),
             reasoning_effort: self.reasoning_effort,
             agent_runtime: resolved_runtime,
@@ -1378,23 +1374,8 @@ fn resolve_agent_runner(
     }
 
     match agent_backend {
-        AgentBackendKind::Gemini => Ok(Some(Arc::new(GeminiRunner))),
-        AgentBackendKind::Codex | AgentBackendKind::Auto => Ok(Some(Arc::new(CodexRunner))),
-    }
-}
-
-fn resolve_display_adapter(
-    backend: BackendKind,
-    agent_backend: AgentBackendKind,
-) -> Arc<dyn AgentDisplayAdapter> {
-    if !backend.requires_agent_runner() {
-        return Arc::new(FallbackDisplayAdapter::default());
-    }
-
-    match agent_backend {
-        AgentBackendKind::Gemini => Arc::new(GeminiDisplayAdapter::default()),
-        AgentBackendKind::Codex | AgentBackendKind::Auto => {
-            Arc::new(CodexDisplayAdapter::default())
+        AgentBackendKind::Gemini | AgentBackendKind::Codex | AgentBackendKind::Auto => {
+            Ok(Some(Arc::new(ScriptRunner)))
         }
     }
 }
@@ -2793,7 +2774,7 @@ binary = "/opt/custom-codex"
     }
 
     #[test]
-    fn agent_backend_exposes_runner_and_adapter() {
+    fn agent_backend_exposes_runner() {
         let mut cfg = Config::default();
         cfg.agent_runtime.command = codex_command();
         cfg.agent_runtime.backend = Some(AgentBackendKind::Codex);
@@ -2801,7 +2782,6 @@ binary = "/opt/custom-codex"
             .resolve_agent_settings(CommandScope::Ask, None)
             .expect("agent backend should resolve");
         assert!(agent.agent_runner().is_ok());
-        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
     }
 
     #[test]
@@ -2824,21 +2804,19 @@ binary = "/opt/custom-codex"
         );
         assert_eq!(
             agent.agent_runner().unwrap().backend_name(),
-            "gemini",
-            "agent lane should dispatch to the gemini runner when the runtime resolves to gemini"
+            "script",
+            "agent lane should dispatch to the script runner even when runtime prefers gemini"
         );
-        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
     }
 
     #[test]
-    fn wire_backend_skips_runner_but_keeps_adapter() {
+    fn wire_backend_skips_runner() {
         let mut cfg = Config::default();
         cfg.backend = BackendKind::Wire;
         let agent = cfg
             .resolve_agent_settings(CommandScope::Ask, None)
             .expect("wire backend should resolve");
         assert!(agent.runner.is_none());
-        assert!(Arc::strong_count(&agent.display_adapter) >= 1);
     }
 
     #[test]
@@ -2925,5 +2903,67 @@ binary = "/opt/custom-codex"
             .expect("ask scope should resolve");
         assert_eq!(agent.backend, BackendKind::Wire);
         assert_eq!(agent.provider_model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn agent_command_precedence_prefers_cli_then_scope_then_default() {
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = vec!["base-cmd".to_string()];
+
+        let mut defaults = AgentOverrides::default();
+        defaults.agent_runtime = Some(AgentRuntimeOverride {
+            backend: None,
+            command: Some(vec!["default-cmd".to_string()]),
+            profile: None,
+            bounds_prompt_path: None,
+            extra_args: None,
+        });
+        cfg.agent_defaults = defaults;
+
+        let mut scoped = AgentOverrides::default();
+        scoped.agent_runtime = Some(AgentRuntimeOverride {
+            backend: None,
+            command: Some(vec!["scoped-cmd".to_string()]),
+            profile: None,
+            bounds_prompt_path: None,
+            extra_args: None,
+        });
+        cfg.agent_scopes.insert(CommandScope::Ask, scoped);
+
+        let ask = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("ask scope should resolve");
+        assert_eq!(
+            ask.agent_runtime.command,
+            vec!["scoped-cmd".to_string()],
+            "scoped command should override defaults and base config"
+        );
+
+        let save = cfg
+            .resolve_agent_settings(CommandScope::Save, None)
+            .expect("save scope should resolve");
+        assert_eq!(
+            save.agent_runtime.command,
+            vec!["default-cmd".to_string()],
+            "default agent override should replace base command for other scopes"
+        );
+
+        let mut cli_override = AgentOverrides::default();
+        cli_override.agent_runtime = Some(AgentRuntimeOverride {
+            backend: None,
+            command: Some(vec!["cli-cmd".to_string(), "--flag".to_string()]),
+            profile: None,
+            bounds_prompt_path: None,
+            extra_args: None,
+        });
+
+        let ask_with_cli = cfg
+            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
+            .expect("cli override should resolve");
+        assert_eq!(
+            ask_with_cli.agent_runtime.command,
+            vec!["cli-cmd".to_string(), "--flag".to_string()],
+            "CLI command should take precedence over scoped/default commands"
+        );
     }
 }

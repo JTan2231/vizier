@@ -113,21 +113,18 @@ pub enum Status {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProgressKind {
     Agent,
-    TokenUsage,
 }
 
 impl ProgressKind {
     fn prefix(self) -> &'static str {
         match self {
             ProgressKind::Agent => "[agent]",
-            ProgressKind::TokenUsage => "[usage]",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             ProgressKind::Agent => "agent",
-            ProgressKind::TokenUsage => "token-usage",
         }
     }
 }
@@ -500,9 +497,9 @@ mod tests {
     #[test]
     fn renders_multiline_summary() {
         let event = ProgressEvent {
-            kind: ProgressKind::TokenUsage,
-            source: Some("[usage]".into()),
-            phase: Some("token-usage".into()),
+            kind: ProgressKind::Agent,
+            source: Some("[agent]".into()),
+            phase: Some("script output".into()),
             label: None,
             message: Some("Total: 10\nInput: 5".into()),
             detail: None,
@@ -517,7 +514,7 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("Total: 10"), "lines were {lines:?}");
         assert!(
-            lines[1].starts_with("[usage]"),
+            lines[1].starts_with("[agent]"),
             "continuation lines keep the prefix: {lines:?}"
         );
         assert!(

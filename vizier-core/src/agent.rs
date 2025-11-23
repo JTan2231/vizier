@@ -1,25 +1,30 @@
-use std::{collections::BTreeMap, fmt, future::Future, path::PathBuf, pin::Pin, sync::Arc};
-
-use serde_json::Value;
-use tokio::sync::mpsc;
-
-use crate::{
-    auditor::TokenUsage,
-    config,
-    display::{ProgressEvent, ProgressKind, Status},
+#[cfg(not(feature = "mock_llm"))]
+use std::time::Instant;
+use std::{
+    collections::BTreeMap,
+    fmt,
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    time::Duration,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentOutputMode {
-    EventsJson,
-    PassthroughHuman,
-}
+use tokio::{
+    io::{self, AsyncBufRead, AsyncBufReadExt},
+    sync::mpsc,
+};
 
-impl Default for AgentOutputMode {
-    fn default() -> Self {
-        AgentOutputMode::EventsJson
-    }
-}
+#[cfg(not(feature = "mock_llm"))]
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+    time,
+};
+
+use crate::{
+    config,
+    display::{self, ProgressEvent, ProgressKind, Status},
+};
 
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
@@ -28,9 +33,9 @@ pub struct AgentRequest {
     pub profile: Option<String>,
     pub command: Vec<String>,
     pub extra_args: Vec<String>,
-    pub output_mode: AgentOutputMode,
     pub scope: Option<config::CommandScope>,
     pub metadata: BTreeMap<String, String>,
+    pub timeout: Option<Duration>,
 }
 
 impl AgentRequest {
@@ -39,11 +44,11 @@ impl AgentRequest {
             prompt,
             repo_root,
             profile: None,
-            command: vec!["codex".to_string(), "exec".to_string()],
+            command: Vec::new(),
             extra_args: Vec::new(),
-            output_mode: AgentOutputMode::default(),
             scope: None,
             metadata: BTreeMap::new(),
+            timeout: None,
         }
     }
 }
@@ -51,8 +56,9 @@ impl AgentRequest {
 #[derive(Debug, Clone)]
 pub struct AgentResponse {
     pub assistant_text: String,
-    pub usage: Option<TokenUsage>,
-    pub events: Vec<AgentEvent>,
+    pub stderr: Vec<String>,
+    pub exit_code: i32,
+    pub duration_ms: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -63,76 +69,6 @@ pub struct ReviewCheckContext {
     pub duration_ms: u128,
     pub stdout: String,
     pub stderr: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentEvent {
-    pub kind: String,
-    pub payload: Value,
-}
-
-pub trait AgentDisplayAdapter: Send + Sync {
-    fn adapt(&self, event: &AgentEvent, scope: Option<config::CommandScope>) -> ProgressEvent;
-}
-
-#[derive(Default)]
-pub struct FallbackDisplayAdapter;
-
-impl AgentDisplayAdapter for FallbackDisplayAdapter {
-    fn adapt(&self, event: &AgentEvent, scope: Option<config::CommandScope>) -> ProgressEvent {
-        let message = event
-            .payload
-            .get("message")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| {
-                event
-                    .payload
-                    .get("detail")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-            })
-            .or_else(|| Some(event.payload.to_string()));
-
-        let source = scope
-            .map(|s| format!("[wire:{}]", s.as_str()))
-            .unwrap_or_else(|| "[wire]".to_string());
-
-        ProgressEvent {
-            kind: ProgressKind::Agent,
-            source: Some(source),
-            phase: Some(humanize_event_type(&event.kind)),
-            label: None,
-            message,
-            detail: None,
-            path: None,
-            progress: None,
-            status: None,
-            timestamp: None,
-            raw: Some(event.payload.to_string()),
-        }
-    }
-}
-
-pub fn humanize_event_type(kind: &str) -> String {
-    let mut out = String::new();
-    for part in kind.split(|c| c == '.' || c == '_') {
-        if part.is_empty() {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(part);
-    }
-
-    if out.is_empty() {
-        kind.to_string()
-    } else {
-        out
-    }
 }
 
 #[derive(Clone)]
@@ -161,9 +97,7 @@ pub enum AgentError {
     Spawn(std::io::Error),
     Io(std::io::Error),
     NonZeroExit(i32, Vec<String>),
-    ProfileAuth(String),
-    MalformedEvent(String),
-    MissingAssistantMessage,
+    Timeout(u64),
     BoundsRead(PathBuf, std::io::Error),
     MissingPrompt(config::PromptKind),
 }
@@ -172,39 +106,36 @@ impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AgentError::BinaryNotFound(path) => {
-                write!(f, "agent backend command not found at {}", path.display())
+                write!(f, "agent command not found at {}", path.display())
             }
-            AgentError::MissingCommand => write!(f, "agent backend command was not provided"),
-            AgentError::Spawn(e) => write!(f, "failed spawning agent backend: {}", e),
+            AgentError::MissingCommand => write!(f, "agent command was not provided"),
+            AgentError::Spawn(e) => write!(f, "failed spawning agent command: {}", e),
             AgentError::Io(e) => write!(f, "I/O error: {}", e),
             AgentError::NonZeroExit(code, lines) => {
                 write!(
                     f,
-                    "agent backend exited with status {code}; stderr: {}",
+                    "agent command exited with status {code}; stderr: {}",
                     lines.join("; ")
                 )
             }
-            AgentError::ProfileAuth(msg) => write!(f, "agent profile/auth failure: {}", msg),
-            AgentError::MalformedEvent(line) => {
-                write!(f, "agent backend emitted malformed JSON event: {}", line)
+            AgentError::Timeout(secs) => {
+                write!(f, "agent command exceeded timeout after {secs}s")
             }
-            AgentError::MissingAssistantMessage => {
+            AgentError::BoundsRead(path, err) => {
                 write!(
                     f,
-                    "agent backend completed without producing an assistant message"
+                    "failed to read agent bounds prompt at {}: {}",
+                    path.display(),
+                    err
                 )
             }
-            AgentError::BoundsRead(path, err) => write!(
-                f,
-                "failed to read agent bounds prompt at {}: {}",
-                path.display(),
-                err
-            ),
-            AgentError::MissingPrompt(kind) => write!(
-                f,
-                "no prompt template was resolved for kind `{}`",
-                kind.as_str()
-            ),
+            AgentError::MissingPrompt(kind) => {
+                write!(
+                    f,
+                    "no prompt template was resolved for kind `{}`",
+                    kind.as_str()
+                )
+            }
         }
     }
 }
@@ -222,90 +153,421 @@ pub type AgentFuture = Pin<Box<dyn Future<Output = Result<AgentResponse, AgentEr
 pub trait AgentRunner: Send + Sync {
     fn backend_name(&self) -> &'static str;
 
-    fn execute(
-        &self,
-        request: AgentRequest,
-        adapter: Arc<dyn AgentDisplayAdapter>,
+    fn execute(&self, request: AgentRequest, progress_hook: Option<ProgressHook>) -> AgentFuture;
+}
+
+pub struct ScriptRunner;
+
+impl ScriptRunner {
+    fn render_source(
+        scope: Option<config::CommandScope>,
+        metadata: &BTreeMap<String, String>,
+    ) -> String {
+        let label = metadata
+            .get("agent_label")
+            .cloned()
+            .or_else(|| metadata.get("agent_command").cloned())
+            .unwrap_or_else(|| "agent".to_string());
+
+        match scope {
+            Some(scope) => format!("[{label}:{}]", scope.as_str()),
+            None => format!("[{label}]"),
+        }
+    }
+
+    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
+    fn command_label(command: &[String]) -> Option<String> {
+        let program = command.first()?;
+        let stem = Path::new(program)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())?;
+        if stem.is_empty() { None } else { Some(stem) }
+    }
+
+    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
+    async fn read_stderr(
+        reader: impl AsyncBufRead + Unpin,
+        source: String,
         progress_hook: Option<ProgressHook>,
-    ) -> AgentFuture;
+    ) -> io::Result<Vec<String>> {
+        let mut lines = Vec::new();
+        let verbosity = display::get_display_config().verbosity;
+
+        let mut stream = reader.lines();
+        while let Some(line) = stream.next_line().await? {
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(ref hook) = progress_hook {
+                let event = ProgressEvent {
+                    kind: ProgressKind::Agent,
+                    source: Some(source.clone()),
+                    phase: None,
+                    label: None,
+                    message: Some(trimmed.clone()),
+                    detail: None,
+                    path: None,
+                    progress: None,
+                    status: None,
+                    timestamp: None,
+                    raw: None,
+                };
+                hook.send_event(event).await;
+            } else if !matches!(verbosity, display::Verbosity::Quiet) {
+                let event = ProgressEvent {
+                    kind: ProgressKind::Agent,
+                    source: Some(source.clone()),
+                    phase: None,
+                    label: None,
+                    message: Some(trimmed.clone()),
+                    detail: None,
+                    path: None,
+                    progress: None,
+                    status: None,
+                    timestamp: None,
+                    raw: None,
+                };
+                for line in display::render_progress_event(&event, verbosity) {
+                    eprintln!("{line}");
+                }
+            }
+
+            lines.push(trimmed);
+        }
+
+        Ok(lines)
+    }
+}
+
+impl AgentRunner for ScriptRunner {
+    fn backend_name(&self) -> &'static str {
+        "script"
+    }
+
+    fn execute(&self, request: AgentRequest, progress_hook: Option<ProgressHook>) -> AgentFuture {
+        Box::pin(async move {
+            #[cfg(feature = "mock_llm")]
+            {
+                if std::env::var("VIZIER_FORCE_AGENT_ERROR")
+                    .ok()
+                    .map(|value| {
+                        matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes"
+                        )
+                    })
+                    .unwrap_or(false)
+                {
+                    return Err(AgentError::NonZeroExit(
+                        42,
+                        vec!["forced mock agent failure".to_string()],
+                    ));
+                }
+
+                if let Some(ref hook) = progress_hook {
+                    let event = ProgressEvent {
+                        kind: ProgressKind::Agent,
+                        source: Some(Self::render_source(request.scope, &request.metadata)),
+                        phase: None,
+                        label: None,
+                        message: Some("mock agent running".to_string()),
+                        detail: None,
+                        path: None,
+                        progress: None,
+                        status: None,
+                        timestamp: None,
+                        raw: None,
+                    };
+                    hook.send_event(event).await;
+                }
+
+                return Ok(AgentResponse {
+                    assistant_text: "mock agent response".to_string(),
+                    stderr: vec!["mock stderr".to_string()],
+                    exit_code: 0,
+                    duration_ms: 10,
+                });
+            }
+
+            #[cfg(not(feature = "mock_llm"))]
+            {
+                let (program, base_args) = request
+                    .command
+                    .split_first()
+                    .ok_or(AgentError::MissingCommand)?;
+
+                let mut command = Command::new(program);
+                command.args(base_args);
+                command.args(&request.extra_args);
+                command.current_dir(&request.repo_root);
+                command.stdin(std::process::Stdio::piped());
+                command.stdout(std::process::Stdio::piped());
+                command.stderr(std::process::Stdio::piped());
+
+                let start = Instant::now();
+                let mut child = match command.spawn() {
+                    Ok(child) => child,
+                    Err(err) => {
+                        if err.kind() == std::io::ErrorKind::NotFound {
+                            let missing = request
+                                .command
+                                .first()
+                                .map(|cmd| PathBuf::from(cmd))
+                                .unwrap_or_else(|| PathBuf::from("agent"));
+                            return Err(AgentError::BinaryNotFound(missing));
+                        }
+                        return Err(AgentError::Spawn(err));
+                    }
+                };
+
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(request.prompt.as_bytes()).await?;
+                    stdin.shutdown().await?;
+                }
+
+                let source = request
+                    .metadata
+                    .get("agent_label")
+                    .cloned()
+                    .or_else(|| Self::command_label(&request.command))
+                    .map(|label| {
+                        Self::render_source(request.scope, &{
+                            let mut meta = request.metadata.clone();
+                            meta.insert("agent_label".to_string(), label.clone());
+                            meta
+                        })
+                    })
+                    .unwrap_or_else(|| Self::render_source(request.scope, &request.metadata));
+
+                let stderr_handle = if let Some(stderr) = child.stderr.take() {
+                    let hook = progress_hook.clone();
+                    Some(tokio::spawn(async move {
+                        Self::read_stderr(BufReader::new(stderr), source, hook).await
+                    }))
+                } else {
+                    None
+                };
+
+                let stdout_handle = if let Some(stdout) = child.stdout.take() {
+                    Some(tokio::spawn(async move {
+                        let mut reader = BufReader::new(stdout);
+                        let mut buffer = String::new();
+                        reader.read_to_string(&mut buffer).await?;
+                        Ok::<String, io::Error>(buffer)
+                    }))
+                } else {
+                    None
+                };
+
+                let wait_future = child.wait();
+                let status = if let Some(timeout) = request.timeout {
+                    match time::timeout(timeout, wait_future).await {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            let _ = child.kill().await;
+                            let secs = timeout.as_secs();
+                            return Err(AgentError::Timeout(secs));
+                        }
+                    }
+                } else {
+                    wait_future.await?
+                };
+
+                let duration_ms = start.elapsed().as_millis();
+
+                let mut stderr_lines = Vec::new();
+                if let Some(handle) = stderr_handle {
+                    stderr_lines = handle.await.unwrap_or_else(|_| Ok(Vec::new()))?;
+                }
+
+                let assistant_text = if let Some(handle) = stdout_handle {
+                    handle.await.unwrap_or_else(|_| Ok(String::new()))?
+                } else {
+                    String::new()
+                };
+
+                if !status.success() {
+                    return Err(AgentError::NonZeroExit(
+                        status.code().unwrap_or(-1),
+                        stderr_lines,
+                    ));
+                }
+
+                Ok(AgentResponse {
+                    assistant_text,
+                    stderr: stderr_lines,
+                    exit_code: status.code().unwrap_or(0),
+                    duration_ms,
+                })
+            }
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::CommandScope, display::Status};
-    use serde_json::json;
+    use crate::config::CommandScope;
+    use tokio::sync::mpsc;
 
-    #[test]
-    fn fallback_adapter_scopes_wire_events_and_humanizes_kind() {
-        let adapter = FallbackDisplayAdapter::default();
-        let event = AgentEvent {
-            kind: "thread.started".to_string(),
-            payload: json!({"message": "hello from wire"}),
+    #[cfg(not(feature = "mock_llm"))]
+    #[tokio::test]
+    async fn renders_progress_events_for_stderr() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("echo.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'line1\\n' 1>&2\nprintf 'done' > \"$1\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let request = AgentRequest {
+            prompt: "ignored".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            profile: None,
+            command: vec![script.display().to_string()],
+            extra_args: vec![tmp.path().join("out.txt").display().to_string()],
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(5)),
         };
 
-        let progress = adapter.adapt(&event, Some(CommandScope::Review));
+        let result = runner
+            .execute(request, Some(ProgressHook::Plain(tx)))
+            .await
+            .expect("script should succeed");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.assistant_text, "");
+        assert!(rx.recv().await.is_some(), "expected progress event");
+    }
 
-        assert_eq!(progress.source.as_deref(), Some("[wire:review]"));
-        assert_eq!(progress.phase.as_deref(), Some("thread started"));
-        assert_eq!(progress.message.as_deref(), Some("hello from wire"));
+    #[cfg(not(feature = "mock_llm"))]
+    #[tokio::test]
+    async fn errors_on_missing_command() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let request = AgentRequest {
+            prompt: "ignored".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            profile: None,
+            command: Vec::new(),
+            extra_args: Vec::new(),
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(1)),
+        };
+
+        let result = runner.execute(request, None).await;
+        assert!(matches!(result, Err(AgentError::MissingCommand)));
+    }
+
+    #[cfg(not(feature = "mock_llm"))]
+    #[tokio::test]
+    async fn fails_on_non_executable_script() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("script.sh");
+        std::fs::write(&script, "#!/bin/sh\necho hello\n").unwrap();
+        // intentionally leave script non-executable
+
+        let request = AgentRequest {
+            prompt: "run".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            profile: None,
+            command: vec![script.display().to_string()],
+            extra_args: Vec::new(),
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(1)),
+        };
+
+        let result = runner.execute(request, None).await;
         assert!(
-            progress.raw.as_ref().is_some(),
-            "raw payload should be preserved"
+            matches!(result, Err(AgentError::Spawn(_))),
+            "expected spawn error for non-executable script, got {result:?}"
         );
     }
 
-    #[test]
-    fn fallback_adapter_uses_detail_when_message_missing() {
-        let adapter = FallbackDisplayAdapter::default();
-        let event = AgentEvent {
-            kind: "item.completed".to_string(),
-            payload: json!({"detail": "fallback detail"}),
-        };
-
-        let progress = adapter.adapt(&event, Some(CommandScope::Ask));
-
-        assert_eq!(progress.message.as_deref(), Some("fallback detail"));
-        assert!(progress.raw.as_ref().unwrap().contains("fallback detail"));
-    }
-
+    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
-    async fn progress_hook_forwards_plain_events() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let hook = ProgressHook::Plain(tx);
-        let adapter = FallbackDisplayAdapter::default();
-        let event = AgentEvent {
-            kind: "progress.update".to_string(),
-            payload: json!({"message": "plain route"}),
-        };
-        let rendered = adapter.adapt(&event, Some(CommandScope::Approve));
-
-        hook.send_event(rendered.clone()).await;
-        let received = rx.recv().await.expect("event should arrive");
-
-        assert_eq!(received.source, rendered.source);
-        assert_eq!(received.message, Some("plain route".to_string()));
-    }
-
-    #[tokio::test]
-    async fn progress_hook_forwards_display_status_events() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let hook = ProgressHook::Display(tx);
-        let adapter = FallbackDisplayAdapter::default();
-        let event = AgentEvent {
-            kind: "progress.update".to_string(),
-            payload: json!({"message": "display route"}),
-        };
-        let rendered = adapter.adapt(&event, Some(CommandScope::Merge));
-
-        hook.send_event(rendered.clone()).await;
-        let received = rx.recv().await.expect("status should arrive");
-
-        if let Status::Event(progress) = received {
-            assert_eq!(progress.source, rendered.source);
-            assert_eq!(progress.message, Some("display route".to_string()));
-        } else {
-            panic!("expected Status::Event");
+    async fn surfaces_non_zero_exit_and_stderr() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("fail.sh");
+        std::fs::write(&script, "#!/bin/sh\necho \"failure detail\" 1>&2\nexit 3\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
         }
+
+        let request = AgentRequest {
+            prompt: "run".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            profile: None,
+            command: vec![script.display().to_string()],
+            extra_args: Vec::new(),
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(2)),
+        };
+
+        let result = runner.execute(request, None).await;
+        match result {
+            Err(AgentError::NonZeroExit(code, lines)) => {
+                assert_eq!(code, 3);
+                assert!(
+                    lines.iter().any(|line| line.contains("failure detail")),
+                    "stderr lines missing failure detail: {lines:?}"
+                );
+            }
+            other => panic!("expected non-zero exit error, got {other:?}"),
+        }
+    }
+
+    #[cfg(not(feature = "mock_llm"))]
+    #[tokio::test]
+    async fn times_out_when_script_runs_too_long() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("sleep.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 2\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let request = AgentRequest {
+            prompt: "timeout".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            profile: None,
+            command: vec![script.display().to_string()],
+            extra_args: Vec::new(),
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(1)),
+        };
+
+        let result = runner.execute(request, None).await;
+        assert!(
+            matches!(result, Err(AgentError::Timeout(secs)) if secs == 1),
+            "expected timeout error, got {result:?}"
+        );
     }
 }
