@@ -2083,7 +2083,12 @@ fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() 
     repo.git(&["commit", "-am", "master divergence"])?;
     let base_commit = repo.repo().head()?.peel_to_commit()?.id();
 
-    let merge = repo.vizier_output(&["merge", "replay-conflict", "--yes"])?;
+    let merge = repo.vizier_output(&[
+        "merge",
+        "replay-conflict",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+    ])?;
     assert!(
         !merge.status.success(),
         "expected merge to surface cherry-pick conflict, got:\n{}",
@@ -2100,8 +2105,13 @@ fn test_merge_squash_replay_respects_manual_resolution_before_finishing_range() 
 
     repo.write("a", "manual resolution wins\n")?;
 
-    let resume =
-        repo.vizier_output(&["merge", "replay-conflict", "--yes", "--complete-conflict"])?;
+    let resume = repo.vizier_output(&[
+        "merge",
+        "replay-conflict",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+        "--complete-conflict",
+    ])?;
     assert!(
         resume.status.success(),
         "vizier merge --complete-conflict failed after manual resolution: {}",
@@ -2572,6 +2582,11 @@ fn test_merge_conflict_auto_resolve() -> TestResult {
         "auto-resolve merge failed: {}",
         String::from_utf8_lossy(&merge.stderr)
     );
+    let stderr = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        stderr.contains("Auto-resolving merge conflicts via"),
+        "stderr should mention config-driven conflict auto-resolution: {stderr}"
+    );
 
     let sentinel = repo
         .path()
@@ -2599,6 +2614,74 @@ fn test_merge_conflict_auto_resolve() -> TestResult {
 }
 
 #[test]
+fn test_merge_conflict_auto_resolve_reuses_setting_on_resume() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    prepare_conflicting_plan(
+        &repo,
+        "conflict-resume-auto",
+        "master edits collide\n",
+        "plan branch wins after resume\n",
+    )?;
+    clean_workdir(&repo)?;
+
+    let mut first = repo.vizier_cmd();
+    first.args([
+        "merge",
+        "conflict-resume-auto",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+    ]);
+    let initial = first.output()?;
+    assert!(
+        !initial.status.success(),
+        "initial merge should fail when auto-resolve is disabled"
+    );
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/conflict-resume-auto.json");
+    assert!(
+        sentinel.exists(),
+        "sentinel should remain after failed auto-resolution attempt"
+    );
+
+    let resume = repo.vizier_output(&[
+        "merge",
+        "conflict-resume-auto",
+        "--yes",
+        "--complete-conflict",
+        "--auto-resolve-conflicts",
+    ])?;
+    assert!(
+        resume.status.success(),
+        "vizier merge --complete-conflict should reuse auto-resolve and succeed: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+    let resume_stderr = String::from_utf8_lossy(&resume.stderr);
+    assert!(
+        resume_stderr.contains("Auto-resolving merge conflicts via")
+            || resume_stderr.contains("Conflict auto-resolution enabled"),
+        "resume should surface conflict auto-resolve status: {resume_stderr}"
+    );
+    assert!(
+        !sentinel.exists(),
+        "sentinel should be cleared after successful auto-resolve resume"
+    );
+    let contents = repo.read("a")?;
+    assert!(
+        contents.contains("plan branch wins after resume"),
+        "auto-resolve resume should apply plan contents: {contents}"
+    );
+    let status = Command::new("git")
+        .args(["-C", repo.path().to_str().unwrap(), "status", "--porcelain"])
+        .output()?;
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "working tree should be clean after auto-resolve resume"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_merge_conflict_creates_sentinel() -> TestResult {
     let repo = IntegrationRepo::new()?;
     prepare_conflicting_plan(
@@ -2609,7 +2692,12 @@ fn test_merge_conflict_creates_sentinel() -> TestResult {
     )?;
     clean_workdir(&repo)?;
 
-    let merge = repo.vizier_output(&["merge", "conflict-manual", "--yes"])?;
+    let merge = repo.vizier_output(&[
+        "merge",
+        "conflict-manual",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+    ])?;
     assert!(
         !merge.status.success(),
         "expected merge to fail on conflicts"
@@ -2633,7 +2721,12 @@ fn test_merge_conflict_complete_flag() -> TestResult {
     )?;
     clean_workdir(&repo)?;
 
-    let merge = repo.vizier_output(&["merge", "conflict-complete", "--yes"])?;
+    let merge = repo.vizier_output(&[
+        "merge",
+        "conflict-complete",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+    ])?;
     assert!(
         !merge.status.success(),
         "expected merge to fail on conflicts"
@@ -2660,8 +2753,13 @@ fn test_merge_conflict_complete_flag() -> TestResult {
         "expected conflicts to be resolved before --complete-conflict, got:\n{status_out}"
     );
 
-    let resume =
-        repo.vizier_output(&["merge", "conflict-complete", "--yes", "--complete-conflict"])?;
+    let resume = repo.vizier_output(&[
+        "merge",
+        "conflict-complete",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+        "--complete-conflict",
+    ])?;
     println!(
         "resume stderr:\n{}",
         String::from_utf8_lossy(&resume.stderr)
@@ -2693,7 +2791,12 @@ fn test_merge_conflict_complete_blocks_wrong_branch() -> TestResult {
     )?;
     clean_workdir(&repo)?;
 
-    let merge = repo.vizier_output(&["merge", "conflict-wrong-branch", "--yes"])?;
+    let merge = repo.vizier_output(&[
+        "merge",
+        "conflict-wrong-branch",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+    ])?;
     assert!(
         !merge.status.success(),
         "expected merge to fail on conflicts"
@@ -2714,6 +2817,7 @@ fn test_merge_conflict_complete_blocks_wrong_branch() -> TestResult {
         "merge",
         "conflict-wrong-branch",
         "--yes",
+        "--no-auto-resolve-conflicts",
         "--complete-conflict",
     ])?;
     assert!(
@@ -2738,7 +2842,12 @@ fn test_merge_conflict_complete_flag_rejects_head_drift() -> TestResult {
     )?;
     clean_workdir(&repo)?;
 
-    let merge = repo.vizier_output(&["merge", "conflict-head-drift", "--yes"])?;
+    let merge = repo.vizier_output(&[
+        "merge",
+        "conflict-head-drift",
+        "--yes",
+        "--no-auto-resolve-conflicts",
+    ])?;
     assert!(
         !merge.status.success(),
         "expected merge to fail on conflicts"
@@ -2760,6 +2869,7 @@ fn test_merge_conflict_complete_flag_rejects_head_drift() -> TestResult {
         "merge",
         "conflict-head-drift",
         "--yes",
+        "--no-auto-resolve-conflicts",
         "--complete-conflict",
     ])?;
     assert!(

@@ -327,6 +327,14 @@ struct MergeCmd {
     #[arg(long = "auto-resolve-conflicts")]
     auto_resolve_conflicts: bool,
 
+    /// Skip backend conflict auto-resolution even when configured
+    #[arg(
+        long = "no-auto-resolve-conflicts",
+        action = ArgAction::SetTrue,
+        conflicts_with = "auto_resolve_conflicts"
+    )]
+    no_auto_resolve_conflicts: bool,
+
     /// Only finalize a previously conflicted merge; fail if no pending Vizier merge exists
     #[arg(long = "complete-conflict")]
     complete_conflict: bool,
@@ -540,7 +548,26 @@ fn resolve_merge_options(
         .plan
         .clone()
         .ok_or_else(|| "plan argument is required for vizier merge")?;
-    let conflict_strategy = if cmd.auto_resolve_conflicts {
+    let config = config::get_config();
+    let default_conflict_auto_resolve = config::MergeConflictsConfig::default().auto_resolve;
+    let conflict_source = if config.merge.conflicts.auto_resolve == default_conflict_auto_resolve {
+        ConflictAutoResolveSource::Default
+    } else {
+        ConflictAutoResolveSource::Config
+    };
+    let mut conflict_auto_resolve = ConflictAutoResolveSetting::new(
+        config.merge.conflicts.auto_resolve,
+        conflict_source,
+    );
+    if cmd.auto_resolve_conflicts {
+        conflict_auto_resolve =
+            ConflictAutoResolveSetting::new(true, ConflictAutoResolveSource::FlagEnable);
+    }
+    if cmd.no_auto_resolve_conflicts {
+        conflict_auto_resolve =
+            ConflictAutoResolveSetting::new(false, ConflictAutoResolveSource::FlagDisable);
+    }
+    let conflict_strategy = if conflict_auto_resolve.enabled() {
         MergeConflictStrategy::Agent
     } else {
         MergeConflictStrategy::Manual
@@ -554,7 +581,7 @@ fn resolve_merge_options(
     }
 
     let repo_root = vcs::repo_root().ok();
-    let mut cicd_gate = CicdGateOptions::from_config(&config::get_config().merge.cicd_gate);
+    let mut cicd_gate = CicdGateOptions::from_config(&config.merge.cicd_gate);
     if let Some(script) = cicd_gate.script.clone() {
         cicd_gate.script = Some(resolve_cicd_script_path(&script, repo_root.as_deref()));
     }
@@ -578,14 +605,14 @@ fn resolve_merge_options(
         }
     }
 
-    let mut squash = config::get_config().merge.squash_default;
+    let mut squash = config.merge.squash_default;
     if cmd.squash {
         squash = true;
     }
     if cmd.no_squash {
         squash = false;
     }
-    let mut squash_mainline = config::get_config().merge.squash_mainline;
+    let mut squash_mainline = config.merge.squash_mainline;
     if let Some(mainline) = cmd.squash_mainline {
         squash_mainline = Some(mainline);
     }
@@ -603,6 +630,7 @@ fn resolve_merge_options(
         delete_branch: !cmd.keep_branch,
         note: cmd.note.clone(),
         push_after,
+        conflict_auto_resolve,
         conflict_strategy,
         complete_conflict: cmd.complete_conflict,
         cicd_gate,

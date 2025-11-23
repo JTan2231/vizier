@@ -45,7 +45,11 @@ squash = true
 # Optional default mainline parent (1-based) when squashing plan branches that contain merge commits.
 # squash_mainline = 2
 
-# Optional CI/CD gate script run during `vizier merge`
+# Default conflict-handling behavior for vizier merge (overridden by --auto-resolve-conflicts/--no-auto-resolve-conflicts)
+[merge.conflicts]
+auto_resolve = true
+
+# Optional CI/CD gate script run during `vizier merge` (auto_resolve here controls gate remediation, not conflict handling)
 [merge.cicd_gate]
 script = "./cicd.sh"
 auto_resolve = true
@@ -98,8 +102,6 @@ enabled = false
 include_snapshot = false
 include_todo_threads = false
 
-# Merge cleanup runs on wire to avoid editing worktrees directly
+# Merge conflicts auto-resolve via the agent backend by default; swap to wire if you prefer manual conflict handling
 [agents.merge]
-backend = "wire"
-model = "gpt-4o-mini"
-reasoning_effort = "low"
+backend = "agent"

@@ -483,8 +483,30 @@ impl Default for ReviewChecksConfig {
 }
 
 #[derive(Clone)]
+pub struct MergeConflictsConfig {
+    pub auto_resolve: bool,
+}
+
+impl Default for MergeConflictsConfig {
+    fn default() -> Self {
+        Self {
+            auto_resolve: false,
+        }
+    }
+}
+
+impl MergeConflictsConfig {
+    fn apply_layer(&mut self, layer: &MergeConflictsLayer) {
+        if let Some(auto_resolve) = layer.auto_resolve {
+            self.auto_resolve = auto_resolve;
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct MergeConfig {
     pub cicd_gate: MergeCicdGateConfig,
+    pub conflicts: MergeConflictsConfig,
     pub squash_default: bool,
     pub squash_mainline: Option<u32>,
 }
@@ -493,6 +515,7 @@ impl Default for MergeConfig {
     fn default() -> Self {
         Self {
             cicd_gate: MergeCicdGateConfig::default(),
+            conflicts: MergeConflictsConfig::default(),
             squash_default: true,
             squash_mainline: None,
         }
@@ -502,6 +525,7 @@ impl Default for MergeConfig {
 impl MergeConfig {
     fn apply_layer(&mut self, layer: &MergeLayer) {
         self.cicd_gate.apply_layer(&layer.cicd_gate);
+        self.conflicts.apply_layer(&layer.conflicts);
 
         if let Some(default_squash) = layer.squash_default {
             self.squash_default = default_squash;
@@ -575,8 +599,14 @@ pub struct MergeCicdGateLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeConflictsLayer {
+    pub auto_resolve: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeLayer {
     pub cicd_gate: MergeCicdGateLayer,
+    pub conflicts: MergeConflictsLayer,
     pub squash_default: Option<bool>,
     pub squash_mainline: Option<u32>,
 }
@@ -1646,6 +1676,20 @@ impl ConfigLayer {
                 ) {
                     layer.merge.squash_mainline = Some(mainline);
                 }
+
+                if let Some(conflicts_value) = table.get("conflicts") {
+                    if let Some(conflicts) = conflicts_value.as_object() {
+                        let auto_resolve = conflicts
+                            .get("auto_resolve")
+                            .or_else(|| conflicts.get("auto-resolve"))
+                            .or_else(|| conflicts.get("auto_resolve_conflicts"))
+                            .or_else(|| conflicts.get("auto-resolve-conflicts"))
+                            .and_then(|value| parse_bool(Some(value)));
+                        if let Some(auto) = auto_resolve {
+                            layer.merge.conflicts.auto_resolve = Some(auto);
+                        }
+                    }
+                }
             }
         }
 
@@ -2299,6 +2343,22 @@ retries = 3
     }
 
     #[test]
+    fn test_merge_conflict_auto_resolve_from_toml() {
+        let toml = r#"
+[merge.conflicts]
+auto_resolve = true
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg =
+            Config::from_toml(file.path().to_path_buf()).expect("parse merge conflict config");
+        assert!(
+            cfg.merge.conflicts.auto_resolve,
+            "conflict auto-resolve should parse from toml"
+        );
+    }
+
+    #[test]
     fn layered_config_merges_global_and_repo_overrides() {
         let temp_dir = tempdir().expect("create temp dir");
         let global_path = temp_dir.path().join("global.toml");
@@ -2314,6 +2374,9 @@ backend = "wire"
 script = "./scripts/global-ci.sh"
 retries = 4
 
+[merge.conflicts]
+auto_resolve = false
+
 [review.checks]
 commands = ["echo global"]
 "#,
@@ -2328,6 +2391,9 @@ commands = ["echo global"]
 model = "wire-local"
 
 [merge.cicd_gate]
+auto_resolve = true
+
+[merge.conflicts]
 auto_resolve = true
 
 [prompts]
@@ -2363,6 +2429,10 @@ documentation = "repo documentation prompt"
         assert_eq!(
             cfg.merge.cicd_gate.retries, 4,
             "numeric config should fall back to the global layer when repo omits it"
+        );
+        assert!(
+            cfg.merge.conflicts.auto_resolve,
+            "repo conflict auto-resolve should override global default"
         );
         assert_eq!(
             cfg.review.checks.commands,

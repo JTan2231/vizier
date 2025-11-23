@@ -80,7 +80,7 @@ struct ScopeReport {
 
 #[derive(Debug, Serialize)]
 struct AgentRuntimeReport {
-    backend: String,
+    label: String,
     command: Vec<String>,
     resolution: RuntimeResolutionReport,
 }
@@ -134,7 +134,7 @@ fn resolve_default_agent_settings(
 
 fn runtime_report(runtime: &config::ResolvedAgentRuntime) -> AgentRuntimeReport {
     AgentRuntimeReport {
-        backend: runtime.label.clone(),
+        label: runtime.label.clone(),
         command: runtime.command.clone(),
         resolution: match &runtime.resolution {
             config::AgentRuntimeResolution::BundledShim { label, path } => {
@@ -191,11 +191,14 @@ fn build_config_report(
     cli_override: Option<&config::AgentOverrides>,
 ) -> Result<ConfigReport, Box<dyn std::error::Error>> {
     let default_agent = resolve_default_agent_settings(cfg, cli_override)?;
-    let agent_runtime_default = if default_agent.backend.requires_agent_runner() {
-        Some(runtime_report(&default_agent.agent_runtime))
+    let agent_backend = if default_agent.backend.requires_agent_runner() {
+        Some(default_agent.backend.to_string())
     } else {
         None
     };
+    let agent_runtime_default = agent_backend
+        .as_ref()
+        .map(|_| runtime_report(&default_agent.agent_runtime));
 
     let mut scopes = BTreeMap::new();
     for scope in config::CommandScope::all() {
@@ -205,9 +208,7 @@ fn build_config_report(
 
     Ok(ConfigReport {
         backend: cfg.backend.to_string(),
-        agent_backend: agent_runtime_default
-            .as_ref()
-            .map(|runtime| runtime.backend.clone()),
+        agent_backend,
         model: cfg.provider_model.clone(),
         reasoning_effort: cfg.reasoning_effort.map(|value| format!("{value:?}")),
         no_session: cfg.no_session,
@@ -260,8 +261,11 @@ fn format_runtime_resolution(resolution: &RuntimeResolutionReport) -> String {
 
 fn runtime_rows(runtime: &AgentRuntimeReport) -> Vec<(String, String)> {
     vec![
-        ("Agent backend".to_string(), runtime.backend.clone()),
-        ("Command".to_string(), format_command(&runtime.command)),
+        ("Runtime label".to_string(), runtime.label.clone()),
+        (
+            "Command".to_string(),
+            runtime.command.join(" ").trim().to_string(),
+        ),
         (
             "Resolution".to_string(),
             format_runtime_resolution(&runtime.resolution),
@@ -781,6 +785,7 @@ pub struct MergeOptions {
     pub delete_branch: bool,
     pub note: Option<String>,
     pub push_after: bool,
+    pub conflict_auto_resolve: ConflictAutoResolveSetting,
     pub conflict_strategy: MergeConflictStrategy,
     pub complete_conflict: bool,
     pub cicd_gate: CicdGateOptions,
@@ -792,6 +797,55 @@ pub struct MergeOptions {
 pub enum MergeConflictStrategy {
     Manual,
     Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictAutoResolveSource {
+    Default,
+    Config,
+    FlagEnable,
+    FlagDisable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConflictAutoResolveSetting {
+    enabled: bool,
+    source: ConflictAutoResolveSource,
+}
+
+impl ConflictAutoResolveSetting {
+    pub fn new(enabled: bool, source: ConflictAutoResolveSource) -> Self {
+        Self { enabled, source }
+    }
+
+    pub fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    #[allow(dead_code)]
+    pub fn source(self) -> ConflictAutoResolveSource {
+        self.source
+    }
+
+    fn source_description(self) -> &'static str {
+        match self.source {
+            ConflictAutoResolveSource::Default => "default",
+            ConflictAutoResolveSource::Config => "merge.conflicts.auto_resolve",
+            ConflictAutoResolveSource::FlagEnable => "--auto-resolve-conflicts",
+            ConflictAutoResolveSource::FlagDisable => "--no-auto-resolve-conflicts",
+        }
+    }
+
+    fn status_line(self) -> String {
+        let origin = self.source_description();
+        if self.enabled() {
+            format!("Conflict auto-resolution enabled via {origin}.")
+        } else {
+            format!(
+                "Conflict auto-resolution disabled via {origin}; conflicts will require manual resolution unless overridden."
+            )
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2157,6 +2211,7 @@ pub async fn run_merge(
             "Agent-based conflict resolution requires an agent-style backend; update [agents.merge] or rerun with --backend agent|gemini",
         )?;
     }
+    display::warn(opts.conflict_auto_resolve.status_line());
 
     if opts.cicd_gate.auto_resolve && opts.cicd_gate.script.is_some() {
         let review_agent = agent.for_prompt(config::PromptKind::Review)?;
@@ -2194,7 +2249,14 @@ pub async fn run_merge(
         return Ok(());
     }
 
-    match try_complete_pending_merge(&spec)? {
+    match try_complete_pending_merge(
+        &spec,
+        opts.conflict_strategy,
+        opts.conflict_auto_resolve,
+        agent,
+    )
+    .await?
+    {
         PendingMergeStatus::Ready {
             merge_oid,
             source_oid,
@@ -2449,6 +2511,7 @@ async fn execute_legacy_merge(
                 spec,
                 merge_message,
                 conflict,
+                opts.conflict_auto_resolve,
                 opts.conflict_strategy,
                 false,
                 None,
@@ -2516,6 +2579,7 @@ async fn execute_squashed_merge(
                 &plan,
                 squash_mainline,
                 conflict,
+                opts.conflict_auto_resolve,
                 opts.conflict_strategy,
                 agent,
             )
@@ -2581,6 +2645,7 @@ async fn handle_squash_apply_conflict(
     plan: &vcs::SquashPlan,
     mainline: Option<u32>,
     conflict: vcs::CherryPickApplyConflict,
+    setting: ConflictAutoResolveSetting,
     strategy: MergeConflictStrategy,
     agent: &config::AgentSettings,
 ) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
@@ -2614,10 +2679,15 @@ async fn handle_squash_apply_conflict(
     emit_conflict_instructions(&spec.slug, &files, &state_path);
 
     match strategy {
-        MergeConflictStrategy::Manual => Err(
-            "merge blocked by conflicts; resolve them and rerun vizier merge with --complete-conflict".into(),
-        ),
+        MergeConflictStrategy::Manual => {
+            display::warn(setting.status_line());
+            Err("merge blocked by conflicts; resolve them and rerun vizier merge with --complete-conflict".into())
+        }
         MergeConflictStrategy::Agent => {
+            display::warn(format!(
+                "Auto-resolving merge conflicts via {}...",
+                setting.source_description()
+            ));
             match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
                 Ok(resolution) => Ok(resolution),
                 Err(err) => {
@@ -2939,8 +3009,11 @@ fn finalize_merge(
     Ok(())
 }
 
-fn try_complete_pending_merge(
+async fn try_complete_pending_merge(
     spec: &plan::PlanBranchSpec,
+    strategy: MergeConflictStrategy,
+    setting: ConflictAutoResolveSetting,
+    agent: &config::AgentSettings,
 ) -> Result<PendingMergeStatus, Box<dyn std::error::Error>> {
     let Some(state) = read_conflict_state(&spec.slug)? else {
         return Ok(PendingMergeStatus::None);
@@ -3069,6 +3142,20 @@ fn try_complete_pending_merge(
             outstanding = list_conflicted_paths()?;
             if !repo.index()?.has_conflicts() {
                 outstanding.clear();
+            }
+        }
+        if !outstanding.is_empty() {
+            if let Some(status) = maybe_auto_resolve_pending_conflicts(
+                spec,
+                &state,
+                &outstanding,
+                strategy,
+                setting,
+                agent,
+            )
+            .await?
+            {
+                return Ok(status);
             }
         }
         display::info(format!(
@@ -3219,6 +3306,18 @@ fn try_complete_pending_merge(
                     replay: Some(replay_state),
                     squash_mainline: state.squash_mainline,
                 };
+                if let Some(status) = maybe_auto_resolve_pending_conflicts(
+                    spec,
+                    &next_state,
+                    &conflict.files,
+                    strategy,
+                    setting,
+                    agent,
+                )
+                .await?
+                {
+                    return Ok(status);
+                }
                 let state_path = write_conflict_state(&next_state)?;
                 emit_conflict_instructions(&spec.slug, &conflict.files, &state_path);
                 return Ok(PendingMergeStatus::Blocked(
@@ -3255,6 +3354,18 @@ fn try_complete_pending_merge(
 
     let outstanding = list_conflicted_paths()?;
     if !outstanding.is_empty() {
+        if let Some(status) = maybe_auto_resolve_pending_conflicts(
+            spec,
+            &state,
+            &outstanding,
+            strategy,
+            setting,
+            agent,
+        )
+        .await?
+        {
+            return Ok(status);
+        }
         display::warn("Merge conflicts remain:");
         for path in &outstanding {
             display::warn(format!("  - {path}"));
@@ -3293,10 +3404,57 @@ fn try_complete_pending_merge(
     })
 }
 
+async fn maybe_auto_resolve_pending_conflicts(
+    spec: &plan::PlanBranchSpec,
+    state: &MergeConflictState,
+    files: &[String],
+    strategy: MergeConflictStrategy,
+    setting: ConflictAutoResolveSetting,
+    agent: &config::AgentSettings,
+) -> Result<Option<PendingMergeStatus>, Box<dyn std::error::Error>> {
+    if files.is_empty() {
+        return Ok(None);
+    }
+
+    if !matches!(strategy, MergeConflictStrategy::Agent) {
+        display::warn(setting.status_line());
+        return Ok(None);
+    }
+
+    display::warn(format!(
+        "Auto-resolving merge conflicts via {}...",
+        setting.source_description()
+    ));
+    match try_auto_resolve_conflicts(spec, state, files, agent).await {
+        Ok(MergeConflictResolution::MergeCommitted {
+            merge_oid,
+            source_oid,
+        }) => Ok(Some(PendingMergeStatus::Ready {
+            merge_oid,
+            source_oid,
+        })),
+        Ok(MergeConflictResolution::SquashImplementationCommitted { source_oid, .. }) => {
+            Ok(Some(PendingMergeStatus::SquashReady {
+                source_oid,
+                merge_message: state.merge_message.clone(),
+            }))
+        }
+        Err(err) => {
+            display::warn(format!(
+                "Backend auto-resolution failed: {err}. Falling back to manual resolution."
+            ));
+            let state_path = merge_conflict_state_path(&state.slug)?;
+            emit_conflict_instructions(&state.slug, files, &state_path);
+            Err(err)
+        }
+    }
+}
+
 async fn handle_merge_conflict(
     spec: &plan::PlanBranchSpec,
     merge_message: &str,
     conflict: vcs::MergeConflict,
+    setting: ConflictAutoResolveSetting,
     strategy: MergeConflictStrategy,
     squash: bool,
     implementation_message: Option<&str>,
@@ -3319,10 +3477,15 @@ async fn handle_merge_conflict(
     let state_path = write_conflict_state(&state)?;
     match strategy {
         MergeConflictStrategy::Manual => {
+            display::warn(setting.status_line());
             emit_conflict_instructions(&spec.slug, &files, &state_path);
             Err("merge blocked by conflicts; resolve them and rerun vizier merge".into())
         }
         MergeConflictStrategy::Agent => {
+            display::warn(format!(
+                "Auto-resolving merge conflicts via {}...",
+                setting.source_description()
+            ));
             match try_auto_resolve_conflicts(spec, &state, &files, agent).await {
                 Ok(result) => Ok(result),
                 Err(err) => {
