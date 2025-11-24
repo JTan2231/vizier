@@ -678,6 +678,7 @@ fn build_agent_request(
         command: agent.agent_runtime.command.clone(),
         progress_filter: agent.agent_runtime.progress_filter.clone(),
         output: agent.agent_runtime.output,
+        allow_script_wrapper: agent.agent_runtime.enable_script_wrapper,
         scope: Some(agent.scope),
         metadata,
         timeout: Some(Duration::from_secs(9000)),

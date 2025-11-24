@@ -12,7 +12,7 @@ backend = "agent"
 [agent]
 label = "codex"                      # Use a bundled shim by label (codex.sh or gemini.sh)
 # command = ["/usr/local/share/vizier/agents/codex.sh"] # Or point directly at a custom script
-# output = "auto"                    # auto|wrapped-json|passthrough; auto wraps bundled shims, passthrough preserves legacy stdout
+# output = "auto"                    # auto|wrapped-json; auto wraps bundled shims
 # progress_filter = ["jq", "-r", "..."] # Optional JSON-to-progress filter; defaults to the Codex jq filter when using the bundled codex shim
 # Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
@@ -70,7 +70,7 @@ backend = "agent"
 [agents.default.agent]
 label = "codex"
 # command = ["./examples/agents/codex.sh"]
-# output = "auto"                    # Leave unset to auto-wrap bundled shims; set to passthrough for scripts that already emit final text on stdout
+# output = "auto"                    # Leave unset to auto-wrap bundled shims
 # progress_filter = ["jq", "-r", "..."] # Optional; defaults to Codex jq filter when label=codex and no command is provided
 
 # Force conversational asks onto the wire backend with a higher-effort reasoning profile

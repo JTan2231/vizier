@@ -333,8 +333,6 @@ impl AgentSettings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentOutputMode {
     Auto,
-    Passthrough,
-    WrappedJson,
 }
 
 impl Default for AgentOutputMode {
@@ -347,23 +345,19 @@ impl AgentOutputMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentOutputMode::Auto => "auto",
-            AgentOutputMode::Passthrough => "passthrough",
-            AgentOutputMode::WrappedJson => "wrapped-json",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentOutputHandling {
-    Passthrough,
-    WrappedJson,
+    Wrapped,
 }
 
 impl AgentOutputHandling {
     pub fn as_str(&self) -> &'static str {
         match self {
-            AgentOutputHandling::Passthrough => "passthrough",
-            AgentOutputHandling::WrappedJson => "wrapped-json",
+            AgentOutputHandling::Wrapped => "wrapped",
         }
     }
 }
@@ -374,6 +368,7 @@ pub struct AgentRuntimeOverride {
     pub command: Option<Vec<String>>,
     pub progress_filter: Option<Vec<String>>,
     pub output: Option<AgentOutputMode>,
+    pub enable_script_wrapper: Option<bool>,
 }
 
 impl AgentRuntimeOverride {
@@ -393,6 +388,10 @@ impl AgentRuntimeOverride {
         if let Some(output) = other.output.as_ref() {
             self.output = Some(*output);
         }
+
+        if let Some(enable_script_wrapper) = other.enable_script_wrapper {
+            self.enable_script_wrapper = Some(enable_script_wrapper);
+        }
     }
 }
 
@@ -402,6 +401,7 @@ pub struct AgentRuntimeOptions {
     pub command: Vec<String>,
     pub progress_filter: Option<Vec<String>>,
     pub output: AgentOutputMode,
+    pub enable_script_wrapper: bool,
 }
 
 impl AgentRuntimeOptions {
@@ -437,6 +437,7 @@ impl AgentRuntimeOptions {
             command: Vec::new(),
             progress_filter: None,
             output: AgentOutputMode::Auto,
+            enable_script_wrapper: false,
         }
     }
 
@@ -463,6 +464,7 @@ pub struct ResolvedAgentRuntime {
     pub command: Vec<String>,
     pub progress_filter: Option<Vec<String>>,
     pub output: AgentOutputHandling,
+    pub enable_script_wrapper: bool,
     pub resolution: AgentRuntimeResolution,
 }
 
@@ -1169,6 +1171,10 @@ impl AgentSettingsBuilder {
             if let Some(output) = runtime.output.as_ref() {
                 self.agent_runtime.output = *output;
             }
+
+            if let Some(enable_script_wrapper) = runtime.enable_script_wrapper {
+                self.agent_runtime.enable_script_wrapper = enable_script_wrapper;
+            }
         }
 
         overrides.documentation.apply_to(&mut self.documentation);
@@ -1306,23 +1312,9 @@ fn resolve_agent_runtime(
         .clone()
         .unwrap_or_else(|| default_label_for_backend(backend).to_string());
     let mut progress_filter = runtime.progress_filter.clone();
-    let output = match runtime.output {
-        AgentOutputMode::Passthrough => AgentOutputHandling::Passthrough,
-        AgentOutputMode::WrappedJson => AgentOutputHandling::WrappedJson,
-        AgentOutputMode::Auto => {
-            if progress_filter.is_some() {
-                AgentOutputHandling::WrappedJson
-            } else if runtime.command.is_empty() && backend.requires_agent_runner() {
-                AgentOutputHandling::WrappedJson
-            } else {
-                AgentOutputHandling::Passthrough
-            }
-        }
-    };
+    let output = AgentOutputHandling::Wrapped;
 
-    if matches!(output, AgentOutputHandling::Passthrough) {
-        progress_filter = None;
-    } else if progress_filter.is_none() {
+    if progress_filter.is_none() {
         progress_filter = default_progress_filter_for_label(&label);
     }
 
@@ -1338,6 +1330,7 @@ fn resolve_agent_runtime(
             command: runtime.command,
             progress_filter,
             output,
+            enable_script_wrapper: runtime.enable_script_wrapper,
             resolution: AgentRuntimeResolution::ProvidedCommand,
         });
     }
@@ -1366,6 +1359,7 @@ fn resolve_agent_runtime(
             command: vec![path.display().to_string()],
             progress_filter,
             output,
+            enable_script_wrapper: runtime.enable_script_wrapper,
             resolution: AgentRuntimeResolution::BundledShim { label, path },
         });
     }
@@ -1375,6 +1369,7 @@ fn resolve_agent_runtime(
         command: Vec::new(),
         progress_filter,
         output,
+        enable_script_wrapper: runtime.enable_script_wrapper,
         resolution: AgentRuntimeResolution::ProvidedCommand,
     })
 }
@@ -1932,15 +1927,12 @@ fn parse_agent_runtime_override(
         if let Some(value) = output.as_str() {
             let normalized = value.trim().to_ascii_lowercase();
             overrides.output = match normalized.as_str() {
-                "" => None,
-                "auto" => Some(AgentOutputMode::Auto),
-                "passthrough" | "legacy" => Some(AgentOutputMode::Passthrough),
-                "wrapped-json" | "wrapped" | "json-stream" => Some(AgentOutputMode::WrappedJson),
+                "" | "auto" | "wrapped" | "wrapped-json" => Some(AgentOutputMode::Auto),
                 other => {
                     return Err(Box::new(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
-                            "unknown agent.output value `{other}` (expected auto|passthrough|wrapped-json)"
+                            "unknown agent.output value `{other}` (expected auto|wrapped-json)"
                         ),
                     )));
                 }
@@ -1948,9 +1940,19 @@ fn parse_agent_runtime_override(
         } else {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "`agent.output` must be a string (auto|passthrough|wrapped-json)",
+                "`agent.output` must be a string (auto|wrapped-json)",
             )));
         }
+    }
+
+    if let Some(enable_script) = parse_bool(
+        object
+            .get("enable_script_wrapper")
+            .or_else(|| object.get("enable-script-wrapper"))
+            .or_else(|| object.get("use_script_wrapper"))
+            .or_else(|| object.get("use-script-wrapper")),
+    ) {
+        overrides.enable_script_wrapper = Some(enable_script);
     }
 
     if overrides == AgentRuntimeOverride::default() {
@@ -2823,7 +2825,7 @@ profile = "deprecated"
         let agent = cfg
             .resolve_agent_settings(CommandScope::Ask, None)
             .expect("default agent settings should resolve");
-        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::WrappedJson);
+        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert!(
             agent.agent_runtime.progress_filter.is_some(),
             "default codex runtime should pick a progress filter"
@@ -2839,32 +2841,10 @@ profile = "deprecated"
         let agent = cfg
             .resolve_agent_settings(CommandScope::Ask, None)
             .expect("agent with filter should resolve");
-        assert_eq!(
-            agent.agent_runtime.output,
-            AgentOutputHandling::WrappedJson,
-            "progress filters should force wrapped output"
-        );
+        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert_eq!(
             agent.agent_runtime.progress_filter,
             Some(vec!["/usr/bin/cat".to_string()])
-        );
-    }
-
-    #[test]
-    fn passthrough_output_drops_progress_filter() {
-        let mut cfg = Config::default();
-        cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
-        cfg.agent_runtime.progress_filter =
-            Some(vec!["jq".to_string(), "-r".to_string(), ".x".to_string()]);
-        cfg.agent_runtime.output = AgentOutputMode::Passthrough;
-
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
-            .expect("agent with passthrough output should resolve");
-        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Passthrough);
-        assert!(
-            agent.agent_runtime.progress_filter.is_none(),
-            "passthrough should disable progress filter usage"
         );
     }
 
@@ -2968,6 +2948,7 @@ profile = "deprecated"
             command: Some(vec!["default-cmd".to_string()]),
             progress_filter: None,
             output: None,
+            enable_script_wrapper: None,
         });
         cfg.agent_defaults = defaults;
 
@@ -2977,6 +2958,7 @@ profile = "deprecated"
             command: Some(vec!["scoped-cmd".to_string()]),
             progress_filter: None,
             output: None,
+            enable_script_wrapper: None,
         });
         cfg.agent_scopes.insert(CommandScope::Ask, scoped);
 
@@ -3006,6 +2988,7 @@ profile = "deprecated"
             command: Some(vec!["cli-cmd".to_string(), "--flag".to_string()]),
             progress_filter: None,
             output: None,
+            enable_script_wrapper: None,
         });
 
         let ask_with_cli = cfg
