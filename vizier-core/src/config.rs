@@ -2211,8 +2211,13 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::{NamedTempFile, tempdir};
     use wire::config::ThinkingLevel;
+
+    lazy_static! {
+        static ref AGENT_SHIM_ENV_LOCK: Mutex<()> = Mutex::new(());
+    }
 
     fn write_json_file(contents: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().expect("failed to create temp file");
@@ -2778,6 +2783,7 @@ profile = "deprecated"
 
     #[test]
     fn resolve_runtime_prefers_bundled_shim_dir_env() {
+        let _guard = AGENT_SHIM_ENV_LOCK.lock().unwrap();
         let temp_dir = tempdir().expect("create temp dir");
         let shim_dir = temp_dir.path().join("codex");
         fs::create_dir_all(&shim_dir).expect("create shim dir");
@@ -2870,6 +2876,7 @@ profile = "deprecated"
 
     #[test]
     fn scoped_agent_backend_overrides_wire_default() {
+        let _guard = AGENT_SHIM_ENV_LOCK.lock().unwrap();
         let temp_dir = tempdir().expect("create temp dir");
         let shim_dir = temp_dir.path().join("codex");
         fs::create_dir_all(&shim_dir).expect("create shim dir");

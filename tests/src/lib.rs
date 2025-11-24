@@ -359,23 +359,28 @@ fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
     // Keep shims under .vizier/tmp so they stay ignored when commands require a clean tree.
     let bin_dir = root.join(".vizier/tmp/bin");
     fs::create_dir_all(&bin_dir)?;
-    for name in ["codex", "gemini"] {
-        let path = bin_dir.join(format!("{name}.sh"));
-        fs::write(
-            &path,
-            "#!/bin/sh
+    let script = b"#!/bin/sh
 set -euo pipefail
 cat >/dev/null
 printf '%s\n' '{\"type\":\"item.started\",\"item\":{\"type\":\"reasoning\",\"text\":\"prep\"}}'
 printf '%s\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"mock agent response\"}}'
 printf 'mock agent running\n' 1>&2
-",
-        )?;
+";
+    for name in ["codex", "gemini"] {
+        let nested = bin_dir.join(name).join("agent.sh");
+        if let Some(parent) = nested.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&nested, script)?;
+        let flat = bin_dir.join(format!("{name}.sh"));
+        fs::write(&flat, script)?;
         #[cfg(unix)]
         {
-            let mut perms = fs::metadata(&path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&path, perms)?;
+            for path in [&nested, &flat] {
+                let mut perms = fs::metadata(path)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(path, perms)?;
+            }
         }
     }
     Ok(bin_dir)
