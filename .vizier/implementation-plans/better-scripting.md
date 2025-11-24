@@ -1,3 +1,9 @@
+Implementation Plan:
+---
+plan: better-scripting
+branch: draft/better-scripting
+---
+
 ## Operator Spec
 
 Today: bundled shim pipes codex exec --json - | tee >(jq … >&2) | jq …, so stderr progress is block-buffered and arrives at the end.
