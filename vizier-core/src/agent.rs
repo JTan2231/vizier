@@ -6,15 +6,20 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    process::Stdio,
     time::Duration,
 };
 
-use tokio::{io::{self, AsyncBufRead, AsyncBufReadExt}, sync::mpsc};
+#[cfg(not(feature = "mock_llm"))]
+use std::process::Stdio;
+
+use tokio::{
+    io::{self, AsyncBufRead, AsyncBufReadExt},
+    sync::mpsc,
+};
 
 #[cfg(not(feature = "mock_llm"))]
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncWriteExt, BufReader},
     process::Command,
     time,
 };
@@ -175,6 +180,7 @@ impl ScriptRunner {
     }
 
     #[cfg(any(feature = "mock_llm", not(unix)))]
+    #[allow(dead_code)]
     fn should_use_stdbuf() -> bool {
         false
     }
@@ -292,21 +298,6 @@ impl ScriptRunner {
 
         Ok(lines)
     }
-
-#[cfg_attr(feature = "mock_llm", allow(dead_code))]
-async fn collect_lines(reader: impl AsyncBufRead + Unpin) -> io::Result<Vec<String>> {
-    let mut lines = Vec::new();
-    let mut stream = reader.lines();
-    while let Some(line) = stream.next_line().await? {
-        let trimmed = line.trim().to_string();
-        if trimmed.is_empty() {
-            continue;
-        }
-        lines.push(trimmed);
-    }
-    Ok(lines)
-}
-
 }
 
 impl AgentRunner for ScriptRunner {
@@ -373,10 +364,28 @@ impl AgentRunner for ScriptRunner {
                 Self::configure_stdio(&mut command);
 
                 #[cfg(all(unix, not(feature = "mock_llm")))]
+                let allow_script_wrapper = {
+                    let needs_progress_streaming = progress_hook.is_some()
+                        || matches!(request.output, config::AgentOutputHandling::Wrapped);
+                    if request.allow_script_wrapper && needs_progress_streaming {
+                        spawn_warnings.push(
+                            "skipping script wrapper to preserve stderr for progress output"
+                                .to_string(),
+                        );
+                        false
+                    } else {
+                        request.allow_script_wrapper
+                    }
+                };
+
+                #[cfg(any(feature = "mock_llm", not(unix)))]
+                let allow_script_wrapper = request.allow_script_wrapper;
+
+                #[cfg(all(unix, not(feature = "mock_llm")))]
                 let mut child = {
                     let mut spawned: Option<tokio::process::Child> = None;
                     if Self::should_use_stdbuf() {
-                        for wrapper in Self::buffering_wrappers(request.allow_script_wrapper) {
+                        for wrapper in Self::buffering_wrappers(allow_script_wrapper) {
                             let mut wrapped = Command::new(&wrapper[0]);
                             wrapped.args(&wrapper[1..]);
                             wrapped.args(&request.command);
@@ -437,12 +446,6 @@ impl AgentRunner for ScriptRunner {
                 };
 
                 let start = Instant::now();
-
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin.write_all(request.prompt.as_bytes()).await?;
-                    stdin.shutdown().await?;
-                }
-
                 let source = request
                     .metadata
                     .get("agent_label")
@@ -473,7 +476,7 @@ impl AgentRunner for ScriptRunner {
                 let mut filter_stdout_handle = None;
                 let mut filter_stderr_handle = None;
 
-                if let Some(filter_cmd) = request.progress_filter.clone() {
+                    if let Some(filter_cmd) = request.progress_filter.clone() {
                     if filter_cmd.is_empty() {
                         return Err(AgentError::Io(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -492,7 +495,7 @@ impl AgentRunner for ScriptRunner {
                     let mut spawned_filter = {
                         let mut spawned: Option<tokio::process::Child> = None;
                         if Self::should_use_stdbuf() {
-                            for wrapper in Self::buffering_wrappers(request.allow_script_wrapper) {
+                            for wrapper in Self::buffering_wrappers(allow_script_wrapper) {
                                 let mut wrapped = Command::new(&wrapper[0]);
                                 wrapped.args(&wrapper[1..]);
                                 wrapped.args(filter_cmd.clone());
@@ -563,8 +566,10 @@ impl AgentRunner for ScriptRunner {
                     }
 
                     if let Some(stderr) = spawned_filter.stderr.take() {
+                        let hook = progress_hook.clone();
+                        let filter_source_err = format!("{}|filter", source);
                         filter_stderr_handle = Some(tokio::spawn(async move {
-                            Self::collect_lines(BufReader::new(stderr)).await
+                            Self::read_stderr(BufReader::new(stderr), filter_source_err, hook).await
                         }));
                     }
 
@@ -597,6 +602,11 @@ impl AgentRunner for ScriptRunner {
                 } else {
                     None
                 };
+
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(request.prompt.as_bytes()).await?;
+                    stdin.shutdown().await?;
+                }
 
                 let wait_future = child.wait();
                 let status = if let Some(timeout) = request.timeout {
@@ -823,9 +833,12 @@ done
             r#"#!/usr/bin/env python3
 import sys
 import time
+_ = sys.stdin.read()
 sys.stdout.write('{"type":"item.started","item":{"type":"reasoning","text":"first"}}\n')
+sys.stdout.flush()
 time.sleep(1)
 sys.stdout.write('{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+sys.stdout.flush()
 "#,
         )
         .unwrap();
@@ -934,10 +947,28 @@ done
         };
 
         let result = runner.execute(request, None).await;
-        assert!(
-            matches!(result, Err(AgentError::Spawn(_))),
-            "expected spawn error for non-executable script, got {result:?}"
-        );
+        match result {
+            Err(AgentError::Spawn(err)) => {
+                assert_eq!(
+                    err.kind(),
+                    std::io::ErrorKind::PermissionDenied,
+                    "expected permission error for non-executable script, got {err:?}"
+                );
+            }
+            Err(AgentError::NonZeroExit(code, lines)) => {
+                assert_eq!(
+                    code, 126,
+                    "non-executable scripts should return 126 when wrapped"
+                );
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.to_ascii_lowercase().contains("permission denied")),
+                    "stderr should mention permission issue: {lines:?}"
+                );
+            }
+            other => panic!("expected failure for non-executable script, got {other:?}"),
+        }
     }
 
     #[cfg(not(feature = "mock_llm"))]

@@ -1272,9 +1272,12 @@ fn test_agent_wrapper_unbuffers_progress_integration() -> TestResult {
         r#"#!/usr/bin/env python3
 import sys
 import time
+_ = sys.stdin.read()
 sys.stdout.write('{"type":"item.started","item":{"type":"reasoning","text":"prep"}}\n')
+sys.stdout.flush()
 time.sleep(1)
 sys.stdout.write('{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+sys.stdout.flush()
 "#,
     )?;
 
@@ -1282,9 +1285,12 @@ sys.stdout.write('{"type":"item.completed","item":{"type":"agent_message","text"
     fs::write(
         &filter_path,
         r#"#!/bin/sh
+last=""
 while IFS= read -r line; do
-  printf 'progress:%s\n' "$line"
+  last="$line"
+  printf 'progress:%s\n' "$line" >&2
 done
+printf '%s' "$last"
 "#,
     )?;
 
