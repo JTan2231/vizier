@@ -73,6 +73,9 @@ Update (2025-11-24): Gemini backend adapter + defaults
 Update (2025-11-25): Script-runner shims replace per-backend binaries
 - Agent/Gemini scopes now rely on the `ScriptRunner`, which resolves `agent.label` (defaulting to `codex`/`gemini`, bundled under `examples/agents/`) or a custom `agent.command`/`--agent-command` and reports runtime resolution as bundled shim vs provided command. Autodiscovery of CLI binaries was removed alongside the Codex/Gemini runner/display adapters; progress/usage now flows from stderr lines emitted by the shim, and CLI overrides use `--agent-label`/`--agent-command` instead of the older bin flag.
 
+Update (2025-11-26): Rust adapters retired; GEMINI.md is now historical
+- The Rust Codex/Gemini adapters were removed in favor of the bundled shims; `GEMINI.md` now documents the legacy adapter shape and the current shim entrypoints so future backends can reuse the pattern without expecting in-tree binaries.
+
 ## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 
 Tension
