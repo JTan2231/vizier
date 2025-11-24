@@ -295,6 +295,13 @@ impl Auditor {
         }
     }
 
+    pub fn record_agent_context(
+        settings: &config::AgentSettings,
+        prompt_kind: Option<SystemPrompt>,
+    ) {
+        Self::record_agent(settings, prompt_kind);
+    }
+
     pub fn record_agent_run(run: AgentRunRecord) {
         if let Ok(mut auditor) = AUDITOR.lock() {
             auditor.last_run = Some(run.clone());

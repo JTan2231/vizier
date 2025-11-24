@@ -30,6 +30,8 @@ Need to sanity-check how those layers resolve before you kick off the workflow? 
 
 Agent runs require either a bundled shim label (`agent.label = "codex"`/`"gemini"`) or an explicit script path (`agent.command = ["/path/to/script.sh"]`). Bundled shims install under `share/vizier/agents/` and follow the runner contract: stdout is the assistant text, stderr is progress/errors, and the exit code sets status. There is no autodiscovery fallback when no script is provided.
 
+Want to exercise a scoped agent without touching `.vizier` or Git? `vizier test-display [--scope ask|save|draft|approve|review|merge]` streams progress through the normal display stack using a harmless prompt, reports the agent’s exit code/duration/stdout/stderr, and defaults to no session logging (`--session` opts back in).
+
 ## High-Level Timeline
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.

@@ -96,6 +96,15 @@ vizier review stdout-stderr
 vizier merge stdout-stderr
 ```
 
+### Smoke-test your agent/display wiring
+Use `vizier test-display` to run the configured backend for a given scope against a harmless prompt, streaming progress through the normal display stack without touching `.vizier` or Git. The command resolves the same scoped agent settings as the workflow commands and exits with the agent’s status code.
+
+- Defaults to the `ask` scope; override with `--scope ask|save|draft|approve|review|merge`.
+- Customize the prompt with `--prompt`, dump captured stdout/stderr with `--raw`, cap runtime via `--timeout <seconds>`, and disable stdbuf/unbuffer/script wrapping with `--no-wrapper` when debugging shell output.
+- Session logging is off by default; opt in with `--session` (respects `--no-session`).
+
+Example: `vizier test-display --scope review --timeout 30`
+
 ## Workflows & Docs
 - `Draft → Approve → Review → Merge`: `docs/workflows/draft-approve-merge.md`
 - Snapshot/TODO discipline (coming soon) will live under `docs/`
@@ -107,7 +116,7 @@ Tune Vizier via repo-local files so settings travel with commits.
 - `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan, `[merge] squash_mainline = 2` to preselect a mainline for merge-heavy plan branches), backend options, and the prompt profiles attached to each command. Every `[agents.<scope>.prompts.<kind>]` table ties a prompt template (inline text or `path`) to backend/model/reasoning overrides so plan/approve/review share a single surface instead of juggling parallel `[prompts.*]` overrides. CLI flags still sit above these scopes; see `docs/prompt-config-matrix.md` for the full scope×prompt-kind matrix and fallback order.
 - `vizier plan` prints the fully resolved configuration (global + repo + CLI overrides) with per-scope agent/runtime selection; pass `--json` for a structured view. The command is read-only and does not start an Auditor session.
 - If you do not pass `--config-file`, Vizier now loads global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your personal defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
-- Agent backends now run through shell scripts that stream JSON on stdout while Vizier handles the rest: the runner tees events through an optional progress filter (stderr) and extracts the final assistant text for stdout. Pick a bundled shim via `agent.label` (`codex`/`gemini`, installed under `share/vizier/agents/`) or point `[agents.<scope>.agent].command` at your own script; tune `[agent].output` (auto|wrapped-json|passthrough) and `[agent].progress_filter` if you need to bypass or customize the wrapper. CLI overrides mirror the same levers: `--agent-label` or `--agent-command`.
+- Agent backends now run through shell scripts that stream JSON on stdout while Vizier handles the rest: the runner tees events through an optional progress filter (stderr) and extracts the final assistant text for stdout. Pick a bundled shim via `agent.label` (`codex`/`gemini`, installed under `share/vizier/agents/`) or point `[agents.<scope>.agent].command` at your own script; tune `[agent].output` (auto|wrapped-json|passthrough) and `[agent].progress_filter` if you need to bypass or customize the wrapper. For Codex, the default progress filter is the bundled `codex-filter.sh` found alongside the shim. CLI overrides mirror the same levers: `--agent-label` or `--agent-command`.
 - The `-p/--model` flag is wire-only. Agent runs ignore it; model overrides only apply when a scope uses the wire backend.
 - There is no autodiscovery fallback: if no bundled shim exists for the chosen `label`, set `agent.command` to a script that obeys the stdout/stderr contract.
 - Each scope names a single `backend`. When that backend fails, Vizier aborts the command instead of falling back to wire, so rerun once the configured backend is healthy.

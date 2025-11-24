@@ -150,6 +150,29 @@ impl From<BackendArg> for config::BackendKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ScopeArg {
+    Ask,
+    Save,
+    Draft,
+    Approve,
+    Review,
+    Merge,
+}
+
+impl From<ScopeArg> for config::CommandScope {
+    fn from(value: ScopeArg) -> Self {
+        match value {
+            ScopeArg::Ask => config::CommandScope::Ask,
+            ScopeArg::Save => config::CommandScope::Save,
+            ScopeArg::Draft => config::CommandScope::Draft,
+            ScopeArg::Approve => config::CommandScope::Approve,
+            ScopeArg::Review => config::CommandScope::Review,
+            ScopeArg::Merge => config::CommandScope::Merge,
+        }
+    }
+}
+
 impl From<ProgressArg> for display::ProgressMode {
     fn from(value: ProgressArg) -> Self {
         match value {
@@ -193,6 +216,10 @@ enum Commands {
     /// Bootstrap `.vizier/.snapshot` and TODO threads from repo history
     #[command(name = "init-snapshot")]
     InitSnapshot(SnapshotInitCmd),
+
+    /// Smoke-test the configured agent/display wiring without touching `.vizier`
+    #[command(name = "test-display")]
+    TestDisplay(TestDisplayCmd),
 
     /// Commit tracked changes with an LLM-generated message and update TODOs/snapshot
     ///
@@ -469,6 +496,37 @@ enum InputOrigin {
     Stdin,
 }
 
+#[derive(ClapArgs, Debug)]
+struct TestDisplayCmd {
+    /// Command scope to resolve agent settings from
+    #[arg(long = "scope", value_enum, default_value_t = ScopeArg::Ask)]
+    scope: ScopeArg,
+
+    /// Override the default smoke-test prompt
+    #[arg(long = "prompt", value_name = "TEXT")]
+    prompt: Option<String>,
+
+    /// Dump captured stdout/stderr verbatim instead of a summarized snippet
+    #[arg(long = "raw", action = ArgAction::SetTrue)]
+    raw: bool,
+
+    /// Timeout in seconds before aborting the agent run
+    #[arg(long = "timeout", value_name = "SECONDS")]
+    timeout_secs: Option<u64>,
+
+    /// Disable stdbuf/unbuffer/script wrapping for debugging agent output
+    #[arg(long = "no-wrapper", action = ArgAction::SetTrue)]
+    no_wrapper: bool,
+
+    /// Write a session log for this smoke test (defaults to off)
+    #[arg(long = "session", action = ArgAction::SetTrue, conflicts_with = "no_session")]
+    session: bool,
+
+    /// Explicitly disable session logging (default)
+    #[arg(long = "no-session", action = ArgAction::SetTrue, conflicts_with = "session")]
+    no_session: bool,
+}
+
 impl From<InputOrigin> for SpecSource {
     fn from(origin: InputOrigin) -> Self {
         match origin {
@@ -634,6 +692,28 @@ fn resolve_merge_options(
         cicd_gate,
         squash,
         squash_mainline,
+    })
+}
+
+fn resolve_test_display_options(
+    cmd: &TestDisplayCmd,
+) -> Result<TestDisplayOptions, Box<dyn std::error::Error>> {
+    if let Some(prompt) = cmd
+        .prompt
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| value.is_empty())
+    {
+        return Err(format!("prompt override cannot be empty (got {prompt:?})").into());
+    }
+
+    Ok(TestDisplayOptions {
+        scope: cmd.scope.into(),
+        prompt_override: cmd.prompt.as_ref().map(|value| value.trim().to_string()),
+        raw_output: cmd.raw,
+        timeout: cmd.timeout_secs.map(std::time::Duration::from_secs),
+        disable_wrapper: cmd.no_wrapper,
+        record_session: cmd.session && !cmd.no_session,
     })
 }
 
@@ -1129,6 +1209,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &agent,
             );
             inline_command(message, push_after, &agent, commit_mode).await
+        }
+
+        Commands::TestDisplay(cmd) => {
+            let opts = resolve_test_display_options(&cmd)?;
+            let agent = config::get_config()
+                .resolve_agent_settings(opts.scope, cli_agent_override.as_ref())?;
+            log_agent_runtime_resolution(&agent);
+            warn_if_model_override_ignored(model_override_requested, opts.scope, &agent);
+            run_test_display(opts, &agent).await
         }
 
         Commands::Draft(cmd) => {

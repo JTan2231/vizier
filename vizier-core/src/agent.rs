@@ -476,7 +476,7 @@ impl AgentRunner for ScriptRunner {
                 let mut filter_stdout_handle = None;
                 let mut filter_stderr_handle = None;
 
-                    if let Some(filter_cmd) = request.progress_filter.clone() {
+                if let Some(filter_cmd) = request.progress_filter.clone() {
                     if filter_cmd.is_empty() {
                         return Err(AgentError::Io(io::Error::new(
                             io::ErrorKind::InvalidInput,

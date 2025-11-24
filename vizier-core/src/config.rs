@@ -1235,24 +1235,9 @@ fn command_label(command: &[String]) -> Option<String> {
 
 fn default_progress_filter_for_label(label: &str) -> Option<Vec<String>> {
     if label.eq_ignore_ascii_case("codex") {
-        let filter = r#"
-if .type == "item.completed" and .item.type == "reasoning" then
-  "[codex] reasoning: \(.item.text)"
-elif .type == "item.started" and .item.type == "command_execution" then
-  "[codex] cmd start: \(.item.command)"
-elif .type == "item.completed" and .item.type == "command_execution" then
-  "[codex] cmd done (\(.item.exit_code // "n/a")): \(.item.command)"
-elif .type == "turn.completed" then
-  "[codex] turn completed (input=\(.usage.input_tokens // 0) cached=\(.usage.cached_input_tokens // 0) output=\(.usage.output_tokens // 0))"
-elif .type == "error" then
-  "[codex] error: \(.message)"
-else empty end"#;
-
-        return Some(vec![
-            "jq".to_string(),
-            "-r".to_string(),
-            filter.trim().to_string(),
-        ]);
+        if let Some(path) = bundled_progress_filter(label) {
+            return Some(vec![path.display().to_string()]);
+        }
     }
 
     None
@@ -1290,12 +1275,20 @@ fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
 }
 
 fn bundled_agent_command(label: &str) -> Option<PathBuf> {
+    find_in_shim_dirs(&format!("{label}.sh"))
+}
+
+fn bundled_progress_filter(label: &str) -> Option<PathBuf> {
+    find_in_shim_dirs(&format!("{label}-filter.sh"))
+}
+
+fn find_in_shim_dirs(filename: &str) -> Option<PathBuf> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
     for dir in bundled_agent_shim_dir_candidates() {
         if !seen.insert(dir.clone()) {
             continue;
         }
-        let candidate = dir.join(format!("{label}.sh"));
+        let candidate = dir.join(filename);
         if candidate.is_file() {
             return Some(candidate);
         }
