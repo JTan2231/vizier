@@ -470,7 +470,7 @@ impl AgentRunner for ScriptRunner {
                     None
                 };
 
-                // Optional progress filter pipeline; Rust treats agent stdout as final text.
+                // Optional progress filter pipeline; Rust treats filter stdout as final text when present.
                 let mut filter_child = None;
                 let mut filter_stdin: Option<tokio::process::ChildStdin> = None;
                 let mut filter_stdout_handle = None;
@@ -632,13 +632,14 @@ impl AgentRunner for ScriptRunner {
                     stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
                 }
 
-                let mut assistant_text = String::new();
+                let mut agent_stdout = String::new();
                 if let Some(handle) = stdout_handle {
-                    assistant_text = handle.await.unwrap_or_else(|_| Ok(String::new()))?;
+                    agent_stdout = handle.await.unwrap_or_else(|_| Ok(String::new()))?;
                 }
 
+                let mut filter_stdout_lines: Vec<String> = Vec::new();
                 if let Some(handle) = filter_stdout_handle {
-                    stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
+                    filter_stdout_lines = handle.await.unwrap_or_else(|_| Ok(Vec::new()))?;
                 }
 
                 if let Some(handle) = filter_stderr_handle {
@@ -648,6 +649,9 @@ impl AgentRunner for ScriptRunner {
                 if let Some(mut filter) = filter_child {
                     let filter_status = filter.wait().await?;
                     if !filter_status.success() {
+                        if !filter_stdout_lines.is_empty() {
+                            stderr_lines.extend(filter_stdout_lines.clone());
+                        }
                         return Err(AgentError::NonZeroExit(
                             filter_status.code().unwrap_or(-1),
                             stderr_lines,
@@ -665,6 +669,12 @@ impl AgentRunner for ScriptRunner {
                         stderr_lines,
                     ));
                 }
+
+                let assistant_text = if !filter_stdout_lines.is_empty() {
+                    filter_stdout_lines.join("\n")
+                } else {
+                    agent_stdout
+                };
 
                 Ok(AgentResponse {
                     assistant_text,
@@ -747,9 +757,12 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"final text
         std::fs::write(
             &filter,
             r#"#!/bin/sh
+last=""
 while IFS= read -r line; do
-  printf 'progress:%s\n' "$line"
+  printf 'progress:%s\n' "$line" 1>&2
+  last="$line"
 done
+printf '%s\n' "$last"
 "#,
         )
         .unwrap();
@@ -847,9 +860,12 @@ sys.stdout.flush()
         std::fs::write(
             &filter,
             r#"#!/bin/sh
+last=""
 while IFS= read -r line; do
-  printf 'progress:%s\n' "$line"
+  printf 'progress:%s\n' "$line" 1>&2
+  last="$line"
 done
+printf '%s\n' "$last"
 "#,
         )
         .unwrap();

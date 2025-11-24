@@ -1910,7 +1910,7 @@ pub fn run_list(opts: ListOptions) -> Result<(), Box<dyn std::error::Error>> {
     list_pending_plans(opts.target)
 }
 
-const DEFAULT_TEST_PROMPT: &str = "Smoke-test the configured agent: emit a few progress updates (no writes) and a final response.";
+const DEFAULT_TEST_PROMPT: &str = "Smoke-test the configured agent: emit a few progress updates (no writes, keep it short) and a final response.";
 
 pub async fn run_test_display(
     opts: TestDisplayOptions,
