@@ -557,7 +557,7 @@ impl AgentRunner for ScriptRunner {
                         }
                     };
 
-                    let filter_source = format!("{}|filter", source);
+                    let filter_source = source.clone();
                     if let Some(stdout) = spawned_filter.stdout.take() {
                         let hook = progress_hook.clone();
                         filter_stdout_handle = Some(tokio::spawn(async move {
@@ -567,7 +567,7 @@ impl AgentRunner for ScriptRunner {
 
                     if let Some(stderr) = spawned_filter.stderr.take() {
                         let hook = progress_hook.clone();
-                        let filter_source_err = format!("{}|filter", source);
+                        let filter_source_err = source.clone();
                         filter_stderr_handle = Some(tokio::spawn(async move {
                             Self::read_stderr(BufReader::new(stderr), filter_source_err, hook).await
                         }));

@@ -46,25 +46,6 @@ impl AgentRunRecord {
             "Duration".to_string(),
             format!("{:.2}s", self.duration_ms as f64 / 1000.0),
         ));
-        rows.push((
-            "Output handling".to_string(),
-            self.output.as_str().to_string(),
-        ));
-        if let Some(filter) = self.progress_filter.as_ref() {
-            rows.push(("Progress filter".to_string(), filter.join(" ")));
-        }
-        if !self.stderr.is_empty() {
-            let last = self.stderr.last().cloned().unwrap_or_default();
-            rows.push(("Stderr".to_string(), last));
-        }
-        if !self.stdout.trim().is_empty() {
-            let mut snippet = self.stdout.trim().lines().next().unwrap_or("").to_string();
-            if snippet.len() > 120 {
-                snippet.truncate(119);
-                snippet.push('…');
-            }
-            rows.push(("Stdout".to_string(), snippet));
-        }
         rows
     }
 }
