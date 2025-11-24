@@ -6,12 +6,14 @@ reasoning_effort = "medium"
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
 # Supported backends: `agent` (runs a shell script) or `wire`.
-# Agent runs expect stdout to contain the final assistant text and stderr to carry progress/errors. Bundled shims (`codex.sh`, `gemini.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
+# Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims (`codex.sh`, `gemini.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
 
 # Base agent runtime wiring shared by agent-backed commands unless a scoped override says otherwise
 [agent]
 label = "codex"                      # Use a bundled shim by label (codex.sh or gemini.sh)
 # command = ["/usr/local/share/vizier/agents/codex.sh"] # Or point directly at a custom script
+# output = "auto"                    # auto|wrapped-json|passthrough; auto wraps bundled shims, passthrough preserves legacy stdout
+# progress_filter = ["jq", "-r", "..."] # Optional JSON-to-progress filter; defaults to the Codex jq filter when using the bundled codex shim
 # Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
@@ -68,7 +70,8 @@ backend = "agent"
 [agents.default.agent]
 label = "codex"
 # command = ["./examples/agents/codex.sh"]
-# stdout is the final assistant response; stderr carries progress/usage/errors.
+# output = "auto"                    # Leave unset to auto-wrap bundled shims; set to passthrough for scripts that already emit final text on stdout
+# progress_filter = ["jq", "-r", "..."] # Optional; defaults to Codex jq filter when label=codex and no command is provided
 
 # Force conversational asks onto the wire backend with a higher-effort reasoning profile
 [agents.ask]

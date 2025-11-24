@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use serde_json::Value;
 use tokio::{
     io::{self, AsyncBufRead, AsyncBufReadExt},
     sync::mpsc,
@@ -31,6 +32,8 @@ pub struct AgentRequest {
     pub prompt: String,
     pub repo_root: PathBuf,
     pub command: Vec<String>,
+    pub progress_filter: Option<Vec<String>>,
+    pub output: config::AgentOutputHandling,
     pub scope: Option<config::CommandScope>,
     pub metadata: BTreeMap<String, String>,
     pub timeout: Option<Duration>,
@@ -42,6 +45,8 @@ impl AgentRequest {
             prompt,
             repo_root,
             command: Vec::new(),
+            progress_filter: None,
+            output: config::AgentOutputHandling::Passthrough,
             scope: None,
             metadata: BTreeMap::new(),
             timeout: None,
@@ -235,6 +240,65 @@ impl ScriptRunner {
 
         Ok(lines)
     }
+
+    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
+    async fn collect_lines(reader: impl AsyncBufRead + Unpin) -> io::Result<Vec<String>> {
+        let mut lines = Vec::new();
+        let mut stream = reader.lines();
+        while let Some(line) = stream.next_line().await? {
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() {
+                continue;
+            }
+            lines.push(trimmed);
+        }
+        Ok(lines)
+    }
+}
+
+fn extract_assistant_text(line: &str) -> Result<Option<String>, serde_json::Error> {
+    let value: Value = serde_json::from_str(line)?;
+    if value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|t| t == "item.completed")
+        .unwrap_or(false)
+    {
+        if let Some(item) = value.get("item") {
+            if item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|t| t == "agent_message")
+                .unwrap_or(false)
+            {
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    return Ok(Some(text.to_string()));
+                }
+            }
+        }
+    }
+
+    if value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|t| t == "message")
+        .unwrap_or(false)
+    {
+        if let Some(message) = value.get("message") {
+            if message
+                .get("role")
+                .and_then(|v| v.as_str())
+                .map(|r| r == "assistant")
+                .unwrap_or(false)
+            {
+                if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
+                    return Ok(Some(text.to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 impl AgentRunner for ScriptRunner {
@@ -336,66 +400,246 @@ impl AgentRunner for ScriptRunner {
                     })
                     .unwrap_or_else(|| Self::render_source(request.scope, &request.metadata));
 
+                let source_for_stderr = source.clone();
                 let stderr_handle = if let Some(stderr) = child.stderr.take() {
                     let hook = progress_hook.clone();
                     Some(tokio::spawn(async move {
-                        Self::read_stderr(BufReader::new(stderr), source, hook).await
+                        Self::read_stderr(BufReader::new(stderr), source_for_stderr, hook).await
                     }))
                 } else {
                     None
                 };
 
-                let stdout_handle = if let Some(stdout) = child.stdout.take() {
-                    Some(tokio::spawn(async move {
-                        let mut reader = BufReader::new(stdout);
-                        let mut buffer = String::new();
-                        reader.read_to_string(&mut buffer).await?;
-                        Ok::<String, io::Error>(buffer)
-                    }))
-                } else {
-                    None
-                };
+                match request.output {
+                    config::AgentOutputHandling::Passthrough => {
+                        let stdout_handle = if let Some(stdout) = child.stdout.take() {
+                            Some(tokio::spawn(async move {
+                                let mut reader = BufReader::new(stdout);
+                                let mut buffer = String::new();
+                                reader.read_to_string(&mut buffer).await?;
+                                Ok::<String, io::Error>(buffer)
+                            }))
+                        } else {
+                            None
+                        };
 
-                let wait_future = child.wait();
-                let status = if let Some(timeout) = request.timeout {
-                    match time::timeout(timeout, wait_future).await {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            let _ = child.kill().await;
-                            let secs = timeout.as_secs();
-                            return Err(AgentError::Timeout(secs));
+                        let wait_future = child.wait();
+                        let status = if let Some(timeout) = request.timeout {
+                            match time::timeout(timeout, wait_future).await {
+                                Ok(result) => result?,
+                                Err(_) => {
+                                    let _ = child.kill().await;
+                                    let secs = timeout.as_secs();
+                                    return Err(AgentError::Timeout(secs));
+                                }
+                            }
+                        } else {
+                            wait_future.await?
+                        };
+
+                        let duration_ms = start.elapsed().as_millis();
+
+                        let mut stderr_lines = Vec::new();
+                        if let Some(handle) = stderr_handle {
+                            stderr_lines = handle.await.unwrap_or_else(|_| Ok(Vec::new()))?;
                         }
+
+                        let assistant_text = if let Some(handle) = stdout_handle {
+                            handle.await.unwrap_or_else(|_| Ok(String::new()))?
+                        } else {
+                            String::new()
+                        };
+
+                        if !status.success() {
+                            return Err(AgentError::NonZeroExit(
+                                status.code().unwrap_or(-1),
+                                stderr_lines,
+                            ));
+                        }
+
+                        Ok(AgentResponse {
+                            assistant_text,
+                            stderr: stderr_lines,
+                            exit_code: status.code().unwrap_or(0),
+                            duration_ms,
+                        })
                     }
-                } else {
-                    wait_future.await?
-                };
+                    config::AgentOutputHandling::WrappedJson => {
+                        let mut filter_child = None;
+                        let mut filter_stdin = None;
+                        let mut filter_stdout_handle = None;
+                        let mut filter_stderr_handle = None;
 
-                let duration_ms = start.elapsed().as_millis();
+                        if let Some(filter_cmd) = request.progress_filter.clone() {
+                            if filter_cmd.is_empty() {
+                                return Err(AgentError::Io(io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "progress filter command cannot be empty when output=wrapped-json",
+                                )));
+                            }
 
-                let mut stderr_lines = Vec::new();
-                if let Some(handle) = stderr_handle {
-                    stderr_lines = handle.await.unwrap_or_else(|_| Ok(Vec::new()))?;
+                            let (filter_program, filter_args) =
+                                filter_cmd.split_first().ok_or(AgentError::MissingCommand)?;
+                            let mut filter = Command::new(filter_program);
+                            filter.args(filter_args);
+                            filter.current_dir(&request.repo_root);
+                            filter.stdin(std::process::Stdio::piped());
+                            filter.stdout(std::process::Stdio::piped());
+                            filter.stderr(std::process::Stdio::piped());
+
+                            match filter.spawn() {
+                                Ok(mut child) => {
+                                    let filter_source = format!("{}|filter", source);
+                                    if let Some(stdout) = child.stdout.take() {
+                                        let hook = progress_hook.clone();
+                                        filter_stdout_handle = Some(tokio::spawn(async move {
+                                            Self::read_stderr(
+                                                BufReader::new(stdout),
+                                                filter_source,
+                                                hook,
+                                            )
+                                            .await
+                                        }));
+                                    }
+
+                                    if let Some(stderr) = child.stderr.take() {
+                                        filter_stderr_handle = Some(tokio::spawn(async move {
+                                            Self::collect_lines(BufReader::new(stderr)).await
+                                        }));
+                                    }
+
+                                    filter_stdin = child.stdin.take();
+                                    filter_child = Some(child);
+                                }
+                                Err(err) => {
+                                    return Err(AgentError::Io(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!(
+                                            "failed to spawn progress filter `{}`: {}",
+                                            filter_program, err
+                                        ),
+                                    )));
+                                }
+                            }
+                        }
+
+                        let stdout_handle = if let Some(stdout) = child.stdout.take() {
+                            let mut writer = filter_stdin.take();
+                            Some(tokio::spawn(async move {
+                                let mut lines = BufReader::new(stdout).lines();
+                                let mut last_text: Option<String> = None;
+                                let mut parse_errors = Vec::new();
+
+                                while let Some(line) = lines.next_line().await? {
+                                    if let Some(ref mut pipe) = writer {
+                                        pipe.write_all(line.as_bytes()).await?;
+                                        pipe.write_all(b"\n").await?;
+                                        let _ = pipe.flush().await;
+                                    }
+
+                                    let trimmed = line.trim();
+                                    if trimmed.is_empty() {
+                                        continue;
+                                    }
+
+                                    match extract_assistant_text(trimmed) {
+                                        Ok(Some(text)) => {
+                                            last_text = Some(text);
+                                        }
+                                        Ok(None) => {}
+                                        Err(err) => {
+                                            parse_errors.push(format!(
+                                                "failed to parse agent JSON: {err}: {line}"
+                                            ));
+                                        }
+                                    }
+                                }
+
+                                if let Some(mut pipe) = writer {
+                                    let _ = pipe.shutdown().await;
+                                }
+
+                                Ok::<(String, Vec<String>), io::Error>((
+                                    last_text.unwrap_or_default(),
+                                    parse_errors,
+                                ))
+                            }))
+                        } else {
+                            None
+                        };
+
+                        let wait_future = child.wait();
+                        let status = if let Some(timeout) = request.timeout {
+                            match time::timeout(timeout, wait_future).await {
+                                Ok(result) => result?,
+                                Err(_) => {
+                                    let _ = child.kill().await;
+                                    if let Some(mut filter) = filter_child.take() {
+                                        let _ = filter.kill().await;
+                                    }
+                                    let secs = timeout.as_secs();
+                                    return Err(AgentError::Timeout(secs));
+                                }
+                            }
+                        } else {
+                            wait_future.await?
+                        };
+
+                        let duration_ms = start.elapsed().as_millis();
+
+                        let mut stderr_lines = Vec::new();
+                        if let Some(handle) = stderr_handle {
+                            stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
+                        }
+
+                        let mut assistant_text = String::new();
+                        let mut parse_error_count = 0;
+                        if let Some(handle) = stdout_handle {
+                            let (text, parse_errors) = handle
+                                .await
+                                .unwrap_or_else(|_| Ok((String::new(), Vec::new())))?;
+                            assistant_text = text;
+                            parse_error_count = parse_errors.len();
+                            stderr_lines.extend(parse_errors);
+                        }
+
+                        if let Some(handle) = filter_stdout_handle {
+                            stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
+                        }
+
+                        if let Some(handle) = filter_stderr_handle {
+                            stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
+                        }
+
+                        if let Some(mut filter) = filter_child {
+                            let filter_status = filter.wait().await?;
+                            if !filter_status.success() {
+                                return Err(AgentError::NonZeroExit(
+                                    filter_status.code().unwrap_or(-1),
+                                    stderr_lines,
+                                ));
+                            }
+                        }
+
+                        if !status.success() {
+                            return Err(AgentError::NonZeroExit(
+                                status.code().unwrap_or(-1),
+                                stderr_lines,
+                            ));
+                        }
+
+                        if assistant_text.trim().is_empty() && parse_error_count > 0 {
+                            return Err(AgentError::NonZeroExit(-1, stderr_lines));
+                        }
+
+                        Ok(AgentResponse {
+                            assistant_text,
+                            stderr: stderr_lines,
+                            exit_code: status.code().unwrap_or(0),
+                            duration_ms,
+                        })
+                    }
                 }
-
-                let assistant_text = if let Some(handle) = stdout_handle {
-                    handle.await.unwrap_or_else(|_| Ok(String::new()))?
-                } else {
-                    String::new()
-                };
-
-                if !status.success() {
-                    return Err(AgentError::NonZeroExit(
-                        status.code().unwrap_or(-1),
-                        stderr_lines,
-                    ));
-                }
-
-                Ok(AgentResponse {
-                    assistant_text,
-                    stderr: stderr_lines,
-                    exit_code: status.code().unwrap_or(0),
-                    duration_ms,
-                })
             }
         })
     }
@@ -434,6 +678,8 @@ mod tests {
                 script.display().to_string(),
                 tmp.path().join("out.txt").display().to_string(),
             ],
+            progress_filter: None,
+            output: config::AgentOutputHandling::Passthrough,
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(5)),
@@ -450,6 +696,79 @@ mod tests {
 
     #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
+    async fn streams_wrapped_json_with_progress_filter() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = tmp.path().join("agent.sh");
+        std::fs::write(
+            &agent,
+            r#"#!/bin/sh
+echo '{"type":"item.started","item":{"type":"reasoning","text":"prep"}}'
+sleep 0.3
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"final text"}}'
+"#,
+        )
+        .unwrap();
+
+        let filter = tmp.path().join("filter.sh");
+        std::fs::write(
+            &filter,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  printf 'progress:%s\n' "$line"
+done
+"#,
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for script in [&agent, &filter] {
+                let mut perms = std::fs::metadata(script).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(script, perms).unwrap();
+            }
+        }
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let request = AgentRequest {
+            prompt: "prompt".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            command: vec![agent.display().to_string()],
+            progress_filter: Some(vec![filter.display().to_string()]),
+            output: config::AgentOutputHandling::WrappedJson,
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(2)),
+        };
+
+        let handle =
+            tokio::spawn(
+                async move { runner.execute(request, Some(ProgressHook::Plain(tx))).await },
+            );
+
+        let first_event = tokio::time::timeout(Duration::from_millis(1000), rx.recv())
+            .await
+            .expect("progress should arrive before completion");
+        assert!(
+            first_event.is_some(),
+            "expected at least one progress event"
+        );
+
+        let response = handle.await.expect("task should run").expect("agent run");
+        assert_eq!(response.assistant_text.trim(), "final text");
+        assert!(
+            response
+                .stderr
+                .iter()
+                .any(|line| line.contains("progress:")),
+            "expected progress filter output to be captured"
+        );
+    }
+
+    #[cfg(not(feature = "mock_llm"))]
+    #[tokio::test]
     async fn errors_on_missing_command() {
         let runner = ScriptRunner;
         let tmp = tempfile::tempdir().unwrap();
@@ -457,6 +776,8 @@ mod tests {
             prompt: "ignored".to_string(),
             repo_root: tmp.path().to_path_buf(),
             command: Vec::new(),
+            progress_filter: None,
+            output: config::AgentOutputHandling::Passthrough,
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
@@ -479,6 +800,8 @@ mod tests {
             prompt: "run".to_string(),
             repo_root: tmp.path().to_path_buf(),
             command: vec![script.display().to_string()],
+            progress_filter: None,
+            output: config::AgentOutputHandling::Passthrough,
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
@@ -510,6 +833,8 @@ mod tests {
             prompt: "run".to_string(),
             repo_root: tmp.path().to_path_buf(),
             command: vec![script.display().to_string()],
+            progress_filter: None,
+            output: config::AgentOutputHandling::Passthrough,
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(2)),
@@ -547,6 +872,8 @@ mod tests {
             prompt: "timeout".to_string(),
             repo_root: tmp.path().to_path_buf(),
             command: vec![script.display().to_string()],
+            progress_filter: None,
+            output: config::AgentOutputHandling::Passthrough,
             scope: Some(CommandScope::Ask),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),

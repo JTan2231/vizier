@@ -30,6 +30,8 @@ lazy_static! {
 #[derive(Clone, Debug)]
 pub struct AgentRunRecord {
     pub command: Vec<String>,
+    pub output: config::AgentOutputHandling,
+    pub progress_filter: Option<Vec<String>>,
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: Vec<String>,
@@ -44,6 +46,13 @@ impl AgentRunRecord {
             "Duration".to_string(),
             format!("{:.2}s", self.duration_ms as f64 / 1000.0),
         ));
+        rows.push((
+            "Output handling".to_string(),
+            self.output.as_str().to_string(),
+        ));
+        if let Some(filter) = self.progress_filter.as_ref() {
+            rows.push(("Progress filter".to_string(), filter.join(" ")));
+        }
         if !self.stderr.is_empty() {
             let last = self.stderr.last().cloned().unwrap_or_default();
             rows.push(("Stderr".to_string(), last));
@@ -752,9 +761,17 @@ impl Auditor {
                 let opts_clone = runtime_opts.clone();
                 let prompt_clone = system_prompt.clone();
                 let mut metadata = BTreeMap::new();
+                metadata.insert("agent_backend".to_string(), agent.backend.to_string());
                 metadata.insert("agent_label".to_string(), opts_clone.label.clone());
                 if !opts_clone.command.is_empty() {
                     metadata.insert("agent_command".to_string(), opts_clone.command.join(" "));
+                }
+                metadata.insert(
+                    "agent_output".to_string(),
+                    opts_clone.output.as_str().to_string(),
+                );
+                if let Some(filter) = opts_clone.progress_filter.as_ref() {
+                    metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
                 }
                 match &opts_clone.resolution {
                     config::AgentRuntimeResolution::BundledShim { path, .. } => {
@@ -775,6 +792,8 @@ impl Auditor {
                         prompt: prompt_clone.clone(),
                         repo_root: repo_root.clone(),
                         command: opts_clone.command.clone(),
+                        progress_filter: opts_clone.progress_filter.clone(),
+                        output: opts_clone.output,
                         scope: Some(agent_scope),
                         metadata,
                         timeout: Some(Duration::from_secs(9000)),
@@ -799,6 +818,8 @@ impl Auditor {
                     Self::replace_messages(&updated);
                     Auditor::record_agent_run(AgentRunRecord {
                         command: opts_clone.command.clone(),
+                        output: opts_clone.output,
+                        progress_filter: opts_clone.progress_filter.clone(),
                         exit_code: response.exit_code,
                         stdout: response.assistant_text.clone(),
                         stderr: response.stderr.clone(),
@@ -880,9 +901,17 @@ impl Auditor {
                     RequestStream::Status { events, .. } => events.clone().map(ProgressHook::Plain),
                 };
                 let mut metadata = BTreeMap::new();
+                metadata.insert("agent_backend".to_string(), agent.backend.to_string());
                 metadata.insert("agent_label".to_string(), runtime_opts.label.clone());
                 if !runtime_opts.command.is_empty() {
                     metadata.insert("agent_command".to_string(), runtime_opts.command.join(" "));
+                }
+                metadata.insert(
+                    "agent_output".to_string(),
+                    runtime_opts.output.as_str().to_string(),
+                );
+                if let Some(filter) = runtime_opts.progress_filter.as_ref() {
+                    metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
                 }
                 match &runtime_opts.resolution {
                     config::AgentRuntimeResolution::BundledShim { path, .. } => {
@@ -901,6 +930,8 @@ impl Auditor {
                     prompt: system_prompt.clone(),
                     repo_root,
                     command: runtime_opts.command.clone(),
+                    progress_filter: runtime_opts.progress_filter.clone(),
+                    output: runtime_opts.output,
                     scope: Some(agent_scope),
                     metadata,
                     timeout: Some(Duration::from_secs(9000)),
@@ -918,6 +949,8 @@ impl Auditor {
                         Self::add_message(assistant_message.clone());
                         Auditor::record_agent_run(AgentRunRecord {
                             command: runtime_opts.command.clone(),
+                            output: runtime_opts.output,
+                            progress_filter: runtime_opts.progress_filter.clone(),
                             exit_code: response.exit_code,
                             stdout: response.assistant_text.clone(),
                             stderr: response.stderr.clone(),
@@ -1037,6 +1070,8 @@ struct SessionModelInfo {
 #[derive(Serialize, Deserialize, Clone)]
 struct SessionAgentRun {
     command: Vec<String>,
+    output: String,
+    progress_filter: Option<Vec<String>>,
     exit_code: i32,
     stdout: String,
     stderr: Vec<String>,
@@ -1047,6 +1082,8 @@ impl From<&AgentRunRecord> for SessionAgentRun {
     fn from(run: &AgentRunRecord) -> Self {
         SessionAgentRun {
             command: run.command.clone(),
+            output: run.output.as_str().to_string(),
+            progress_filter: run.progress_filter.clone(),
             exit_code: run.exit_code,
             stdout: run.stdout.clone(),
             stderr: run.stderr.clone(),

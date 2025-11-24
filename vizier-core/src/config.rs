@@ -330,10 +330,50 @@ impl AgentSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentOutputMode {
+    Auto,
+    Passthrough,
+    WrappedJson,
+}
+
+impl Default for AgentOutputMode {
+    fn default() -> Self {
+        AgentOutputMode::Auto
+    }
+}
+
+impl AgentOutputMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentOutputMode::Auto => "auto",
+            AgentOutputMode::Passthrough => "passthrough",
+            AgentOutputMode::WrappedJson => "wrapped-json",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentOutputHandling {
+    Passthrough,
+    WrappedJson,
+}
+
+impl AgentOutputHandling {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentOutputHandling::Passthrough => "passthrough",
+            AgentOutputHandling::WrappedJson => "wrapped-json",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentRuntimeOverride {
     pub label: Option<String>,
     pub command: Option<Vec<String>>,
+    pub progress_filter: Option<Vec<String>>,
+    pub output: Option<AgentOutputMode>,
 }
 
 impl AgentRuntimeOverride {
@@ -345,6 +385,14 @@ impl AgentRuntimeOverride {
         if let Some(command) = other.command.as_ref() {
             self.command = Some(command.clone());
         }
+
+        if let Some(filter) = other.progress_filter.as_ref() {
+            self.progress_filter = Some(filter.clone());
+        }
+
+        if let Some(output) = other.output.as_ref() {
+            self.output = Some(*output);
+        }
     }
 }
 
@@ -352,6 +400,8 @@ impl AgentRuntimeOverride {
 pub struct AgentRuntimeOptions {
     pub label: Option<String>,
     pub command: Vec<String>,
+    pub progress_filter: Option<Vec<String>>,
+    pub output: AgentOutputMode,
 }
 
 impl AgentRuntimeOptions {
@@ -362,6 +412,14 @@ impl AgentRuntimeOptions {
 
         if let Some(command) = overrides.command.as_ref() {
             self.command = command.clone();
+        }
+
+        if let Some(filter) = overrides.progress_filter.as_ref() {
+            self.progress_filter = Some(filter.clone());
+        }
+
+        if let Some(output) = overrides.output.as_ref() {
+            self.output = *output;
         }
     }
 }
@@ -377,6 +435,8 @@ impl AgentRuntimeOptions {
         Self {
             label: None,
             command: Vec::new(),
+            progress_filter: None,
+            output: AgentOutputMode::Auto,
         }
     }
 
@@ -401,6 +461,8 @@ pub enum AgentRuntimeResolution {
 pub struct ResolvedAgentRuntime {
     pub label: String,
     pub command: Vec<String>,
+    pub progress_filter: Option<Vec<String>>,
+    pub output: AgentOutputHandling,
     pub resolution: AgentRuntimeResolution,
 }
 
@@ -1063,6 +1125,14 @@ impl AgentSettingsBuilder {
             if let Some(command) = runtime.command.as_ref() {
                 self.agent_runtime.command = command.clone();
             }
+
+            if let Some(filter) = runtime.progress_filter.as_ref() {
+                self.agent_runtime.progress_filter = Some(filter.clone());
+            }
+
+            if let Some(output) = runtime.output.as_ref() {
+                self.agent_runtime.output = *output;
+            }
         }
 
         overrides.documentation.apply_to(&mut self.documentation);
@@ -1090,6 +1160,14 @@ impl AgentSettingsBuilder {
 
             if let Some(command) = runtime.command.as_ref() {
                 self.agent_runtime.command = command.clone();
+            }
+
+            if let Some(filter) = runtime.progress_filter.as_ref() {
+                self.agent_runtime.progress_filter = Some(filter.clone());
+            }
+
+            if let Some(output) = runtime.output.as_ref() {
+                self.agent_runtime.output = *output;
             }
         }
 
@@ -1149,6 +1227,31 @@ fn command_label(command: &[String]) -> Option<String> {
     if stem.is_empty() { None } else { Some(stem) }
 }
 
+fn default_progress_filter_for_label(label: &str) -> Option<Vec<String>> {
+    if label.eq_ignore_ascii_case("codex") {
+        let filter = r#"
+if .type == "item.completed" and .item.type == "reasoning" then
+  "[codex] reasoning: \(.item.text)"
+elif .type == "item.started" and .item.type == "command_execution" then
+  "[codex] cmd start: \(.item.command)"
+elif .type == "item.completed" and .item.type == "command_execution" then
+  "[codex] cmd done (\(.item.exit_code // "n/a")): \(.item.command)"
+elif .type == "turn.completed" then
+  "[codex] turn completed (input=\(.usage.input_tokens // 0) cached=\(.usage.cached_input_tokens // 0) output=\(.usage.output_tokens // 0))"
+elif .type == "error" then
+  "[codex] error: \(.message)"
+else empty end"#;
+
+        return Some(vec![
+            "jq".to_string(),
+            "-r".to_string(),
+            filter.trim().to_string(),
+        ]);
+    }
+
+    None
+}
+
 fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -1202,6 +1305,26 @@ fn resolve_agent_runtime(
         .label
         .clone()
         .unwrap_or_else(|| default_label_for_backend(backend).to_string());
+    let mut progress_filter = runtime.progress_filter.clone();
+    let output = match runtime.output {
+        AgentOutputMode::Passthrough => AgentOutputHandling::Passthrough,
+        AgentOutputMode::WrappedJson => AgentOutputHandling::WrappedJson,
+        AgentOutputMode::Auto => {
+            if progress_filter.is_some() {
+                AgentOutputHandling::WrappedJson
+            } else if runtime.command.is_empty() && backend.requires_agent_runner() {
+                AgentOutputHandling::WrappedJson
+            } else {
+                AgentOutputHandling::Passthrough
+            }
+        }
+    };
+
+    if matches!(output, AgentOutputHandling::Passthrough) {
+        progress_filter = None;
+    } else if progress_filter.is_none() {
+        progress_filter = default_progress_filter_for_label(&label);
+    }
 
     if !runtime.command.is_empty() {
         if label.is_empty() {
@@ -1213,6 +1336,8 @@ fn resolve_agent_runtime(
         return Ok(ResolvedAgentRuntime {
             label,
             command: runtime.command,
+            progress_filter,
+            output,
             resolution: AgentRuntimeResolution::ProvidedCommand,
         });
     }
@@ -1239,6 +1364,8 @@ fn resolve_agent_runtime(
         return Ok(ResolvedAgentRuntime {
             label: label.clone(),
             command: vec![path.display().to_string()],
+            progress_filter,
+            output,
             resolution: AgentRuntimeResolution::BundledShim { label, path },
         });
     }
@@ -1246,6 +1373,8 @@ fn resolve_agent_runtime(
     Ok(ResolvedAgentRuntime {
         label,
         command: Vec::new(),
+        progress_filter,
+        output,
         resolution: AgentRuntimeResolution::ProvidedCommand,
     })
 }
@@ -1784,6 +1913,42 @@ fn parse_agent_runtime_override(
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "`agent.command` must be a non-empty string or array",
+            )));
+        }
+    }
+
+    if let Some(filter) = object.get("progress_filter") {
+        if let Some(parsed) = parse_command_value(filter) {
+            overrides.progress_filter = Some(parsed);
+        } else {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "`agent.progress_filter` must be a non-empty string or array",
+            )));
+        }
+    }
+
+    if let Some(output) = object.get("output") {
+        if let Some(value) = output.as_str() {
+            let normalized = value.trim().to_ascii_lowercase();
+            overrides.output = match normalized.as_str() {
+                "" => None,
+                "auto" => Some(AgentOutputMode::Auto),
+                "passthrough" | "legacy" => Some(AgentOutputMode::Passthrough),
+                "wrapped-json" | "wrapped" | "json-stream" => Some(AgentOutputMode::WrappedJson),
+                other => {
+                    return Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "unknown agent.output value `{other}` (expected auto|passthrough|wrapped-json)"
+                        ),
+                    )));
+                }
+            };
+        } else {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "`agent.output` must be a string (auto|passthrough|wrapped-json)",
             )));
         }
     }
@@ -2653,6 +2818,57 @@ profile = "deprecated"
     }
 
     #[test]
+    fn default_codex_runtime_wraps_and_sets_progress_filter() {
+        let cfg = Config::default();
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("default agent settings should resolve");
+        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::WrappedJson);
+        assert!(
+            agent.agent_runtime.progress_filter.is_some(),
+            "default codex runtime should pick a progress filter"
+        );
+    }
+
+    #[test]
+    fn progress_filter_override_enables_wrapped_output() {
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
+        cfg.agent_runtime.progress_filter = Some(vec!["/usr/bin/cat".to_string()]);
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("agent with filter should resolve");
+        assert_eq!(
+            agent.agent_runtime.output,
+            AgentOutputHandling::WrappedJson,
+            "progress filters should force wrapped output"
+        );
+        assert_eq!(
+            agent.agent_runtime.progress_filter,
+            Some(vec!["/usr/bin/cat".to_string()])
+        );
+    }
+
+    #[test]
+    fn passthrough_output_drops_progress_filter() {
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
+        cfg.agent_runtime.progress_filter =
+            Some(vec!["jq".to_string(), "-r".to_string(), ".x".to_string()]);
+        cfg.agent_runtime.output = AgentOutputMode::Passthrough;
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("agent with passthrough output should resolve");
+        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Passthrough);
+        assert!(
+            agent.agent_runtime.progress_filter.is_none(),
+            "passthrough should disable progress filter usage"
+        );
+    }
+
+    #[test]
     fn wire_backend_skips_runner() {
         let mut cfg = Config::default();
         cfg.backend = BackendKind::Wire;
@@ -2750,6 +2966,8 @@ profile = "deprecated"
         defaults.agent_runtime = Some(AgentRuntimeOverride {
             label: Some("default".to_string()),
             command: Some(vec!["default-cmd".to_string()]),
+            progress_filter: None,
+            output: None,
         });
         cfg.agent_defaults = defaults;
 
@@ -2757,6 +2975,8 @@ profile = "deprecated"
         scoped.agent_runtime = Some(AgentRuntimeOverride {
             label: Some("scoped".to_string()),
             command: Some(vec!["scoped-cmd".to_string()]),
+            progress_filter: None,
+            output: None,
         });
         cfg.agent_scopes.insert(CommandScope::Ask, scoped);
 
@@ -2784,6 +3004,8 @@ profile = "deprecated"
         cli_override.agent_runtime = Some(AgentRuntimeOverride {
             label: Some("cli".to_string()),
             command: Some(vec!["cli-cmd".to_string(), "--flag".to_string()]),
+            progress_filter: None,
+            output: None,
         });
 
         let ask_with_cli = cfg

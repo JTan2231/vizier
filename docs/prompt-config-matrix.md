@@ -114,7 +114,7 @@ Agent behavior for a given scope+kind can be customized in two layers:
      - `backend = "agent" | "wire" | "gemini"`
      - `model = "..."` (wire-only)
      - `reasoning_effort = "low" | "medium" | "high" | …`
-     - `[agents.<scope>.agent]` for runtime wiring (`label` / `command`)
+     - `[agents.<scope>.agent]` for runtime wiring (`label` / `command` plus `output` and optional `progress_filter` when wrapping JSON streams)
      - `[agents.<scope>.documentation]` for documentation prompt toggles (see above)
 
 2. **Prompt-local agent overrides**
@@ -148,4 +148,3 @@ Remember:
 - `docs/workflows/draft-approve-merge.md` — workflow-level behavior; this file is the authoritative matrix for prompt scopes and kinds.
 
 When adding new commands or prompt kinds, update **this matrix first**, then refresh the references in `README.md`, `AGENTS.md`, the workflow docs, and `example-config.toml` so downstream agents and humans can rely on a single, consistent story.
-

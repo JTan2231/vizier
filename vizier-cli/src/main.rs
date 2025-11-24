@@ -555,10 +555,8 @@ fn resolve_merge_options(
     } else {
         ConflictAutoResolveSource::Config
     };
-    let mut conflict_auto_resolve = ConflictAutoResolveSetting::new(
-        config.merge.conflicts.auto_resolve,
-        conflict_source,
-    );
+    let mut conflict_auto_resolve =
+        ConflictAutoResolveSetting::new(config.merge.conflicts.auto_resolve, conflict_source);
     if cmd.auto_resolve_conflicts {
         conflict_auto_resolve =
             ConflictAutoResolveSetting::new(true, ConflictAutoResolveSource::FlagEnable);

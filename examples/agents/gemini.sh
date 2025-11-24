@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-gemini --output-format stream-json \
-  1> >(jq -r 'select(.type == "message" and .message.role == "assistant") | .message.content // empty') \
-  2> >(cat >&2)
+prompt=$(cat)
+if [ -z "$prompt" ]; then
+  printf '[gemini shim] prompt: <empty>\n' >&2
+else
+  first_line=${prompt%%$'\n'*}
+  printf '[gemini shim] prompt (first line preview): %s\n' "$first_line" >&2
+fi
+
+printf '%s' "$prompt" | gemini --output-format stream-json

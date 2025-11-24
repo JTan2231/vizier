@@ -652,6 +652,13 @@ fn build_agent_request(
         "agent_command".to_string(),
         agent.agent_runtime.command.join(" "),
     );
+    metadata.insert(
+        "agent_output".to_string(),
+        agent.agent_runtime.output.as_str().to_string(),
+    );
+    if let Some(filter) = agent.agent_runtime.progress_filter.as_ref() {
+        metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
+    }
     match &agent.agent_runtime.resolution {
         config::AgentRuntimeResolution::BundledShim { path, .. } => {
             metadata.insert(
@@ -669,6 +676,8 @@ fn build_agent_request(
         prompt,
         repo_root,
         command: agent.agent_runtime.command.clone(),
+        progress_filter: agent.agent_runtime.progress_filter.clone(),
+        output: agent.agent_runtime.output,
         scope: Some(agent.scope),
         metadata,
         timeout: Some(Duration::from_secs(9000)),

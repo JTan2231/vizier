@@ -12,7 +12,7 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
@@ -357,7 +357,13 @@ fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
         let path = bin_dir.join(format!("{name}.sh"));
         fs::write(
             &path,
-            "#!/bin/sh\ncat >/dev/null\nprintf 'mock agent response\n'\nprintf 'mock agent running\n' 1>&2\n",
+            "#!/bin/sh
+set -euo pipefail
+cat >/dev/null
+printf '%s\n' '{\"type\":\"item.started\",\"item\":{\"type\":\"reasoning\",\"text\":\"prep\"}}'
+printf '%s\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"mock agent response\"}}'
+printf 'mock agent running\n' 1>&2
+",
         )?;
         #[cfg(unix)]
         {
@@ -367,6 +373,36 @@ fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
         }
     }
     Ok(bin_dir)
+}
+
+fn write_backend_stub(dir: &Path, name: &str) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join(name);
+    fs::write(
+        &path,
+        "#!/bin/sh
+set -euo pipefail
+
+if [ -n \"${INPUT_LOG:-}\" ]; then
+  cat >\"${INPUT_LOG}\"
+else
+  cat >/dev/null
+fi
+
+if [ -n \"${ARGS_LOG:-}\" ]; then
+  printf \"%s\\n\" \"$*\" >\"${ARGS_LOG}\"
+fi
+
+printf '%s\\n' \"${PAYLOAD:-stub-output}\"
+",
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(path)
 }
 
 fn write_default_cicd_script(repo_root: &Path) -> io::Result<()> {
@@ -513,7 +549,7 @@ fn test_save_no_commit_leaves_pending_changes() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Mode       : manual"),
+        stdout.contains("Mode") && stdout.to_ascii_lowercase().contains("manual"),
         "expected manual mode indicator in output but saw: {stdout}"
     );
 
@@ -2546,7 +2582,7 @@ fn test_review_summary_includes_token_suffix() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&review.stdout);
     assert!(
-        stdout.contains("Agent    : codex"),
+        stdout.contains("Agent") && stdout.contains("codex"),
         "review summary should include agent details but was:\n{stdout}"
     );
     assert!(
@@ -2913,6 +2949,126 @@ fn test_merge_complete_conflict_without_pending_state() -> TestResult {
     assert!(
         !sentinel.exists(),
         "sentinel should not exist when the merge was never started"
+    );
+    Ok(())
+}
+
+#[test]
+fn codex_shim_forwards_prompt_and_args() -> TestResult {
+    let tmp = TempDir::new()?;
+    let bin_dir = tmp.path().join("bin");
+    let input_log = tmp.path().join("codex-input.log");
+    let args_log = tmp.path().join("codex-args.log");
+    write_backend_stub(&bin_dir, "codex")?;
+
+    let prompt = "line-one\nline-two";
+    let shim = repo_root().join("examples/agents/codex.sh");
+
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    let joined_path = env::join_paths(paths)?;
+
+    let mut cmd = Command::new(shim);
+    cmd.env("PATH", joined_path);
+    cmd.env("INPUT_LOG", &input_log);
+    cmd.env("ARGS_LOG", &args_log);
+    cmd.env("PAYLOAD", "codex-backend-output");
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or("failed to open stdin for codex shim")?
+        .write_all(prompt.as_bytes())?;
+    let output = child.wait_with_output()?;
+    assert!(
+        output.status.success(),
+        "codex shim exited with {:?}",
+        output.status
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "codex-backend-output\n");
+
+    let recorded_input = fs::read_to_string(&input_log)?;
+    assert_eq!(recorded_input, prompt);
+
+    let recorded_args = fs::read_to_string(&args_log)?;
+    assert_eq!(recorded_args.trim(), "exec --json -");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[codex shim] prompt (first line preview): line-one"),
+        "stderr missing preview: {stderr}"
+    );
+    assert!(
+        !stderr.contains("line-two"),
+        "stderr should only include the first prompt line: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn gemini_shim_forwards_prompt_and_args() -> TestResult {
+    let tmp = TempDir::new()?;
+    let bin_dir = tmp.path().join("bin");
+    let input_log = tmp.path().join("gemini-input.log");
+    let args_log = tmp.path().join("gemini-args.log");
+    write_backend_stub(&bin_dir, "gemini")?;
+
+    let prompt = "gem-first\nsecond-line";
+    let shim = repo_root().join("examples/agents/gemini.sh");
+
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    let joined_path = env::join_paths(paths)?;
+
+    let mut cmd = Command::new(shim);
+    cmd.env("PATH", joined_path);
+    cmd.env("INPUT_LOG", &input_log);
+    cmd.env("ARGS_LOG", &args_log);
+    cmd.env("PAYLOAD", "gemini-backend-output");
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or("failed to open stdin for gemini shim")?
+        .write_all(prompt.as_bytes())?;
+    let output = child.wait_with_output()?;
+    assert!(
+        output.status.success(),
+        "gemini shim exited with {:?}",
+        output.status
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "gemini-backend-output\n");
+
+    let recorded_input = fs::read_to_string(&input_log)?;
+    assert_eq!(recorded_input, prompt);
+
+    let recorded_args = fs::read_to_string(&args_log)?;
+    assert_eq!(recorded_args.trim(), "--output-format stream-json");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[gemini shim] prompt (first line preview): gem-first"),
+        "stderr missing preview: {stderr}"
+    );
+    assert!(
+        !stderr.contains("second-line"),
+        "stderr should only include the first prompt line: {stderr}"
     );
     Ok(())
 }
