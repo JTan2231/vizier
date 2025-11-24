@@ -1,4 +1,3 @@
-Implementation Plan:
 ---
 plan: better-scripting
 branch: draft/better-scripting
