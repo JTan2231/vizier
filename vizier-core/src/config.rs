@@ -1275,11 +1275,17 @@ fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
 }
 
 fn bundled_agent_command(label: &str) -> Option<PathBuf> {
-    find_in_shim_dirs(&format!("{label}.sh"))
+    find_first_in_shim_dirs(vec![
+        format!("{label}/agent.sh"),
+        format!("{label}.sh"), // backward compatibility
+    ])
 }
 
 fn bundled_progress_filter(label: &str) -> Option<PathBuf> {
-    find_in_shim_dirs(&format!("{label}-filter.sh"))
+    find_first_in_shim_dirs(vec![
+        format!("{label}/filter.sh"),
+        format!("{label}-filter.sh"), // backward compatibility
+    ])
 }
 
 fn find_in_shim_dirs(filename: &str) -> Option<PathBuf> {
@@ -1291,6 +1297,15 @@ fn find_in_shim_dirs(filename: &str) -> Option<PathBuf> {
         let candidate = dir.join(filename);
         if candidate.is_file() {
             return Some(candidate);
+        }
+    }
+    None
+}
+
+fn find_first_in_shim_dirs(candidates: Vec<String>) -> Option<PathBuf> {
+    for name in candidates {
+        if let Some(path) = find_in_shim_dirs(&name) {
+            return Some(path);
         }
     }
     None
@@ -2764,7 +2779,9 @@ profile = "deprecated"
     #[test]
     fn resolve_runtime_prefers_bundled_shim_dir_env() {
         let temp_dir = tempdir().expect("create temp dir");
-        let shim_path = temp_dir.path().join("codex.sh");
+        let shim_dir = temp_dir.path().join("codex");
+        fs::create_dir_all(&shim_dir).expect("create shim dir");
+        let shim_path = shim_dir.join("agent.sh");
         fs::write(&shim_path, "#!/bin/sh\n").expect("write shim");
 
         let original = std::env::var("VIZIER_AGENT_SHIMS_DIR").ok();
@@ -2854,7 +2871,9 @@ profile = "deprecated"
     #[test]
     fn scoped_agent_backend_overrides_wire_default() {
         let temp_dir = tempdir().expect("create temp dir");
-        let shim_path = temp_dir.path().join("codex.sh");
+        let shim_dir = temp_dir.path().join("codex");
+        fs::create_dir_all(&shim_dir).expect("create shim dir");
+        let shim_path = shim_dir.join("agent.sh");
         fs::write(&shim_path, "#!/bin/sh\n").expect("write shim");
         let original = std::env::var("VIZIER_AGENT_SHIMS_DIR").ok();
         unsafe {

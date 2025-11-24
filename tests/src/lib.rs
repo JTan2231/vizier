@@ -117,6 +117,11 @@ impl IntegrationRepo {
     fn vizier_cmd(&self) -> Command {
         let mut cmd = Command::new(&self.vizier_bin);
         cmd.current_dir(self.path());
+        // Point Vizier at an isolated config root so user-global configs
+        // cannot flip backends during integration tests.
+        let config_root = self.path().join(".vizier/tmp/config-root");
+        let _ = fs::create_dir_all(&config_root);
+        cmd.env("VIZIER_CONFIG_DIR", &config_root);
         cmd.env("VIZIER_AGENT_SHIMS_DIR", &self.agent_bin_dir);
         let mut paths = vec![self.agent_bin_dir.clone()];
         if let Some(existing) = env::var_os("PATH") {
@@ -3285,7 +3290,7 @@ fn codex_shim_forwards_prompt_and_args() -> TestResult {
     write_backend_stub(&bin_dir, "codex")?;
 
     let prompt = "line-one\nline-two";
-    let shim = repo_root().join("examples/agents/codex.sh");
+    let shim = repo_root().join("examples/agents/codex/agent.sh");
 
     let mut paths = vec![bin_dir.clone()];
     if let Some(existing) = env::var_os("PATH") {
@@ -3345,7 +3350,7 @@ fn gemini_shim_forwards_prompt_and_args() -> TestResult {
     write_backend_stub(&bin_dir, "gemini")?;
 
     let prompt = "gem-first\nsecond-line";
-    let shim = repo_root().join("examples/agents/gemini.sh");
+    let shim = repo_root().join("examples/agents/gemini/agent.sh");
 
     let mut paths = vec![bin_dir.clone()];
     if let Some(existing) = env::var_os("PATH") {

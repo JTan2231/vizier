@@ -6,14 +6,14 @@ reasoning_effort = "medium"
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
 # Supported backends: `agent` (runs a shell script) or `wire`.
-# Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims (`codex.sh`, `gemini.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
+# Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims (`codex/agent.sh`, `gemini/agent.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
 
 # Base agent runtime wiring shared by agent-backed commands unless a scoped override says otherwise
 [agent]
-label = "codex"                      # Use a bundled shim by label (codex.sh or gemini.sh)
-# command = ["/usr/local/share/vizier/agents/codex.sh"] # Or point directly at a custom script
+label = "codex"                      # Use a bundled shim by label (codex/agent.sh or gemini/agent.sh)
+# command = ["/usr/local/share/vizier/agents/codex/agent.sh"] # Or point directly at a custom script
 # output = "auto"                    # auto|wrapped-json; auto wraps bundled shims
-# progress_filter = "./examples/agents/codex-filter.sh" # Optional progress-to-stderr filter; defaults to the bundled codex filter when label=codex
+# progress_filter = "./examples/agents/codex/filter.sh" # Optional progress-to-stderr filter; defaults to the bundled codex filter when label=codex
 # Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
@@ -69,9 +69,9 @@ backend = "agent"
 # Fine-tune how the default agent backend runs (label or explicit command)
 [agents.default.agent]
 label = "codex"
-# command = ["./examples/agents/codex.sh"]
+# command = ["./examples/agents/codex/agent.sh"]
 # output = "auto"                    # Leave unset to auto-wrap bundled shims
-# progress_filter = "./examples/agents/codex-filter.sh" # Optional; defaults to bundled Codex filter when label=codex and no command is provided
+# progress_filter = "./examples/agents/codex/filter.sh" # Optional; defaults to bundled Codex filter when label=codex and no command is provided
 
 # Force conversational asks onto the wire backend with a higher-effort reasoning profile
 [agents.ask]
@@ -97,7 +97,7 @@ backend = "agent"
 # [agents.review]
 # backend = "gemini"
 # [agents.review.agent]
-# command = ["./examples/agents/gemini.sh"]
+# command = ["./examples/agents/gemini/agent.sh"]
 
 # Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts
 [agents.merge.documentation]
