@@ -5,7 +5,7 @@ use crate::{agent::AgentError, config, tools};
 
 // Default bounds applied when no per-agent bounds prompt is configured.
 pub const DEFAULT_AGENT_BOUNDS: &str = r#"You are operating inside the current Git repository working tree.
-- Edit files directly (especially `.vizier/.snapshot` and TODO artifacts) instead of calling Vizier CLI commands.
+- Edit files directly (especially the snapshot under `.vizier/` (default `.vizier/narrative/snapshot.md`, legacy `.vizier/.snapshot`) and any narrative docs under `.vizier/narrative/`) instead of calling Vizier CLI commands.
 - Do not invoke Vizier tools; you have full shell/file access already.
 - Stay within the repo boundaries; never access parent directories or network resources unless the prompt explicitly authorizes it.
 - Aggressively make changes--the story is continuously evolving.
@@ -14,7 +14,7 @@ pub const DEFAULT_AGENT_BOUNDS: &str = r#"You are operating inside the current G
 pub const AGENT_BOUNDS_TAG: &str = "agentBounds";
 
 #[derive(Clone, Debug)]
-pub struct ThreadArtifact {
+pub struct NarrativeDoc {
     pub slug: String,
     pub body: String,
 }
@@ -22,67 +22,88 @@ pub struct ThreadArtifact {
 #[derive(Clone, Debug)]
 pub struct PromptContext {
     pub snapshot: String,
-    pub threads: Vec<ThreadArtifact>,
+    pub docs: Vec<NarrativeDoc>,
 }
 
 pub fn gather_prompt_context() -> Result<PromptContext, AgentError> {
-    let Some(todo_dir) = tools::try_get_todo_dir() else {
-        // Outside a repo or missing `.vizier/`; treat context as empty instead of panicking
-        return Ok(PromptContext {
-            snapshot: String::new(),
-            threads: Vec::new(),
-        });
-    };
+    let narrative_dir = tools::try_get_narrative_dir();
 
-    let snapshot_path = PathBuf::from(format!("{}{}", todo_dir, ".snapshot"));
-    let snapshot = std::fs::read_to_string(&snapshot_path).unwrap_or_default();
-    let threads = read_thread_files(&PathBuf::from(todo_dir))?;
+    let snapshot = load_snapshot();
+    let docs = read_narrative_docs(narrative_dir.as_deref())?;
 
-    Ok(PromptContext { snapshot, threads })
+    Ok(PromptContext { snapshot, docs })
 }
 
-fn read_thread_files(dir: &Path) -> Result<Vec<ThreadArtifact>, AgentError> {
-    let mut threads = Vec::new();
-
-    if !dir.exists() {
-        return Ok(threads);
+fn load_snapshot() -> String {
+    if let Some(path) = tools::try_snapshot_path() {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            return contents;
+        }
     }
 
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    String::new()
+}
 
-        if !path.is_file() {
-            continue;
-        }
+fn read_narrative_docs(narrative_dir: Option<&str>) -> Result<Vec<NarrativeDoc>, AgentError> {
+    let Some(dir) = narrative_dir else {
+        return Ok(Vec::new());
+    };
 
-        if path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .map(|name| name == ".snapshot")
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let slug = match path.file_name().and_then(OsStr::to_str) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-
-        let body = std::fs::read_to_string(&path).unwrap_or_default();
-        threads.push(ThreadArtifact { slug, body });
+    let root = PathBuf::from(dir);
+    if !root.exists() {
+        return Ok(Vec::new());
     }
 
-    threads.sort_by(|a, b| a.slug.cmp(&b.slug));
-    Ok(threads)
+    let mut docs = Vec::new();
+    let mut stack = vec![root.clone()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .map(|name| name == tools::SNAPSHOT_FILE)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            if !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                continue;
+            }
+
+            let body = std::fs::read_to_string(&path).unwrap_or_default();
+            let slug = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            docs.push(NarrativeDoc { slug, body });
+        }
+    }
+
+    docs.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(docs)
 }
 
 fn load_context_if_needed(
     include_snapshot: bool,
-    include_todo_threads: bool,
+    include_narrative_docs: bool,
 ) -> Result<Option<PromptContext>, AgentError> {
-    if !include_snapshot && !include_todo_threads {
+    if !include_snapshot && !include_narrative_docs {
         return Ok(None);
     }
 
@@ -110,20 +131,20 @@ fn append_snapshot_section(prompt: &mut String, context: Option<&PromptContext>)
     prompt.push_str("</snapshot>\n\n");
 }
 
-fn append_todo_threads_section(prompt: &mut String, context: Option<&PromptContext>) {
-    prompt.push_str("<todoThreads>\n");
+fn append_narrative_docs_section(prompt: &mut String, context: Option<&PromptContext>) {
+    prompt.push_str("<narrativeDocs>\n");
     if let Some(ctx) = context {
-        if ctx.threads.is_empty() {
-            prompt.push_str("(no active TODO threads)\n");
+        if ctx.docs.is_empty() {
+            prompt.push_str("(no additional narrative docs)\n");
         } else {
-            for thread in &ctx.threads {
-                prompt.push_str(&format!("### {}\n{}\n\n", thread.slug, thread.body.trim()));
+            for doc in &ctx.docs {
+                prompt.push_str(&format!("### {}\n{}\n\n", doc.slug, doc.body.trim()));
             }
         }
     } else {
-        prompt.push_str("(no active TODO threads)\n");
+        prompt.push_str("(no additional narrative docs)\n");
     }
-    prompt.push_str("</todoThreads>\n\n");
+    prompt.push_str("</narrativeDocs>\n\n");
 }
 
 pub fn build_documentation_prompt(
@@ -133,7 +154,7 @@ pub fn build_documentation_prompt(
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
-        documentation.include_todo_threads,
+        documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
@@ -151,8 +172,8 @@ pub fn build_documentation_prompt(
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_todo_threads {
-        append_todo_threads_section(&mut prompt, context.as_ref());
+    if documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
     prompt.push_str("<task>\n");
@@ -171,7 +192,7 @@ pub fn build_implementation_plan_prompt(
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
-        documentation.include_todo_threads,
+        documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
@@ -190,8 +211,8 @@ pub fn build_implementation_plan_prompt(
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_todo_threads {
-        append_todo_threads_section(&mut prompt, context.as_ref());
+    if documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
     prompt.push_str("<operatorSpec>\n");
@@ -215,7 +236,7 @@ pub fn build_review_prompt(
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
-        documentation.include_todo_threads,
+        documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
@@ -234,8 +255,8 @@ pub fn build_review_prompt(
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_todo_threads {
-        append_todo_threads_section(&mut prompt, context.as_ref());
+    if documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
     prompt.push_str("<planDocument>\n");
@@ -334,7 +355,7 @@ pub fn build_merge_conflict_prompt(
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
-        documentation.include_todo_threads,
+        documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
@@ -361,8 +382,8 @@ pub fn build_merge_conflict_prompt(
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_todo_threads {
-        append_todo_threads_section(&mut prompt, context.as_ref());
+    if documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
     Ok(prompt)
@@ -382,12 +403,12 @@ pub fn build_cicd_failure_prompt(
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
         documentation.include_snapshot,
-        documentation.include_todo_threads,
+        documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
-    prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/.snapshot` plus TODO threads when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
+    prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/narrative/snapshot.md` plus any relevant narrative docs when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
 
     prompt.push_str(&format!("<{AGENT_BOUNDS_TAG}>\n"));
     prompt.push_str(&bounds);
@@ -431,8 +452,8 @@ pub fn build_cicd_failure_prompt(
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_todo_threads {
-        append_todo_threads_section(&mut prompt, context.as_ref());
+    if documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
     Ok(prompt)
@@ -571,7 +592,7 @@ mod tests {
         let settings = DocumentationSettings {
             use_documentation_prompt: true,
             include_snapshot: false,
-            include_todo_threads: false,
+            include_narrative_docs: false,
         };
         let selection =
             config::get_config().prompt_for(CommandScope::Ask, PromptKind::Documentation);
@@ -580,8 +601,8 @@ mod tests {
 
         assert!(prompt.contains("<mainInstruction>"));
         assert!(prompt.contains("<task>\ndo the thing\n</task>"));
-        assert!(!prompt.contains("<snapshot>"));
-        assert!(!prompt.contains("<todoThreads>"));
+        assert!(!prompt.contains("<snapshot>\n"));
+        assert!(!prompt.contains("<narrativeDocs>\n"));
     }
 
     #[test]
@@ -589,7 +610,7 @@ mod tests {
         let settings = DocumentationSettings {
             use_documentation_prompt: false,
             include_snapshot: false,
-            include_todo_threads: false,
+            include_narrative_docs: false,
         };
 
         let prompt =

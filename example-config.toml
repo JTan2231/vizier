@@ -94,7 +94,7 @@ backend = "agent"
 [agents.merge.documentation]
 enabled = false
 include_snapshot = false
-include_todo_threads = false
+include_narrative_docs = false
 
 [agents.merge]
 backend = "agent"

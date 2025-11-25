@@ -1,4 +1,4 @@
-Canonicalization note (2025-10-06): This is the canonical TODO for the stdout/stderr contract and verbosity work. Duplicates consolidated: stdout_stderr_contract_and_verbosity.md. Legacy file now carries a redirect stub to this artifact. Cross-links and acceptance remain here.
+Canonicalization note (2025-10-06): This is the canonical thread for the stdout/stderr contract and verbosity work. Legacy TODO files were removed; keep cross-links and acceptance anchored here.
 
 ---
 
@@ -33,10 +33,10 @@ Acceptance criteria
 Status update (2025-11-15)
 - Shipped: -q/-v/-vv, --no-ansi, progress gating tied to TTY/verbosity (vizier-core/src/display.rs; vizier-cli wires config).
 - Outstanding: unify stdout Outcome across commands; implement outcome.v1 schema; ensure non-TTY never sees ANSI and stderr respects verbosity in all paths.
-- Manual `vizier clean` epilogues were removed entirely; TODO hygiene now flows through Default-Action Posture plus the dedicated GC work tracked in `.vizier/todo_todo_todo_garbage_collection_on_save.md`.
+- Manual `vizier clean` epilogues were removed entirely; TODO hygiene now flows through Default-Action Posture plus the dedicated GC work tracked in the snapshot.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)
 - vizier-core/src/display.rs (TTY gating, spinner, verbosity)
 - vizier-cli/src/actions.rs (current ad-hoc outcomes for save/init-snapshot)
-- Cross-link: .vizier/todo_post_action_outcome_summaries_across_tui_cli_and_assistant.md.md
+- Cross-link: Outcome summaries thread (see snapshot)

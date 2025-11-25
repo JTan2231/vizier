@@ -605,12 +605,8 @@ impl AgentRunner for ScriptRunner {
                     if let Some(stdout) = spawned_filter.stdout.take() {
                         let hook = progress_hook.clone();
                         filter_stdout_handle = Some(tokio::spawn(async move {
-                            Self::read_filter_stdout(
-                                BufReader::new(stdout),
-                                filter_source,
-                                hook,
-                            )
-                            .await
+                            Self::read_filter_stdout(BufReader::new(stdout), filter_source, hook)
+                                .await
                         }));
                     }
 
@@ -884,11 +880,7 @@ printf '%s\n' "$last"
         let runner = ScriptRunner;
         let tmp = tempfile::tempdir().unwrap();
         let agent = tmp.path().join("agent.sh");
-        std::fs::write(
-            &agent,
-            "#!/bin/sh\nprintf 'chunk one\\nchunk two\\n'\n",
-        )
-        .unwrap();
+        std::fs::write(&agent, "#!/bin/sh\nprintf 'chunk one\\nchunk two\\n'\n").unwrap();
 
         let filter = tmp.path().join("filter.sh");
         std::fs::write(
@@ -947,13 +939,11 @@ printf '%s\n' "$content"
         let expected = "## Section One\n\nFirst section body.\n\n## Section Two\n\nTail line.\n";
         assert_eq!(response.assistant_text, expected);
         assert!(
-            events
-                .iter()
-                .all(|event| event
-                    .message
-                    .as_deref()
-                    .map(|msg| !msg.trim().is_empty())
-                    .unwrap_or(false)),
+            events.iter().all(|event| event
+                .message
+                .as_deref()
+                .map(|msg| !msg.trim().is_empty())
+                .unwrap_or(false)),
             "progress events should remain trimmed and non-empty"
         );
         assert!(

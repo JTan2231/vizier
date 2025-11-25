@@ -194,7 +194,7 @@ impl From<ProgressArg> for display::ProgressMode {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// One-shot interaction that applies the default-action posture (snapshot/TODO updates plus any backend edits) and exits
+    /// One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any backend edits) and exits
     Ask(AskCmd),
 
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
@@ -222,7 +222,7 @@ enum Commands {
     /// Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
     Merge(MergeCmd),
 
-    /// Bootstrap `.vizier/.snapshot` and TODO threads from repo history
+    /// Bootstrap `.vizier/narrative/snapshot.md` and narrative docs from repo history
     #[command(name = "init-snapshot")]
     InitSnapshot(SnapshotInitCmd),
 
@@ -230,7 +230,7 @@ enum Commands {
     #[command(name = "test-display")]
     TestDisplay(TestDisplayCmd),
 
-    /// Commit tracked changes with an LLM-generated message and update TODOs/snapshot
+    /// Commit tracked changes with an LLM-generated message and update snapshot/narrative docs
     ///
     /// Examples:
     ///   vizier save                # defaults to HEAD
@@ -453,7 +453,7 @@ impl From<CompletionShell> for Shell {
 
 #[derive(ClapArgs, Debug, Clone)]
 struct SnapshotInitCmd {
-    /// Overwrite existing snapshot/TODOs without confirmation
+    /// Overwrite existing snapshot/narrative docs without confirmation
     #[arg(long)]
     force: bool,
 
@@ -1180,12 +1180,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_json: cli.global.json,
     };
 
-    if let Err(e) = std::fs::create_dir_all(tools::get_todo_dir()) {
+    if let Err(e) = std::fs::create_dir_all(tools::get_vizier_dir()) {
         display::emit(
             LogLevel::Error,
             format!(
-                "Error creating TODO directory {:?}: {e}",
-                tools::get_todo_dir()
+                "Error creating .vizier directory {:?}: {e}",
+                tools::get_vizier_dir()
+            ),
+        );
+
+        return Err(Box::<dyn std::error::Error>::from(e));
+    }
+
+    if let Err(e) = std::fs::create_dir_all(tools::get_narrative_dir()) {
+        display::emit(
+            LogLevel::Error,
+            format!(
+                "Error creating .vizier/narrative directory {:?}: {e}",
+                tools::get_narrative_dir()
             ),
         );
 

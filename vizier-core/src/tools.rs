@@ -1,13 +1,18 @@
-use crate::{config, file_tracking, observer::CaptureGuard, vcs};
+use std::path::{Path, PathBuf};
 
-const TODO_DIR: &str = ".vizier/";
+use crate::{config, observer::CaptureGuard, vcs};
+
+pub const VIZIER_DIR: &str = ".vizier/";
+pub const NARRATIVE_DIR: &str = "narrative/";
+pub const SNAPSHOT_FILE: &str = "snapshot.md";
+pub const LEGACY_SNAPSHOT_FILE: &str = ".snapshot";
 
 #[derive(Clone, Debug, Default)]
 pub struct Tool;
 
 // TODO: We should only default to the current directory if there isn't a configured target
 //       directory (for more automated/transient uses)
-fn resolve_todo_dir() -> Option<String> {
+fn resolve_vizier_dir() -> Option<String> {
     let start_dir = std::env::current_dir()
         .ok()
         .expect("Couldn't grab the current working directory");
@@ -15,9 +20,9 @@ fn resolve_todo_dir() -> Option<String> {
     let mut levels_up = 0;
 
     loop {
-        if current.join(TODO_DIR).exists() {
+        if current.join(VIZIER_DIR).exists() {
             let mut path = "../".repeat(levels_up);
-            path.push_str(TODO_DIR);
+            path.push_str(VIZIER_DIR);
             return Some(path);
         }
 
@@ -35,19 +40,131 @@ fn resolve_todo_dir() -> Option<String> {
     }
 }
 
-pub fn get_todo_dir() -> String {
-    resolve_todo_dir().unwrap_or_else(|| panic!("Couldn't find `.vizier/`! How'd this happen?"))
+pub fn get_vizier_dir() -> String {
+    resolve_vizier_dir().unwrap_or_else(|| panic!("Couldn't find `.vizier/`! How'd this happen?"))
 }
 
-pub fn try_get_todo_dir() -> Option<String> {
-    resolve_todo_dir()
+pub fn try_get_vizier_dir() -> Option<String> {
+    resolve_vizier_dir()
+}
+
+pub fn get_narrative_dir() -> String {
+    format!("{}{}", get_vizier_dir(), NARRATIVE_DIR)
+}
+
+pub fn try_get_narrative_dir() -> Option<String> {
+    try_get_vizier_dir().map(|dir| format!("{}{}", dir, NARRATIVE_DIR))
+}
+
+pub fn snapshot_path() -> PathBuf {
+    try_snapshot_path()
+        .unwrap_or_else(|| PathBuf::from(get_narrative_dir()).join(SNAPSHOT_FILE))
+}
+
+pub fn try_snapshot_path() -> Option<PathBuf> {
+    let vizier_root = try_get_vizier_dir().map(PathBuf::from)?;
+
+    if let Some(existing) = discover_snapshot_path(&vizier_root) {
+        return Some(existing);
+    }
+
+    Some(
+        vizier_root
+            .join(NARRATIVE_DIR)
+            .join(SNAPSHOT_FILE),
+    )
+}
+
+pub fn read_snapshot() -> String {
+    try_snapshot_path()
+        .and_then(|path| std::fs::read_to_string(&path).ok())
+        .unwrap_or_default()
+}
+
+pub fn is_snapshot_file(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let file_name = Path::new(normalized.as_str())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+
+    matches!(file_name, SNAPSHOT_FILE | LEGACY_SNAPSHOT_FILE)
+}
+
+pub fn story_diff_targets() -> Vec<String> {
+    let mut targets = vec![get_narrative_dir()];
+
+    if let Some(snapshot) = try_get_vizier_dir()
+        .map(PathBuf::from)
+        .and_then(|root| discover_snapshot_path(&root))
+    {
+        let normalized = snapshot.to_string_lossy().replace('\\', "/");
+        let narrative_dir = get_narrative_dir();
+
+        if !normalized.starts_with(&narrative_dir) {
+            targets.push(normalized);
+        }
+    }
+
+    targets
+}
+
+fn discover_snapshot_path(vizier_root: &Path) -> Option<PathBuf> {
+    for candidate in [
+        vizier_root.join(NARRATIVE_DIR).join(SNAPSHOT_FILE),
+        vizier_root.join(LEGACY_SNAPSHOT_FILE),
+    ] {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    find_snapshot_anywhere(vizier_root)
+}
+
+fn find_snapshot_anywhere(vizier_root: &Path) -> Option<PathBuf> {
+    let mut stack = vec![vizier_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+
+            if file_type.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions") {
+                        continue;
+                    }
+                }
+
+                stack.push(path);
+                continue;
+            }
+
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_snapshot_file)
+            {
+                return Some(path);
+            }
+        }
+    }
+
+    None
 }
 
 pub fn is_action(name: &str) -> bool {
-    name == "add_todo"
-        || name == "update_todo"
-        || name == "update_snapshot"
-        || name == "update_todo_status"
+    let _ = name;
+    false
 }
 
 // TODO: We need a better way of handling errors as they happen here.
@@ -106,147 +223,64 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn build_todo_path(name: &str) -> Result<String, String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err(llm_error("TODO name cannot be empty"));
-    }
-
-    if trimmed.starts_with('.') {
-        return Err(llm_error(
-            "TODO name cannot start with '.'; choose a visible slug",
-        ));
-    }
-
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(llm_error(
-            "TODO name cannot contain path separators. Provide a single slug.",
-        ));
-    }
-
-    Ok(format!("{}{}", get_todo_dir(), trimmed))
-}
-
-#[allow(dead_code)]
-fn add_todo(name: String, description: String) -> String {
-    let filename = match build_todo_path(&name) {
-        Ok(path) => path,
-        Err(err) => return err,
+pub fn list_narrative_docs() -> String {
+    let root = match try_get_narrative_dir() {
+        Some(dir) => PathBuf::from(dir),
+        None => return String::new(),
     };
 
-    if let Err(e) = file_tracking::FileTracker::write(&filename, &description) {
-        llm_error(&format!("Failed to create todo file {}: {}", filename, e))
-    } else {
-        "Todo added successfully".to_string()
-    }
-}
-
-#[allow(dead_code)]
-fn delete_todo(name: String) -> String {
-    let filename = match build_todo_path(&name) {
-        Ok(path) => path,
-        Err(err) => return err,
+    let mut names = match collect_markdown_entries(&root) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return llm_error(&format!(
+                "Error reading narrative directory {}: {}",
+                root.display(),
+                e
+            ));
+        }
     };
 
-    if let Err(e) = file_tracking::FileTracker::delete(&filename) {
-        llm_error(&format!("Failed to create delete file {}: {}", filename, e))
-    } else {
-        "Todo deleted successfully".to_string()
-    }
+    names.sort();
+    names.dedup();
+    names.join("; ")
 }
 
-#[allow(dead_code)]
-fn update_todo(todo_name: String, update: String) -> String {
-    let filename = match build_todo_path(&todo_name) {
-        Ok(path) => path,
-        Err(err) => return err,
-    };
+fn collect_markdown_entries(root: &Path) -> Result<Vec<String>, std::io::Error> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut entries = Vec::new();
 
-    if let Err(e) = file_tracking::FileTracker::write(&filename, &format!("{}\n\n---\n\n", update))
-    {
-        llm_error(&format!("Failed to create todo file {}: {}", filename, e))
-    } else {
-        "Todo updated successfully".to_string()
-    }
-}
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
 
-#[allow(dead_code)]
-fn read_file(filepath: String) -> String {
-    let contents = file_tracking::FileTracker::read(&filepath);
-    if let Err(e) = contents {
-        return llm_error(&format!("Failed to read todo file {}: {}", filepath, e));
-    }
-
-    contents.unwrap_or_default()
-}
-
-pub fn list_todos() -> String {
-    match std::fs::read_dir(get_todo_dir()) {
-        Ok(d) => {
-            let mut names = Vec::new();
-
-            for entry in d.flatten() {
-                let file_type = match entry.file_type() {
-                    Ok(ft) => ft,
-                    Err(_) => continue,
-                };
-
-                if !file_type.is_file() {
-                    continue;
-                }
-
-                let name = match entry.file_name().into_string() {
-                    Ok(name) => name,
-                    Err(_) => continue,
-                };
-
-                if name.starts_with('.') {
-                    continue;
-                }
-
-                names.push(name);
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
             }
 
-            names.join("; ")
+            if path.file_name().and_then(|n| n.to_str()) == Some(SNAPSHOT_FILE) {
+                continue;
+            }
+
+            if !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                continue;
+            }
+
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            entries.push(relative);
         }
-        Err(e) => llm_error(&format!(
-            "Error reading directory {}: {}",
-            get_todo_dir(),
-            e
-        )),
     }
-}
 
-#[allow(dead_code)]
-fn read_todo(todo_name: String) -> String {
-    let filename = match build_todo_path(&todo_name) {
-        Ok(path) => path,
-        Err(err) => return err,
-    };
-
-    let contents = file_tracking::FileTracker::read(&filename.clone());
-    if let Err(e) = contents {
-        llm_error(&format!("Failed to read todo file {}: {}", filename, e))
-    } else {
-        contents.unwrap_or_default()
-    }
-}
-
-pub fn read_snapshot() -> String {
-    let filename = format!("{}{}", get_todo_dir(), ".snapshot");
-    std::fs::read_to_string(&filename).unwrap_or_default()
-}
-
-#[allow(dead_code)]
-fn update_snapshot(content: String) -> String {
-    let filename = format!("{}{}", get_todo_dir(), ".snapshot");
-
-    if let Err(e) = std::fs::write(&filename, &content) {
-        llm_error(&format!("Failed to update snapshot: {}", e))
-    } else {
-        "Snapshot updated successfully".to_string()
-    }
+    Ok(entries)
 }
 
 #[allow(dead_code)]
@@ -320,4 +354,51 @@ pub fn get_snapshot_tools() -> Vec<Tool> {
 pub fn active_tooling_for(agent: &config::AgentSettings) -> Vec<Tool> {
     let _ = agent;
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn discover_snapshot_prefers_canonical_location() {
+        let temp = tempdir().unwrap();
+        let vizier_root = temp.path().join(".vizier");
+        fs::create_dir_all(vizier_root.join("narrative")).unwrap();
+        fs::write(
+            vizier_root.join("narrative").join(SNAPSHOT_FILE),
+            "canonical",
+        )
+        .unwrap();
+        fs::write(vizier_root.join(LEGACY_SNAPSHOT_FILE), "legacy").unwrap();
+
+        let found = discover_snapshot_path(&vizier_root).unwrap();
+        assert_eq!(found, vizier_root.join("narrative").join(SNAPSHOT_FILE));
+    }
+
+    #[test]
+    fn discover_snapshot_falls_back_to_legacy_file() {
+        let temp = tempdir().unwrap();
+        let vizier_root = temp.path().join(".vizier");
+        fs::create_dir_all(&vizier_root).unwrap();
+        fs::write(vizier_root.join(LEGACY_SNAPSHOT_FILE), "legacy").unwrap();
+
+        let found = discover_snapshot_path(&vizier_root).unwrap();
+        assert_eq!(found, vizier_root.join(LEGACY_SNAPSHOT_FILE));
+    }
+
+    #[test]
+    fn discover_snapshot_scans_nested_paths() {
+        let temp = tempdir().unwrap();
+        let vizier_root = temp.path().join(".vizier");
+        let nested = vizier_root.join("nested/deeper");
+        fs::create_dir_all(&nested).unwrap();
+        let nested_snapshot = nested.join(SNAPSHOT_FILE);
+        fs::write(&nested_snapshot, "content").unwrap();
+
+        let found = discover_snapshot_path(&vizier_root).unwrap();
+        assert_eq!(found, nested_snapshot);
+    }
 }

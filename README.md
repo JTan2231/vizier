@@ -6,6 +6,13 @@ Vizier is the control plane between your agents and your Git repository. It's no
 
 **Bring Your Own Agent.** Vizier doesn't care which agent you use. It cares *how* that agent interacts with version control: isolated branches, audited commits, narrative tracking, and compliance gates.
 
+## What Vizier Does (At a Glance)
+- Coordinates agents through the `draft → approve → review → merge` workflow atop Git without touching your working tree.
+- Maintains a living Snapshot plus supporting narrative docs so every change advances a named thread.
+- Enforces guardrails: pending commit gates, review artifacts, architecture-doc citations, and repo-local evidence under `.vizier/`.
+- Keeps workspaces clean via temporary worktrees and repo-level session logs.
+- Operates 100% Git-native — every artifact is a branch, commit, or tracked file you can inspect locally.
+
 ## Why You'd Use It
 
 Use Vizier when you need guardrails for AI-assisted development without outsourcing your repo to another SaaS surface.
@@ -63,10 +70,19 @@ That's it. Vizier updates `.vizier/.snapshot` and TODO threads as you work. Ever
 ## Core Concepts
 
 ### Snapshot
-A single-page document capturing what your code does and why it exists. Think of it as a diffable story bible that evolves with your project.
+A single-page story bible that captures both CODE STATE (observable behaviors/interfaces) and NARRATIVE STATE (themes, tensions, open threads). Treat it like a diffable frame of truth.
 
-### Threads & TODOs
-Threads are narrative arcs (e.g., "improve error handling"). TODOs are specific tasks that advance those threads, always tied back to the Snapshot with concrete acceptance criteria.
+- Always read-before-write; prefer minimal, diff-like updates over rewrites.
+- Cross-link snapshot paragraphs to the narrative docs they inform.
+- Ground every edit in evidence from the codebase or user behavior — never invent internals.
+
+### Narrative docs & threads
+Threads are narrative arcs; narrative docs (under `.vizier/narrative/threads/`) are the Chekhov's guns that resolve each tension.
+Legacy `.vizier/todo_*.md` files are no longer read; migrate any remaining notes into `.vizier/narrative/threads/` so they stay in the prompt context.
+
+- Every narrative doc advances a named thread and cites the relevant slice of the Snapshot.
+- Tasks stay product-level by default; reach for implementation detail only when safety or explicit requests demand it.
+- No "investigate X" placeholders — each narrative doc commits to an observable outcome with acceptance criteria.
 
 ### Agent Control Plane
 Agents never write directly to your repo. They work through Vizier commands that stage changes behind disposable worktrees, commit with audit trails, and surface outcomes for review.
@@ -78,6 +94,10 @@ Agents never write directly to your repo. They work through Vizier commands that
 ### Human-Driven: Ask and Save
 
 Use Vizier to maintain narrative even without agents:
+
+- `vizier ask "..."` captures a directive, updates the snapshot/narrative docs, and exits with a concise outcome.
+- Vizier applies the default-action posture: unless you opt out, conversations update the narrative artifacts automatically.
+- `vizier save` stages `.vizier/` edits plus code changes, runs the Auditor, and lands commits without disturbing existing staged work.
 
 ```bash
 vizier ask "what's the status of the API refactor?"
@@ -101,7 +121,7 @@ Commit: a1b2c3d
 
 ### Agent-Heavy: Draft, Approve, Review, Merge
 
-Let agents implement features on isolated branches:
+Each Vizier action lands a single commit that bundles code edits with canonical narrative assets (`.vizier/.snapshot` plus notes under `.vizier/narrative/threads/`). Plan documents, `.vizier/tmp/*`, and session logs stay as scratch artifacts and are filtered out automatically. Let agents implement features on isolated branches:
 
 ```bash
 # 1. Create a plan on a draft branch
@@ -158,28 +178,25 @@ squash = true  # Clean two-commit history per plan
 - Define CI/CD gates that must pass before merging
 - Customize prompts via `.vizier/config.toml` or standalone files
 
-**Inspect before running:**
-```bash
-vizier plan --json  # See resolved settings without touching repo
-```
-
-**Configuration layers** (later wins):
-1. Global defaults (`~/.config/vizier/config.toml`)
-2. Repo overrides (`.vizier/config.toml`)
-3. CLI flags (`--backend`, `--cicd-script`, etc.)
-
-See `example-config.toml` for annotated examples, or `docs/config-reference.md` for the complete catalogue.
+**Configuration essentials:**
+- `docs/config-reference.md` is the exhaustive list of configuration keys (scope, defaults, precedence, CLI overrides) plus deprecated entries; `docs/prompt-config-matrix.md` maps scopes to prompt kinds.
+- `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan, `[merge] squash_mainline = 2` for merge-heavy plan branches), backend options, and the prompt profiles attached to each command (`[agents.<scope>.prompts.<kind>]` with inline text or `path` overrides).
+- `vizier plan` prints the fully resolved configuration (global + repo + CLI overrides) with per-scope backend/runtime selection; pass `--json` for a structured view. Help output pages on TTY by default; use `$VIZIER_PAGER` or `--pager`/`--no-pager` to control it. Quiet/`--no-ansi`/non-TTY fall back to plain stdout.
+- If you do not pass `--config-file`, Vizier loads global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (when present) and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your personal defaults. `VIZIER_CONFIG_FILE` is consulted only when neither config file exists.
+- Agent backends run through shell scripts that stream JSON on stdout while Vizier handles the rest: pick a bundled shim via `agent.label` (`codex`/`gemini`, installed under `share/vizier/agents/`) or point `[agents.<scope>.agent].command` at your own script; tune `[agent].output` and `[agent].progress_filter` as needed. Each scope names a single backend; failures abort instead of falling back automatically.
+- `.vizier/*.md` prompt files (IMPLEMENTATION_PLAN_PROMPT, REVIEW_PROMPT, MERGE_CONFLICT_PROMPT, etc.; legacy BASE_SYSTEM_PROMPT still works) remain the fallback when no scope-specific profile is defined. Per-scope documentation controls live under `[agents.<scope>.documentation]` (`enabled`, `include_snapshot`, `include_narrative_docs`) so you can slim prompts when needed.
+- `.vizier/COMMIT_PROMPT.md` (or `[prompts.commit]`) replaces the default commit template. `example-config.toml` documents every knob, precedence rule (`CLI → scoped agent → default agent → legacy`), and shows how per-scope prompt profiles control backend selection and prompt text.
 
 ## Philosophy: Narrative Maintainer
 
 Vizier treats software development as story editing, not just diff management.
 
-- **Code is story** — The Snapshot is your single-frame story bible
-- **Every TODO is a Chekhov's gun** — Specific, contextual, inevitable to resolve
-- **Evidence beats speculation** — Ground changes in observable behavior and tests
-- **Continuity beats churn** — Evolve existing threads instead of spawning duplicates
-- **Operators stay in control** — Agents amplify intent but never free-drive
-- **VCS hygiene over agent choice** — Vizier has strong opinions about Git interactions, zero opinions about which AI writes your code
+- Code is story, not an index; the Snapshot is the single-frame story bible.
+- Every narrative doc/TODO is a Chekhov's gun — specific, contextual, and inevitable to resolve.
+- Evidence beats speculation; ground changes in observable behavior and tests.
+- Continuity beats churn; evolve existing threads instead of spawning duplicates.
+- Operators stay in control; agents amplify maintainer intent but never free-drive.
+- VCS hygiene over agent choice — Vizier has strong opinions about Git interactions, zero opinions about which AI writes your code.
 
 ## Additional Resources
 

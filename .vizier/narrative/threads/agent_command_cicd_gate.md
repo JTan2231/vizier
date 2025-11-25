@@ -27,7 +27,7 @@ Status
 - Remaining work focuses on generalizing the gate abstraction beyond merge/review (ask/save/draft/approve), emitting structured gate facts into Outcome/session logs, and allowing repositories to define reusable named gate profiles instead of merge-only wiring.
 
 Pointers
-- Agent workflow orchestration thread in `.vizier/.snapshot` (Active threads: Agent workflow orchestration).
+- Agent workflow orchestration thread in `.vizier/narrative/snapshot.md` (Active threads: Agent workflow orchestration).
 - `vizier review` checks and `[review.checks]` configuration as the initial gate surface.
 - Outcome summaries and stdout/stderr contract TODOs for reporting and IO rules.
 - Session logging JSON store for recording per-command gate decisions.

@@ -374,14 +374,29 @@ impl Auditor {
 
         let root = project_root.to_str().unwrap();
 
+        let mut diff_chunks = Vec::new();
+        for target in tools::story_diff_targets() {
+            match vcs::get_diff(root, Some(&target), None) {
+                Ok(diff) => diff_chunks.push(diff),
+                Err(err) => display::debug(format!(
+                    "Unable to compute narrative diff for {target}: {err}"
+                )),
+            }
+        }
+
         let mut diff_message = None;
-        if let Ok(diff) = vcs::get_diff(root, Some(&tools::get_todo_dir()), None) {
-            display::info("Writing commit message for TODO changes...");
+        if !diff_chunks.is_empty() {
+            let combined = diff_chunks.join("");
+            display::info("Writing commit message for narrative changes...");
             diff_message = Some(
                 Self::llm_request(
-                    "Given a diff on a directory of TODO items, return a commit message for these changes."
+                    "Given a diff on narrative artifacts, return a commit message for these changes."
                         .to_string(),
-                    if diff.len() == 0 { "init".to_string() } else { diff },
+                    if combined.is_empty() {
+                        "init".to_string()
+                    } else {
+                        combined
+                    },
                 )
                 .await?
                 .content,
@@ -845,8 +860,15 @@ fn simulate_integration_changes() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !skip_vizier_change {
-        crate::file_tracking::FileTracker::write(".vizier/.snapshot", "some snapshot change")?;
-        crate::file_tracking::FileTracker::write(".vizier/todo.md", "some todo change")?;
+        std::fs::create_dir_all(".vizier/narrative/threads")?;
+        crate::file_tracking::FileTracker::write(
+            ".vizier/narrative/snapshot.md",
+            "some snapshot change",
+        )?;
+        crate::file_tracking::FileTracker::write(
+            ".vizier/narrative/threads/demo.md",
+            "some narrative change",
+        )?;
     }
 
     Ok(())

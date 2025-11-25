@@ -121,7 +121,7 @@ struct ReviewReport {
 struct DocumentationReport {
     enabled: bool,
     include_snapshot: bool,
-    include_todo_threads: bool,
+    include_narrative_docs: bool,
 }
 
 fn resolve_default_agent_settings(
@@ -155,7 +155,7 @@ fn documentation_report(docs: &config::DocumentationSettings) -> DocumentationRe
     DocumentationReport {
         enabled: docs.use_documentation_prompt,
         include_snapshot: docs.include_snapshot,
-        include_todo_threads: docs.include_todo_threads,
+        include_narrative_docs: docs.include_narrative_docs,
     }
 }
 
@@ -256,7 +256,7 @@ fn documentation_label(docs: &DocumentationReport) -> String {
 
     let mut parts = vec!["enabled".to_string()];
     parts.push(format!("snapshot={}", docs.include_snapshot));
-    parts.push(format!("todo_threads={}", docs.include_todo_threads));
+    parts.push(format!("narrative_docs={}", docs.include_narrative_docs));
     parts.join(" ")
 }
 
@@ -1253,7 +1253,8 @@ fn clear_narrative_tracker(paths: &[String]) {
 
 fn build_save_instruction(note: Option<&str>) -> String {
     let mut instruction =
-        "<instruction>Update the snapshot and existing TODOs as needed</instruction>".to_string();
+        "<instruction>Update the snapshot and supporting narrative docs as needed</instruction>"
+            .to_string();
 
     if let Some(text) = note {
         instruction.push_str(&format!(
@@ -1338,7 +1339,7 @@ async fn save(
             } else {
                 narrative_summary
                     .clone()
-                    .unwrap_or_else(|| "Update snapshot and TODO threads".to_string())
+                    .unwrap_or_else(|| "Update snapshot and narrative docs".to_string())
             };
 
             let mut message_builder = CommitMessageBuilder::new(commit_body);
@@ -1383,7 +1384,7 @@ async fn save(
     } else {
         if has_narrative_changes {
             display::info(
-                "Snapshot/TODO updates left pending (--no-commit); review and commit when ready.",
+                "Snapshot/narrative updates left pending (--no-commit); review and commit when ready.",
             );
         }
         if has_code_changes {
@@ -1518,7 +1519,7 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
     Ok(user_message)
 }
 
-/// NOTE: Filters out hidden entries; every visible file in `.vizier/` is a TODO candidate.
+/// NOTE: Filters out hidden entries; every visible file in `.vizier/` is treated as part of the narrative surface.
 ///
 /// This is `vizier ask`
 pub async fn inline_command(
@@ -1586,7 +1587,7 @@ pub async fn inline_command(
             } else {
                 narrative_summary
                     .clone()
-                    .unwrap_or_else(|| "Update snapshot and TODO threads".to_string())
+                    .unwrap_or_else(|| "Update snapshot and narrative docs".to_string())
             };
 
             let mut builder = CommitMessageBuilder::new(commit_body);
@@ -4648,7 +4649,7 @@ async fn apply_review_fixes(
     }
     instruction.push_str("</reviewCritique>");
     instruction.push_str(
-        "<note>Update `.vizier/.snapshot` and TODO threads when behavior changes.</note>",
+        "<note>Update `.vizier/narrative/snapshot.md` and any relevant narrative docs when behavior changes.</note>",
     );
 
     let system_prompt = agent_prompt::build_documentation_prompt(
@@ -4793,7 +4794,7 @@ async fn apply_plan_in_worktree(
 
     let plan_rel = spec.plan_rel_path();
     let mut instruction = format!(
-        "<instruction>Read the implementation plan at {} and implement its Execution Plan on this branch. Apply the listed steps, update `.vizier/.snapshot` plus TODO threads as needed, and stage the resulting edits for commit.</instruction>",
+        "<instruction>Read the implementation plan at {} and implement its Execution Plan on this branch. Apply the listed steps, update `.vizier/narrative/snapshot.md` plus any narrative docs as needed, and stage the resulting edits for commit.</instruction>",
         plan_rel.display()
     );
     instruction.push_str(&format!(

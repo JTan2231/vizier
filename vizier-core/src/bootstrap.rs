@@ -65,8 +65,11 @@ pub async fn bootstrap_snapshot(
     let agent = config::get_config().resolve_agent_settings(config::CommandScope::Ask, None)?;
     let agent = agent.for_prompt(config::PromptKind::Documentation)?;
 
-    let todo_dir = resolve_todo_dir()?;
-    let snapshot_path = todo_dir.join(".snapshot");
+    let narrative_dir = resolve_narrative_dir()?;
+    if !narrative_dir.exists() {
+        std::fs::create_dir_all(&narrative_dir)?;
+    }
+    let snapshot_path = narrative_dir.join(crate::tools::SNAPSHOT_FILE);
 
     ensure_overwrite_allowed(&snapshot_path, options.force)?;
 
@@ -148,8 +151,8 @@ struct RepoStatus {
     analysis_timestamp: String,
 }
 
-fn resolve_todo_dir() -> io::Result<PathBuf> {
-    let dir = PathBuf::from(tools::get_todo_dir());
+fn resolve_narrative_dir() -> io::Result<PathBuf> {
+    let dir = PathBuf::from(tools::get_narrative_dir());
     if dir.is_absolute() {
         Ok(dir)
     } else {
@@ -291,8 +294,8 @@ fn build_instruction(
 ) -> String {
     let mut message = String::new();
 
-    message.push_str("Kick off a first-pass Vizier SNAPSHOT + TODO threads for this repository.\n");
-    message.push_str("You are the story editor: capture the current frame of the project (CODE STATE / NARRATIVE STATE) and open the smallest set of TODO scenes that move the story forward.\n\n");
+    message.push_str("Kick off a first-pass Vizier narrative snapshot for this repository.\n");
+    message.push_str("You are the story editor: capture the current frame of the project (CODE STATE / NARRATIVE STATE) and add only the supporting narrative notes needed to keep active tensions visible under `.vizier/narrative/`.\n\n");
 
     message.push_str("Theme (placard — front-facing at-a-glance identity):\n");
     message.push_str("- One or two sentences that capture the *core narrative tension* of this project right now.\n");
@@ -360,30 +363,24 @@ fn build_instruction(
     message.push_str("\nOperating stance:\n");
     message.push_str("- Read before you write: prefer minimal, diff-like edits to the snapshot.\n");
     message.push_str("- Evidence > speculation: ground in observed behavior, tests, or user-visible constraints.\n");
-    message.push_str("- Merge threads; don’t fork duplicates. Every TODO must cite the snapshot slice it depends on.\n");
-    message.push_str("- Default to Product-level TODOs (behavior + acceptance). Only include Implementation Notes when safety/correctness or an already-chosen constraint demands it.\n");
+    message.push_str("- Merge narrative threads; avoid duplicating themes across docs, and always anchor notes to the snapshot slice they extend.\n");
+    message.push_str("- Default to Product-level behaviors and acceptance signals; reserve implementation notes for safety/correctness or already-bound constraints.\n");
 
     message.push_str("\nActions you must take now (use available tools):\n");
     message.push_str("1) Use reading tools as needed to understand code, docs, and history.\n");
-    message.push_str("2) Write `.vizier/.snapshot` with `update_snapshot`: a single page with CODE STATE (observable surfaces/behaviors) and NARRATIVE STATE (active tensions/threads).\n");
-    message.push_str("3) For each tension surfaced, create a TODO via `add_todo` (one file per scene). Each TODO must:\n");
-    message.push_str("   - Start at Product level (behavior + acceptance criteria).\n");
-    message.push_str("   - Cite the snapshot section it depends on.\n");
-    message.push_str("   - Optionally include short Implementation Notes **only** if required by safety/correctness or an already-bound constraint.\n");
+    message.push_str("2) Write `.vizier/narrative/snapshot.md`: a single page with CODE STATE (observable surfaces/behaviors) and NARRATIVE STATE (active tensions/threads). Cross-link to any supporting narrative docs you open.\n");
     message.push_str(
-        "4) Cross-link: the snapshot must reference the filenames of the TODOs you create.\n",
+        "3) When a tension needs more space than the snapshot affords, open a focused narrative doc under `.vizier/narrative/threads/<slug>.md` (one doc per tension) and anchor it to the snapshot slice it develops.\n",
     );
 
     message.push_str("\nRespond **only** in this format (no prologue):\n");
     message.push_str("<snapshotDelta>\n");
     message.push_str("- Minimal, diff-like notes updating CODE STATE and/or NARRATIVE STATE.\n");
-    message.push_str("- Include cross-links to the TODO threads you opened.\n");
+    message.push_str("- Include cross-links to any narrative docs you authored.\n");
     message.push_str("</snapshotDelta>\n\n");
-    message.push_str("<todos>\n");
-    message.push_str("- A list of behavior-first TODOs with acceptance criteria.\n");
-    message.push_str("- Optional pointers (files/components) for orientation.\n");
-    message.push_str("- Include Implementation Notes only if justified per rules above.\n");
-    message.push_str("</todos>\n");
+    message.push_str("<narrativeDocs>\n");
+    message.push_str("- List any narrative docs you created or updated under `.vizier/narrative/` with path and intent/acceptance signals.\n");
+    message.push_str("</narrativeDocs>\n");
 
     message
 }

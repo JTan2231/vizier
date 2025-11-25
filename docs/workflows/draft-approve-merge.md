@@ -41,7 +41,7 @@ Want to exercise a scoped agent without touching `.vizier` or Git? `vizier test-
 3. **`vizier review <slug>`** — Runs the merge CI/CD gate before prompting (using `[merge.cicd_gate]` or review `--cicd-*` overrides) and feeds the result into the critique prompt/summary/session log, then runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists). The critique streams to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and you can optionally apply fixes on the plan branch without mutating the plan document’s front matter. Auto-remediation for the gate stays disabled during review; merge still owns CI/CD fixes.
 4. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, replays the plan branch commits onto the target, and (by default) soft-squashes that range into a single implementation commit on the target before writing the non–fast-forward merge commit that embeds the stored plan under an `Implementation Plan:` block. Pass `--no-squash` or set `[merge] squash = false` in `.vizier/config.toml` to keep the legacy “merge straight from the draft branch history” behavior. If the plan branch contains merge commits, squash merges now preflight the history and require either `--squash-mainline <parent index>` (or `[merge] squash_mainline = <n>`) to cherry-pick those merges or `--no-squash` to keep the branch graph intact.
 
-Every step commits code and canonical narrative edits together in a single commit (`.vizier/.snapshot` plus root-level TODO threads). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
+Every step commits code and canonical narrative edits together in a single commit (`.vizier/narrative/snapshot.md` plus notes under `.vizier/narrative/threads/`). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
@@ -61,7 +61,7 @@ Use this when you want to inspect agent output locally before history changes. O
 
 ### Customizing the plan/review/merge prompts
 
-Repositories can tune every agent instruction involved in this workflow without recompiling Vizier. Define `[agents.<scope>.prompts.<kind>]` tables (for example, `[agents.draft.prompts.implementation_plan]`, `[agents.review.prompts.review]`, `[agents.merge.prompts.merge_conflict]`) inside `.vizier/config.toml` to point at custom Markdown templates via `path` or inline text and to pin backend/model/reasoning overrides for that specific scope. Vizier loads those profiles before each run, so prompt updates take effect immediately; `.vizier/DOCUMENTATION_PROMPT.md` (legacy `BASE_SYSTEM_PROMPT.md`), `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is defined. Per-scope documentation toggles live under `[agents.<scope>.documentation]` (`enabled`, `include_snapshot`, `include_todo_threads`) so scopes like merge/approve/review-fix can opt out of the documentation prompt or drop snapshot/TODO attachments when they need a leaner context. For a complete matrix of scopes, prompt kinds, and fallback order, refer to `docs/prompt-config-matrix.md`.
+Repositories can tune every agent instruction involved in this workflow without recompiling Vizier. Define `[agents.<scope>.prompts.<kind>]` tables (for example, `[agents.draft.prompts.implementation_plan]`, `[agents.review.prompts.review]`, `[agents.merge.prompts.merge_conflict]`) inside `.vizier/config.toml` to point at custom Markdown templates via `path` or inline text and to pin backend/model/reasoning overrides for that specific scope. Vizier loads those profiles before each run, so prompt updates take effect immediately; `.vizier/DOCUMENTATION_PROMPT.md` (legacy `BASE_SYSTEM_PROMPT.md`), `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is defined. Per-scope documentation toggles live under `[agents.<scope>.documentation]` (`enabled`, `include_snapshot`, `include_narrative_docs`) so scopes like merge/approve/review-fix can opt out of the documentation prompt or drop snapshot/narrative attachments when they need a leaner context. For a complete matrix of scopes, prompt kinds, and fallback order, refer to `docs/prompt-config-matrix.md`.
 
 ## `vizier draft`: create the plan branch
 
@@ -97,7 +97,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 **What it does**
 - Validates that `draft/<slug>` is based on the current target branch; warns if the branch is behind.
 - Creates a temporary worktree `.vizier/tmp-worktrees/<slug>-<suffix>/` checked out to the plan branch and runs the configured implementation backend against the stored plan document.
-- The backend edits `.vizier/.snapshot`, TODOs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
+- The backend edits `.vizier/narrative/snapshot.md`, narrative docs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
 - Your original checkout stays untouched. On success the temp worktree is removed; on failure it is preserved for debugging and the branch keeps whatever the backend staged.
 - While the backend runs, Vizier prints one `[agent:<scope>] phase — message` line per event (with status, percentage, and file hints) so you keep a scrolling history of what the agent is doing instead of watching a spinner. Pass `-q` to suppress them or `-v/-vv` for timestamps/raw JSON.
 
@@ -124,7 +124,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Runs the merge CI/CD gate before prompting, using `[merge.cicd_gate]` (or review `--cicd-*` overrides) and piping the status/log snippets into both the critique prompt and the review summary/session log. Auto-remediation for the gate is disabled during review; merge still owns CI/CD fixes.
 - Creates another disposable worktree on `draft/<slug>`, gathers the diff against the target branch, and runs the configured review checks (defaults to `cargo check --all --all-targets` and `cargo test --all --all-targets` when a `Cargo.toml` is present or the `[review.checks]` commands in your config).
 - Streams each check result to stderr so you see passes/failures before the backend speaks. Failures are captured verbatim and wired into the prompt.
-- Builds an agent prompt that includes the snapshot, TODO threads, plan document, diff summary, and the check logs, then prints the Markdown critique directly to stdout (and into the session log) instead of saving `.vizier/reviews/<slug>.md`.
+- Builds an agent prompt that includes the snapshot, narrative docs, plan document, diff summary, and the check logs, then prints the Markdown critique directly to stdout (and into the session log) instead of saving `.vizier/reviews/<slug>.md`.
 - Prompts `Apply suggested fixes on draft/<slug>? [y/N]` unless you passed `--review-only` or `-y/--yes`. When accepted, Vizier feeds the backend both the plan document and the in-memory critique text, applies the fixes on `draft/<slug>`, and commits those changes (or leaves them pending with `--no-commit`). The plan document front matter stays lean (`plan` + `branch`) and is no longer mutated by review status updates.
 
 **Flags to remember**
@@ -142,7 +142,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
   commands = ["npm test", "cargo fmt -- --check", "cargo clippy -- -D warnings"]
   ```
 - Failed commands do not abort the review; the stderr/stdout are preserved and surfaced in both the CLI output and agent prompt so reviewers can see exactly what broke. The same applies to CI/CD gate failures: the critique still runs with the gate output attached.
-- Use `--skip-checks` when your repo relies on external services or long-running suites. The critique still includes the diff summary, plan metadata, and TODO threads.
+- Use `--skip-checks` when your repo relies on external services or long-running suites. The critique still includes the diff summary, plan metadata, and narrative context.
 
 **Outputs to watch**
 - CLI prints `critique=terminal`, the diff command, check counts, and the session log path in the Outcome line; the critique itself appears earlier in stdout for immediate consumption.
@@ -159,7 +159,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 **Prep work (handled automatically)**
 1. Creates a temporary worktree on the plan branch.
 2. Deletes `.vizier/implementation-plans/<slug>.md` from that branch so the plan doc does not land in the target branch.
-3. Runs a `vizier save`–style backend refresh to make sure `.vizier/.snapshot` + TODOs in the plan branch reflect the latest story before merging.
+3. Runs a `vizier save`–style backend refresh to make sure `.vizier/narrative/snapshot.md` + narrative docs in the plan branch reflect the latest story before merging.
 4. Cleans up the worktree.
 5. Checks out the target branch locally (switches branches if needed).
 
@@ -220,7 +220,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
    ```bash
    vizier merge ingest-backpressure
    ```
-   - Vizier refreshes `.vizier/.snapshot`, removes the plan doc, and merges into the detected primary branch (e.g., `main`).
+   - Vizier refreshes `.vizier/narrative/snapshot.md`, removes the plan doc, and merges into the detected primary branch (e.g., `main`).
    - Final output is a block such as:
      ```
      Outcome: Merge complete
@@ -247,4 +247,4 @@ Not automatically. Pass `--push` (global CLI flag) after `approve` or `merge` if
 ## Architecture docs & agent workflows
 
 - Plan documents live under `.vizier/implementation-plans/` and describe how the selected backend intends to implement the spec, but they do **not** replace architecture-doc references required by the compliance gate. Keep your architecture doc path handy so `vizier save` can cite it when the plan’s changes land on the primary branch.
-- When multiple agents collaborate, use this workflow as the runbook: one operator drafts, another approves, and a third merges. The Auditor already records Outcome lines for each command, so reference those facts (plus the plan slug) inside `.vizier/.snapshot` and TODO updates to keep the narrative threads aligned.
+- When multiple agents collaborate, use this workflow as the runbook: one operator drafts, another approves, and a third merges. The Auditor already records Outcome lines for each command, so reference those facts (plus the plan slug) inside `.vizier/narrative/snapshot.md` and narrative updates to keep the threads aligned.

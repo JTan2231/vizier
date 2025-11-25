@@ -460,11 +460,11 @@ fn test_save() -> TestResult {
 
     let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
     assert!(
-        files.contains("a") && files.contains(".vizier/.snapshot"),
+        files.contains("a") && files.contains(".vizier/narrative/snapshot.md"),
         "combined commit should include code + narrative files, got {files:?}"
     );
 
-    let snapshot = repo.read(".vizier/.snapshot")?;
+    let snapshot = repo.read(".vizier/narrative/snapshot.md")?;
     assert!(
         snapshot.contains("some snapshot change"),
         "expected mock backend snapshot update"
@@ -499,7 +499,7 @@ fn test_save_with_staged_files() -> TestResult {
     );
     let files = files_changed_in_commit(&repo_handle, "HEAD")?;
     assert!(
-        files.contains("b") && files.contains(".vizier/.snapshot"),
+        files.contains("b") && files.contains(".vizier/narrative/snapshot.md"),
         "combined commit should include staged code and narrative files, got {files:?}"
     );
     Ok(())
@@ -534,7 +534,7 @@ fn test_save_without_code_changes() -> TestResult {
     assert_eq!(after - before, 1, "should create a single commit");
     let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
     assert!(
-        files.contains(".vizier/.snapshot") && !files.contains("a"),
+        files.contains(".vizier/narrative/snapshot.md") && !files.contains("a"),
         "expected commit to contain only narrative assets when code changes are skipped, got {files:?}"
     );
     Ok(())
@@ -570,13 +570,13 @@ fn test_save_no_commit_leaves_pending_changes() -> TestResult {
             repo.path().to_str().unwrap(),
             "status",
             "--short",
-            ".vizier/.snapshot",
+            ".vizier/narrative/snapshot.md",
         ])
         .output()?;
     let status_stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        status_stdout.contains(".vizier/.snapshot"),
-        "expected .vizier/.snapshot to be dirty after --no-commit save, git status was: {status_stdout}"
+        status_stdout.contains(".vizier/narrative/snapshot.md"),
+        "expected .vizier/narrative/snapshot.md to be dirty after --no-commit save, git status was: {status_stdout}"
     );
 
     let code_status = Command::new("git")
@@ -612,7 +612,7 @@ fn test_ask_creates_single_combined_commit() -> TestResult {
     assert_eq!(after - before, 1, "ask should create one combined commit");
     let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
     assert!(
-        files.contains(".vizier/.snapshot") && files.contains("a"),
+        files.contains(".vizier/narrative/snapshot.md") && files.contains("a"),
         "ask commit should include code and narrative assets, got {files:?}"
     );
     Ok(())
@@ -1718,7 +1718,7 @@ fn test_approve_creates_single_combined_commit() -> TestResult {
 
     let files = files_changed_in_commit(&repo_handle, &commit.id().to_string())?;
     assert!(
-        files.contains(".vizier/.snapshot") && files.contains("a"),
+        files.contains(".vizier/narrative/snapshot.md") && files.contains("a"),
         "approve commit should include code and narrative assets, got {files:?}"
     );
     assert!(
@@ -2467,7 +2467,7 @@ fn test_review_streams_critique() -> TestResult {
 
     let files = files_changed_in_commit(&repo_handle, &commit.id().to_string())?;
     assert!(
-        files.contains(".vizier/.snapshot"),
+        files.contains(".vizier/narrative/snapshot.md"),
         "critique commit should include narrative assets, got {files:?}"
     );
     assert!(

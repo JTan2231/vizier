@@ -160,7 +160,7 @@ impl std::fmt::Display for CommandScope {
 pub struct DocumentationSettings {
     pub use_documentation_prompt: bool,
     pub include_snapshot: bool,
-    pub include_todo_threads: bool,
+    pub include_narrative_docs: bool,
 }
 
 impl Default for DocumentationSettings {
@@ -168,7 +168,7 @@ impl Default for DocumentationSettings {
         Self {
             use_documentation_prompt: true,
             include_snapshot: true,
-            include_todo_threads: true,
+            include_narrative_docs: true,
         }
     }
 }
@@ -177,14 +177,14 @@ impl Default for DocumentationSettings {
 pub struct DocumentationSettingsOverride {
     pub use_documentation_prompt: Option<bool>,
     pub include_snapshot: Option<bool>,
-    pub include_todo_threads: Option<bool>,
+    pub include_narrative_docs: Option<bool>,
 }
 
 impl DocumentationSettingsOverride {
     fn is_empty(&self) -> bool {
         self.use_documentation_prompt.is_none()
             && self.include_snapshot.is_none()
-            && self.include_todo_threads.is_none()
+            && self.include_narrative_docs.is_none()
     }
 
     fn merge(&mut self, other: &DocumentationSettingsOverride) {
@@ -196,8 +196,8 @@ impl DocumentationSettingsOverride {
             self.include_snapshot = Some(include_snapshot);
         }
 
-        if let Some(include_threads) = other.include_todo_threads {
-            self.include_todo_threads = Some(include_threads);
+        if let Some(include_docs) = other.include_narrative_docs {
+            self.include_narrative_docs = Some(include_docs);
         }
     }
 
@@ -210,8 +210,8 @@ impl DocumentationSettingsOverride {
             settings.include_snapshot = include_snapshot;
         }
 
-        if let Some(include_threads) = self.include_todo_threads {
-            settings.include_todo_threads = include_threads;
+        if let Some(include_docs) = self.include_narrative_docs {
+            settings.include_narrative_docs = include_docs;
         }
     }
 }
@@ -672,7 +672,7 @@ pub struct ConfigLayer {
 
 impl Config {
     pub fn default() -> Self {
-        let prompt_directory = tools::try_get_todo_dir().map(std::path::PathBuf::from);
+        let prompt_directory = tools::try_get_vizier_dir().map(std::path::PathBuf::from);
         let mut repo_prompts = HashMap::new();
 
         if let Some(dir) = prompt_directory.as_ref() {
@@ -1938,14 +1938,13 @@ fn parse_documentation_settings(
         overrides.include_snapshot = Some(include_snapshot);
     }
 
-    if let Some(include_threads) = parse_bool(
+    if let Some(include_docs) = parse_bool(
         table
-            .get("include_todo_threads")
-            .or_else(|| table.get("include-todo-threads"))
-            .or_else(|| table.get("include_todos"))
-            .or_else(|| table.get("include-todos")),
+            .get("include_narrative_docs")
+            .or_else(|| table.get("include-narrative-docs"))
+            .or_else(|| table.get("include_narrative")),
     ) {
-        overrides.include_todo_threads = Some(include_threads);
+        overrides.include_narrative_docs = Some(include_docs);
     }
 
     if overrides.is_empty() {
@@ -2131,7 +2130,10 @@ pub fn get_system_prompt_with_meta(
         tree::tree_to_string(&file_tree, "")
     ));
 
-    prompt.push_str(&format!("<todos>{}</todos>", tools::list_todos()));
+    prompt.push_str(&format!(
+        "<narrativeDocs>{}</narrativeDocs>",
+        tools::list_narrative_docs()
+    ));
 
     prompt.push_str(&format!(
         "<currentWorkingDirectory>{}</currentWorkingDirectory>",
@@ -2286,11 +2288,12 @@ implementation_plan = "draft scope"
 [agents.default.documentation]
 enabled = false
 include_snapshot = false
-include_todo_threads = false
+include_narrative_docs = false
 
 [agents.ask.documentation]
 enabled = true
 include_snapshot = true
+include_narrative_docs = true
 "#;
 
         let mut file = NamedTempFile::new().expect("temp toml");
@@ -2307,7 +2310,7 @@ include_snapshot = true
             .expect("resolve ask settings");
         assert!(ask_settings.documentation.use_documentation_prompt);
         assert!(ask_settings.documentation.include_snapshot);
-        assert!(!ask_settings.documentation.include_todo_threads);
+        assert!(ask_settings.documentation.include_narrative_docs);
         assert!(ask_settings.prompt_selection().is_some());
 
         let save_settings = cfg
@@ -2315,7 +2318,7 @@ include_snapshot = true
             .expect("resolve save settings");
         assert!(!save_settings.documentation.use_documentation_prompt);
         assert!(!save_settings.documentation.include_snapshot);
-        assert!(!save_settings.documentation.include_todo_threads);
+        assert!(!save_settings.documentation.include_narrative_docs);
         assert!(save_settings.prompt_selection().is_none());
     }
 

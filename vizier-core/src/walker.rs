@@ -77,13 +77,28 @@ pub fn get_non_ignored_files() -> Vec<std::path::PathBuf> {
         .map(|entry| entry.path().to_owned())
         .collect::<Vec<_>>();
 
-    if let Ok(extra_entries) = std::fs::read_dir(crate::tools::get_todo_dir()) {
-        files.extend(
-            extra_entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
-                .map(|entry| entry.path()),
-        );
+    let mut extra_dirs = vec![std::path::PathBuf::from(crate::tools::get_vizier_dir())];
+    while let Some(dir) = extra_dirs.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_type = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+
+                if file_type.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions") {
+                            continue;
+                        }
+                    }
+                    extra_dirs.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
     }
 
     files

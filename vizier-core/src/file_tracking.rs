@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::tools;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use git2::{Repository, StatusOptions, StatusShow};
@@ -176,7 +177,8 @@ impl FileTracker {
 }
 
 fn is_vizier_path(path: &str) -> bool {
-    path.starts_with(".vizier/") || path.starts_with(".vizier\\")
+    let normalized = path.replace('\\', "/");
+    normalized.starts_with(".vizier/") || normalized.starts_with("./.vizier/")
 }
 
 fn is_canonical_story_path(path: &str) -> bool {
@@ -184,18 +186,42 @@ fn is_canonical_story_path(path: &str) -> bool {
         return false;
     }
 
-    let trimmed = path
-        .trim_start_matches(".vizier/")
-        .trim_start_matches(".vizier\\");
-    if trimmed == ".snapshot" {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./").trim_start_matches(".vizier/");
+
+    if tools::is_snapshot_file(trimmed) {
         return true;
     }
 
-    if trimmed.contains(['/', '\\']) {
+    if !trimmed.starts_with("narrative/") {
         return false;
     }
 
-    PathBuf::from(trimmed)
+    let relative = trimmed.trim_start_matches("narrative/");
+    if relative.is_empty() {
+        return false;
+    }
+
+    PathBuf::from(relative)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_paths_are_treated_as_canonical_story_paths() {
+        assert!(is_canonical_story_path(".vizier/.snapshot"));
+        assert!(is_canonical_story_path(".vizier/narrative/snapshot.md"));
+        assert!(is_canonical_story_path("./.vizier/custom/snapshot.md"));
+    }
+
+    #[test]
+    fn non_story_paths_are_ignored() {
+        assert!(!is_canonical_story_path(".vizier/config.toml"));
+        assert!(!is_canonical_story_path(".vizier/narrative/notes.txt"));
+        assert!(!is_canonical_story_path(".vizier/narrative/"));
+    }
 }
