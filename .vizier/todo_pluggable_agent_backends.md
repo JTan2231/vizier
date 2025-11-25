@@ -83,6 +83,9 @@ Update (2025-11-26): Rust adapters retired; GEMINI.md is now historical
 Update (2025-11-27): Wire removal cleanup and agent-only session logging
 - `vizier test-display` now records sessions via the Auditor message APIs instead of the removed `Config.provider` wiring, and prompt-context gathering no longer panics when `.vizier` is absent (returns empty snapshot/threads instead). Config/tests reject wire/model/reasoning/fallback keys, leaving agent/gemini as the only supported backends; cargo check/test and `./cicd.sh` are green after the cleanup.
 
+Update (2025-11-28): Bundled Gemini progress filter + defaults
+- Added `examples/agents/gemini/filter.sh`, a jq-based progress filter that renders Gemini JSONL events into human-readable progress lines on stderr while preserving the final assistant reply on stdout. Default Gemini runtime settings now force wrapped output and automatically attach this filter (guarded by `default_gemini_runtime_sets_progress_filter` in `vizier-core/src/config.rs`), keeping progress/output parity with the Codex shim.
+
 ## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 
 Tension

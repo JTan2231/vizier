@@ -2766,6 +2766,21 @@ profile = "deprecated"
     }
 
     #[test]
+    fn default_gemini_runtime_sets_progress_filter() {
+        let mut cfg = Config::default();
+        cfg.backend = BackendKind::Gemini;
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("default gemini settings should resolve");
+        assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
+        assert!(
+            agent.agent_runtime.progress_filter.is_some(),
+            "default gemini runtime should pick a progress filter"
+        );
+    }
+
+    #[test]
     fn progress_filter_override_enables_wrapped_output() {
         let mut cfg = Config::default();
         cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
