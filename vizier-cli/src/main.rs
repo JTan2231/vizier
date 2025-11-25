@@ -318,6 +318,22 @@ struct ReviewCmd {
     /// Skip running configured review checks (e.g., cargo test)
     #[arg(long = "skip-checks")]
     skip_checks: bool,
+
+    /// Path to a CI/CD gate script (defaults to merge.cicd_gate.script)
+    #[arg(long = "cicd-script", value_name = "PATH")]
+    cicd_script: Option<PathBuf>,
+
+    /// Force-enable backend remediation when the CI/CD script fails
+    #[arg(long = "auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "no_auto_cicd_fix")]
+    auto_cicd_fix: bool,
+
+    /// Disable backend remediation even if configured
+    #[arg(long = "no-auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "auto_cicd_fix")]
+    no_auto_cicd_fix: bool,
+
+    /// Number of remediation attempts before aborting (`merge.cicd_gate.retries` by default)
+    #[arg(long = "cicd-retries", value_name = "COUNT")]
+    cicd_retries: Option<u32>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -586,6 +602,34 @@ fn resolve_review_options(
         .plan
         .clone()
         .ok_or_else(|| "plan argument is required for vizier review")?;
+    let config = config::get_config();
+    let repo_root = vcs::repo_root().ok();
+    let mut cicd_gate = CicdGateOptions::from_config(&config.merge.cicd_gate);
+    let mut auto_resolve_requested = cicd_gate.auto_resolve;
+    if let Some(script) = cicd_gate.script.clone() {
+        cicd_gate.script = Some(resolve_cicd_script_path(&script, repo_root.as_deref()));
+    }
+    if let Some(script) = cmd.cicd_script.as_ref() {
+        cicd_gate.script = Some(resolve_cicd_script_path(script, repo_root.as_deref()));
+    }
+    if cmd.auto_cicd_fix {
+        auto_resolve_requested = true;
+    }
+    if cmd.no_auto_cicd_fix {
+        auto_resolve_requested = false;
+    }
+    if let Some(retries) = cmd.cicd_retries {
+        cicd_gate.retries = retries;
+    }
+    // Review runs the gate without auto-remediation unless explicitly allowed in the future.
+    cicd_gate.auto_resolve = false;
+    if let Some(script) = cicd_gate.script.as_ref() {
+        let metadata = std::fs::metadata(script)
+            .map_err(|err| format!("unable to read CI/CD script {}: {err}", script.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("CI/CD script {} must be a file", script.display()).into());
+        }
+    }
 
     Ok(ReviewOptions {
         plan,
@@ -594,6 +638,8 @@ fn resolve_review_options(
         assume_yes: cmd.assume_yes,
         review_only: cmd.review_only,
         skip_checks: cmd.skip_checks,
+        cicd_gate,
+        auto_resolve_requested,
         push_after,
     })
 }

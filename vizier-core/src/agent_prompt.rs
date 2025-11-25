@@ -26,9 +26,17 @@ pub struct PromptContext {
 }
 
 pub fn gather_prompt_context() -> Result<PromptContext, AgentError> {
-    let snapshot_path = PathBuf::from(format!("{}{}", tools::get_todo_dir(), ".snapshot"));
+    let Some(todo_dir) = tools::try_get_todo_dir() else {
+        // Outside a repo or missing `.vizier/`; treat context as empty instead of panicking
+        return Ok(PromptContext {
+            snapshot: String::new(),
+            threads: Vec::new(),
+        });
+    };
+
+    let snapshot_path = PathBuf::from(format!("{}{}", todo_dir, ".snapshot"));
     let snapshot = std::fs::read_to_string(&snapshot_path).unwrap_or_default();
-    let threads = read_thread_files(&PathBuf::from(tools::get_todo_dir()))?;
+    let threads = read_thread_files(&PathBuf::from(todo_dir))?;
 
     Ok(PromptContext { snapshot, threads })
 }
@@ -202,6 +210,7 @@ pub fn build_review_prompt(
     plan_document: &str,
     diff_summary: &str,
     check_results: &[crate::agent::ReviewCheckContext],
+    cicd_gate: Option<&crate::agent::ReviewGateContext>,
     documentation: &config::DocumentationSettings,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
@@ -268,7 +277,50 @@ pub fn build_review_prompt(
             ));
         }
     }
-    prompt.push_str("</checkResults>\n");
+    prompt.push_str("</checkResults>\n\n");
+
+    prompt.push_str("<cicdGate>\n");
+    if let Some(gate) = cicd_gate {
+        let status = match gate.status {
+            crate::agent::ReviewGateStatus::Passed => "passed",
+            crate::agent::ReviewGateStatus::Failed => "failed",
+            crate::agent::ReviewGateStatus::Skipped => "skipped",
+        };
+        let script_label = gate
+            .script
+            .as_ref()
+            .map(|path| path.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unset".to_string());
+        let exit_code = gate
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        let duration = gate
+            .duration_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unset".to_string());
+        let stdout = gate.stdout.trim();
+        let stderr = gate.stderr.trim();
+        prompt.push_str(&format!(
+            "status: {status}\nscript: {script_label}\nattempts: {}\nexit_code: {exit_code}\nduration_ms: {duration}\nauto_resolve: {}\nstdout:\n{}\n\nstderr:\n{}\n",
+            gate.attempts,
+            gate.auto_resolve_enabled,
+            if stdout.is_empty() {
+                "(stdout was empty)".to_string()
+            } else {
+                stdout.to_string()
+            },
+            if stderr.is_empty() {
+                "(stderr was empty)".to_string()
+            } else {
+                stderr.to_string()
+            },
+        ));
+    } else {
+        prompt.push_str("No CI/CD gate was configured before this review.\n");
+    }
+    prompt.push_str("</cicdGate>\n");
 
     Ok(prompt)
 }
@@ -440,12 +492,50 @@ mod tests {
             "plan",
             "diff",
             &[],
+            None,
             &DocumentationSettings::default(),
         )
         .unwrap();
 
         assert!(prompt.starts_with("custom review"));
         assert!(prompt.contains("<planDocument>"));
+
+        config::set_config(original);
+    }
+
+    #[test]
+    fn review_prompt_includes_cicd_gate_context() {
+        let _guard = CONFIG_LOCK.lock().unwrap();
+        let original = config::get_config();
+        let selection = config::get_config().prompt_for(CommandScope::Review, PromptKind::Review);
+        let gate = crate::agent::ReviewGateContext {
+            script: Some("cicd.sh".to_string()),
+            status: crate::agent::ReviewGateStatus::Failed,
+            attempts: 1,
+            duration_ms: Some(1200),
+            exit_code: Some(2),
+            stdout: "gate stdout".to_string(),
+            stderr: String::new(),
+            auto_resolve_enabled: false,
+        };
+        let prompt = build_review_prompt(
+            &selection,
+            "slug",
+            "draft/slug",
+            "main",
+            "plan",
+            "diff",
+            &[],
+            Some(&gate),
+            &DocumentationSettings::default(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("<cicdGate>"));
+        assert!(prompt.contains("status: failed"));
+        assert!(prompt.contains("script: cicd.sh"));
+        assert!(prompt.contains("exit_code: 2"));
+        assert!(prompt.contains("stdout:\ngate stdout"));
 
         config::set_config(original);
     }

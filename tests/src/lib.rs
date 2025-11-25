@@ -2807,6 +2807,148 @@ fn test_review_summary_includes_token_suffix() -> TestResult {
 }
 
 #[test]
+fn test_review_runs_cicd_gate_before_critique() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "review-gate-pass", "gate pass spec"])?;
+    repo.vizier_output(&["approve", "review-gate-pass", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let gate_log = repo.path().join("review-gate.log");
+    let script_path = write_cicd_script(
+        &repo,
+        "review-gate-pass.sh",
+        &format!(
+            "#!/bin/sh\nset -eu\necho \"gate ran\" > \"{}\"\n",
+            gate_log.display()
+        ),
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+    let review = repo.vizier_output(&[
+        "review",
+        "review-gate-pass",
+        "--review-only",
+        "--skip-checks",
+        "--cicd-script",
+        &script_flag,
+    ])?;
+    assert!(
+        review.status.success(),
+        "vizier review failed: {}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+
+    assert!(
+        gate_log.exists(),
+        "CI/CD gate script should run before the critique"
+    );
+
+    let stdout = String::from_utf8_lossy(&review.stdout);
+    assert!(
+        stdout.contains("CI/CD gate") && stdout.contains("passed"),
+        "review summary should report the passed CI/CD gate:\n{stdout}"
+    );
+
+    let contents = session_log_contents_from_output(&repo, &stdout)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    let operations = json
+        .get("operations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        operations.iter().any(|entry| {
+            entry.get("kind").and_then(Value::as_str) == Some("cicd_gate")
+                && entry
+                    .get("details")
+                    .and_then(|details| details.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("passed")
+        }),
+        "session log should capture a passed CI/CD gate operation: {operations:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_review_surfaces_failed_cicd_gate_and_continues() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "review-gate-fail", "gate fail spec"])?;
+    repo.vizier_output(&["approve", "review-gate-fail", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let gate_log = repo.path().join("review-gate-fail.log");
+    let script_path = write_cicd_script(
+        &repo,
+        "review-gate-fail.sh",
+        &format!(
+            "#!/bin/sh\nset -eu\necho \"broken gate\" > \"{}\"\nexit 1\n",
+            gate_log.display()
+        ),
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+    let review = repo.vizier_output(&[
+        "review",
+        "review-gate-fail",
+        "--review-only",
+        "--skip-checks",
+        "--cicd-script",
+        &script_flag,
+    ])?;
+    assert!(
+        review.status.success(),
+        "vizier review should continue even when the gate fails: {}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&review.stdout);
+    assert!(
+        stdout.contains("CI/CD gate") && stdout.contains("failed"),
+        "review summary should report the failed CI/CD gate:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--- Review critique for plan review-gate-fail ---"),
+        "critique should still stream when the gate fails:\n{stdout}"
+    );
+
+    assert!(
+        gate_log.exists(),
+        "failed CI/CD gate should still run before the critique"
+    );
+
+    let contents = session_log_contents_from_output(&repo, &stdout)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    let operations = json
+        .get("operations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        operations.iter().any(|entry| {
+            entry.get("kind").and_then(Value::as_str) == Some("cicd_gate")
+                && entry
+                    .get("details")
+                    .and_then(|details| details.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("failed")
+        }),
+        "session log should capture a failed CI/CD gate operation: {operations:?}"
+    );
+    assert!(
+        operations.iter().any(|entry| {
+            entry
+                .get("details")
+                .and_then(|details| details.get("exit_code"))
+                .and_then(Value::as_i64)
+                == Some(1)
+        }),
+        "failed gate operation should record exit code 1: {operations:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_merge_conflict_auto_resolve() -> TestResult {
     let repo = IntegrationRepo::new()?;
     prepare_conflicting_plan(

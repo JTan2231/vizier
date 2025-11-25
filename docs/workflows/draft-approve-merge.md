@@ -36,7 +36,7 @@ Want to exercise a scoped agent without touching `.vizier` or Git? `vizier test-
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.
 2. **`vizier approve <slug>`** — Applies the plan on `draft/<slug>` from within another temporary worktree, staging and committing the resulting edits on that branch only.
-3. **`vizier review <slug>`** — Runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists), captures the diff summary, streams the configured backend’s critique to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and optionally applies fixes on the plan branch without mutating the plan document’s front matter.
+3. **`vizier review <slug>`** — Runs the merge CI/CD gate before prompting (using `[merge.cicd_gate]` or review `--cicd-*` overrides) and feeds the result into the critique prompt/summary/session log, then runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists). The critique streams to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and you can optionally apply fixes on the plan branch without mutating the plan document’s front matter. Auto-remediation for the gate stays disabled during review; merge still owns CI/CD fixes.
 4. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, replays the plan branch commits onto the target, and (by default) soft-squashes that range into a single implementation commit on the target before writing the non–fast-forward merge commit that embeds the stored plan under an `Implementation Plan:` block. Pass `--no-squash` or set `[merge] squash = false` in `.vizier/config.toml` to keep the legacy “merge straight from the draft branch history” behavior. If the plan branch contains merge commits, squash merges now preflight the history and require either `--squash-mainline <parent index>` (or `[merge] squash_mainline = <n>`) to cherry-pick those merges or `--no-squash` to keep the branch graph intact.
 
 Every step commits code and canonical narrative edits together in a single commit (`.vizier/.snapshot` plus root-level TODO threads). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
@@ -119,6 +119,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Plan branch (`draft/<slug>` or `--branch`) is up to date enough that you can run the configured checks locally
 
 **What it does**
+- Runs the merge CI/CD gate before prompting, using `[merge.cicd_gate]` (or review `--cicd-*` overrides) and piping the status/log snippets into both the critique prompt and the review summary/session log. Auto-remediation for the gate is disabled during review; merge still owns CI/CD fixes.
 - Creates another disposable worktree on `draft/<slug>`, gathers the diff against the target branch, and runs the configured review checks (defaults to `cargo check --all --all-targets` and `cargo test --all --all-targets` when a `Cargo.toml` is present or the `[review.checks]` commands in your config).
 - Streams each check result to stderr so you see passes/failures before the backend speaks. Failures are captured verbatim and wired into the prompt.
 - Builds an agent prompt that includes the snapshot, TODO threads, plan document, diff summary, and the check logs, then prints the Markdown critique directly to stdout (and into the session log) instead of saving `.vizier/reviews/<slug>.md`.
@@ -130,6 +131,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - `--skip-checks` — jump straight to the critique when your test suite is too heavy for disposable worktrees
 - `-y/--yes` — apply fixes automatically after generating the critique
 - `--target` / `--branch` — override the diff base or plan branch name when needed
+- `--cicd-script` / `--auto-cicd-fix` / `--no-auto-cicd-fix` / `--cicd-retries` — reuse the merge CI/CD gate script and overrides for review visibility; the gate still runs read-only during review (auto fixes remain merge-only).
 
 **Checks & configuration**
 - By default, Vizier tries `cargo check --all --all-targets` and `cargo test --all --all-targets` when `Cargo.toml` exists. Override this via:
@@ -137,7 +139,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
   [review.checks]
   commands = ["npm test", "cargo fmt -- --check", "cargo clippy -- -D warnings"]
   ```
-- Failed commands do not abort the review; the stderr/stdout are preserved and surfaced in both the CLI output and agent prompt so reviewers can see exactly what broke.
+- Failed commands do not abort the review; the stderr/stdout are preserved and surfaced in both the CLI output and agent prompt so reviewers can see exactly what broke. The same applies to CI/CD gate failures: the critique still runs with the gate output attached.
 - Use `--skip-checks` when your repo relies on external services or long-running suites. The critique still includes the diff summary, plan metadata, and TODO threads.
 
 **Outputs to watch**

@@ -76,6 +76,25 @@ pub struct ReviewCheckContext {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ReviewGateStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewGateContext {
+    pub script: Option<String>,
+    pub status: ReviewGateStatus,
+    pub attempts: u32,
+    pub duration_ms: Option<u128>,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub auto_resolve_enabled: bool,
+}
+
 #[derive(Clone)]
 pub enum ProgressHook {
     Display(mpsc::Sender<Status>),

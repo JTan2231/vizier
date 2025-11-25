@@ -4,7 +4,7 @@ Thread: Agent workflow orchestration (cross: Outcome summaries, Session logging,
 
 Tension
 - Agent-backed commands can currently report success even when repo checks or external CI fail, so “green” runs don’t reliably mean that quality/safety gates passed.
-- `vizier review` already runs configurable checks, but its results are not yet treated as a reusable gate primitive that other agent flows can depend on.
+- `vizier review` now runs the merge CI/CD gate ahead of critique (auto-remediation disabled) and streams its status into the critique prompt, but gate usage remains merge/review-only and still lacks structured Outcome/session metadata or reuse across ask/save/draft/approve.
 
 Desired behavior (Product-level)
 - Define a CI/CD gate concept that agent-backed commands can require: each such command declares which gate profile it uses (for example, local check commands, a delegated remote pipeline, or both), expressed in repo config rather than hard-coded per command.
@@ -23,7 +23,8 @@ Acceptance criteria
 
 Status
 - Merge-time CI/CD gate shipped for `vizier merge` via `[merge.cicd_gate]` plus per-run overrides; README, workflow docs, and integration tests (`test_merge_cicd_gate_executes_script`, `test_merge_cicd_gate_failure_blocks_merge`, `test_merge_cicd_gate_auto_fix_applies_changes`) are in place.
-- Remaining work focuses on generalizing the gate abstraction beyond merge (ask/save/draft/approve/review), emitting structured gate facts into Outcome/session logs, and allowing repositories to define reusable named gate profiles instead of merge-only wiring.
+- Review now executes the merge CI/CD gate before critique (auto-resolve forced off, gate result logged to the Auditor and fed into the critique prompt/commit message) so reviewers see gate status alongside check results; failures warn but do not auto-fix or block the critique flow.
+- Remaining work focuses on generalizing the gate abstraction beyond merge/review (ask/save/draft/approve), emitting structured gate facts into Outcome/session logs, and allowing repositories to define reusable named gate profiles instead of merge-only wiring.
 
 Pointers
 - Agent workflow orchestration thread in `.vizier/.snapshot` (Active threads: Agent workflow orchestration).
@@ -32,3 +33,4 @@ Pointers
 - Session logging JSON store for recording per-command gate decisions.
 
 Update (2025-11-17): `vizier merge` now treats `[merge.cicd_gate]` as the gate definition. The CLI resolves repo config + per-run overrides (`--cicd-script`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, `--cicd-retries`), executes the script against the on-target worktree (in default squash mode it runs while the squashed implementation commit is staged but before the merge commit is written; in `--no-squash` legacy mode it runs immediately after the merge commit, including `--complete-conflict` resumes), surfaces the captured stdout/stderr on failure, and optionally lets the agent backend attempt remediation when `[agents.merge]` resolves to that backend. README and `docs/workflows/draft-approve-merge.md` describe the new behavior, and integration tests (`test_merge_cicd_gate_executes_script`, `test_merge_cicd_gate_failure_blocks_merge`, `test_merge_cicd_gate_auto_fix_applies_changes`) cover pass/fail/auto-fix scenarios. Remaining work: generalize the gate abstraction beyond merge (ask/save/draft/approve/review), emit structured gate facts via outcome.v1/session logs, and allow repositories to define reusable named gate profiles rather than merge-only wiring.
+Update (2025-11-27): `vizier review` now runs the merge CI/CD gate once per review before prompting (auto-resolve disabled even when configured), records the gate result via the Auditor, and threads gate context into the critique prompt/commit author note; failures continue the critique with the failure context so fixes can be applied manually. Remaining work: extend gates to ask/save/draft/approve, and surface gate status in standardized Outcome/session JSON with reusable gate profiles.

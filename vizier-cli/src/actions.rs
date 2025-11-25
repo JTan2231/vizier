@@ -10,11 +10,13 @@ use std::time::{Duration, Instant};
 use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, RepositoryState};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::agent::{
-    AgentError, AgentRequest, AgentResponse, ProgressHook, ReviewCheckContext,
+    AgentError, AgentRequest, AgentResponse, ProgressHook, ReviewCheckContext, ReviewGateContext,
+    ReviewGateStatus,
 };
 use vizier_core::vcs::{
     AttemptOutcome, CherryPickOutcome, CredentialAttempt, MergePreparation, MergeReady,
@@ -116,6 +118,7 @@ struct WorkflowReport {
 #[derive(Debug, Serialize)]
 struct ReviewReport {
     checks: Vec<String>,
+    cicd_gate: MergeGateReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -233,6 +236,16 @@ fn build_config_report(
         },
         review: ReviewReport {
             checks: cfg.review.checks.commands.clone(),
+            cicd_gate: MergeGateReport {
+                script: cfg
+                    .merge
+                    .cicd_gate
+                    .script
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                auto_resolve: cfg.merge.cicd_gate.auto_resolve,
+                retries: cfg.merge.cicd_gate.retries,
+            },
         },
         agent_runtime_default,
         scopes,
@@ -314,14 +327,27 @@ fn format_scope_rows(scope: &ScopeReport) -> Vec<(String, String)> {
 }
 
 fn format_review_rows(report: &ReviewReport) -> Vec<(String, String)> {
-    vec![(
+    let mut rows = vec![(
         "Checks".to_string(),
         if report.checks.is_empty() {
             "none".to_string()
         } else {
             report.checks.join(" | ")
         },
-    )]
+    )];
+    rows.push((
+        "CI/CD script".to_string(),
+        value_or_unset(report.cicd_gate.script.clone(), "unset"),
+    ));
+    rows.push((
+        "CI/CD auto-fix".to_string(),
+        report.cicd_gate.auto_resolve.to_string(),
+    ));
+    rows.push((
+        "CI/CD retries".to_string(),
+        format_number(report.cicd_gate.retries as usize),
+    ));
+    rows
 }
 
 fn format_merge_rows(report: &MergeReport) -> Vec<(String, String)> {
@@ -785,6 +811,8 @@ pub struct ReviewOptions {
     pub assume_yes: bool,
     pub review_only: bool,
     pub skip_checks: bool,
+    pub cicd_gate: CicdGateOptions,
+    pub auto_resolve_requested: bool,
     pub push_after: bool,
 }
 
@@ -2370,6 +2398,8 @@ pub async fn run_review(
             assume_yes: opts.assume_yes,
             review_only: opts.review_only,
             skip_checks: opts.skip_checks,
+            cicd_gate: opts.cicd_gate.clone(),
+            auto_resolve_requested: opts.auto_resolve_requested,
         },
         commit_mode,
         agent,
@@ -2408,11 +2438,16 @@ pub async fn run_review(
                 ));
             }
 
+            let repo_root = repo_root().ok();
             let mut rows = vec![
                 ("Outcome".to_string(), "Review complete".to_string()),
                 ("Plan".to_string(), spec.slug.clone()),
                 ("Branch".to_string(), spec.branch.clone()),
                 ("Critique".to_string(), outcome.critique_label.to_string()),
+                (
+                    "CI/CD gate".to_string(),
+                    outcome.cicd_gate.summary_label(repo_root.as_deref()),
+                ),
                 (
                     "Checks".to_string(),
                     format!(
@@ -4081,6 +4116,8 @@ struct ReviewExecution {
     assume_yes: bool,
     review_only: bool,
     skip_checks: bool,
+    cicd_gate: CicdGateOptions,
+    auto_resolve_requested: bool,
 }
 
 struct ReviewOutcome {
@@ -4091,6 +4128,7 @@ struct ReviewOutcome {
     diff_command: String,
     branch_mutated: bool,
     fix_commit: Option<String>,
+    cicd_gate: ReviewGateResult,
 }
 
 struct PlanApplyResult {
@@ -4130,6 +4168,80 @@ impl ReviewCheckResult {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ReviewGateResult {
+    status: ReviewGateStatus,
+    script: Option<PathBuf>,
+    attempts: u32,
+    exit_code: Option<i32>,
+    duration: Option<Duration>,
+    stdout: String,
+    stderr: String,
+    auto_resolve_enabled: bool,
+}
+
+impl ReviewGateResult {
+    fn skipped() -> Self {
+        ReviewGateResult {
+            status: ReviewGateStatus::Skipped,
+            script: None,
+            attempts: 0,
+            exit_code: None,
+            duration: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            auto_resolve_enabled: false,
+        }
+    }
+
+    fn script_label(&self, repo_root: Option<&Path>) -> String {
+        let Some(script) = self.script.as_ref() else {
+            return "unset".to_string();
+        };
+
+        repo_root
+            .and_then(|root| script.strip_prefix(root).ok())
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| script.display().to_string())
+    }
+
+    fn exit_code_label(&self) -> String {
+        self.exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".to_string())
+    }
+
+    fn duration_ms(&self) -> Option<u128> {
+        self.duration.map(|value| value.as_millis())
+    }
+
+    fn summary_label(&self, repo_root: Option<&Path>) -> String {
+        match self.status {
+            ReviewGateStatus::Skipped => "not configured".to_string(),
+            ReviewGateStatus::Passed => format!("passed ({})", self.script_label(repo_root)),
+            ReviewGateStatus::Failed => format!(
+                "failed {} ({})",
+                self.exit_code_label(),
+                self.script_label(repo_root)
+            ),
+        }
+    }
+
+    fn to_prompt_context(&self, repo_root: Option<&Path>) -> Option<ReviewGateContext> {
+        self.script.as_ref()?;
+        Some(ReviewGateContext {
+            script: Some(self.script_label(repo_root)),
+            status: self.status,
+            attempts: self.attempts,
+            duration_ms: self.duration_ms(),
+            exit_code: self.exit_code,
+            stdout: self.stdout.clone(),
+            stderr: self.stderr.clone(),
+            auto_resolve_enabled: self.auto_resolve_enabled,
+        })
+    }
+}
+
 async fn perform_review_workflow(
     spec: &plan::PlanBranchSpec,
     plan_meta: &plan::PlanMetadata,
@@ -4140,6 +4252,21 @@ async fn perform_review_workflow(
     agent: &config::AgentSettings,
 ) -> Result<ReviewOutcome, Box<dyn std::error::Error>> {
     let _cwd = WorkdirGuard::enter(worktree_path)?;
+    let repo_root = repo_root().ok();
+
+    if exec.auto_resolve_requested {
+        display::warn(
+            "CI/CD auto-remediation is disabled during review; rerun merge for gate auto-fixes.",
+        );
+    }
+
+    let gate_result = run_cicd_gate_for_review(&exec.cicd_gate)?;
+    record_gate_operation("review", &gate_result);
+    if matches!(gate_result.status, ReviewGateStatus::Failed) {
+        display::warn(
+            "CI/CD gate failed before the review critique; continuing with failure context.",
+        );
+    }
 
     let commands = resolve_review_commands(worktree_path, exec.skip_checks);
     if commands.is_empty() && !exec.skip_checks {
@@ -4159,6 +4286,7 @@ async fn perform_review_workflow(
 
     let critique_agent = agent.for_prompt(config::PromptKind::Review)?;
     let selection = prompt_selection(&critique_agent)?;
+    let gate_context = gate_result.to_prompt_context(repo_root.as_deref());
     let prompt = agent_prompt::build_review_prompt(
         selection,
         &spec.slug,
@@ -4167,6 +4295,7 @@ async fn perform_review_workflow(
         &plan_document,
         &diff_summary,
         &check_contexts,
+        gate_context.as_ref(),
         &critique_agent.documentation,
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -4213,6 +4342,10 @@ async fn perform_review_workflow(
                 spec.slug, checks_passed, checks_total
             );
             summary.push_str(&format!("\nDiff command: {}", spec.diff_command()));
+            summary.push_str(&format!(
+                "\nCI/CD gate: {}",
+                gate_result.summary_label(repo_root.as_deref())
+            ));
 
             let mut builder = CommitMessageBuilder::new(summary);
             builder
@@ -4308,6 +4441,7 @@ async fn perform_review_workflow(
         diff_command,
         branch_mutated,
         fix_commit,
+        cicd_gate: gate_result,
     })
 }
 
@@ -4458,6 +4592,71 @@ fn log_cicd_result(script: &Path, result: &CicdScriptResult, attempt: u32) {
         log_cicd_stream("stdout", &result.stdout);
         log_cicd_stream("stderr", &result.stderr);
     }
+}
+
+fn run_cicd_gate_for_review(
+    gate_opts: &CicdGateOptions,
+) -> Result<ReviewGateResult, Box<dyn std::error::Error>> {
+    let Some(script) = gate_opts.script.as_ref() else {
+        display::info("CI/CD gate: not configured for review; skipping.");
+        return Ok(ReviewGateResult::skipped());
+    };
+
+    if gate_opts.auto_resolve {
+        display::warn(
+            "CI/CD gate auto-remediation is disabled during review; reporting status without applying fixes.",
+        );
+    }
+
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let result = run_cicd_script(script, &repo_root)?;
+    log_cicd_result(script, &result, 1);
+
+    let status = if result.success() {
+        ReviewGateStatus::Passed
+    } else {
+        ReviewGateStatus::Failed
+    };
+
+    Ok(ReviewGateResult {
+        status,
+        script: Some(script.clone()),
+        attempts: 1,
+        exit_code: result.status.code(),
+        duration: Some(result.duration),
+        stdout: clip_log(result.stdout.as_bytes()),
+        stderr: clip_log(result.stderr.as_bytes()),
+        auto_resolve_enabled: false,
+    })
+}
+
+fn record_gate_operation(scope: &str, gate: &ReviewGateResult) {
+    let repo_root = repo_root().ok();
+    let script = gate.script.as_ref().map(|path| {
+        repo_root
+            .as_ref()
+            .and_then(|root| path.strip_prefix(root).ok())
+            .map(|relative| relative.display().to_string())
+            .unwrap_or_else(|| path.display().to_string())
+    });
+    Auditor::record_operation(
+        "cicd_gate",
+        json!({
+            "scope": scope,
+            "script": script,
+            "status": match gate.status {
+                ReviewGateStatus::Passed => "passed",
+                ReviewGateStatus::Failed => "failed",
+                ReviewGateStatus::Skipped => "skipped",
+            },
+            "attempts": gate.attempts,
+            "exit_code": gate.exit_code,
+            "duration_ms": gate.duration_ms(),
+            "stdout": gate.stdout,
+            "stderr": gate.stderr,
+            "auto_resolve_enabled": gate.auto_resolve_enabled,
+        }),
+    );
 }
 
 fn cicd_gate_failure_error(script: &Path, result: &CicdScriptResult) -> Box<dyn std::error::Error> {

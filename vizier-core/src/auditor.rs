@@ -221,6 +221,8 @@ pub struct Auditor {
     last_agent: Option<AgentInvocationContext>,
     #[serde(skip)]
     last_run: Option<AgentRunRecord>,
+    #[serde(default)]
+    operations: Vec<serde_json::Value>,
 }
 
 impl Auditor {
@@ -234,6 +236,7 @@ impl Auditor {
             last_session_artifact: None,
             last_agent: None,
             last_run: None,
+            operations: Vec::new(),
         }
     }
 
@@ -290,6 +293,14 @@ impl Auditor {
                 agent.exit_code = Some(run.exit_code);
                 agent.duration_ms = Some(run.duration_ms);
             }
+        }
+    }
+
+    pub fn record_operation(kind: &str, details: serde_json::Value) {
+        if let Ok(mut auditor) = AUDITOR.lock() {
+            auditor
+                .operations
+                .push(json!({"kind": kind, "details": details}));
         }
     }
 
@@ -477,7 +488,7 @@ impl Auditor {
             model: Self::model_snapshot(self.last_agent.as_ref(), &cfg),
             messages: self.messages.clone(),
             agent: self.last_run.as_ref().map(SessionAgentRun::from),
-            operations: Vec::new(),
+            operations: self.operations.clone(),
             artifacts: Vec::new(),
             outcome: SessionOutcome {
                 status: "completed".to_string(),
