@@ -20,6 +20,8 @@ backend = "agent"
 backend = "gemini"           # keep merge cleanup on the gemini stack
 ```
 
+For the full catalogue of knobs and defaults (scope, precedence, CLI overrides), see `docs/config-reference.md`. Before kicking off a workflow, `vizier plan --json` prints the resolved agent/backend/prompt settings for your current repo without mutating state.
+
 Config precedence: when you skip `--config-file`, Vizier loads the user/global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) as a base and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
 
 If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier does not fall back to another backend; rerun the command once the configured backend is healthy.

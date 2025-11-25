@@ -30,3 +30,4 @@ Pointers
 - README, AGENTS.md, and workflow docs that describe `[agents.*]`, `[merge.cicd_gate]`, and the draft → approve → review → merge flags.
 
 Update (2025-11-22): Config loading now layers global defaults with repo overrides when `--config-file` is absent, logs both sources, and only consults `VIZIER_CONFIG_FILE` when no config files exist; docs/examples/tests cover agent/gate/review inheritance under the merged precedence.
+Update (2025-11-29): `docs/config-reference.md` now carries quick-start override examples (pin review to Gemini, tighten merge gate retries, disable auto-commit, per-scope prompt swaps) plus a config-vs-CLI override matrix, and AGENTS.md points to it. Added automated checks for help output (quiet + `--no-ansi`, pager suppression in non-TTY) alongside a regression test that bundled progress filters attach to any agent label with a sibling `filter.sh`.

@@ -105,6 +105,8 @@ Use `vizier test-display` to run the configured backend for a given scope agains
 
 Example: `vizier test-display --scope review --timeout 30`
 
+For a complete catalogue of configuration keys, defaults, and CLI overrides, see `docs/config-reference.md`; `vizier plan --json` is the quickest way to inspect the resolved settings for your current repo.
+
 ## Workflows & Docs
 - `Draft → Approve → Review → Merge`: `docs/workflows/draft-approve-merge.md`
 - Snapshot/TODO discipline (coming soon) will live under `docs/`
@@ -113,8 +115,10 @@ Example: `vizier test-display --scope review --timeout 30`
 ## Configuration & Agent Backends
 Tune Vizier via repo-local files so settings travel with commits.
 
+- `docs/config-reference.md` is the exhaustive list of configuration keys (scope, defaults, precedence, CLI overrides) plus deprecated entries; lean on it when customizing agents, gates, or IO posture.
 - `.vizier/config.toml` defines agent scopes (`[agents.ask]`, `[agents.save]`, `[agents.draft]`, `[agents.approve]`, `[agents.review]`, `[agents.merge]`), merge defaults (e.g., `[merge] squash = true` to keep two commits per plan, `[merge] squash_mainline = 2` to preselect a mainline for merge-heavy plan branches), backend options, and the prompt profiles attached to each command. Every `[agents.<scope>.prompts.<kind>]` table ties a prompt template (inline text or `path`) to backend/documentation/runtime overrides so plan/approve/review share a single surface instead of juggling parallel `[prompts.*]` overrides. CLI flags still sit above these scopes; see `docs/prompt-config-matrix.md` for the full scope×prompt-kind matrix and fallback order.
 - `vizier plan` prints the fully resolved configuration (global + repo + CLI overrides) with per-scope agent/runtime selection; pass `--json` for a structured view. The command is read-only and does not start an Auditor session.
+- Help output pages on TTY by default; set `$VIZIER_PAGER` (defaults to `less -FRSX`) or pass `--pager`/`--no-pager` to force/disable paging. Quiet/`--no-ansi`/non-TTY fall back to plain stdout.
 - If you do not pass `--config-file`, Vizier now loads global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your personal defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
 - Agent backends now run through shell scripts that stream JSON on stdout while Vizier handles the rest: the runner tees events through an optional progress filter (stderr) and extracts the final assistant text for stdout. Pick a bundled shim via `agent.label` (`codex`/`gemini`, installed under `share/vizier/agents/`) or point `[agents.<scope>.agent].command` at your own script; tune `[agent].output` (auto|wrapped-json|passthrough) and `[agent].progress_filter` if you need to bypass or customize the wrapper. For Codex, the default progress filter is the bundled `codex/filter.sh` found alongside `codex/agent.sh`. CLI overrides mirror the same levers: `--agent-label` or `--agent-command`.
 - There is no autodiscovery fallback: if no bundled shim exists for the chosen `label`, set `agent.command` to a script that obeys the stdout/stderr contract.

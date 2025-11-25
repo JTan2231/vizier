@@ -1,4 +1,4 @@
-# Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults. When no --config-file is provided, Vizier loads the global config first (if it exists) and overlays .vizier/config.toml so repo entries override while missing keys inherit your personal defaults; VIZIER_CONFIG_FILE is only used when neither config file is present.
+# Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults. When no --config-file is provided, Vizier loads the global config first (if it exists) and overlays .vizier/config.toml so repo entries override while missing keys inherit your personal defaults; VIZIER_CONFIG_FILE is only used when neither config file is present. See docs/config-reference.md for the full catalogue of keys, defaults, and CLI overrides.
 # Global defaults (apply unless overridden below)
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.

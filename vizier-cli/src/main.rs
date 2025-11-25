@@ -1,9 +1,13 @@
 use std::{
-    io::IsTerminal,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
-use clap::{ArgAction, ArgGroup, Args as ClapArgs, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{
+    ArgAction, ArgGroup, Args as ClapArgs, ColorChoice, CommandFactory, FromArgMatches, Parser,
+    Subcommand, ValueEnum, error::ErrorKind,
+};
 use clap_complete::Shell;
 use vizier_core::{
     auditor, config,
@@ -37,59 +41,67 @@ struct Cli {
 
 #[derive(ClapArgs, Debug)]
 struct GlobalOpts {
-    /// Increase verbosity (`-v` = info, `-vv` = debug)
+    /// Increase stderr verbosity (`-v` = info, `-vv` = debug); quiet wins over verbose, and output still honors TTY/--no-ansi gating
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
     verbose: u8,
 
-    /// Silence all non-error output
+    /// Silence progress/history; only errors and explicit output (help/outcome) remain
     #[arg(short = 'q', long, global = true)]
     quiet: bool,
 
-    /// Enable debug logging (alias for -vv)
+    /// Enable debug logging (alias for -vv; kept for parity with older workflows)
     #[arg(short = 'd', long, global = true)]
     debug: bool,
 
-    /// Disable ANSI control sequences even on TTYs
+    /// Disable ANSI control sequences even on TTYs (non-TTY is always plain); useful for CI/log scrapers
     #[arg(long = "no-ansi", global = true)]
     no_ansi: bool,
 
-    /// Progress display mode for long-running operations
+    /// Progress display mode for long-running operations (`auto` = TTY-only, `never` suppresses spinners/history, `always` forces them)
     #[arg(long = "progress", value_enum, default_value_t = ProgressArg::Auto, global = true)]
     progress: ProgressArg,
 
-    /// Load session as existing context
+    /// Page help output when available; defaults to TTY-only paging and honors $VIZIER_PAGER
+    #[arg(long = "pager", action = ArgAction::SetTrue, global = true, conflicts_with = "no_pager")]
+    pager: bool,
+
+    /// Disable paging for help output even on a TTY
+    #[arg(long = "no-pager", action = ArgAction::SetTrue, global = true, conflicts_with = "pager")]
+    no_pager: bool,
+
+    /// Load session context from `.vizier/sessions/<id>/session.json` (or legacy config dir) before running
     #[arg(short = 'l', long = "load-session", global = true)]
     load_session: Option<String>,
 
-    /// Load session as existing context
+    /// Skip writing session logs (for compliance-sensitive runs)
     #[arg(short = 'n', long = "no-session", global = true)]
     no_session: bool,
 
-    /// Backend to use for edit orchestration (`agent` or `gemini`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
+    /// Backend for assistant-backed commands (`agent` or `gemini`). Overrides config for this run; commands fail fast when the selected backend rejects the run.
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
-    /// Bundled agent shim label to run (for example, `codex` or `gemini`)
+    /// Bundled agent shim label to run (for example, `codex` or `gemini`); overrides config until the end of this invocation
     #[arg(long = "agent-label", value_name = "LABEL", global = true)]
     agent_label: Option<String>,
 
-    /// Path to a custom agent script (stdout = assistant text; stderr = progress/errors)
+    /// Path to a custom agent script (stdout = assistant text; stderr = progress/errors); wins over labels/config for this run
     #[arg(long = "agent-command", value_name = "PATH", global = true)]
     agent_command: Option<String>,
 
-    /// Emit the audit as JSON to stdout
+    /// Emit the audit/outcome as JSON to stdout (human epilogues may be suppressed depending on the command)
     #[arg(short = 'j', long, global = true)]
     json: bool,
 
-    /// Config file to load (supports JSON or TOML)
+    /// Config file to load (supports JSON or TOML); bypasses the normal global+repo layering
     #[arg(short = 'C', long = "config-file", global = true)]
     config_file: Option<String>,
 
-    /// Push the current branch to origin after mutating git history
+    /// Push the current branch to origin after mutating git history (approve/merge/save flows)
     #[arg(short = 'P', long, global = true)]
     push: bool,
 
-    /// Leave changes staged/dirty instead of committing automatically
+    /// Leave changes staged/dirty instead of committing automatically (`[workflow] no_commit_default` sets the default posture)
     #[arg(long = "no-commit", action = ArgAction::SetTrue, global = true)]
     no_commit: bool,
 }
@@ -102,6 +114,8 @@ impl Default for GlobalOpts {
             debug: false,
             no_ansi: false,
             progress: ProgressArg::Auto,
+            pager: false,
+            no_pager: false,
             load_session: None,
             no_session: false,
             backend: None,
@@ -120,6 +134,13 @@ enum ProgressArg {
     Auto,
     Never,
     Always,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PagerMode {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -173,16 +194,16 @@ impl From<ProgressArg> for display::ProgressMode {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Inline one-shot interaction: send a single message and exit
+    /// One-shot interaction that applies the default-action posture (snapshot/TODO updates plus any backend edits) and exits
     Ask(AskCmd),
 
-    /// Generate an implementation-plan draft branch from an operator spec
+    /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
 
-    /// Print the resolved configuration and exit
+    /// Print the resolved configuration (global + repo + CLI overrides) and exit
     Plan(PlanCmd),
 
     /// Generate shell completion scripts
@@ -192,13 +213,13 @@ enum Commands {
     #[command(name = "__complete", hide = true)]
     Complete(HiddenCompleteCmd),
 
-    /// Approve plan branches created by `vizier draft`
+    /// Implement and commit a stored plan on its draft branch using a disposable worktree
     Approve(ApproveCmd),
 
-    /// Review a plan branch, run checks, and optionally apply fixes
+    /// Review a plan branch (runs gate/checks first), stream critique, and optionally apply fixes
     Review(ReviewCmd),
 
-    /// Merge approved plan branches back into the primary branch
+    /// Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
     Merge(MergeCmd),
 
     /// Bootstrap `.vizier/.snapshot` and TODO threads from repo history
@@ -256,7 +277,7 @@ struct PlanCmd {}
 
 #[derive(ClapArgs, Debug)]
 struct ApproveCmd {
-    /// Plan slug to approve
+    /// Plan slug to approve (tab-completes from pending plans)
     #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
     plan: Option<String>,
 
@@ -276,14 +297,14 @@ struct ApproveCmd {
     #[arg(long = "branch", value_name = "BRANCH")]
     branch: Option<String>,
 
-    /// Skip confirmation prompt
+    /// Skip the confirmation prompt before applying the plan on the draft branch
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
 }
 
 #[derive(ClapArgs, Debug)]
 struct ReviewCmd {
-    /// Plan slug to review
+    /// Plan slug to review (tab-completes from pending plans)
     #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
     plan: Option<String>,
 
@@ -303,11 +324,11 @@ struct ReviewCmd {
     #[arg(long = "review-only")]
     review_only: bool,
 
-    /// Skip running configured review checks (e.g., cargo test)
+    /// Skip running configured review checks (e.g., cargo test); merge CI/CD gate still runs once per review
     #[arg(long = "skip-checks")]
     skip_checks: bool,
 
-    /// Path to a CI/CD gate script (defaults to merge.cicd_gate.script)
+    /// Path to a CI/CD gate script for this review (defaults to merge.cicd_gate.script)
     #[arg(long = "cicd-script", value_name = "PATH")]
     cicd_script: Option<PathBuf>,
 
@@ -326,7 +347,7 @@ struct ReviewCmd {
 
 #[derive(ClapArgs, Debug)]
 struct MergeCmd {
-    /// Plan slug to merge
+    /// Plan slug to merge (tab-completes from pending plans)
     #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
     plan: Option<String>,
 
@@ -338,7 +359,7 @@ struct MergeCmd {
     #[arg(long = "branch", value_name = "BRANCH")]
     branch: Option<String>,
 
-    /// Skip confirmation prompt
+    /// Skip the merge confirmation prompt
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
 
@@ -386,11 +407,11 @@ struct MergeCmd {
     #[arg(long = "cicd-retries", value_name = "COUNT")]
     cicd_retries: Option<u32>,
 
-    /// Squash implementation commits before creating the merge commit
+    /// Squash implementation commits before creating the merge commit (default follows `[merge] squash`)
     #[arg(long = "squash", action = ArgAction::SetTrue, conflicts_with = "no_squash")]
     squash: bool,
 
-    /// Preserve implementation commits (legacy behavior)
+    /// Preserve implementation commits (legacy behavior; overrides `[merge] squash = true`)
     #[arg(long = "no-squash", action = ArgAction::SetTrue, conflicts_with = "squash")]
     no_squash: bool,
 
@@ -801,6 +822,110 @@ fn build_cli_agent_overrides(
     }
 }
 
+fn flag_present(args: &[String], short: Option<char>, long: &str) -> bool {
+    let short_flag = short.map(|value| format!("-{value}"));
+    args.iter().any(|arg| {
+        if arg == long {
+            return true;
+        }
+        if let Some(short_flag) = short_flag.as_ref() {
+            if arg == short_flag {
+                return true;
+            }
+            if arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg.contains(short_flag.trim_start_matches('-'))
+            {
+                return true;
+            }
+        }
+        false
+    })
+}
+
+fn pager_mode_from_args(args: &[String]) -> PagerMode {
+    if flag_present(args, None, "--no-pager") {
+        PagerMode::Never
+    } else if flag_present(args, None, "--pager") {
+        PagerMode::Always
+    } else {
+        PagerMode::Auto
+    }
+}
+
+fn render_help_with_pager(
+    err: clap::Error,
+    pager_mode: PagerMode,
+    stdout_is_tty: bool,
+    suppress_pager: bool,
+    ansi_enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rendered = err.render().to_string();
+    let help_text = if ansi_enabled {
+        rendered
+    } else {
+        strip_ansi_codes(&rendered)
+    };
+
+    if suppress_pager || !stdout_is_tty || matches!(pager_mode, PagerMode::Never) {
+        print!("{help_text}");
+        return Ok(());
+    }
+
+    if let Some(pager) = std::env::var("VIZIER_PAGER")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if try_page_output(&pager, &help_text).is_ok() {
+            return Ok(());
+        }
+    }
+
+    if matches!(pager_mode, PagerMode::Always | PagerMode::Auto)
+        && try_page_output("less -FRSX", &help_text).is_ok()
+    {
+        return Ok(());
+    }
+
+    print!("{help_text}");
+    Ok(())
+}
+
+fn try_page_output(command: &str, contents: &str) -> std::io::Result<()> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::piped())
+        .spawn()?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(contents.as_bytes())?;
+    }
+
+    let _ = child.wait()?;
+    Ok(())
+}
+
+fn strip_ansi_codes(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        output.push(ch);
+    }
+    output
+}
+
 fn log_agent_runtime_resolution(agent: &config::AgentSettings) {
     if !agent.backend.requires_agent_runner() {
         return;
@@ -956,10 +1081,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let cli = Cli::parse();
-
     let stdout_is_tty = std::io::stdout().is_terminal();
     let stderr_is_tty = std::io::stderr().is_terminal();
+    let raw_args: Vec<String> = std::env::args().collect();
+    let quiet_requested = flag_present(&raw_args, Some('q'), "--quiet");
+    let json_requested = flag_present(&raw_args, Some('j'), "--json");
+    let no_ansi_requested = flag_present(&raw_args, None, "--no-ansi");
+    let pager_mode = pager_mode_from_args(&raw_args);
+
+    let color_choice = if !no_ansi_requested && stdout_is_tty && stderr_is_tty {
+        ColorChoice::Auto
+    } else {
+        ColorChoice::Never
+    };
+
+    let command = Cli::command().color(color_choice);
+    let matches = match command.try_get_matches_from(&raw_args) {
+        Ok(matches) => matches,
+        Err(err) => match err.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                render_help_with_pager(
+                    err,
+                    pager_mode,
+                    stdout_is_tty,
+                    quiet_requested || json_requested,
+                    color_choice != ColorChoice::Never,
+                )?;
+                return Ok(());
+            }
+            ErrorKind::DisplayVersion => {
+                let rendered = err.render().to_string();
+                println!("{rendered}");
+                return Ok(());
+            }
+            _ => err.exit(),
+        },
+    };
+
+    let cli = Cli::from_arg_matches(&matches)?;
 
     let mut verbosity = if cli.global.quiet {
         display::Verbosity::Quiet

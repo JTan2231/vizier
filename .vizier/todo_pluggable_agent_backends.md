@@ -86,6 +86,8 @@ Update (2025-11-27): Wire removal cleanup and agent-only session logging
 Update (2025-11-28): Bundled Gemini progress filter + defaults
 - Added `examples/agents/gemini/filter.sh`, a jq-based progress filter that renders Gemini JSONL events into human-readable progress lines on stderr while preserving the final assistant reply on stdout. Default Gemini runtime settings now force wrapped output and automatically attach this filter (guarded by `default_gemini_runtime_sets_progress_filter` in `vizier-core/src/config.rs`), keeping progress/output parity with the Codex shim.
 
+Update (2025-11-29): Documented and regression-tested that bundled progress filters attach based on `agent.label` (not just codex/gemini), so custom shims with a sibling `filter.sh` inherit wrapped output without extra config.
+
 ## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 
 Tension

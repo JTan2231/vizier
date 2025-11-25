@@ -1149,14 +1149,10 @@ fn command_label(command: &[String]) -> Option<String> {
     if stem.is_empty() { None } else { Some(stem) }
 }
 
+// Attach a bundled progress filter for any agent label that ships one (codex, gemini,
+// or custom shims), so wrapped output stays consistent without per-backend branching.
 fn default_progress_filter_for_label(label: &str) -> Option<Vec<String>> {
-    if label.eq_ignore_ascii_case("codex") {
-        if let Some(path) = bundled_progress_filter(label) {
-            return Some(vec![path.display().to_string()]);
-        }
-    }
-
-    None
+    bundled_progress_filter(label).map(|path| vec![path.display().to_string()])
 }
 
 fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
@@ -2777,6 +2773,50 @@ profile = "deprecated"
         assert!(
             agent.agent_runtime.progress_filter.is_some(),
             "default gemini runtime should pick a progress filter"
+        );
+    }
+
+    #[test]
+    fn bundled_progress_filter_applies_to_custom_label() {
+        let _guard = AGENT_SHIM_ENV_LOCK.lock().unwrap();
+        let temp_dir = tempdir().expect("create temp dir");
+        let shim_dir = temp_dir.path().join("custom");
+        fs::create_dir_all(&shim_dir).expect("create shim dir");
+        let agent_path = shim_dir.join("agent.sh");
+        fs::write(&agent_path, "#!/bin/sh\n").expect("write agent shim");
+        let filter_path = shim_dir.join("filter.sh");
+        fs::write(&filter_path, "#!/bin/sh\n").expect("write filter shim");
+
+        let original = std::env::var("VIZIER_AGENT_SHIMS_DIR").ok();
+        unsafe {
+            std::env::set_var("VIZIER_AGENT_SHIMS_DIR", temp_dir.path());
+        }
+
+        let mut cfg = Config::default();
+        cfg.agent_runtime.label = Some("custom".to_string());
+
+        let agent = cfg
+            .resolve_agent_settings(CommandScope::Ask, None)
+            .expect("custom agent settings should resolve");
+
+        match original {
+            Some(value) => unsafe {
+                std::env::set_var("VIZIER_AGENT_SHIMS_DIR", value);
+            },
+            None => unsafe {
+                std::env::remove_var("VIZIER_AGENT_SHIMS_DIR");
+            },
+        }
+
+        assert_eq!(
+            agent.agent_runtime.command,
+            vec![agent_path.display().to_string()],
+            "custom label should reuse the bundled shim"
+        );
+        assert_eq!(
+            agent.agent_runtime.progress_filter,
+            Some(vec![filter_path.display().to_string()]),
+            "custom label should pick up a bundled progress filter when unset"
         );
     }
 

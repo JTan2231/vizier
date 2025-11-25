@@ -3146,6 +3146,64 @@ fn test_test_display_can_write_session_when_opted_in() -> TestResult {
 }
 
 #[test]
+fn test_help_respects_no_ansi_and_quiet() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let mut cmd = repo.vizier_cmd();
+    cmd.args(["--help", "-q", "--no-ansi"]);
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "help should exit 0 even with quiet/no-ansi: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "quiet mode should not suppress help output: {stdout}"
+    );
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "help output should omit ANSI when --no-ansi is set: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_help_does_not_invoke_pager_when_not_a_tty() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let temp_dir = TempDir::new()?;
+    let pager_log = temp_dir.path().join("pager-hit.log");
+    let pager_cmd = format!("cat > {}", pager_log.display());
+
+    let mut cmd = repo.vizier_cmd();
+    cmd.env("VIZIER_PAGER", &pager_cmd);
+    cmd.args(["--pager", "--help"]);
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "help with --pager should exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !pager_log.exists(),
+        "pager command should not run when stdout is not a TTY"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "help should still print when pager is suppressed: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn codex_shim_forwards_prompt_and_args() -> TestResult {
     let tmp = TempDir::new()?;
     let bin_dir = tmp.path().join("bin");
