@@ -65,11 +65,7 @@ struct GlobalOpts {
     #[arg(short = 'n', long = "no-session", global = true)]
     no_session: bool,
 
-    /// Set LLM model for wire-backed runs (agent backends ignore this; configure models in .vizier/config.toml instead)
-    #[arg(short = 'p', long, global = true)]
-    model: Option<String>,
-
-    /// Backend to use for edit orchestration (`agent`, `gemini`, or `wire`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
+    /// Backend to use for edit orchestration (`agent` or `gemini`). Commands fail fast when the selected backend rejects the run; there is no automatic fallback.
     #[arg(long = "backend", value_enum, global = true)]
     backend: Option<BackendArg>,
 
@@ -88,10 +84,6 @@ struct GlobalOpts {
     /// Config file to load (supports JSON or TOML)
     #[arg(short = 'C', long = "config-file", global = true)]
     config_file: Option<String>,
-
-    /// Override model reasoning effort (minimal, low, medium, high)
-    #[arg(short = 'r', long = "reasoning-effort", global = true)]
-    reasoning_effort: Option<String>,
 
     /// Push the current branch to origin after mutating git history
     #[arg(short = 'P', long, global = true)]
@@ -112,13 +104,11 @@ impl Default for GlobalOpts {
             progress: ProgressArg::Auto,
             load_session: None,
             no_session: false,
-            model: None,
             backend: None,
             agent_label: None,
             agent_command: None,
             json: false,
             config_file: None,
-            reasoning_effort: None,
             push: false,
             no_commit: false,
         }
@@ -137,7 +127,6 @@ enum BackendArg {
     #[value(alias = "codex")]
     Agent,
     Gemini,
-    Wire,
 }
 
 impl From<BackendArg> for config::BackendKind {
@@ -145,7 +134,6 @@ impl From<BackendArg> for config::BackendKind {
         match value {
             BackendArg::Agent => config::BackendKind::Agent,
             BackendArg::Gemini => config::BackendKind::Gemini,
-            BackendArg::Wire => config::BackendKind::Wire,
         }
     }
 }
@@ -782,22 +770,6 @@ fn build_cli_agent_overrides(
         overrides.backend = Some(backend.into());
     }
 
-    if let Some(model) = opts.model.as_ref() {
-        let trimmed = model.trim();
-        if trimmed.is_empty() {
-            return Err("model name cannot be empty".into());
-        }
-        overrides.model = Some(trimmed.to_string());
-    }
-
-    if let Some(reasoning) = opts.reasoning_effort.as_ref() {
-        let trimmed = reasoning.trim();
-        if trimmed.is_empty() {
-            return Err("reasoning effort cannot be empty".into());
-        }
-        overrides.reasoning_effort = Some(wire::config::ThinkingLevel::from_string(trimmed)?);
-    }
-
     if let Some(label) = opts
         .agent_label
         .as_ref()
@@ -826,21 +798,6 @@ fn build_cli_agent_overrides(
         Ok(None)
     } else {
         Ok(Some(overrides))
-    }
-}
-
-fn warn_if_model_override_ignored(
-    model_override_requested: bool,
-    scope: config::CommandScope,
-    agent: &config::AgentSettings,
-) {
-    if model_override_requested && agent.backend != config::BackendKind::Wire {
-        display::warn(format!(
-            "--model override ignored for `{}` because the {} backend is active; update [agents.{}] or rerun with --backend wire.",
-            scope.as_str(),
-            agent.backend,
-            scope.as_str()
-        ));
     }
 }
 
@@ -1161,46 +1118,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.agent_runtime.command = vec![command.to_string()];
     }
 
-    let mut provider_needs_rebuild =
-        cfg.provider_model != config::DEFAULT_MODEL || cfg.reasoning_effort.is_some();
-
-    if let Some(model) = &cli.global.model {
-        let trimmed = model.trim();
-        if trimmed.is_empty() {
-            return Err("model name cannot be empty".into());
-        }
-        if cfg.backend == config::BackendKind::Wire {
-            cfg.provider_model = trimmed.to_owned();
-            provider_needs_rebuild = true;
-        }
-    }
-
-    if let Some(reasoning_effort) = &cli.global.reasoning_effort {
-        let trimmed = reasoning_effort.trim();
-        if trimmed.is_empty() {
-            return Err("reasoning effort cannot be empty".into());
-        }
-
-        cfg.reasoning_effort = Some(wire::config::ThinkingLevel::from_string(trimmed)?);
-        provider_needs_rebuild = true;
-    }
-
-    if provider_needs_rebuild {
-        cfg.provider =
-            config::Config::provider_from_settings(&cfg.provider_model, cfg.reasoning_effort)?;
-    }
-
     let workflow_defaults = cfg.workflow.clone();
 
     config::set_config(cfg);
 
     let cli_agent_override = build_cli_agent_overrides(&cli.global)?;
-    let model_override_requested = cli
-        .global
-        .model
-        .as_ref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
 
     let push_after = cli.global.push;
     let commit_mode = if cli.global.no_commit {
@@ -1227,11 +1149,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Save, cli_agent_override.as_ref())?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(
-                model_override_requested,
-                config::CommandScope::Save,
-                &agent,
-            );
             run_save(
                 &rev_or_range,
                 &[".vizier/"],
@@ -1249,11 +1166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Ask, cli_agent_override.as_ref())?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(
-                model_override_requested,
-                config::CommandScope::Ask,
-                &agent,
-            );
             inline_command(message, push_after, &agent, commit_mode).await
         }
 
@@ -1262,7 +1174,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let agent = config::get_config()
                 .resolve_agent_settings(opts.scope, cli_agent_override.as_ref())?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(model_override_requested, opts.scope, &agent);
             run_test_display(opts, &agent).await
         }
 
@@ -1271,11 +1182,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Draft, cli_agent_override.as_ref())?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(
-                model_override_requested,
-                config::CommandScope::Draft,
-                &agent,
-            );
             run_draft(
                 DraftArgs {
                     spec_text: resolved.text,
@@ -1298,11 +1204,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli_agent_override.as_ref(),
             )?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(
-                model_override_requested,
-                config::CommandScope::Approve,
-                &agent,
-            );
             run_approve(opts, &agent, commit_mode).await
         }
         Commands::Review(cmd) => {
@@ -1312,11 +1213,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli_agent_override.as_ref(),
             )?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(
-                model_override_requested,
-                config::CommandScope::Review,
-                &agent,
-            );
             run_review(opts, &agent, commit_mode).await
         }
         Commands::Merge(cmd) => {
@@ -1324,11 +1220,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let agent = config::get_config()
                 .resolve_agent_settings(config::CommandScope::Merge, cli_agent_override.as_ref())?;
             log_agent_runtime_resolution(&agent);
-            warn_if_model_override_ignored(
-                model_override_requested,
-                config::CommandScope::Merge,
-                &agent,
-            );
             run_merge(opts, &agent, commit_mode).await
         }
     }

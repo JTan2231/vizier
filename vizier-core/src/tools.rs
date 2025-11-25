@@ -1,8 +1,9 @@
-use wire::prelude::{Tool, ToolWrapper, get_tool, tool};
-
 use crate::{config, file_tracking, observer::CaptureGuard, vcs};
 
 const TODO_DIR: &str = ".vizier/";
+
+#[derive(Clone, Debug, Default)]
+pub struct Tool;
 
 // TODO: We should only default to the current directory if there isn't a configured target
 //       directory (for more automated/transient uses)
@@ -53,7 +54,7 @@ pub fn is_action(name: &str) -> bool {
 //       Right now the current approach is to just unwrap them and that really isn't working at
 //       all in terms of maintaining flow with the language models.
 
-// TODO: The wire needs updated to accept more kinds of types for the function arguments
+// TODO: Expand tool argument support for richer structured inputs
 
 pub fn llm_error(message: &str) -> String {
     format!("<error>{}</error>", message)
@@ -74,7 +75,6 @@ pub fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
     response
 }
 
-#[tool(description = "Get the `git diff` of the project")]
 pub fn diff() -> String {
     let guard = CaptureGuard::start();
     match vcs::get_diff(".", None, None) {
@@ -83,26 +83,6 @@ pub fn diff() -> String {
     }
 }
 
-#[tool(description = "
-Display recent commits from the current Git repository.
-
-Parameters:
-    depth: Maximum number of commits to display (default: 10 if parsing fails--this is also the maximum).
-    commit_message_type: Optional filter; only commits whose messages contain this string
-                         (case-insensitive) will be shown. If empty, no filtering is applied.
-                         Null is inapplicable here. Use an empty string to omit.
-
-Output:
-- Each commit is listed on a new line in the format:
-    <short_sha>  <summary> — <author>
-
-Notes:
-- Commits are ordered chronologically descending (most recent first).
-- `depth` applies *after* filtering, so fewer than `depth` commits may appear if
-  not enough commits match the filter.
-- There is a filter applied after retrieval that removes conversation logs
-- If no commit messages match, output will be empty.
-")]
 pub fn git_log(depth: String, commit_message_type: String) -> String {
     let guard = CaptureGuard::start();
 
@@ -147,13 +127,6 @@ fn build_todo_path(name: &str) -> Result<String, String> {
     Ok(format!("{}{}", get_todo_dir(), trimmed))
 }
 
-#[tool(description = "
-Add a TODO item.
-
-Parameters:
-    todo_name: Slug used as the exact filename inside `.vizier/`
-    description: Content of the TODO item (markdown recommended)
-")]
 fn add_todo(name: String, description: String) -> String {
     let filename = match build_todo_path(&name) {
         Ok(path) => path,
@@ -167,12 +140,6 @@ fn add_todo(name: String, description: String) -> String {
     }
 }
 
-#[tool(description = "
-Delete a TODO item.
-
-Parameters:
-    name: Slug of the TODO item to delete
-")]
 fn delete_todo(name: String) -> String {
     let filename = match build_todo_path(&name) {
         Ok(path) => path,
@@ -186,14 +153,6 @@ fn delete_todo(name: String) -> String {
     }
 }
 
-#[tool(description = "Updates an existing TODO item by appending new content.
-
-Parameters:
-    todo_name: Slug of the TODO item to update
-    update: Content to append to the item
-
-Notes: Content is appended with separator lines for readability
-")]
 fn update_todo(todo_name: String, update: String) -> String {
     let filename = match build_todo_path(&todo_name) {
         Ok(path) => path,
@@ -208,12 +167,6 @@ fn update_todo(todo_name: String, update: String) -> String {
     }
 }
 
-#[tool(description = "Reads and returns the contents of a specified file.
-
-Parameters:
-    filepath: Path to the file to read
-
-Returns: String containing file contents or error message if read fails")]
 fn read_file(filepath: String) -> String {
     let contents = file_tracking::FileTracker::read(&filepath);
     if let Err(e) = contents {
@@ -223,9 +176,6 @@ fn read_file(filepath: String) -> String {
     contents.unwrap_or_default()
 }
 
-#[tool(description = "Lists all existing TODO items.
-
-Returns: Semicolon-separated string of TODO item names")]
 pub fn list_todos() -> String {
     match std::fs::read_dir(get_todo_dir()) {
         Ok(d) => {
@@ -263,12 +213,6 @@ pub fn list_todos() -> String {
     }
 }
 
-#[tool(description = "Retrieves the contents of a specific TODO item.
-
-Parameters:
-    todo_name: Slug of the TODO item to read
-
-Returns: String containing the TODO item's contents")]
 fn read_todo(todo_name: String) -> String {
     let filename = match build_todo_path(&todo_name) {
         Ok(path) => path,
@@ -283,22 +227,11 @@ fn read_todo(todo_name: String) -> String {
     }
 }
 
-#[tool(description = "Retrieves the current project trajectory snapshot.
-
-Returns: String containing snapshot contents or empty string if none exists")]
 pub fn read_snapshot() -> String {
     let filename = format!("{}{}", get_todo_dir(), ".snapshot");
     std::fs::read_to_string(&filename).unwrap_or_default()
 }
 
-#[tool(
-    description = "Updates the project trajectory snapshot with new content.
-
-Parameters:
-    content: New snapshot content to write
-
-Notes: Overwrites any existing snapshot"
-)]
 fn update_snapshot(content: String) -> String {
     let filename = format!("{}{}", get_todo_dir(), ".snapshot");
 
@@ -309,22 +242,6 @@ fn update_snapshot(content: String) -> String {
     }
 }
 
-#[tool(
-    description = "Creates a new GitHub issue in the repository associated with the current working directory.
-
-Parameters:
-    title: Title of the new GitHub issue
-    body: Body/description content of the issue
-
-Notes:
-    - Uses GitHub’s REST API (v2022-11-28).
-    - Only use this tool at the user's request.
-      Please note that mentions of this tool (e.g., `need a git issue`, etc.) are authorization enough to proceed for this.
-    - The issue body will automatically be signed noting that the issue was agentically created--_do not_ sign it yourself.
-
-Returns:
-    String containing the raw API response if successful, or an error message if the request fails."
-)]
 fn create_git_issue(title: String, body: String) -> String {
     use reqwest::blocking::Client;
     use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
@@ -384,35 +301,15 @@ fn create_git_issue(title: String, body: String) -> String {
     }
 }
 
-// TODO: We need to figure out how to get this order-agnostic with the #[tool] annotations
 pub fn get_tools() -> Vec<Tool> {
-    vec![
-        get_tool!(create_git_issue),
-        get_tool!(diff),
-        get_tool!(git_log),
-        get_tool!(add_todo),
-        get_tool!(delete_todo),
-        get_tool!(update_todo),
-        get_tool!(list_todos),
-        get_tool!(read_file),
-        get_tool!(read_todo),
-        get_tool!(read_snapshot),
-        get_tool!(update_snapshot),
-    ]
+    Vec::new()
 }
 
 pub fn get_snapshot_tools() -> Vec<Tool> {
-    vec![
-        get_tool!(git_log),
-        get_tool!(list_todos),
-        get_tool!(read_file),
-        get_tool!(update_snapshot),
-    ]
+    Vec::new()
 }
 
 pub fn active_tooling_for(agent: &config::AgentSettings) -> Vec<Tool> {
-    match agent.backend {
-        config::BackendKind::Agent | config::BackendKind::Gemini => Vec::new(),
-        config::BackendKind::Wire => get_tools(),
-    }
+    let _ = agent;
+    Vec::new()
 }

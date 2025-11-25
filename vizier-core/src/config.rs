@@ -4,11 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use lazy_static::lazy_static;
-use wire::{
-    api::Prompt,
-    config::{ClientOptions, ThinkingLevel},
-    new_client_with_options, openai,
-};
 
 use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
@@ -16,8 +11,6 @@ use crate::{
     agent::{AgentRunner, ScriptRunner},
     tools, tree,
 };
-
-pub const DEFAULT_MODEL: &str = "gpt-5";
 
 lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::default());
@@ -81,7 +74,6 @@ impl PromptKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     Agent,
-    Wire,
     Gemini,
 }
 
@@ -89,7 +81,6 @@ impl BackendKind {
     pub fn from_str(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "agent" | "codex" => Some(Self::Agent),
-            "wire" => Some(Self::Wire),
             "gemini" => Some(Self::Gemini),
             _ => None,
         }
@@ -104,7 +95,6 @@ impl std::fmt::Display for BackendKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BackendKind::Agent => write!(f, "agent"),
-            BackendKind::Wire => write!(f, "wire"),
             BackendKind::Gemini => write!(f, "gemini"),
         }
     }
@@ -229,15 +219,13 @@ impl DocumentationSettingsOverride {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOverrides {
     pub backend: Option<BackendKind>,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<ThinkingLevel>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
     pub documentation: DocumentationSettingsOverride,
     pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
 }
 
 /// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]` so the same
-/// table controls the template, backend/model overrides, and agent runtime options for a
+/// table controls the template, backend overrides, and agent runtime options for a
 /// specific command/prompt pairing. Legacy `[prompts.*]` keys remain supported,
 /// but repositories should converge on these profiles so operators reason about a
 /// single surface when migrating.
@@ -257,8 +245,6 @@ impl PromptOverrides {
 impl AgentOverrides {
     pub fn is_empty(&self) -> bool {
         self.backend.is_none()
-            && self.model.is_none()
-            && self.reasoning_effort.is_none()
             && self.agent_runtime.is_none()
             && self.documentation.is_empty()
             && self.prompt_overrides.is_empty()
@@ -267,14 +253,6 @@ impl AgentOverrides {
     pub fn merge(&mut self, other: &AgentOverrides) {
         if let Some(backend) = other.backend {
             self.backend = Some(backend);
-        }
-
-        if let Some(model) = other.model.as_ref() {
-            self.model = Some(model.clone());
-        }
-
-        if let Some(level) = other.reasoning_effort {
-            self.reasoning_effort = Some(level);
         }
 
         if let Some(runtime) = other.agent_runtime.as_ref() {
@@ -297,10 +275,7 @@ impl AgentOverrides {
 pub struct AgentSettings {
     pub scope: CommandScope,
     pub backend: BackendKind,
-    pub provider: Arc<dyn Prompt>,
     pub runner: Option<Arc<dyn AgentRunner>>,
-    pub provider_model: String,
-    pub reasoning_effort: Option<ThinkingLevel>,
     pub agent_runtime: ResolvedAgentRuntime,
     pub documentation: DocumentationSettings,
     pub prompt: Option<PromptSelection>,
@@ -504,9 +479,6 @@ pub struct PromptSelection {
 
 #[derive(Clone)]
 pub struct Config {
-    pub provider: Arc<dyn Prompt>,
-    pub provider_model: String,
-    pub reasoning_effort: Option<ThinkingLevel>,
     pub no_session: bool,
     pub backend: BackendKind,
     pub agent_runtime: AgentRuntimeOptions,
@@ -687,8 +659,6 @@ pub struct WorkflowLayer {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigLayer {
-    pub provider_model: Option<String>,
-    pub reasoning_effort: Option<ThinkingLevel>,
     pub backend: Option<BackendKind>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
     pub review: ReviewLayer,
@@ -718,9 +688,6 @@ impl Config {
         }
 
         Self {
-            provider: Arc::new(openai::OpenAIClient::new(DEFAULT_MODEL)),
-            provider_model: DEFAULT_MODEL.to_owned(),
-            reasoning_effort: None,
             no_session: false,
             backend: BackendKind::Agent,
             agent_runtime: AgentRuntimeOptions::default(),
@@ -744,14 +711,6 @@ impl Config {
     }
 
     pub fn apply_layer(&mut self, layer: &ConfigLayer) {
-        if let Some(model) = layer.provider_model.as_ref() {
-            self.provider_model = model.clone();
-        }
-
-        if let Some(level) = layer.reasoning_effort {
-            self.reasoning_effort = Some(level);
-        }
-
         if let Some(backend) = layer.backend {
             self.backend = backend;
         }
@@ -789,18 +748,6 @@ impl Config {
         for ((scope, prompt), value) in layer.scoped_prompts.iter() {
             self.set_scoped_prompt(*scope, *prompt, value.clone());
         }
-    }
-
-    pub fn provider_from_settings(
-        model: &str,
-        reasoning_effort: Option<ThinkingLevel>,
-    ) -> Result<Arc<dyn Prompt>, Box<dyn std::error::Error>> {
-        let mut options = ClientOptions::default();
-        if let Some(level) = reasoning_effort {
-            options = options.with_thinking_level(level);
-        }
-
-        Ok(Arc::from(new_client_with_options(model, options)?))
     }
 
     pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
@@ -1042,6 +989,11 @@ const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["flags", "thinking_level"],
     &["flags", "thinking-level"],
 ];
+const WIRE_BACKEND_REMOVED_MESSAGE: &str =
+    "the `wire` backend has been removed. Update your config/CLI flags to use `agent` or `gemini`.";
+const MODEL_CONFIG_REMOVED_MESSAGE: &str =
+    "model overrides are no longer supported now that the wire backend has been removed.";
+const REASONING_CONFIG_REMOVED_MESSAGE: &str = "reasoning-effort overrides are no longer supported now that the wire backend has been removed.";
 const DOCUMENTATION_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["DOCUMENTATION_PROMPT"],
     &["documentation_prompt"],
@@ -1087,8 +1039,6 @@ const MERGE_CONFLICT_PROMPT_KEY_PATHS: &[&[&str]] = &[
 #[derive(Clone)]
 struct AgentSettingsBuilder {
     backend: BackendKind,
-    provider_model: String,
-    reasoning_effort: Option<ThinkingLevel>,
     agent_runtime: AgentRuntimeOptions,
     documentation: DocumentationSettings,
 }
@@ -1097,8 +1047,6 @@ impl AgentSettingsBuilder {
     fn new(cfg: &Config) -> Self {
         Self {
             backend: cfg.backend,
-            provider_model: cfg.provider_model.clone(),
-            reasoning_effort: cfg.reasoning_effort,
             agent_runtime: cfg.agent_runtime.clone(),
             documentation: DocumentationSettings::default(),
         }
@@ -1107,16 +1055,6 @@ impl AgentSettingsBuilder {
     fn apply(&mut self, overrides: &AgentOverrides) {
         if let Some(backend) = overrides.backend {
             self.backend = backend;
-        }
-
-        if let Some(model) = overrides.model.as_ref() {
-            if self.backend == BackendKind::Wire {
-                self.provider_model = model.clone();
-            }
-        }
-
-        if let Some(level) = overrides.reasoning_effort {
-            self.reasoning_effort = Some(level);
         }
 
         if let Some(runtime) = overrides.agent_runtime.as_ref() {
@@ -1143,16 +1081,6 @@ impl AgentSettingsBuilder {
     fn apply_cli_override(&mut self, overrides: &AgentOverrides) {
         if let Some(backend) = overrides.backend {
             self.backend = backend;
-        }
-
-        if let Some(model) = overrides.model.as_ref() {
-            if self.backend == BackendKind::Wire {
-                self.provider_model = model.clone();
-            }
-        }
-
-        if let Some(level) = overrides.reasoning_effort {
-            self.reasoning_effort = Some(level);
         }
 
         if let Some(runtime) = overrides.agent_runtime.as_ref() {
@@ -1193,13 +1121,6 @@ impl AgentSettingsBuilder {
         prompt: Option<PromptSelection>,
         cli_override: Option<&AgentOverrides>,
     ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        let provider = if self.provider_model == cfg.provider_model
-            && self.reasoning_effort == cfg.reasoning_effort
-        {
-            cfg.provider.clone()
-        } else {
-            Config::provider_from_settings(&self.provider_model, self.reasoning_effort)?
-        };
         let agent_runtime = self.agent_runtime.normalized_for_backend(self.backend);
 
         let resolved_runtime = resolve_agent_runtime(agent_runtime.clone(), self.backend)?;
@@ -1207,10 +1128,7 @@ impl AgentSettingsBuilder {
         Ok(AgentSettings {
             scope,
             backend: self.backend,
-            provider,
             runner: resolve_agent_runner(self.backend)?,
-            provider_model: self.provider_model.clone(),
-            reasoning_effort: self.reasoning_effort,
             agent_runtime: resolved_runtime,
             documentation: self.documentation.clone(),
             prompt,
@@ -1222,7 +1140,6 @@ impl AgentSettingsBuilder {
 pub fn default_label_for_backend(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::Gemini => "gemini",
-        BackendKind::Wire => "wire",
         BackendKind::Agent => "codex",
     }
 }
@@ -1437,24 +1354,37 @@ fn parse_agent_overrides(
 
     let mut overrides = AgentOverrides::default();
 
-    if let Some(backend) =
-        find_string(value, BACKEND_KEY_PATHS).and_then(|text| BackendKind::from_str(text.trim()))
-    {
-        overrides.backend = Some(backend);
-    }
+    if let Some(raw_backend) = find_string(value, BACKEND_KEY_PATHS) {
+        let trimmed = raw_backend.trim();
+        if trimmed.eq_ignore_ascii_case("wire") {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                WIRE_BACKEND_REMOVED_MESSAGE,
+            )));
+        }
 
-    if let Some(model) = find_string(value, MODEL_KEY_PATHS) {
-        let trimmed = model.trim();
-        if !trimmed.is_empty() {
-            overrides.model = Some(trimmed.to_string());
+        if let Some(backend) = BackendKind::from_str(trimmed) {
+            overrides.backend = Some(backend);
+        } else if !trimmed.is_empty() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
+            )));
         }
     }
 
-    if let Some(level) = find_string(value, REASONING_EFFORT_KEY_PATHS) {
-        let trimmed = level.trim();
-        if !trimmed.is_empty() {
-            overrides.reasoning_effort = Some(ThinkingLevel::from_string(trimmed)?);
-        }
+    if find_string(value, MODEL_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            MODEL_CONFIG_REMOVED_MESSAGE,
+        )));
+    }
+
+    if find_string(value, REASONING_EFFORT_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            REASONING_CONFIG_REMOVED_MESSAGE,
+        )));
     }
 
     if let Some(runtime_value) = value_at_path(value, &["agent"]) {
@@ -1721,24 +1651,37 @@ impl ConfigLayer {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut layer = ConfigLayer::default();
 
-        if let Some(model) = find_string(&file_config, MODEL_KEY_PATHS) {
-            let model = model.trim();
-            if !model.is_empty() {
-                layer.provider_model = Some(model.to_owned());
-            }
+        if find_string(&file_config, MODEL_KEY_PATHS).is_some() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                MODEL_CONFIG_REMOVED_MESSAGE,
+            )));
         }
 
-        if let Some(level) = find_string(&file_config, REASONING_EFFORT_KEY_PATHS) {
-            let level = level.trim();
-            if !level.is_empty() {
-                layer.reasoning_effort = Some(ThinkingLevel::from_string(level)?);
-            }
+        if find_string(&file_config, REASONING_EFFORT_KEY_PATHS).is_some() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                REASONING_CONFIG_REMOVED_MESSAGE,
+            )));
         }
 
-        if let Some(backend) = find_string(&file_config, BACKEND_KEY_PATHS)
-            .and_then(|value| BackendKind::from_str(value.trim()))
-        {
-            layer.backend = Some(backend);
+        if let Some(raw_backend) = find_string(&file_config, BACKEND_KEY_PATHS) {
+            let trimmed = raw_backend.trim();
+            if trimmed.eq_ignore_ascii_case("wire") {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    WIRE_BACKEND_REMOVED_MESSAGE,
+                )));
+            }
+
+            if let Some(backend) = BackendKind::from_str(trimmed) {
+                layer.backend = Some(backend);
+            } else if !trimmed.is_empty() {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
+                )));
+            }
         }
 
         if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
@@ -2213,7 +2156,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::{NamedTempFile, tempdir};
-    use wire::config::ThinkingLevel;
 
     lazy_static! {
         static ref AGENT_SHIM_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -2399,27 +2341,15 @@ include_snapshot = true
     }
 
     #[test]
-    fn test_reasoning_effort_in_config_file() {
+    fn config_rejects_model_and_reasoning_keys() {
         let json = r#"{ "model": "gpt-5", "reasoning_effort": "medium" }"#;
         let file = write_json_file(json);
 
-        let cfg =
-            Config::from_json(file.path().to_path_buf()).expect("should parse reasoning effort");
-
-        assert_eq!(cfg.provider_model, "gpt-5");
-        assert_eq!(cfg.reasoning_effort, Some(ThinkingLevel::Medium));
-    }
-
-    #[test]
-    fn test_reasoning_effort_without_model_uses_default() {
-        let json = r#"{ "reasoning_effort": "high" }"#;
-        let file = write_json_file(json);
-
-        let cfg = Config::from_json(file.path().to_path_buf())
-            .expect("should parse reasoning effort only");
-
-        assert_eq!(cfg.provider_model, DEFAULT_MODEL);
-        assert_eq!(cfg.reasoning_effort, Some(ThinkingLevel::High));
+        let cfg = Config::from_json(file.path().to_path_buf());
+        assert!(
+            cfg.is_err(),
+            "model/reasoning keys should be rejected after wire removal"
+        );
     }
 
     #[test]
@@ -2547,9 +2477,6 @@ auto_resolve = true
             r#"
 backend = "agent"
 
-[agents.default]
-backend = "wire"
-
 [merge.cicd_gate]
 script = "./scripts/global-ci.sh"
 retries = 4
@@ -2568,7 +2495,7 @@ commands = ["echo global"]
             &repo_path,
             r#"
 [agents.default]
-model = "wire-local"
+backend = "gemini"
 
 [merge.cicd_gate]
 auto_resolve = true
@@ -2589,13 +2516,8 @@ documentation = "repo documentation prompt"
 
         assert_eq!(
             cfg.agent_defaults.backend,
-            Some(BackendKind::Wire),
-            "global backend should carry into repo config"
-        );
-        assert_eq!(
-            cfg.agent_defaults.model.as_deref(),
-            Some("wire-local"),
-            "repo model override should layer onto global defaults"
+            Some(BackendKind::Gemini),
+            "repo backend override should win over global defaults"
         );
         assert_eq!(
             cfg.merge.cicd_gate.script,
@@ -2644,7 +2566,7 @@ documentation = "repo documentation prompt"
         );
 
         let toml_path = vizier_dir.join("config.toml");
-        fs::write(&toml_path, "backend = \"wire\"").expect("write toml config");
+        fs::write(&toml_path, "backend = \"agent\"").expect("write toml config");
         assert_eq!(
             project_config_path(temp_dir.path()).expect("toml config should override json"),
             toml_path
@@ -2695,8 +2617,7 @@ documentation = "repo documentation prompt"
             r#"
 [agents.default.prompts.documentation]
 path = "profile_documentation.md"
-backend = "wire"
-model = "gpt-4o-mini"
+backend = "gemini"
 "#,
         )
         .expect("write config");
@@ -2719,8 +2640,7 @@ model = "gpt-4o-mini"
                 .trim(),
             "scoped prompt from file"
         );
-        assert_eq!(agent.backend, BackendKind::Wire);
-        assert_eq!(agent.provider_model, "gpt-4o-mini");
+        assert_eq!(agent.backend, BackendKind::Gemini);
     }
 
     #[test]
@@ -2862,98 +2782,6 @@ profile = "deprecated"
             agent.agent_runtime.progress_filter,
             Some(vec!["/usr/bin/cat".to_string()])
         );
-    }
-
-    #[test]
-    fn wire_backend_skips_runner() {
-        let mut cfg = Config::default();
-        cfg.backend = BackendKind::Wire;
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
-            .expect("wire backend should resolve");
-        assert!(agent.runner.is_none());
-    }
-
-    #[test]
-    fn scoped_agent_backend_overrides_wire_default() {
-        let _guard = AGENT_SHIM_ENV_LOCK.lock().unwrap();
-        let temp_dir = tempdir().expect("create temp dir");
-        let shim_dir = temp_dir.path().join("codex");
-        fs::create_dir_all(&shim_dir).expect("create shim dir");
-        let shim_path = shim_dir.join("agent.sh");
-        fs::write(&shim_path, "#!/bin/sh\n").expect("write shim");
-        let original = std::env::var("VIZIER_AGENT_SHIMS_DIR").ok();
-        unsafe {
-            std::env::set_var("VIZIER_AGENT_SHIMS_DIR", temp_dir.path());
-        }
-
-        let mut cfg = Config::default();
-        cfg.backend = BackendKind::Wire;
-
-        let mut overrides = AgentOverrides::default();
-        overrides.backend = Some(BackendKind::Agent);
-        cfg.agent_scopes.insert(CommandScope::Save, overrides);
-
-        let ask = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
-            .expect("ask scope should resolve");
-        assert_eq!(ask.backend, BackendKind::Wire);
-        assert!(
-            ask.runner.is_none(),
-            "wire scopes should not resolve runners"
-        );
-
-        let save = cfg
-            .resolve_agent_settings(CommandScope::Save, None)
-            .expect("save scope should resolve");
-        assert_eq!(save.backend, BackendKind::Agent);
-        assert!(
-            save.agent_runner().is_ok(),
-            "agent scopes should expose a runner even when defaults are wire"
-        );
-
-        match original {
-            Some(value) => unsafe {
-                std::env::set_var("VIZIER_AGENT_SHIMS_DIR", value);
-            },
-            None => unsafe {
-                std::env::remove_var("VIZIER_AGENT_SHIMS_DIR");
-            },
-        }
-    }
-
-    #[test]
-    fn cli_model_override_is_ignored_for_agent_backend() {
-        let mut cfg = Config::default();
-        cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
-        cfg.backend = BackendKind::Agent;
-
-        let mut cli_override = AgentOverrides::default();
-        cli_override.model = Some("gpt-4o-mini".to_string());
-
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
-            .expect("ask scope should resolve");
-        assert_eq!(agent.backend, BackendKind::Agent);
-        assert_eq!(
-            agent.provider_model, DEFAULT_MODEL,
-            "agent backends should ignore CLI model overrides"
-        );
-    }
-
-    #[test]
-    fn cli_model_override_applies_for_wire_backend() {
-        let mut cfg = Config::default();
-        cfg.backend = BackendKind::Wire;
-
-        let mut cli_override = AgentOverrides::default();
-        cli_override.model = Some("gpt-4o-mini".to_string());
-
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
-            .expect("ask scope should resolve");
-        assert_eq!(agent.backend, BackendKind::Wire);
-        assert_eq!(agent.provider_model, "gpt-4o-mini");
     }
 
     #[test]

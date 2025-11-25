@@ -4,7 +4,7 @@ This guide explains how Vizier’s plan workflow turns a high-level spec into au
 
 ### Agent configuration
 
-The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing backends and the wire transport as needed (see also `docs/prompt-config-matrix.md` for the full scope×prompt-kind matrix and config levers):
+The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing backends as needed (see also `docs/prompt-config-matrix.md` for the full scope×prompt-kind matrix and config levers):
 
 ```toml
 [agents.default]
@@ -17,14 +17,14 @@ backend = "agent"            # enforce an editing-capable implementation backend
 backend = "agent"
 
 [agents.merge]
-backend = "wire"             # keep merge cleanup on the wire stack
+backend = "gemini"           # keep merge cleanup on the gemini stack
 ```
 
 Config precedence: when you skip `--config-file`, Vizier loads the user/global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) as a base and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
 
-If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier no longer falls back to wire automatically; rerun the command once the configured backend is healthy.
+If the selected backend crashes or rejects the request, the command fails immediately with the backend error. Vizier does not fall back to another backend; rerun the command once the configured backend is healthy.
 
-CLI overrides (`--backend`, `--agent-label`, `--agent-command`, `-p/--model`, `-r/--reasoning-effort`) apply only to the command being executed and sit above the `[agents.<scope>]` entries. The `-p/--model` flag is wire-only: agent/Codex backends ignore it, so model overrides only affect scopes running on wire.
+CLI overrides (`--backend`, `--agent-label`, `--agent-command`) apply only to the command being executed and sit above the `[agents.<scope>]` entries.
 
 Need to sanity-check how those layers resolve before you kick off the workflow? Run `vizier plan` (or `vizier plan --json` for structured output) to print the effective configuration, per-scope backend, and resolved agent runtime without mutating the repo or starting a session.
 

@@ -33,7 +33,7 @@ use vizier_core::{
     bootstrap::{BootstrapOptions, IssuesProvider},
     config,
     display::{self, LogLevel, ProgressEvent, Verbosity, format_label_value_block, format_number},
-    file_tracking, tools, vcs,
+    file_tracking, vcs,
 };
 
 use crate::plan;
@@ -63,8 +63,6 @@ fn format_block_with_indent(rows: Vec<(String, String)>, indent: usize) -> Strin
 struct ConfigReport {
     backend: String,
     agent_backend: Option<String>,
-    model: String,
-    reasoning_effort: Option<String>,
     no_session: bool,
     workflow: WorkflowReport,
     merge: MergeReport,
@@ -76,8 +74,6 @@ struct ConfigReport {
 #[derive(Debug, Serialize)]
 struct ScopeReport {
     backend: String,
-    model: Option<String>,
-    reasoning_effort: Option<String>,
     documentation: DocumentationReport,
     agent_runtime: Option<AgentRuntimeReport>,
 }
@@ -164,28 +160,10 @@ fn documentation_report(docs: &config::DocumentationSettings) -> DocumentationRe
 }
 
 fn scope_report(agent: &config::AgentSettings) -> ScopeReport {
-    let model = if agent.backend == config::BackendKind::Wire {
-        Some(agent.provider_model.clone())
-    } else {
-        None
-    };
-
-    let reasoning = if agent.backend == config::BackendKind::Wire {
-        agent.reasoning_effort.map(|value| format!("{value:?}"))
-    } else {
-        None
-    };
-
-    let runtime = if agent.backend.requires_agent_runner() {
-        Some(runtime_report(&agent.agent_runtime))
-    } else {
-        None
-    };
+    let runtime = Some(runtime_report(&agent.agent_runtime));
 
     ScopeReport {
         backend: agent.backend.to_string(),
-        model,
-        reasoning_effort: reasoning,
         documentation: documentation_report(&agent.documentation),
         agent_runtime: runtime,
     }
@@ -196,14 +174,8 @@ fn build_config_report(
     cli_override: Option<&config::AgentOverrides>,
 ) -> Result<ConfigReport, Box<dyn std::error::Error>> {
     let default_agent = resolve_default_agent_settings(cfg, cli_override)?;
-    let agent_backend = if default_agent.backend.requires_agent_runner() {
-        Some(default_agent.backend.to_string())
-    } else {
-        None
-    };
-    let agent_runtime_default = agent_backend
-        .as_ref()
-        .map(|_| runtime_report(&default_agent.agent_runtime));
+    let agent_backend = Some(default_agent.backend.to_string());
+    let agent_runtime_default = Some(runtime_report(&default_agent.agent_runtime));
 
     let mut scopes = BTreeMap::new();
     for scope in config::CommandScope::all() {
@@ -214,8 +186,6 @@ fn build_config_report(
     Ok(ConfigReport {
         backend: cfg.backend.to_string(),
         agent_backend,
-        model: cfg.provider_model.clone(),
-        reasoning_effort: cfg.reasoning_effort.map(|value| format!("{value:?}")),
         no_session: cfg.no_session,
         workflow: WorkflowReport {
             no_commit_default: cfg.workflow.no_commit_default,
@@ -302,25 +272,13 @@ fn documentation_label(docs: &DocumentationReport) -> String {
 fn format_scope_rows(scope: &ScopeReport) -> Vec<(String, String)> {
     let mut rows = vec![("Backend".to_string(), scope.backend.clone())];
 
-    if let Some(model) = scope.model.as_ref() {
-        rows.push(("Model".to_string(), model.clone()));
-    }
-
-    if let Some(reasoning) = scope.reasoning_effort.as_ref() {
-        rows.push(("Reasoning effort".to_string(), reasoning.clone()));
-    }
-
     rows.push((
         "Documentation prompt".to_string(),
         documentation_label(&scope.documentation),
     ));
 
-    match scope.agent_runtime.as_ref() {
-        Some(runtime) => rows.extend(runtime_rows(runtime)),
-        None => rows.push((
-            "Agent runtime".to_string(),
-            "n/a (wire backend)".to_string(),
-        )),
+    if let Some(runtime) = scope.agent_runtime.as_ref() {
+        rows.extend(runtime_rows(runtime));
     }
 
     rows
@@ -384,11 +342,6 @@ fn format_global_rows(report: &ConfigReport) -> Vec<(String, String)> {
         (
             "Agent backend".to_string(),
             value_or_unset(report.agent_backend.clone(), "unset"),
-        ),
-        ("Model".to_string(), report.model.clone()),
-        (
-            "Reasoning effort".to_string(),
-            value_or_unset(report.reasoning_effort.clone(), "unset"),
         ),
         ("No session".to_string(), report.no_session.to_string()),
         (
@@ -472,14 +425,11 @@ pub fn run_plan_summary(
 
 fn format_agent_value() -> Option<String> {
     auditor::Auditor::latest_agent_context().map(|context| {
-        let mut parts = vec![context.backend_label];
-        parts.push(format!("scope {}", context.scope.as_str()));
-        if context.backend == config::BackendKind::Wire {
-            parts.push(format!("model {}", context.model));
-            if let Some(reasoning) = context.reasoning_effort {
-                parts.push(format!("reasoning {reasoning:?}"));
-            }
+        let mut parts = vec![format!("backend {}", context.backend)];
+        if !context.backend_label.is_empty() {
+            parts.push(format!("runtime {}", context.backend_label));
         }
+        parts.push(format!("scope {}", context.scope.as_str()));
         if let Some(code) = context.exit_code {
             parts.push(format!("exit {}", code));
         }
@@ -1360,8 +1310,6 @@ async fn save(
         Some(config::PromptKind::Documentation),
         system_prompt,
         save_instruction,
-        tools::active_tooling_for(&prompt_agent),
-        None,
         None,
     )
     .await?;
@@ -1609,8 +1557,6 @@ pub async fn inline_command(
         Some(config::PromptKind::Documentation),
         system_prompt,
         user_message,
-        tools::active_tooling_for(&prompt_agent),
-        None,
         None,
     )
     .await
@@ -1808,8 +1754,6 @@ pub async fn run_draft(
             Some(config::PromptKind::ImplementationPlan),
             prompt,
             spec_text.clone(),
-            Vec::new(),
-            None,
             Some(worktree_path.clone()),
         )
         .await
@@ -3137,12 +3081,10 @@ async fn attempt_cicd_auto_fix(
         Some(config::PromptKind::Review),
         prompt,
         instruction,
-        tools::active_tooling_for(&fix_agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
         },
-        None,
         Some(request_root),
     )
     .await?;
@@ -4313,12 +4255,10 @@ async fn perform_review_workflow(
         Some(config::PromptKind::Review),
         prompt,
         user_message,
-        Vec::new(),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
         },
-        None,
         Some(worktree_path.to_path_buf()),
     )
     .await?;
@@ -4742,12 +4682,10 @@ async fn apply_review_fixes(
         Some(config::PromptKind::Documentation),
         system_prompt,
         instruction.clone(),
-        tools::active_tooling_for(&prompt_agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
         },
-        None,
         Some(worktree_path.to_path_buf()),
     )
     .await?;
@@ -4894,12 +4832,10 @@ async fn apply_plan_in_worktree(
         None,
         system_prompt,
         instruction.clone(),
-        tools::active_tooling_for(&prompt_agent),
         auditor::RequestStream::Status {
             text: text_tx,
             events: Some(event_tx),
         },
-        None,
         Some(worktree_path.to_path_buf()),
     )
     .await
@@ -4983,8 +4919,6 @@ async fn refresh_plan_branch(
         Some(config::PromptKind::Documentation),
         system_prompt,
         instruction,
-        tools::active_tooling_for(&prompt_agent),
-        None,
         Some(worktree_path.to_path_buf()),
     )
     .await?;

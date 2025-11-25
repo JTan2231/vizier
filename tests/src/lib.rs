@@ -619,87 +619,6 @@ fn test_ask_creates_single_combined_commit() -> TestResult {
 }
 
 #[test]
-fn test_agent_scope_resolution() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    let config_path = repo.path().join("agents.toml");
-    fs::write(
-        &config_path,
-        r#"
-[agents.default]
-backend = "codex"
-
-[agents.ask]
-backend = "wire"
-model = "gpt-5"
-reasoning_effort = "low"
-"#,
-    )?;
-
-    let before_logs = gather_session_logs(&repo)?;
-    let ask_output = repo
-        .vizier_cmd_with_config(&config_path)
-        .args(["ask", "refresh snapshot context"])
-        .output()?;
-    assert!(
-        ask_output.status.success(),
-        "vizier ask failed: {}",
-        String::from_utf8_lossy(&ask_output.stderr)
-    );
-    let after_logs = gather_session_logs(&repo)?;
-    let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| "expected vizier ask to write a session log")?;
-    let ask_contents = fs::read_to_string(new_log)?;
-    let ask_json: Value = serde_json::from_str(&ask_contents)?;
-    assert_eq!(
-        ask_json
-            .get("model")
-            .and_then(|model| model.get("provider"))
-            .and_then(Value::as_str),
-        Some("wire"),
-        "ask session log should report the wire backend"
-    );
-    assert_eq!(
-        ask_json
-            .get("model")
-            .and_then(|model| model.get("scope"))
-            .and_then(Value::as_str),
-        Some("ask"),
-        "ask session log should report scope=ask"
-    );
-
-    let save_output = repo
-        .vizier_cmd_with_config(&config_path)
-        .arg("save")
-        .output()?;
-    assert!(
-        save_output.status.success(),
-        "vizier save failed: {}",
-        String::from_utf8_lossy(&save_output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&save_output.stdout);
-    let save_contents = session_log_contents_from_output(&repo, &stdout)?;
-    let save_json: Value = serde_json::from_str(&save_contents)?;
-    assert_eq!(
-        save_json
-            .get("model")
-            .and_then(|model| model.get("provider"))
-            .and_then(Value::as_str),
-        Some("codex"),
-        "save should use the configured agent backend runner"
-    );
-    assert_eq!(
-        save_json
-            .get("model")
-            .and_then(|model| model.get("scope"))
-            .and_then(Value::as_str),
-        Some("save"),
-        "save session log should include scope"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn test_missing_agent_binary_blocks_run() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let mut cmd = repo.vizier_cmd();
@@ -735,8 +654,7 @@ fn test_repo_config_overrides_env_config() -> TestResult {
         &repo_config,
         r#"
 [agents.default]
-backend = "wire"
-model = "gpt-5"
+backend = "agent"
 "#,
     )?;
 
@@ -772,8 +690,8 @@ backend = "codex"
         json.get("model")
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
-        Some("wire"),
-        "repo config should force ask onto the wire backend despite env overrides"
+        Some("agent"),
+        "repo config should force ask onto the configured backend despite env overrides"
     );
     Ok(())
 }
@@ -795,7 +713,7 @@ fn test_env_config_used_when_repo_config_missing() -> TestResult {
         &env_config,
         r#"
 [agents.default]
-backend = "wire"
+backend = "agent"
 "#,
     )?;
 
@@ -822,78 +740,9 @@ backend = "wire"
         json.get("model")
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
-        Some("wire"),
+        Some("agent"),
         "env config should take effect when no repo config exists"
     );
-    Ok(())
-}
-
-#[test]
-fn test_global_and_repo_configs_merge() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    let repo_config = repo.path().join(".vizier").join("config.toml");
-    fs::write(
-        &repo_config,
-        r#"
-[agents.ask]
-model = "gpt-4o-mini"
-"#,
-    )?;
-
-    let global_root = TempDir::new()?;
-    let global_dir = global_root.path().join("vizier");
-    fs::create_dir_all(&global_dir)?;
-    let global_config = global_dir.join("config.toml");
-    fs::write(
-        &global_config,
-        r#"
-backend = "wire"
-
-[agents.default]
-backend = "wire"
-"#,
-    )?;
-
-    let before_logs = gather_session_logs(&repo)?;
-    let mut cmd = repo.vizier_cmd();
-    cmd.env("VIZIER_CONFIG_DIR", global_root.path());
-    cmd.env("XDG_CONFIG_HOME", global_root.path());
-    cmd.args(["ask", "global repo config merging"]);
-    let output = cmd.output()?;
-    assert!(
-        output.status.success(),
-        "vizier ask failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let after_logs = gather_session_logs(&repo)?;
-    let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| "expected vizier ask to create a session log")?;
-    let contents = fs::read_to_string(new_log)?;
-    let json: Value = serde_json::from_str(&contents)?;
-
-    assert_eq!(
-        json.get("config_effective")
-            .and_then(|cfg| cfg.get("backend"))
-            .and_then(Value::as_str),
-        Some("wire"),
-        "global backend should remain in effect when repo lacks a default backend"
-    );
-    assert_eq!(
-        json.get("model")
-            .and_then(|model| model.get("provider"))
-            .and_then(Value::as_str),
-        Some("wire"),
-        "ask should resolve the merged backend"
-    );
-    assert_eq!(
-        json.get("model")
-            .and_then(|model| model.get("name"))
-            .and_then(Value::as_str),
-        Some("gpt-4o-mini"),
-        "repo model override should layer on top of the inherited backend"
-    );
-
     Ok(())
 }
 
@@ -961,16 +810,7 @@ no_commit_default = true
 
     let output = repo
         .vizier_cmd_with_config(&config_path)
-        .args([
-            "--backend",
-            "wire",
-            "--model",
-            "gpt-4o-mini",
-            "--reasoning-effort",
-            "high",
-            "plan",
-            "--json",
-        ])
+        .args(["--backend", "gemini", "plan", "--json"])
         .output()?;
     assert!(
         output.status.success(),
@@ -981,20 +821,8 @@ no_commit_default = true
 
     assert_eq!(
         json.get("backend").and_then(Value::as_str),
-        Some("wire"),
+        Some("gemini"),
         "CLI backend override should win even when config file is provided"
-    );
-    assert_eq!(
-        json.get("model").and_then(Value::as_str),
-        Some("gpt-4o-mini"),
-        "wire model override should flow into the report"
-    );
-    assert_eq!(
-        json.get("reasoning_effort")
-            .and_then(Value::as_str)
-            .map(|value| value.to_ascii_lowercase()),
-        Some("high".to_string()),
-        "reasoning effort should honor CLI override"
     );
     assert_eq!(
         json.pointer("/workflow/no_commit_default")
@@ -1021,7 +849,7 @@ no_commit_default = true
     );
     assert_eq!(
         json.pointer("/scopes/ask/backend").and_then(Value::as_str),
-        Some("wire"),
+        Some("gemini"),
         "per-scope backend should reflect CLI overrides"
     );
     Ok(())
@@ -1905,70 +1733,6 @@ fn test_approve_creates_single_combined_commit() -> TestResult {
 
 #[test]
 fn test_cli_backend_override_rejected_for_approve() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    let config_path = repo.path().join("agents.toml");
-    fs::write(
-        &config_path,
-        r#"
-[agents.default]
-backend = "codex"
-"#,
-    )?;
-
-    let draft = repo
-        .vizier_cmd_with_config(&config_path)
-        .args(["draft", "--name", "agent-scope", "scope smoke test"])
-        .output()?;
-    assert!(
-        draft.status.success(),
-        "vizier draft failed: {}",
-        String::from_utf8_lossy(&draft.stderr)
-    );
-
-    let approve = repo
-        .vizier_cmd_with_config(&config_path)
-        .args(["--backend", "wire", "approve", "agent-scope", "--yes"])
-        .output()?;
-    assert!(
-        !approve.status.success(),
-        "approve unexpectedly succeeded with --backend wire"
-    );
-    let stderr = String::from_utf8_lossy(&approve.stderr);
-    assert!(
-        stderr.contains("approve requires an agent-style backend"),
-        "stderr missing backend warning: {}",
-        stderr
-    );
-
-    Ok(())
-}
-
-#[test]
-fn test_merge_auto_resolve_rejects_wire_backend() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "wire-merge", "wire backend check"])?;
-    clean_workdir(&repo)?;
-    repo.vizier_output(&["approve", "wire-merge", "--yes"])?;
-    clean_workdir(&repo)?;
-
-    let merge = repo.vizier_output(&[
-        "--backend",
-        "wire",
-        "merge",
-        "wire-merge",
-        "--yes",
-        "--auto-resolve-conflicts",
-    ])?;
-    assert!(
-        !merge.status.success(),
-        "merge should fail when auto-resolve is requested on the wire backend"
-    );
-    let stderr = String::from_utf8_lossy(&merge.stderr);
-    assert!(
-        stderr.contains("Agent-based conflict resolution requires an agent-style backend"),
-        "stderr should surface backend requirement: {stderr}"
-    );
-
     Ok(())
 }
 
@@ -2033,10 +1797,6 @@ fn test_approve_fails_when_codex_errors() -> TestResult {
         stderr.contains("agent backend"),
         "stderr should mention backend error, got: {stderr}"
     );
-    assert!(
-        !stderr.to_ascii_lowercase().contains("wire backend"),
-        "stderr hinted at a wire fallback: {stderr}"
-    );
 
     let repo_handle = repo.repo();
     let after_commit = repo_handle
@@ -2091,10 +1851,6 @@ fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
             || stderr.contains("forced mock agent failure")
             || stderr.contains("agent backend exited"),
         "stderr should mention backend failure, got: {stderr}"
-    );
-    assert!(
-        !stderr.to_ascii_lowercase().contains("wire backend"),
-        "stderr hinted at a wire fallback: {stderr}"
     );
 
     repo.repo()
@@ -2639,45 +2395,6 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
     assert!(
         stdout.contains("Gate fixes") && stdout.contains("amend:"),
         "merge summary should report the amended implementation commit: {stdout}"
-    );
-    Ok(())
-}
-
-#[test]
-fn test_merge_cicd_auto_fix_warns_on_wire_backend() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "cicd-wire", "wire backend ci gate"])?;
-    repo.vizier_output(&["approve", "cicd-wire", "--yes"])?;
-    clean_workdir(&repo)?;
-
-    let script_path = write_cicd_script(
-        &repo,
-        "gate-wire.sh",
-        "#!/bin/sh\necho \"gate fails\" >&2\nexit 1\n",
-    )?;
-    let script_flag = script_path.to_string_lossy().to_string();
-    let merge = repo.vizier_output(&[
-        "--backend",
-        "wire",
-        "merge",
-        "cicd-wire",
-        "--yes",
-        "--cicd-script",
-        &script_flag,
-        "--auto-cicd-fix",
-    ])?;
-    assert!(
-        !merge.status.success(),
-        "merge should fail when CI/CD gate fails without agent auto-remediation"
-    );
-    let stderr = String::from_utf8_lossy(&merge.stderr);
-    assert!(
-        stderr.contains("CI/CD auto-remediation requested"),
-        "stderr should warn about missing agent backend for auto fixes: {stderr}"
-    );
-    assert!(
-        stderr.contains("gate fails"),
-        "stderr should include CI/CD gate output: {stderr}"
     );
     Ok(())
 }

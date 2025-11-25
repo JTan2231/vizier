@@ -313,12 +313,11 @@ async fn display_status(rx: Receiver<Status>, runtime: DisplayRuntime) {
     }
 }
 
-pub async fn call_with_status<F, Fut>(f: F) -> Result<Vec<wire::types::Message>, Box<dyn Error>>
+pub async fn call_with_status<F, Fut, T>(f: F) -> Result<T, Box<dyn Error>>
 where
     F: FnOnce(Sender<Status>) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>>
-        + Send
-        + 'static,
+    Fut: std::future::Future<Output = Result<T, Box<dyn std::error::Error>>> + Send + 'static,
+    T: Send + 'static,
 {
     let (tx, rx) = channel(10);
     let runtime = DisplayRuntime::from_config(get_display_config());

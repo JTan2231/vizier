@@ -111,8 +111,6 @@ pub async fn bootstrap_snapshot(
         Some(config::PromptKind::Documentation),
         system_prompt,
         instruction,
-        tools::get_snapshot_tools(),
-        None,
         None,
     )
     .await?;

@@ -1,11 +1,8 @@
 # Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults. When no --config-file is provided, Vizier loads the global config first (if it exists) and overlays .vizier/config.toml so repo entries override while missing keys inherit your personal defaults; VIZIER_CONFIG_FILE is only used when neither config file is present.
 # Global defaults (apply unless overridden below)
-# The CLI -p/--model override is wire-only; agent/Codex runs ignore model settings.
-model = "gpt-4.1"
-reasoning_effort = "medium"
 backend = "agent"
 # Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
-# Supported backends: `agent` (runs a shell script) or `wire`.
+# Supported backends: `agent` (runs a shell script) or `gemini`.
 # Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims (`codex/agent.sh`, `gemini/agent.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
 
 # Base agent runtime wiring shared by agent-backed commands unless a scoped override says otherwise
@@ -17,7 +14,7 @@ label = "codex"                      # Use a bundled shim by label (codex/agent.
 # Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
-# together with backend/model overrides for that scope+prompt pairing. Available kinds: documentation, commit,
+# together with backend overrides for that scope+prompt pairing. Available kinds: documentation, commit,
 # implementation_plan, review, merge_conflict. See `docs/prompt-config-matrix.md` for the full scope×prompt-kind
 # matrix, fallback order, and documentation toggles.
 [agents.default.prompts.documentation]
@@ -62,7 +59,7 @@ retries = 2
 # When true, assistant-backed commands hold their edits for manual commits until you rerun without --no-commit.
 no_commit_default = false
 
-# Default agent stack inherited by every command before CLI flags are processed (model/reasoning only apply on wire scopes)
+# Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
 backend = "agent"
 
@@ -72,12 +69,6 @@ label = "codex"
 # command = ["./examples/agents/codex/agent.sh"]
 # output = "auto"                    # Leave unset to auto-wrap bundled shims
 # progress_filter = "./examples/agents/codex/filter.sh" # Optional; defaults to bundled Codex filter when label=codex and no command is provided
-
-# Force conversational asks onto the wire backend with a higher-effort reasoning profile
-[agents.ask]
-backend = "wire"
-model = "gpt-4.1-preview"
-reasoning_effort = "high"
 
 # Keep save flows on the agent backend so narrative edits always use the same backend
 [agents.save]
@@ -105,6 +96,5 @@ enabled = false
 include_snapshot = false
 include_todo_threads = false
 
-# Merge conflicts auto-resolve via the agent backend by default; swap to wire if you prefer manual conflict handling
 [agents.merge]
 backend = "agent"

@@ -8,7 +8,7 @@ This document is the canonical reference for how Vizier maps CLI commands (“sc
 Use this as the single place to answer:
 - “Which prompt text does this command use?”
 - “Where do I put a custom template?”
-- “Which knobs let me change backend/model/reasoning or documentation behavior?”
+- “Which knobs let me change backend or documentation behavior?”
 
 ## Scope × prompt-kind usage
 
@@ -37,10 +37,10 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
    - Shape:
      - Inline text: a string value, or `{ text = "..." }`, or `{ prompt = "..." }`
      - File-based: `{ path = "relative/path.md" }` or `{ file = "relative/path.md" }`
-     - Optional nested agent overrides: `[agents.<scope>.prompts.<kind>.agent]` (see below)
+   - Optional nested agent overrides: `[agents.<scope>.prompts.<kind>.agent]` (see below)
    - Effect:
      - Sets the exact template text for this scope+kind.
-     - May attach backend/model/reasoning/agent-runtime/documentation overrides just for this pairing.
+     - May attach backend/agent-runtime/documentation overrides just for this pairing.
 
 2. **Scoped prompt section**  
    - Table: `[prompts.<scope>]`  
@@ -104,16 +104,14 @@ include_todo_threads = false
 - `include_snapshot` and `include_todo_threads` gate whether the snapshot and TODO threads are embedded for that scope.
 - These settings also apply when documentation-style prompts are used during plan implementation, review fix-up, and merge-time narrative refresh.
 
-## Backend/model/reasoning overrides per prompt
+## Backend overrides per prompt
 
 Agent behavior for a given scope+kind can be customized in two layers:
 
 1. **Scope-wide agent overrides**
    - Table: `[agents.<scope>]`
    - Keys:
-     - `backend = "agent" | "wire" | "gemini"`
-     - `model = "..."` (wire-only)
-     - `reasoning_effort = "low" | "medium" | "high" | …`
+     - `backend = "agent" | "gemini"`
      - `[agents.<scope>.agent]` for runtime wiring (`label` / `command` plus `output` and optional `progress_filter` when wrapping JSON streams)
      - `[agents.<scope>.documentation]` for documentation prompt toggles (see above)
 
@@ -125,8 +123,6 @@ Agent behavior for a given scope+kind can be customized in two layers:
 
      [agents.review.prompts.review.agent]
      backend = "agent"
-     model = "gpt-4.1-preview"        # ignored for non-wire backends
-     reasoning_effort = "high"
      [agents.review.prompts.review.agent.agent]
      label = "codex"                  # or set `command = [...]`
      ```
@@ -134,7 +130,6 @@ Agent behavior for a given scope+kind can be customized in two layers:
    - These overrides apply only when that **scope+kind** is in use; other prompt kinds for the same scope inherit from `[agents.<scope>]` and `[agents.default]`.
 
 Remember:
-- The `-p/--model` CLI flag is **wire-only**; agent-style backends (Codex/Gemini) ignore it.
 - Each command resolves to a single backend; misconfigured backends cause the command to fail rather than silently falling back.
 
 ## Where to look for concrete examples

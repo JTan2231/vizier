@@ -11,11 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::{
-    sync::mpsc::{Sender, channel},
-    task::JoinHandle,
-};
-use wire::config::ThinkingLevel;
+use tokio::sync::mpsc::{Sender, channel};
 
 use crate::{
     agent::{AgentRequest, ProgressHook},
@@ -25,6 +21,52 @@ use crate::{
 
 lazy_static! {
     static ref AUDITOR: Mutex<Auditor> = Mutex::new(Auditor::new());
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageRole::System => "System",
+            MessageRole::User => "User",
+            MessageRole::Assistant => "Assistant",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Message {
+    pub role: MessageRole,
+    pub content: String,
+}
+
+impl Message {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::System,
+            content: content.into(),
+        }
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: content.into(),
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -68,8 +110,6 @@ pub struct AgentInvocationContext {
     pub backend: config::BackendKind,
     pub backend_label: String,
     pub scope: config::CommandScope,
-    pub model: String,
-    pub reasoning_effort: Option<ThinkingLevel>,
     pub prompt_kind: SystemPrompt,
     pub command: Vec<String>,
     pub exit_code: Option<i32>,
@@ -169,50 +209,11 @@ impl AuditResult {
     }
 }
 
-async fn prompt_wire_with_tools(
-    client: &dyn wire::api::Prompt,
-    tx: tokio::sync::mpsc::Sender<String>,
-    system_prompt: &str,
-    messages: Vec<wire::types::Message>,
-    tools: Vec<wire::types::Tool>,
-) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
-    // TODO: Mock server??? why did we even implement it if not to use it
-    #[cfg(feature = "mock_llm")]
-    {
-        let _ = (&tx, system_prompt, &tools);
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-        let mut new_messages = messages.clone();
-        new_messages.push(
-            client
-                .new_message("mock response".to_string())
-                .as_assistant()
-                .build(),
-        );
-
-        Ok(new_messages)
-    }
-
-    #[cfg(not(feature = "mock_llm"))]
-    {
-        client
-            .prompt_with_tools_with_status(tx, &system_prompt, messages, tools)
-            .await
-    }
-}
-
-fn channel_for_stream(
-    stream: &RequestStream,
-) -> (tokio::sync::mpsc::Sender<String>, Option<JoinHandle<()>>) {
-    match stream {
-        RequestStream::Status { text, .. } => (text.clone(), None),
-    }
-}
-
 /// _All_ LLM interactions need run through the auditor
 /// This should hold every LLM interaction from the current session, in chronological order
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Auditor {
-    messages: Vec<wire::types::Message>,
+    messages: Vec<Message>,
     session_start: String,
     session_id: String,
     #[serde(skip)]
@@ -241,35 +242,27 @@ impl Auditor {
     }
 
     /// Clones the message history in the auditor
-    pub fn get_messages() -> Vec<wire::types::Message> {
+    pub fn get_messages() -> Vec<Message> {
         AUDITOR.lock().unwrap().messages.clone()
     }
 
-    pub fn add_message(message: wire::types::Message) {
+    pub fn add_message(message: Message) {
         let mut auditor = AUDITOR.lock().unwrap();
         auditor.messages.push(message);
     }
 
-    pub fn replace_messages(messages: &Vec<wire::types::Message>) {
+    pub fn replace_messages(messages: &Vec<Message>) {
         let mut auditor = AUDITOR.lock().unwrap();
         auditor.messages = messages.clone();
     }
 
     fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
         if let Ok(mut auditor) = AUDITOR.lock() {
-            let backend_label = match settings.backend {
-                config::BackendKind::Wire => settings.backend.to_string(),
-                _ => settings.agent_runtime.label.clone(),
-            };
+            let backend_label = settings.agent_runtime.label.clone();
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
                 backend_label,
                 scope: settings.scope,
-                model: match settings.backend {
-                    config::BackendKind::Wire => settings.provider_model.clone(),
-                    _ => settings.agent_runtime.label.clone(),
-                },
-                reasoning_effort: settings.reasoning_effort,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
                 command: settings.agent_runtime.command.clone(),
                 exit_code: None,
@@ -322,13 +315,10 @@ impl Auditor {
         let messages = AUDITOR.lock().unwrap().messages.clone();
         let mut conversation = String::new();
 
-        for message in messages
-            .iter()
-            .filter(|m| m.message_type != wire::types::MessageType::FunctionCall)
-        {
+        for message in messages.iter() {
             conversation.push_str(&format!(
                 "{}: {}\n\n###\n\n",
-                message.message_type.to_string(),
+                message.role.as_str(),
                 message.content
             ));
         }
@@ -421,14 +411,12 @@ impl Auditor {
 
     pub fn load_session_messages_from_path(
         path: &Path,
-    ) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
         let contents = fs::read_to_string(path)?;
         Ok(Self::parse_session_messages(&contents)?)
     }
 
-    fn parse_session_messages(
-        contents: &str,
-    ) -> Result<Vec<wire::types::Message>, serde_json::Error> {
+    fn parse_session_messages(contents: &str) -> Result<Vec<Message>, serde_json::Error> {
         if let Ok(wrapper) = serde_json::from_str::<SessionLogWrapper>(contents) {
             return Ok(wrapper.messages);
         }
@@ -503,20 +491,21 @@ impl Auditor {
     ) -> SessionModelInfo {
         match agent {
             Some(ctx) => SessionModelInfo {
-                provider: ctx.backend_label.clone(),
-                name: ctx.model.clone(),
-                reasoning_effort: ctx.reasoning_effort.map(|level| format!("{level:?}")),
+                provider: ctx.backend.to_string(),
+                name: ctx.backend_label.clone(),
+                reasoning_effort: None,
                 scope: Some(ctx.scope.as_str().to_string()),
             },
-            None => SessionModelInfo {
-                provider: cfg.backend.to_string(),
-                name: cfg.provider_model.clone(),
-                reasoning_effort: cfg
-                    .reasoning_effort
-                    .as_ref()
-                    .map(|level| format!("{level:?}")),
-                scope: None,
-            },
+            None => {
+                SessionModelInfo {
+                    provider: cfg.backend.to_string(),
+                    name: cfg.agent_runtime.label.clone().unwrap_or_else(|| {
+                        config::default_label_for_backend(cfg.backend).to_string()
+                    }),
+                    reasoning_effort: None,
+                    scope: None,
+                }
+            }
         }
     }
 
@@ -572,10 +561,6 @@ impl Auditor {
     fn config_snapshot(cfg: &config::Config) -> serde_json::Value {
         json!({
             "backend": cfg.backend.to_string(),
-            "reasoning_effort": cfg
-                .reasoning_effort
-                .as_ref()
-                .map(|level| format!("{level:?}")),
             "agent": {
                 "label": cfg.agent_runtime.label.clone(),
                 "command": cfg.agent_runtime.command.clone(),
@@ -616,9 +601,9 @@ impl Auditor {
         }
     }
 
-    fn summarize_assistant(messages: &[wire::types::Message]) -> Option<String> {
+    fn summarize_assistant(messages: &[Message]) -> Option<String> {
         for message in messages.iter().rev() {
-            if message.message_type == wire::types::MessageType::Assistant {
+            if message.role == MessageRole::Assistant {
                 return Some(message.content.clone());
             }
         }
@@ -649,57 +634,20 @@ impl Auditor {
     pub async fn llm_request(
         #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
         user_message: String,
-    ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
-        let provider = crate::config::get_config().provider.clone();
-        let _ = Self::add_message(provider.new_message(user_message.clone()).as_user().build());
-
-        let messages = AUDITOR.lock().unwrap().messages.clone();
-
-        #[cfg(feature = "integration_testing")]
-        {
-            let mut updated = messages.clone();
-            let assistant_message = provider
-                .new_message("mock response".to_string())
-                .as_assistant()
-                .build();
-            updated.push(assistant_message.clone());
-            Self::replace_messages(&updated);
-            return Ok(assistant_message);
-        }
-
-        #[cfg(not(feature = "integration_testing"))]
-        {
-            let response = display::call_with_status(async move |tx| {
-                tx.send(display::Status::Working("Thinking...".into()))
-                    .await?;
-
-                let (request_tx, mut request_rx) = channel(10);
-                let status_tx = tx.clone();
-
-                tokio::spawn(async move {
-                    while let Some(msg) = request_rx.recv().await {
-                        status_tx.send(display::Status::Working(msg)).await.unwrap();
-                    }
-                });
-
-                let response = prompt_wire_with_tools(
-                    &*crate::config::get_config().provider,
-                    request_tx.clone(),
-                    &system_prompt,
-                    messages.clone(),
-                    vec![],
-                )
-                .await?;
-
-                Self::replace_messages(&response);
-
-                Ok(response)
-            })
-            .await
-            .map_err(|e| e as Box<dyn std::error::Error>)?;
-
-            Ok(response.last().unwrap().clone())
-        }
+    ) -> Result<Message, Box<dyn std::error::Error>> {
+        let agent = crate::config::get_config().resolve_prompt_profile(
+            config::CommandScope::Ask,
+            SystemPrompt::Commit,
+            None,
+        )?;
+        Self::llm_request_with_tools(
+            &agent,
+            Some(SystemPrompt::Commit),
+            system_prompt,
+            user_message,
+            None,
+        )
+        .await
     }
 
     /// Basic LLM request with tool usage
@@ -709,131 +657,93 @@ impl Auditor {
         prompt_variant: Option<SystemPrompt>,
         system_prompt: String,
         user_message: String,
-        tools: Vec<wire::types::Tool>,
-        model_override: Option<String>,
         repo_root_override: Option<PathBuf>,
-    ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
+    ) -> Result<Message, Box<dyn std::error::Error>> {
         Self::record_agent(agent, prompt_variant);
-
-        let backend = agent.backend;
-        let provider = agent.provider.clone();
         let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
-        let resolved_model = match backend {
-            config::BackendKind::Wire => {
-                model_override.or_else(|| Some(agent.provider_model.clone()))
-            }
-            _ => None,
+        let mut messages = AUDITOR.lock().unwrap().messages.clone();
+        messages.push(Message::user(user_message));
+        Self::replace_messages(&messages);
+
+        simulate_integration_changes()?;
+        let runner = Arc::clone(agent.agent_runner()?);
+        let repo_root = match repo_root_override {
+            Some(path) => path,
+            None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
         };
-
-        let _ = Self::add_message(provider.new_message(user_message).as_user().build());
-
-        let messages = AUDITOR.lock().unwrap().messages.clone();
-
-        match backend {
-            config::BackendKind::Wire => {
-                let wire_provider = match resolved_model {
-                    Some(ref model) => {
-                        config::Config::provider_from_settings(model, agent.reasoning_effort)?
-                    }
-                    None => provider.clone(),
-                };
-                let response = run_wire_with_status(
-                    wire_provider,
-                    system_prompt,
-                    messages.clone(),
-                    tools.clone(),
-                    |resp| Self::replace_messages(resp),
-                )
-                .await?;
-                Ok(response.last().unwrap().clone())
-            }
-            _ => {
-                simulate_integration_changes()?;
-                let runner = Arc::clone(agent.agent_runner()?);
-                let repo_root = match repo_root_override {
-                    Some(path) => path,
-                    None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
-                };
-                let messages_clone = messages.clone();
-                let provider_clone = provider.clone();
-                let opts_clone = runtime_opts.clone();
-                let prompt_clone = system_prompt.clone();
-                let mut metadata = BTreeMap::new();
-                metadata.insert("agent_backend".to_string(), agent.backend.to_string());
-                metadata.insert("agent_label".to_string(), opts_clone.label.clone());
-                if !opts_clone.command.is_empty() {
-                    metadata.insert("agent_command".to_string(), opts_clone.command.join(" "));
-                }
+        let messages_clone = messages.clone();
+        let opts_clone = runtime_opts.clone();
+        let prompt_clone = system_prompt.clone();
+        let mut metadata = BTreeMap::new();
+        metadata.insert("agent_backend".to_string(), agent.backend.to_string());
+        metadata.insert("agent_label".to_string(), opts_clone.label.clone());
+        if !opts_clone.command.is_empty() {
+            metadata.insert("agent_command".to_string(), opts_clone.command.join(" "));
+        }
+        metadata.insert(
+            "agent_output".to_string(),
+            opts_clone.output.as_str().to_string(),
+        );
+        if let Some(filter) = opts_clone.progress_filter.as_ref() {
+            metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
+        }
+        match &opts_clone.resolution {
+            config::AgentRuntimeResolution::BundledShim { path, .. } => {
                 metadata.insert(
-                    "agent_output".to_string(),
-                    opts_clone.output.as_str().to_string(),
+                    "agent_command_source".to_string(),
+                    "bundled-shim".to_string(),
                 );
-                if let Some(filter) = opts_clone.progress_filter.as_ref() {
-                    metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
-                }
-                match &opts_clone.resolution {
-                    config::AgentRuntimeResolution::BundledShim { path, .. } => {
-                        metadata.insert(
-                            "agent_command_source".to_string(),
-                            "bundled-shim".to_string(),
-                        );
-                        metadata.insert("agent_shim_path".to_string(), path.display().to_string());
-                    }
-                    config::AgentRuntimeResolution::ProvidedCommand => {
-                        metadata
-                            .insert("agent_command_source".to_string(), "configured".to_string());
-                    }
-                }
-
-                let codex_run = display::call_with_status(async move |tx| {
-                    let request = AgentRequest {
-                        prompt: prompt_clone.clone(),
-                        repo_root: repo_root.clone(),
-                        command: opts_clone.command.clone(),
-                        progress_filter: opts_clone.progress_filter.clone(),
-                        output: opts_clone.output,
-                        allow_script_wrapper: opts_clone.enable_script_wrapper,
-                        scope: Some(agent_scope),
-                        metadata,
-                        timeout: Some(Duration::from_secs(9000)),
-                    };
-
-                    let response = runner
-                        .execute(request, Some(ProgressHook::Display(tx.clone())))
-                        .await
-                        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
-
-                    let mut updated = messages_clone.clone();
-                    let message_text = if response.assistant_text.trim().is_empty() {
-                        " ".to_string()
-                    } else {
-                        response.assistant_text.clone()
-                    };
-                    let assistant_message = provider_clone
-                        .new_message(message_text)
-                        .as_assistant()
-                        .build();
-                    updated.push(assistant_message);
-                    Self::replace_messages(&updated);
-                    Auditor::record_agent_run(AgentRunRecord {
-                        command: opts_clone.command.clone(),
-                        output: opts_clone.output,
-                        progress_filter: opts_clone.progress_filter.clone(),
-                        exit_code: response.exit_code,
-                        stdout: response.assistant_text.clone(),
-                        stderr: response.stderr.clone(),
-                        duration_ms: response.duration_ms,
-                    });
-                    Ok(updated)
-                })
-                .await;
-
-                match codex_run {
-                    Ok(response) => Ok(response.last().unwrap().clone()),
-                    Err(err) => Err(err),
-                }
+                metadata.insert("agent_shim_path".to_string(), path.display().to_string());
             }
+            config::AgentRuntimeResolution::ProvidedCommand => {
+                metadata.insert("agent_command_source".to_string(), "configured".to_string());
+            }
+        }
+
+        let codex_run = display::call_with_status(async move |tx| {
+            let request = AgentRequest {
+                prompt: prompt_clone.clone(),
+                repo_root: repo_root.clone(),
+                command: opts_clone.command.clone(),
+                progress_filter: opts_clone.progress_filter.clone(),
+                output: opts_clone.output,
+                allow_script_wrapper: opts_clone.enable_script_wrapper,
+                scope: Some(agent_scope),
+                metadata,
+                timeout: Some(Duration::from_secs(9000)),
+            };
+
+            let response = runner
+                .execute(request, Some(ProgressHook::Display(tx.clone())))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+
+            let mut updated = messages_clone.clone();
+            let message_text = if response.assistant_text.trim().is_empty() {
+                " ".to_string()
+            } else {
+                response.assistant_text.clone()
+            };
+            let assistant_message = Message::assistant(message_text);
+            updated.push(assistant_message.clone());
+            Self::replace_messages(&updated);
+            Auditor::record_agent_run(AgentRunRecord {
+                command: opts_clone.command.clone(),
+                output: opts_clone.output,
+                progress_filter: opts_clone.progress_filter.clone(),
+                exit_code: response.exit_code,
+                stdout: response.assistant_text.clone(),
+                stderr: response.stderr.clone(),
+                duration_ms: response.duration_ms,
+            });
+            Ok(updated)
+        })
+        .await;
+
+        match codex_run {
+            Ok(response) => Ok(response.last().unwrap().clone()),
+            Err(err) => Err(err),
         }
     }
 
@@ -843,168 +753,86 @@ impl Auditor {
         prompt_variant: Option<SystemPrompt>,
         system_prompt: String,
         user_message: String,
-        tools: Vec<wire::types::Tool>,
         stream: RequestStream,
-        model_override: Option<String>,
         repo_root_override: Option<PathBuf>,
-    ) -> Result<wire::types::Message, Box<dyn std::error::Error>> {
+    ) -> Result<Message, Box<dyn std::error::Error>> {
         Self::record_agent(agent, prompt_variant);
 
-        let backend = agent.backend;
-        let provider = agent.provider.clone();
         let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
-        let resolved_model = match backend {
-            config::BackendKind::Wire => {
-                model_override.or_else(|| Some(agent.provider_model.clone()))
-            }
-            _ => None,
-        };
-
-        let _ = Self::add_message(provider.new_message(user_message).as_user().build());
-
-        let messages = AUDITOR.lock().unwrap().messages.clone();
-
-        match backend {
-            config::BackendKind::Wire => {
-                let wire_provider = match resolved_model {
-                    Some(ref model) => {
-                        config::Config::provider_from_settings(model, agent.reasoning_effort)?
-                    }
-                    None => provider.clone(),
-                };
-                let (wire_tx, drain_handle) = channel_for_stream(&stream);
-                let response = prompt_wire_with_tools(
-                    &*wire_provider,
-                    wire_tx,
-                    &system_prompt,
-                    messages.clone(),
-                    tools.clone(),
-                )
-                .await?;
-                if let Some(handle) = drain_handle {
-                    let _ = handle.await;
-                }
-
-                let last = response.last().unwrap().clone();
-                Self::add_message(last.clone());
-                Ok(last)
-            }
-            _ => {
-                simulate_integration_changes()?;
-                let runner = Arc::clone(agent.agent_runner()?);
-                let repo_root = match repo_root_override {
-                    Some(path) => path,
-                    None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
-                };
-                let progress_hook = match &stream {
-                    RequestStream::Status { events, .. } => events.clone().map(ProgressHook::Plain),
-                };
-                let mut metadata = BTreeMap::new();
-                metadata.insert("agent_backend".to_string(), agent.backend.to_string());
-                metadata.insert("agent_label".to_string(), runtime_opts.label.clone());
-                if !runtime_opts.command.is_empty() {
-                    metadata.insert("agent_command".to_string(), runtime_opts.command.join(" "));
-                }
-                metadata.insert(
-                    "agent_output".to_string(),
-                    runtime_opts.output.as_str().to_string(),
-                );
-                if let Some(filter) = runtime_opts.progress_filter.as_ref() {
-                    metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
-                }
-                match &runtime_opts.resolution {
-                    config::AgentRuntimeResolution::BundledShim { path, .. } => {
-                        metadata.insert(
-                            "agent_command_source".to_string(),
-                            "bundled-shim".to_string(),
-                        );
-                        metadata.insert("agent_shim_path".to_string(), path.display().to_string());
-                    }
-                    config::AgentRuntimeResolution::ProvidedCommand => {
-                        metadata
-                            .insert("agent_command_source".to_string(), "configured".to_string());
-                    }
-                }
-                let request = AgentRequest {
-                    prompt: system_prompt.clone(),
-                    repo_root,
-                    command: runtime_opts.command.clone(),
-                    progress_filter: runtime_opts.progress_filter.clone(),
-                    output: runtime_opts.output,
-                    allow_script_wrapper: runtime_opts.enable_script_wrapper,
-                    scope: Some(agent_scope),
-                    metadata,
-                    timeout: Some(Duration::from_secs(9000)),
-                };
-
-                match runner.execute(request, progress_hook).await {
-                    Ok(response) => {
-                        let message_text = if response.assistant_text.trim().is_empty() {
-                            " ".to_string()
-                        } else {
-                            response.assistant_text.clone()
-                        };
-                        let assistant_message =
-                            provider.new_message(message_text).as_assistant().build();
-                        Self::add_message(assistant_message.clone());
-                        Auditor::record_agent_run(AgentRunRecord {
-                            command: runtime_opts.command.clone(),
-                            output: runtime_opts.output,
-                            progress_filter: runtime_opts.progress_filter.clone(),
-                            exit_code: response.exit_code,
-                            stdout: response.assistant_text.clone(),
-                            stderr: response.stderr.clone(),
-                            duration_ms: response.duration_ms,
-                        });
-                        Ok(assistant_message)
-                    }
-                    Err(err) => Err(Box::new(err)),
-                }
-            }
-        }
-    }
-}
-
-async fn run_wire_with_status<F>(
-    provider: Arc<dyn wire::api::Prompt>,
-    system_prompt: String,
-    messages: Vec<wire::types::Message>,
-    tools: Vec<wire::types::Tool>,
-    mut on_response: F,
-) -> Result<Vec<wire::types::Message>, Box<dyn std::error::Error>>
-where
-    F: FnMut(&Vec<wire::types::Message>) + Send + 'static,
-{
-    display::call_with_status(async move |tx| {
-        tx.send(display::Status::Working("Thinking...".into()))
-            .await?;
-
-        let (request_tx, mut request_rx) = channel(10);
-        let status_tx = tx.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = request_rx.recv().await {
-                status_tx.send(display::Status::Working(msg)).await.unwrap();
-            }
-        });
+        let mut messages = AUDITOR.lock().unwrap().messages.clone();
+        messages.push(Message::user(user_message));
+        Self::replace_messages(&messages);
 
         simulate_integration_changes()?;
+        let runner = Arc::clone(agent.agent_runner()?);
+        let repo_root = match repo_root_override {
+            Some(path) => path,
+            None => find_project_root()?.unwrap_or_else(|| PathBuf::from(".")),
+        };
+        let progress_hook = match &stream {
+            RequestStream::Status { events, .. } => events.clone().map(ProgressHook::Plain),
+        };
+        let mut metadata = BTreeMap::new();
+        metadata.insert("agent_backend".to_string(), agent.backend.to_string());
+        metadata.insert("agent_label".to_string(), runtime_opts.label.clone());
+        if !runtime_opts.command.is_empty() {
+            metadata.insert("agent_command".to_string(), runtime_opts.command.join(" "));
+        }
+        metadata.insert(
+            "agent_output".to_string(),
+            runtime_opts.output.as_str().to_string(),
+        );
+        if let Some(filter) = runtime_opts.progress_filter.as_ref() {
+            metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
+        }
+        match &runtime_opts.resolution {
+            config::AgentRuntimeResolution::BundledShim { path, .. } => {
+                metadata.insert(
+                    "agent_command_source".to_string(),
+                    "bundled-shim".to_string(),
+                );
+                metadata.insert("agent_shim_path".to_string(), path.display().to_string());
+            }
+            config::AgentRuntimeResolution::ProvidedCommand => {
+                metadata.insert("agent_command_source".to_string(), "configured".to_string());
+            }
+        }
+        let request = AgentRequest {
+            prompt: system_prompt.clone(),
+            repo_root,
+            command: runtime_opts.command.clone(),
+            progress_filter: runtime_opts.progress_filter.clone(),
+            output: runtime_opts.output,
+            allow_script_wrapper: runtime_opts.enable_script_wrapper,
+            scope: Some(agent_scope),
+            metadata,
+            timeout: Some(Duration::from_secs(9000)),
+        };
 
-        let response = prompt_wire_with_tools(
-            &*provider,
-            request_tx.clone(),
-            &system_prompt,
-            messages.clone(),
-            tools.clone(),
-        )
-        .await?;
-
-        on_response(&response);
-
-        Ok(response)
-    })
-    .await
-    .map_err(|e| e as Box<dyn std::error::Error>)
+        match runner.execute(request, progress_hook).await {
+            Ok(response) => {
+                let message_text = if response.assistant_text.trim().is_empty() {
+                    " ".to_string()
+                } else {
+                    response.assistant_text.clone()
+                };
+                let assistant_message = Message::assistant(message_text);
+                Self::add_message(assistant_message.clone());
+                Auditor::record_agent_run(AgentRunRecord {
+                    command: runtime_opts.command.clone(),
+                    output: runtime_opts.output,
+                    progress_filter: runtime_opts.progress_filter.clone(),
+                    exit_code: response.exit_code,
+                    stdout: response.assistant_text.clone(),
+                    stderr: response.stderr.clone(),
+                    duration_ms: response.duration_ms,
+                });
+                Ok(assistant_message)
+            }
+            Err(err) => Err(Box::new(err)),
+        }
+    }
 }
 
 #[cfg(feature = "integration_testing")]
@@ -1112,7 +940,7 @@ struct SessionLog {
     config_effective: serde_json::Value,
     system_prompt: SessionPromptInfo,
     model: SessionModelInfo,
-    messages: Vec<wire::types::Message>,
+    messages: Vec<Message>,
     agent: Option<SessionAgentRun>,
     operations: Vec<serde_json::Value>,
     artifacts: Vec<String>,
@@ -1121,7 +949,7 @@ struct SessionLog {
 
 #[derive(Deserialize)]
 struct SessionLogWrapper {
-    messages: Vec<wire::types::Message>,
+    messages: Vec<Message>,
 }
 
 #[derive(Clone, Debug)]
