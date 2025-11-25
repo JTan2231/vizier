@@ -59,6 +59,14 @@ retries = 2
 # When true, assistant-backed commands hold their edits for manual commits until you rerun without --no-commit.
 no_commit_default = false
 
+[workflow.background]
+# Allow/disallow background execution globally
+enabled = true
+# Silence progress chatter in background jobs unless explicitly overridden
+quiet = true
+# Control progress display for background jobs (auto|never|always)
+progress = "never"
+
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
 backend = "agent"

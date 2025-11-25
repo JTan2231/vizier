@@ -103,6 +103,7 @@ pub enum RequestStream {
 pub struct AuditorCleanup {
     pub debug: bool,
     pub print_json: bool,
+    pub persisted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +119,10 @@ pub struct AgentInvocationContext {
 
 impl Drop for AuditorCleanup {
     fn drop(&mut self) {
+        if self.persisted {
+            return;
+        }
+
         if let Some(artifact) = Auditor::persist_session_log() {
             display::info(format!("Session saved to {}", artifact.display_path()));
 

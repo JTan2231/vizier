@@ -109,12 +109,20 @@ struct MergeGateReport {
 #[derive(Debug, Serialize)]
 struct WorkflowReport {
     no_commit_default: bool,
+    background: BackgroundReport,
 }
 
 #[derive(Debug, Serialize)]
 struct ReviewReport {
     checks: Vec<String>,
     cicd_gate: MergeGateReport,
+}
+
+#[derive(Debug, Serialize)]
+struct BackgroundReport {
+    enabled: bool,
+    quiet: bool,
+    progress: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -189,6 +197,15 @@ fn build_config_report(
         no_session: cfg.no_session,
         workflow: WorkflowReport {
             no_commit_default: cfg.workflow.no_commit_default,
+            background: BackgroundReport {
+                enabled: cfg.workflow.background.enabled,
+                quiet: cfg.workflow.background.quiet,
+                progress: match cfg.workflow.background.progress {
+                    display::ProgressMode::Auto => "auto".to_string(),
+                    display::ProgressMode::Never => "never".to_string(),
+                    display::ProgressMode::Always => "always".to_string(),
+                },
+            },
         },
         merge: MergeReport {
             squash_default: cfg.merge.squash_default,
@@ -338,6 +355,18 @@ fn format_global_rows(report: &ConfigReport) -> Vec<(String, String)> {
         (
             "No-commit default".to_string(),
             report.workflow.no_commit_default.to_string(),
+        ),
+        (
+            "Background enabled".to_string(),
+            report.workflow.background.enabled.to_string(),
+        ),
+        (
+            "Background quiet".to_string(),
+            report.workflow.background.quiet.to_string(),
+        ),
+        (
+            "Background progress".to_string(),
+            report.workflow.background.progress.clone(),
         ),
     ]
 }

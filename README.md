@@ -154,6 +154,20 @@ Branch draft/rate-limiting deleted
 
 Need details on conflict resolution, CI/CD gates, or custom prompts? See `docs/workflows/draft-approve-merge.md`.
 
+### Background jobs
+
+Long-running commands can detach so your terminal stays free:
+
+```bash
+vizier draft --background "add rate limiting to API client"
+vizier approve --yes --background rate-limiting
+```
+
+- Background is supported for `ask`, `draft`, `approve`, `review`, `merge`, and `save`. Destructive prompts still require `--yes` (or `--review-only` for reviews).
+- Logs live under `.vizier/jobs/<id>/{stdout.log,stderr.log,job.json,outcome.json}` with session/outcome pointers and config/agent metadata.
+- Inspect and manage jobs with `vizier jobs list|status|show|tail|attach|cancel|gc`.
+- `[workflow.background]` controls allow/deny plus default quiet/progress (`--no-ansi`/`--no-pager` are forced for background runs).
+
 ## Configuration
 
 Vizier reads `.vizier/config.toml` for agent backends and workflow settings:

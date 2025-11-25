@@ -9,6 +9,7 @@ use clap::{
     Subcommand, ValueEnum, error::ErrorKind,
 };
 use clap_complete::Shell;
+use serde_json::json;
 use vizier_core::{
     auditor, config,
     display::{self, LogLevel},
@@ -18,7 +19,10 @@ use vizier_core::{
 mod actions;
 use crate::actions::*;
 mod completions;
+mod jobs;
 mod plan;
+use uuid::Uuid;
+use crate::jobs::JobStatus;
 
 /// A CLI for LLM project management.
 #[derive(Parser, Debug)]
@@ -104,6 +108,14 @@ struct GlobalOpts {
     /// Leave changes staged/dirty instead of committing automatically (`[workflow] no_commit_default` sets the default posture)
     #[arg(long = "no-commit", action = ArgAction::SetTrue, global = true)]
     no_commit: bool,
+
+    /// Run supported commands in the background and return immediately with a job handle
+    #[arg(long = "background", action = ArgAction::SetTrue, global = true)]
+    background: bool,
+
+    /// Internal hook for background child processes; do not set manually
+    #[arg(long = "background-job-id", hide = true, global = true)]
+    background_job_id: Option<String>,
 }
 
 impl Default for GlobalOpts {
@@ -125,6 +137,8 @@ impl Default for GlobalOpts {
             config_file: None,
             push: false,
             no_commit: false,
+            background: false,
+            background_job_id: None,
         }
     }
 }
@@ -182,6 +196,23 @@ impl From<ScopeArg> for config::CommandScope {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum JobLogStreamArg {
+    Stdout,
+    Stderr,
+    Both,
+}
+
+impl From<JobLogStreamArg> for jobs::LogStream {
+    fn from(value: JobLogStreamArg) -> Self {
+        match value {
+            JobLogStreamArg::Stdout => jobs::LogStream::Stdout,
+            JobLogStreamArg::Stderr => jobs::LogStream::Stderr,
+            JobLogStreamArg::Both => jobs::LogStream::Both,
+        }
+    }
+}
+
 impl From<ProgressArg> for display::ProgressMode {
     fn from(value: ProgressArg) -> Self {
         match value {
@@ -205,6 +236,9 @@ enum Commands {
 
     /// Print the resolved configuration (global + repo + CLI overrides) and exit
     Plan(PlanCmd),
+
+    /// Inspect detached Vizier background jobs
+    Jobs(JobsCmd),
 
     /// Generate shell completion scripts
     Completions(CompletionsCmd),
@@ -274,6 +308,62 @@ struct ListCmd {
 
 #[derive(ClapArgs, Debug)]
 struct PlanCmd {}
+
+#[derive(ClapArgs, Debug)]
+struct JobsCmd {
+    #[command(subcommand)]
+    action: JobsAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum JobsAction {
+    /// List all tracked background jobs
+    List,
+
+    /// Show details for a background job id
+    Show {
+        #[arg(value_name = "JOB")]
+        job: String,
+    },
+
+    /// Show a terse status line for a background job id
+    Status {
+        #[arg(value_name = "JOB")]
+        job: String,
+    },
+
+    /// Tail logs for a background job (stdout/stderr)
+    Tail {
+        #[arg(value_name = "JOB")]
+        job: String,
+
+        /// Which log to display
+        #[arg(long = "stream", value_enum, default_value_t = JobLogStreamArg::Both)]
+        stream: JobLogStreamArg,
+
+        /// Continue following the log until the job leaves Running/Pending
+        #[arg(long = "follow", action = ArgAction::SetTrue)]
+        follow: bool,
+    },
+
+    /// Attach to both stdout and stderr for a running job
+    Attach {
+        #[arg(value_name = "JOB")]
+        job: String,
+    },
+
+    /// Attempt to cancel a running background job
+    Cancel {
+        #[arg(value_name = "JOB")]
+        job: String,
+    },
+
+    /// Garbage-collect completed jobs older than N days (default 7)
+    Gc {
+        #[arg(long = "days", value_name = "DAYS", default_value_t = 7)]
+        days: u64,
+    },
+}
 
 #[derive(ClapArgs, Debug)]
 struct ApproveCmd {
@@ -772,6 +862,133 @@ fn resolve_test_display_options(
     })
 }
 
+fn run_jobs_command(
+    project_root: &Path,
+    jobs_root: &Path,
+    cmd: JobsCmd,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd.action {
+        JobsAction::List => {
+            let records = jobs::list_records(jobs_root)?;
+            if records.is_empty() {
+                println!("Outcome: No background jobs found");
+                return Ok(());
+            }
+
+            println!("Background jobs ({})", records.len());
+            for record in records {
+                let status = jobs::status_label(record.status);
+                let command = if record.command.is_empty() {
+                    "<command unavailable>".to_string()
+                } else {
+                    record.command.join(" ")
+                };
+                println!("- {} [{}] {}", record.id, status, command);
+            }
+            Ok(())
+        }
+        JobsAction::Show { job } => {
+            let record = jobs::read_record(jobs_root, &job)?;
+            println!("Job {}", record.id);
+            println!("Status: {}", jobs::status_label(record.status));
+            if let Some(pid) = record.pid {
+                println!("PID: {pid}");
+            }
+            if let Some(started) = record.started_at {
+                println!("Started: {}", started.to_rfc3339());
+            }
+            if let Some(finished) = record.finished_at {
+                println!("Finished: {}", finished.to_rfc3339());
+            }
+            if let Some(code) = record.exit_code {
+                println!("Exit code: {code}");
+            }
+            println!("Stdout: {}", record.stdout_path);
+            println!("Stderr: {}", record.stderr_path);
+            if let Some(session) = record.session_path {
+                println!("Session: {}", session);
+            }
+            if let Some(outcome) = record.outcome_path {
+                println!("Outcome: {}", outcome);
+            }
+            if let Some(metadata) = record.metadata.as_ref() {
+                if let Some(scope) = metadata.scope.as_ref() {
+                    println!("Scope: {scope}");
+                }
+                if let Some(plan) = metadata.plan.as_ref() {
+                    println!("Plan: {plan}");
+                }
+                if let Some(target) = metadata.target.as_ref() {
+                    println!("Target: {target}");
+                }
+                if let Some(branch) = metadata.branch.as_ref() {
+                    println!("Branch: {branch}");
+                }
+                if let Some(revision) = metadata.revision.as_ref() {
+                    println!("Revision: {revision}");
+                }
+                if let Some(agent_backend) = metadata.agent_backend.as_ref() {
+                    println!("Agent backend: {agent_backend}");
+                }
+                if let Some(label) = metadata.agent_label.as_ref() {
+                    println!("Agent label: {label}");
+                }
+                if let Some(command) = metadata.agent_command.as_ref() {
+                    println!("Agent command: {}", command.join(" "));
+                }
+                if let Some(exit) = metadata.agent_exit_code {
+                    println!("Agent exit: {exit}");
+                }
+            }
+            if let Some(config) = record.config_snapshot.as_ref() {
+                println!("Config snapshot: {}", config);
+            }
+            if !record.command.is_empty() {
+                println!("Command: {}", record.command.join(" "));
+            }
+            Ok(())
+        }
+        JobsAction::Status { job } => {
+            let record = jobs::read_record(jobs_root, &job)?;
+            let exit = record
+                .exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            println!(
+                "{} [{}] exit={} stdout={} stderr={}",
+                record.id,
+                jobs::status_label(record.status),
+                exit,
+                record.stdout_path,
+                record.stderr_path
+            );
+            Ok(())
+        }
+        JobsAction::Tail {
+            job,
+            stream,
+            follow,
+        } => jobs::tail_job_logs(jobs_root, &job, stream.into(), follow),
+        JobsAction::Attach { job } => {
+            jobs::tail_job_logs(jobs_root, &job, jobs::LogStream::Both, true)
+        }
+        JobsAction::Cancel { job } => {
+            let record = jobs::cancel_job(project_root, jobs_root, &job)?;
+            println!(
+                "Job {} marked cancelled (stdout: {}, stderr: {})",
+                record.id, record.stdout_path, record.stderr_path
+            );
+            Ok(())
+        }
+        JobsAction::Gc { days } => {
+            let removed =
+                jobs::gc_jobs(project_root, jobs_root, chrono::Duration::days(days as i64))?;
+            println!("Outcome: removed {} job(s)", removed);
+            Ok(())
+        }
+    }
+}
+
 fn resolve_cicd_script_path(script: &Path, repo_root: Option<&Path>) -> PathBuf {
     if script.is_absolute() {
         return script.to_path_buf();
@@ -825,7 +1042,7 @@ fn build_cli_agent_overrides(
 fn flag_present(args: &[String], short: Option<char>, long: &str) -> bool {
     let short_flag = short.map(|value| format!("-{value}"));
     args.iter().any(|arg| {
-        if arg == long {
+        if arg == long || (long.starts_with("--") && arg.starts_with(&format!("{long}="))) {
             return true;
         }
         if let Some(short_flag) = short_flag.as_ref() {
@@ -851,6 +1068,218 @@ fn pager_mode_from_args(args: &[String]) -> PagerMode {
     } else {
         PagerMode::Auto
     }
+}
+
+fn progress_label(mode: display::ProgressMode) -> &'static str {
+    match mode {
+        display::ProgressMode::Auto => "auto",
+        display::ProgressMode::Never => "never",
+        display::ProgressMode::Always => "always",
+    }
+}
+
+fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
+    match command {
+        Commands::Ask(_) => Some(config::CommandScope::Ask),
+        Commands::Draft(_) => Some(config::CommandScope::Draft),
+        Commands::Approve(_) => Some(config::CommandScope::Approve),
+        Commands::Review(_) => Some(config::CommandScope::Review),
+        Commands::Merge(_) => Some(config::CommandScope::Merge),
+        Commands::Save(_) => Some(config::CommandScope::Save),
+        _ => None,
+    }
+}
+
+fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
+    json!({
+        "backend": cfg.backend.to_string(),
+        "agent": {
+            "label": cfg.agent_runtime.label,
+            "command": cfg.agent_runtime.command,
+        },
+        "workflow": {
+            "no_commit_default": cfg.workflow.no_commit_default,
+            "background": {
+                "enabled": cfg.workflow.background.enabled,
+                "quiet": cfg.workflow.background.quiet,
+                "progress": progress_label(cfg.workflow.background.progress),
+            },
+        },
+    })
+}
+
+fn build_job_metadata(
+    command: &Commands,
+    cfg: &config::Config,
+    cli_agent_override: Option<&config::AgentOverrides>,
+) -> jobs::JobMetadata {
+    let mut metadata = jobs::JobMetadata::default();
+    metadata.background_quiet = Some(cfg.workflow.background.quiet);
+    metadata.background_progress = Some(progress_label(cfg.workflow.background.progress).to_string());
+    metadata.config_backend = Some(cfg.backend.to_string());
+    metadata.config_agent_label = cfg.agent_runtime.label.clone();
+    if !cfg.agent_runtime.command.is_empty() {
+        metadata.config_agent_command = Some(cfg.agent_runtime.command.clone());
+    }
+
+    if let Some(scope) = command_scope_for(command) {
+        metadata.scope = Some(scope.as_str().to_string());
+        if let Ok(agent) = cfg.resolve_agent_settings(scope, cli_agent_override) {
+            metadata.agent_backend = Some(agent.backend.to_string());
+            metadata.agent_label = Some(agent.agent_runtime.label.clone());
+            if !agent.agent_runtime.command.is_empty() {
+                metadata.agent_command = Some(agent.agent_runtime.command.clone());
+            }
+        }
+    }
+
+    match command {
+        Commands::Approve(cmd) => {
+            metadata.plan = cmd.plan.clone();
+            metadata.target = cmd.target.clone();
+            metadata.branch = cmd.branch.clone();
+        }
+        Commands::Review(cmd) => {
+            metadata.plan = cmd.plan.clone();
+            metadata.target = cmd.target.clone();
+            metadata.branch = cmd.branch.clone();
+        }
+        Commands::Merge(cmd) => {
+            metadata.plan = cmd.plan.clone();
+            metadata.target = cmd.target.clone();
+            metadata.branch = cmd.branch.clone();
+        }
+        Commands::Save(cmd) => {
+            metadata.revision = Some(cmd.rev_or_range.clone());
+        }
+        _ => {}
+    }
+
+    metadata
+}
+
+fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
+    let mut metadata = jobs::JobMetadata::default();
+    if let Some(context) = auditor::Auditor::latest_agent_context() {
+        metadata.agent_backend = Some(context.backend.to_string());
+        metadata.agent_label = Some(context.backend_label);
+    }
+
+    if let Some(run) = auditor::Auditor::latest_agent_run() {
+        metadata.agent_exit_code = Some(run.exit_code);
+        if !run.command.is_empty() {
+            metadata.agent_command = Some(run.command.clone());
+        }
+    }
+
+    if metadata.agent_backend.is_none()
+        && metadata.agent_label.is_none()
+        && metadata.agent_exit_code.is_none()
+        && metadata
+            .agent_command
+            .as_ref()
+            .map(|value| value.is_empty())
+            .unwrap_or(true)
+    {
+        None
+    } else {
+        Some(metadata)
+    }
+}
+
+fn background_supported(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Ask(_)
+            | Commands::Draft(_)
+            | Commands::Approve(_)
+            | Commands::Review(_)
+            | Commands::Merge(_)
+            | Commands::Save(_)
+    )
+}
+
+fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        Commands::Approve(cmd) if !cmd.assume_yes => Err(
+            "--background for vizier approve requires --yes to skip interactive prompts".into(),
+        ),
+        Commands::Merge(cmd) if !cmd.assume_yes => Err(
+            "--background for vizier merge requires --yes to skip interactive prompts".into(),
+        ),
+        Commands::Review(cmd) if !cmd.assume_yes && !cmd.review_only => Err(
+            "--background for vizier review requires --yes or --review-only to avoid prompts".into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut skip_next = false;
+    for arg in raw_args.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        if arg == "--background" || arg.starts_with("--background=") {
+            continue;
+        }
+
+        if arg == "--background-job-id" {
+            skip_next = true;
+            continue;
+        }
+
+        args.push(arg.clone());
+    }
+
+    args
+}
+
+fn user_friendly_args(raw_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(binary) = raw_args.first() {
+        args.push(binary.clone());
+    }
+    args.extend(strip_background_flags(raw_args));
+    args
+}
+
+fn build_background_child_args(
+    raw_args: &[String],
+    job_id: &str,
+    cfg: &config::BackgroundConfig,
+) -> Vec<String> {
+    let mut args = strip_background_flags(raw_args);
+    args.push("--background-job-id".to_string());
+    args.push(job_id.to_string());
+
+    if !flag_present(&args, None, "--no-ansi") {
+        args.push("--no-ansi".to_string());
+    }
+
+    let quiet_flagged =
+        flag_present(&args, Some('q'), "--quiet") || flag_present(&args, Some('v'), "--verbose");
+    if cfg.quiet && !quiet_flagged && !flag_present(&args, Some('d'), "--debug") {
+        args.push("--quiet".to_string());
+    }
+
+    if !flag_present(&args, None, "--progress") {
+        args.push("--progress".to_string());
+        args.push(match cfg.progress {
+            display::ProgressMode::Auto => "auto".to_string(),
+            display::ProgressMode::Never => "never".to_string(),
+            display::ProgressMode::Always => "always".to_string(),
+        });
+    }
+
+    if !flag_present(&args, None, "--no-pager") && !flag_present(&args, None, "--pager") {
+        args.push("--no-pager".to_string());
+    }
+
+    args
 }
 
 fn render_help_with_pager(
@@ -1175,9 +1604,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(Box::<dyn std::error::Error>::from(e));
     }
 
-    let _auditor_cleanup = auditor::AuditorCleanup {
+    let jobs_root = match jobs::ensure_jobs_root(&project_root) {
+        Ok(path) => path,
+        Err(e) => {
+            display::emit(
+                LogLevel::Error,
+                format!("Error creating .vizier/jobs directory: {e}"),
+            );
+            return Err(Box::<dyn std::error::Error>::from(e));
+        }
+    };
+
+    let mut auditor_cleanup = auditor::AuditorCleanup {
         debug: cli.global.debug,
         print_json: cli.global.json,
+        persisted: false,
     };
 
     if let Err(e) = std::fs::create_dir_all(tools::get_vizier_dir()) {
@@ -1304,7 +1745,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         CommitMode::AutoCommit
     };
 
-    match cli.command {
+    if cli.global.background && cli.global.background_job_id.is_none() {
+        if !config::get_config().workflow.background.enabled {
+            display::emit(
+                LogLevel::Error,
+                "--background is disabled for this repository ([workflow.background].enabled = false)",
+            );
+            return Err("background execution disabled".into());
+        }
+
+        if !background_supported(&cli.command) {
+            display::emit(
+                LogLevel::Error,
+                "--background is only supported for ask/draft/approve/review/merge/save",
+            );
+            return Err("unsupported background command".into());
+        }
+
+        if let Err(err) = ensure_background_safe(&cli.command) {
+            display::emit(LogLevel::Error, err.to_string());
+            return Err(err);
+        }
+
+        let job_id = Uuid::new_v4().to_string();
+        let child_args = build_background_child_args(
+            &raw_args,
+            &job_id,
+            &config::get_config().workflow.background,
+        );
+        let recorded_args = user_friendly_args(&raw_args);
+        let metadata = build_job_metadata(&cli.command, &config::get_config(), cli_agent_override.as_ref());
+        let config_snapshot = Some(background_config_snapshot(&config::get_config()));
+        let binary = std::env::current_exe()?;
+        let launch = jobs::launch_background_job(
+            &project_root,
+            &jobs_root,
+            &binary,
+            &job_id,
+            &child_args,
+            &recorded_args,
+            Some(metadata),
+            config_snapshot,
+        )?;
+
+        println!(
+            "Background job {} started (stdout: {}, stderr: {})",
+            launch.record.id, launch.record.stdout_path, launch.record.stderr_path
+        );
+        return Ok(());
+    }
+
+    let result = match cli.command {
         Commands::Completions(cmd) => {
             crate::completions::write_registration(cmd.shell.into(), || Cli::command())?;
             Ok(())
@@ -1367,6 +1858,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
         Commands::Plan(_) => run_plan_summary(cli_agent_override.as_ref(), cli.global.json),
+        Commands::Jobs(cmd) => run_jobs_command(&project_root, &jobs_root, cmd),
 
         Commands::Approve(cmd) => {
             let opts = resolve_approve_options(&cmd, push_after)?;
@@ -1393,5 +1885,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log_agent_runtime_resolution(&agent);
             run_merge(opts, &agent, commit_mode).await
         }
+    };
+
+    if let Some(job_id) = cli.global.background_job_id.as_ref() {
+        let status = if result.is_ok() {
+            JobStatus::Succeeded
+        } else {
+            JobStatus::Failed
+        };
+
+        let mut exit_code = if result.is_ok() { 0 } else { 1 };
+        if let Some(run) = auditor::Auditor::latest_agent_run() {
+            exit_code = run.exit_code;
+        }
+
+        let session_path = auditor::Auditor::persist_session_log().map(|artifact| {
+            auditor_cleanup.persisted = true;
+            display::info(format!("Session saved to {}", artifact.display_path()));
+            if auditor_cleanup.print_json {
+                if let Ok(contents) = std::fs::read_to_string(&artifact.path) {
+                    println!("{contents}");
+                }
+            }
+            artifact.display_path()
+        });
+
+        if let Err(err) = jobs::finalize_job(
+            &project_root,
+            &jobs_root,
+            job_id,
+            status,
+            exit_code,
+            session_path,
+            runtime_job_metadata(),
+        ) {
+            display::warn(format!(
+                "unable to update background job {} status: {}",
+                job_id, err
+            ));
+        }
     }
+
+    result
 }

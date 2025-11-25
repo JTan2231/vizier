@@ -51,5 +51,7 @@ Update — Conductor checkpoints and Outcome breadcrumbs
 - Acceptance: End-to-end run produces consistent Outcome epilogues/JSON; resume tokens allow re-entry at each gate; failures use exit code 10.
 - Cross: Architecture doc gate, Outcome component, Agent backends.
 
+Update (2025-11-30): Background execution now records richer audit trails for detached runs. `--background` inherits `[workflow.background]` defaults (enable/quiet/progress), forces non-interactive IO (`--no-ansi/--no-pager`), and writes job records with config snapshot, scope/target/plan metadata, agent backend/exit code, and session/outcome paths under `.vizier/jobs/<id>/{job.json,outcome.json}`. `vizier jobs` gained `status`, `tail`, `attach`, `cancel`, and `gc` so operators can reattach to logs or clean stale jobs, but conductor-style checkpoints/resume tokens for the broader workflow remain open.
+
 
 ---

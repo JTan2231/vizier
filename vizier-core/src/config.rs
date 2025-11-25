@@ -9,6 +9,7 @@ use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
     REVIEW_PROMPT,
     agent::{AgentRunner, ScriptRunner},
+    display,
     tools, tree,
 };
 
@@ -574,14 +575,49 @@ impl MergeConfig {
 }
 
 #[derive(Clone)]
+pub struct BackgroundConfig {
+    pub enabled: bool,
+    pub quiet: bool,
+    pub progress: display::ProgressMode,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            quiet: true,
+            progress: display::ProgressMode::Never,
+        }
+    }
+}
+
+impl BackgroundConfig {
+    fn apply_layer(&mut self, layer: &BackgroundLayer) {
+        if let Some(enabled) = layer.enabled {
+            self.enabled = enabled;
+        }
+
+        if let Some(quiet) = layer.quiet {
+            self.quiet = quiet;
+        }
+
+        if let Some(progress) = layer.progress {
+            self.progress = progress;
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct WorkflowConfig {
     pub no_commit_default: bool,
+    pub background: BackgroundConfig,
 }
 
 impl Default for WorkflowConfig {
     fn default() -> Self {
         Self {
             no_commit_default: false,
+            background: BackgroundConfig::default(),
         }
     }
 }
@@ -591,6 +627,8 @@ impl WorkflowConfig {
         if let Some(no_commit) = layer.no_commit_default {
             self.no_commit_default = no_commit;
         }
+
+        self.background.apply_layer(&layer.background);
     }
 }
 
@@ -653,8 +691,16 @@ pub struct ReviewLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BackgroundLayer {
+    pub enabled: Option<bool>,
+    pub quiet: Option<bool>,
+    pub progress: Option<display::ProgressMode>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkflowLayer {
     pub no_commit_default: Option<bool>,
+    pub background: BackgroundLayer,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1770,6 +1816,34 @@ impl ConfigLayer {
                 {
                     layer.workflow.no_commit_default = Some(no_commit);
                 }
+
+                if let Some(background_value) = workflow_table.get("background") {
+                    if let Some(background_table) = background_value.as_object() {
+                        if let Some(enabled) = parse_bool(
+                            background_table
+                                .get("enabled")
+                                .or_else(|| background_table.get("allow")),
+                        ) {
+                            layer.workflow.background.enabled = Some(enabled);
+                        }
+
+                        if let Some(quiet) = parse_bool(
+                            background_table
+                                .get("quiet")
+                                .or_else(|| background_table.get("silent")),
+                        ) {
+                            layer.workflow.background.quiet = Some(quiet);
+                        }
+
+                        if let Some(progress) = parse_progress_mode(
+                            background_table
+                                .get("progress")
+                                .or_else(|| background_table.get("progress_mode")),
+                        ) {
+                            layer.workflow.background.progress = Some(progress);
+                        }
+                    }
+                }
             }
         }
 
@@ -2004,6 +2078,17 @@ fn parse_bool(value: Option<&serde_json::Value>) -> Option<bool> {
                 None
             }
         }
+        _ => None,
+    }
+}
+
+fn parse_progress_mode(value: Option<&serde_json::Value>) -> Option<display::ProgressMode> {
+    let raw = value?;
+    let text = raw.as_str()?.trim().to_ascii_lowercase();
+    match text.as_str() {
+        "auto" => Some(display::ProgressMode::Auto),
+        "never" => Some(display::ProgressMode::Never),
+        "always" => Some(display::ProgressMode::Always),
         _ => None,
     }
 }

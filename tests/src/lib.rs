@@ -831,6 +831,24 @@ no_commit_default = true
         "workflow.no_commit_default from the config file should appear in the report"
     );
     assert_eq!(
+        json.pointer("/workflow/background/enabled")
+            .and_then(Value::as_bool),
+        Some(true),
+        "workflow.background.enabled should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/workflow/background/quiet")
+            .and_then(Value::as_bool),
+        Some(true),
+        "workflow.background.quiet should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/workflow/background/progress")
+            .and_then(Value::as_str),
+        Some("never"),
+        "workflow.background.progress should appear in the report"
+    );
+    assert_eq!(
         json.pointer("/merge/cicd_gate/script")
             .and_then(Value::as_str),
         Some("./alt-cicd.sh"),
