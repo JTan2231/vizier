@@ -263,16 +263,22 @@ impl ScriptRunner {
     }
 
     #[cfg_attr(feature = "mock_llm", allow(dead_code))]
-    async fn read_stderr(
+    async fn read_progress_stream(
         reader: impl AsyncBufRead + Unpin,
         source: String,
         progress_hook: Option<ProgressHook>,
-    ) -> io::Result<Vec<String>> {
+        capture_raw: bool,
+    ) -> io::Result<(Vec<String>, String)> {
         let mut lines = Vec::new();
+        let mut raw = String::new();
         let verbosity = display::get_display_config().verbosity;
 
         let mut stream = reader.lines();
         while let Some(line) = stream.next_line().await? {
+            if capture_raw {
+                raw.push_str(&line);
+                raw.push('\n');
+            }
             let trimmed = line.trim().to_string();
             if trimmed.is_empty() {
                 continue;
@@ -315,7 +321,26 @@ impl ScriptRunner {
             lines.push(trimmed);
         }
 
+        Ok((lines, raw))
+    }
+
+    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
+    async fn read_stderr(
+        reader: impl AsyncBufRead + Unpin,
+        source: String,
+        progress_hook: Option<ProgressHook>,
+    ) -> io::Result<Vec<String>> {
+        let (lines, _) = Self::read_progress_stream(reader, source, progress_hook, false).await?;
         Ok(lines)
+    }
+
+    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
+    async fn read_filter_stdout(
+        reader: impl AsyncBufRead + Unpin,
+        source: String,
+        progress_hook: Option<ProgressHook>,
+    ) -> io::Result<(Vec<String>, String)> {
+        Self::read_progress_stream(reader, source, progress_hook, true).await
     }
 }
 
@@ -580,7 +605,12 @@ impl AgentRunner for ScriptRunner {
                     if let Some(stdout) = spawned_filter.stdout.take() {
                         let hook = progress_hook.clone();
                         filter_stdout_handle = Some(tokio::spawn(async move {
-                            Self::read_stderr(BufReader::new(stdout), filter_source, hook).await
+                            Self::read_filter_stdout(
+                                BufReader::new(stdout),
+                                filter_source,
+                                hook,
+                            )
+                            .await
                         }));
                     }
 
@@ -657,8 +687,11 @@ impl AgentRunner for ScriptRunner {
                 }
 
                 let mut filter_stdout_lines: Vec<String> = Vec::new();
+                let mut filter_stdout_raw = String::new();
                 if let Some(handle) = filter_stdout_handle {
-                    filter_stdout_lines = handle.await.unwrap_or_else(|_| Ok(Vec::new()))?;
+                    (filter_stdout_lines, filter_stdout_raw) = handle
+                        .await
+                        .unwrap_or_else(|_| Ok((Vec::new(), String::new())))?;
                 }
 
                 if let Some(handle) = filter_stderr_handle {
@@ -670,6 +703,13 @@ impl AgentRunner for ScriptRunner {
                     if !filter_status.success() {
                         if !filter_stdout_lines.is_empty() {
                             stderr_lines.extend(filter_stdout_lines.clone());
+                        } else if !filter_stdout_raw.is_empty() {
+                            stderr_lines.extend(
+                                filter_stdout_raw
+                                    .lines()
+                                    .map(|line| line.to_string())
+                                    .collect::<Vec<_>>(),
+                            );
                         }
                         return Err(AgentError::NonZeroExit(
                             filter_status.code().unwrap_or(-1),
@@ -689,7 +729,9 @@ impl AgentRunner for ScriptRunner {
                     ));
                 }
 
-                let assistant_text = if !filter_stdout_lines.is_empty() {
+                let assistant_text = if !filter_stdout_raw.is_empty() {
+                    filter_stdout_raw
+                } else if !filter_stdout_lines.is_empty() {
                     filter_stdout_lines.join("\n")
                 } else {
                     agent_stdout
@@ -833,6 +875,93 @@ printf '%s\n' "$last"
                 .iter()
                 .any(|line| line.contains("progress:")),
             "expected progress filter output to be captured"
+        );
+    }
+
+    #[cfg(not(feature = "mock_llm"))]
+    #[tokio::test]
+    async fn preserves_blank_lines_from_filtered_output() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = tmp.path().join("agent.sh");
+        std::fs::write(
+            &agent,
+            "#!/bin/sh\nprintf 'chunk one\\nchunk two\\n'\n",
+        )
+        .unwrap();
+
+        let filter = tmp.path().join("filter.sh");
+        std::fs::write(
+            &filter,
+            r###"#!/bin/sh
+content="## Section One
+
+First section body.
+
+## Section Two
+
+Tail line."
+
+while IFS= read -r line; do
+  printf 'progress:%s\n' "$line" 1>&2
+done
+
+printf '%s\n' "$content"
+"###,
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for script in [&agent, &filter] {
+                let mut perms = std::fs::metadata(script).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(script, perms).unwrap();
+            }
+        }
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let request = AgentRequest {
+            prompt: "prompt".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            command: vec![agent.display().to_string()],
+            progress_filter: Some(vec![filter.display().to_string()]),
+            output: config::AgentOutputHandling::Wrapped,
+            allow_script_wrapper: true,
+            scope: Some(CommandScope::Ask),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(2)),
+        };
+
+        let response = runner
+            .execute(request, Some(ProgressHook::Plain(tx)))
+            .await
+            .expect("agent run should succeed");
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        let expected = "## Section One\n\nFirst section body.\n\n## Section Two\n\nTail line.\n";
+        assert_eq!(response.assistant_text, expected);
+        assert!(
+            events
+                .iter()
+                .all(|event| event
+                    .message
+                    .as_deref()
+                    .map(|msg| !msg.trim().is_empty())
+                    .unwrap_or(false)),
+            "progress events should remain trimmed and non-empty"
+        );
+        assert!(
+            response
+                .stderr
+                .iter()
+                .any(|line| line.contains("progress:chunk one")),
+            "stderr should carry trimmed progress lines"
         );
     }
 
