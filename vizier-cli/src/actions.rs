@@ -28,7 +28,7 @@ use vizier_core::vcs::{
 };
 use vizier_core::{
     agent_prompt, auditor,
-    auditor::{AgentRunRecord, Auditor, CommitMessageBuilder, CommitMessageType},
+    auditor::{AgentRunRecord, Auditor, CommitMessageBuilder, CommitMessageType, Message},
     bootstrap,
     bootstrap::{BootstrapOptions, IssuesProvider},
     config,
@@ -224,15 +224,6 @@ fn build_config_report(
 
 fn value_or_unset(value: Option<String>, fallback: &str) -> String {
     value.unwrap_or_else(|| fallback.to_string())
-}
-
-fn format_command(command: &[String]) -> String {
-    let joined = command.join(" ").trim().to_string();
-    if joined.is_empty() {
-        "unset".to_string()
-    } else {
-        joined
-    }
 }
 
 fn format_runtime_resolution(resolution: &RuntimeResolutionReport) -> String {
@@ -2058,14 +2049,8 @@ fn record_test_display_session(
     prompt: &str,
     response: &AgentResponse,
 ) -> Option<String> {
-    let provider = config::get_config().provider.clone();
-    auditor::Auditor::add_message(provider.new_message(prompt.to_string()).as_user().build());
-    auditor::Auditor::add_message(
-        provider
-            .new_message(response.assistant_text.clone())
-            .as_assistant()
-            .build(),
-    );
+    auditor::Auditor::add_message(Message::user(prompt.to_string()));
+    auditor::Auditor::add_message(Message::assistant(response.assistant_text.clone()));
     auditor::Auditor::record_agent_run(AgentRunRecord {
         command: agent.agent_runtime.command.clone(),
         output: agent.agent_runtime.output,
@@ -2084,14 +2069,13 @@ fn record_test_display_failure(
     exit_code: i32,
     stderr: &[String],
 ) -> Option<String> {
-    let provider = config::get_config().provider.clone();
-    auditor::Auditor::add_message(provider.new_message(prompt.to_string()).as_user().build());
+    auditor::Auditor::add_message(Message::user(prompt.to_string()));
     let assistant_text = if stderr.is_empty() {
         format!("agent exited with status {exit_code}")
     } else {
         stderr.join("\n")
     };
-    auditor::Auditor::add_message(provider.new_message(assistant_text).as_assistant().build());
+    auditor::Auditor::add_message(Message::assistant(assistant_text));
     auditor::Auditor::record_agent_run(AgentRunRecord {
         command: agent.agent_runtime.command.clone(),
         output: agent.agent_runtime.output,

@@ -80,6 +80,9 @@ Update (2025-11-25): Script-runner shims replace per-backend binaries
 Update (2025-11-26): Rust adapters retired; GEMINI.md is now historical
 - The Rust Codex/Gemini adapters were removed in favor of the bundled shims; `GEMINI.md` now documents the legacy adapter shape and the current shim entrypoints so future backends can reuse the pattern without expecting in-tree binaries.
 
+Update (2025-11-27): Wire removal cleanup and agent-only session logging
+- `vizier test-display` now records sessions via the Auditor message APIs instead of the removed `Config.provider` wiring, and prompt-context gathering no longer panics when `.vizier` is absent (returns empty snapshot/threads instead). Config/tests reject wire/model/reasoning/fallback keys, leaving agent/gemini as the only supported backends; cargo check/test and `./cicd.sh` are green after the cleanup.
+
 ## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 
 Tension

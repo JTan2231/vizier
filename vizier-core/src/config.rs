@@ -912,7 +912,7 @@ impl Config {
             }
         }
 
-        builder.build(self, scope, None, cli_override)
+        builder.build(scope, None, cli_override)
     }
 
     pub fn resolve_prompt_profile(
@@ -956,7 +956,7 @@ impl Config {
         } else {
             Some(self.prompt_for(scope, kind))
         };
-        builder.build(self, scope, prompt, cli_override)
+        builder.build(scope, prompt, cli_override)
     }
 }
 
@@ -1116,7 +1116,6 @@ impl AgentSettingsBuilder {
 
     fn build(
         &self,
-        cfg: &Config,
         scope: CommandScope,
         prompt: Option<PromptSelection>,
         cli_override: Option<&AgentOverrides>,
@@ -2212,8 +2211,6 @@ mod tests {
     #[test]
     fn test_from_toml_prompts_table() {
         let toml = r#"
-model = "gpt-5"
-
 [prompts]
 documentation = "toml documentation override"
 commit = "toml commit override"

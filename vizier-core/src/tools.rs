@@ -106,6 +106,7 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn build_todo_path(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -127,6 +128,7 @@ fn build_todo_path(name: &str) -> Result<String, String> {
     Ok(format!("{}{}", get_todo_dir(), trimmed))
 }
 
+#[allow(dead_code)]
 fn add_todo(name: String, description: String) -> String {
     let filename = match build_todo_path(&name) {
         Ok(path) => path,
@@ -140,6 +142,7 @@ fn add_todo(name: String, description: String) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn delete_todo(name: String) -> String {
     let filename = match build_todo_path(&name) {
         Ok(path) => path,
@@ -153,6 +156,7 @@ fn delete_todo(name: String) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn update_todo(todo_name: String, update: String) -> String {
     let filename = match build_todo_path(&todo_name) {
         Ok(path) => path,
@@ -167,6 +171,7 @@ fn update_todo(todo_name: String, update: String) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn read_file(filepath: String) -> String {
     let contents = file_tracking::FileTracker::read(&filepath);
     if let Err(e) = contents {
@@ -213,6 +218,7 @@ pub fn list_todos() -> String {
     }
 }
 
+#[allow(dead_code)]
 fn read_todo(todo_name: String) -> String {
     let filename = match build_todo_path(&todo_name) {
         Ok(path) => path,
@@ -232,6 +238,7 @@ pub fn read_snapshot() -> String {
     std::fs::read_to_string(&filename).unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn update_snapshot(content: String) -> String {
     let filename = format!("{}{}", get_todo_dir(), ".snapshot");
 
@@ -242,6 +249,7 @@ fn update_snapshot(content: String) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn create_git_issue(title: String, body: String) -> String {
     use reqwest::blocking::Client;
     use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
