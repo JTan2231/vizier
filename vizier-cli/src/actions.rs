@@ -611,12 +611,11 @@ pub fn print_agent_summary() {
     println!("{block}");
 }
 
-fn prompt_selection<'a>(
-    agent: &'a config::AgentSettings,
-) -> Result<&'a config::PromptSelection, Box<dyn std::error::Error>> {
+fn prompt_selection(
+    agent: &config::AgentSettings,
+) -> Result<&config::PromptSelection, Box<dyn std::error::Error>> {
     agent.prompt_selection().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             format!(
                 "agent for `{}` is missing a resolved prompt; call AgentSettings::for_prompt first",
                 agent.scope.as_str()
@@ -1163,7 +1162,7 @@ pub async fn run_save(
             }
             Err(e) => {
                 display::emit(LogLevel::Error, format!("Error running --save: {e}"));
-                Err(Box::<dyn std::error::Error>::from(e))
+                Err(e)
             }
         },
         Err(e) => {
@@ -1307,11 +1306,7 @@ async fn save(
     let provided_note = if let Some(message) = user_message {
         Some(message)
     } else if use_message_editor {
-        if let Ok(edited) = get_editor_message() {
-            Some(edited)
-        } else {
-            None
-        }
+        get_editor_message().ok()
     } else {
         None
     };
@@ -1348,7 +1343,7 @@ async fn save(
     let summary_block = format_block(summary_rows);
     if !summary_block.is_empty() {
         for line in summary_block.lines() {
-            display::info(line.to_string());
+            display::info(line);
         }
     }
 
@@ -1496,7 +1491,7 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
 
     let temp_path: TempPath = temp_file.into_temp_path();
 
-    match std::fs::write(temp_path.to_path_buf(), "") {
+    match std::fs::write(&temp_path, "") {
         Ok(_) => {}
         Err(e) => {
             display::emit(LogLevel::Error, "Error writing to temp file");
@@ -1523,8 +1518,7 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
         .status()?;
 
     if !status.success() {
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(Box::new(std::io::Error::other(
             "Editor command failed",
         )));
     }
@@ -1538,8 +1532,7 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
             contents
         }
         Err(e) => {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(Box::new(std::io::Error::other(
                 format!("Error reading file: {}", e),
             )));
         }
@@ -1585,7 +1578,7 @@ pub async fn inline_command(
         Ok(r) => r,
         Err(e) => {
             display::emit(LogLevel::Error, format!("Error during LLM request: {e}"));
-            return Err(Box::<dyn std::error::Error>::from(e));
+            return Err(e);
         }
     };
 
@@ -1593,7 +1586,7 @@ pub async fn inline_command(
         Ok(outcome) => outcome,
         Err(e) => {
             display::emit(LogLevel::Error, format!("Error finalizing audit: {e}"));
-            return Err(Box::<dyn std::error::Error>::from(e));
+            return Err(e);
         }
     };
     let session_display = audit_result.session_display();
@@ -1722,7 +1715,7 @@ pub async fn run_draft(
     let mut plan_document_preview: Option<String> = None;
     let mut session_artifact: Option<auditor::SessionArtifact> = None;
     let primary_branch = detect_primary_branch()
-        .ok_or_else(|| "unable to detect a primary branch (tried origin/HEAD, main, master)")?;
+        .ok_or("unable to detect a primary branch (tried origin/HEAD, main, master)")?;
 
     let mut branch_created = false;
     let mut worktree_created = false;
@@ -1975,7 +1968,7 @@ pub async fn run_test_display(
                     agent,
                     &prompt,
                     124,
-                    &vec![format!("timeout after {secs}s")],
+                    &[format!("timeout after {secs}s")],
                 );
             }
             std::process::exit(124);
@@ -2230,14 +2223,13 @@ pub async fn run_approve(
     match approval {
         Ok(result) => {
             if commit_mode.should_commit() {
-                if let Some(tree) = worktree.take() {
-                    if let Err(err) = tree.cleanup() {
+                if let Some(tree) = worktree.take()
+                    && let Err(err) = tree.cleanup() {
                         display::warn(format!(
                             "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
                             err
                         ));
                     }
-                }
 
                 let mut rows = vec![
                     ("Outcome".to_string(), "Plan implemented".to_string()),
@@ -2367,14 +2359,13 @@ pub async fn run_review(
     match review_result {
         Ok(outcome) => {
             if commit_mode.should_commit() {
-                if let Some(tree) = worktree.take() {
-                    if let Err(err) = tree.cleanup() {
+                if let Some(tree) = worktree.take()
+                    && let Err(err) = tree.cleanup() {
                         display::warn(format!(
                             "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
                             err
                         ));
                     }
-                }
             } else if let Some(tree) = worktree.take() {
                 display::info(format!(
                     "Review worktree preserved at {}; inspect branch {} for pending critique/fix artifacts.",
@@ -2600,14 +2591,13 @@ pub async fn run_merge(
         return Err(err);
     }
 
-    if let Some(tree) = worktree.take() {
-        if let Err(err) = tree.cleanup() {
+    if let Some(tree) = worktree.take()
+        && let Err(err) = tree.cleanup() {
             display::warn(format!(
                 "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
                 err
             ));
         }
-    }
 
     let current_branch = current_branch_name(&repo)?;
     if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
@@ -2697,14 +2687,13 @@ fn resolve_squash_plan_and_mainline(
             display::warn(
                 "Merge history is ambiguous; proceeding with the provided --squash-mainline value.",
             );
-        } else if let Some(inferred) = plan.inferred_mainline {
-            if inferred != mainline {
+        } else if let Some(inferred) = plan.inferred_mainline
+            && inferred != mainline {
                 display::warn(format!(
                     "Inferred mainline {} differs from provided {}; continuing with the provided value.",
                     inferred, mainline
                 ));
             }
-        }
         return Ok((plan, Some(mainline)));
     }
 
@@ -2870,15 +2859,14 @@ async fn finalize_squashed_merge_from_head(
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
     let gate = run_cicd_gate_for_merge(spec, opts, agent).await?;
     let ready = merge_ready_from_head(source_oid)?;
-    if let Some(expected) = expected_implementation {
-        if expected != ready.head_oid {
+    if let Some(expected) = expected_implementation
+        && expected != ready.head_oid {
             display::warn(format!(
                 "HEAD moved after recording the implementation commit (expected {}, saw {}); finalizing merge from the current HEAD state.",
                 short_hash(&expected.to_string()),
                 short_hash(&ready.head_oid.to_string())
             ));
         }
-    }
     let implementation_head = ready.head_oid;
     let merge_oid = commit_squashed_merge(merge_message, ready)?;
     Ok(MergeExecutionResult {
@@ -3301,7 +3289,7 @@ async fn try_complete_pending_merge(
         let implementation_message = state
             .implementation_message
             .as_deref()
-            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+            .ok_or("missing implementation commit message for squashed merge state")?;
         let start_oid = Oid::from_str(&replay.start_oid)?;
         let mut applied_commits: Vec<Oid> = replay
             .applied_commits
@@ -3335,9 +3323,9 @@ async fn try_complete_pending_merge(
             ));
         }
         let mut conflict_paths = Vec::new();
-        if let Ok(idx) = repo.index() {
-            if let Ok(mut conflicts) = idx.conflicts() {
-                while let Some(entry) = conflicts.next() {
+        if let Ok(idx) = repo.index()
+            && let Ok(mut conflicts) = idx.conflicts() {
+                for entry in conflicts.by_ref() {
                     if let Ok(conflict) = entry {
                         let path_bytes = conflict
                             .our
@@ -3351,7 +3339,6 @@ async fn try_complete_pending_merge(
                     }
                 }
             }
-        }
         if !conflict_paths.is_empty() {
             let mut index = repo.index()?;
             for path in &conflict_paths {
@@ -3364,9 +3351,9 @@ async fn try_complete_pending_merge(
         {
             let mut idx = repo.index()?;
             let _ = idx.read(true);
-            if idx.has_conflicts() {
-                if let Ok(mut conflicts) = idx.conflicts() {
-                    while let Some(entry) = conflicts.next() {
+            if idx.has_conflicts()
+                && let Ok(mut conflicts) = idx.conflicts() {
+                    for entry in conflicts.by_ref() {
                         if let Ok(conflict) = entry {
                             let path_bytes = conflict
                                 .our
@@ -3380,7 +3367,6 @@ async fn try_complete_pending_merge(
                         }
                     }
                 }
-            }
         }
         if !outstanding.is_empty() {
             let mut index = repo.index()?;
@@ -3394,8 +3380,8 @@ async fn try_complete_pending_merge(
                 outstanding.clear();
             }
         }
-        if !outstanding.is_empty() {
-            if let Some(status) = maybe_auto_resolve_pending_conflicts(
+        if !outstanding.is_empty()
+            && let Some(status) = maybe_auto_resolve_pending_conflicts(
                 spec,
                 &state,
                 &outstanding,
@@ -3407,7 +3393,6 @@ async fn try_complete_pending_merge(
             {
                 return Ok(status);
             }
-        }
         display::info(format!(
             "Pending merge state: {:?}, index_conflicts={}, paths={outstanding:?}",
             repo.state(),
@@ -3418,7 +3403,7 @@ async fn try_complete_pending_merge(
             let current_index = applied_commits.len();
             let current_commit_oid = source_commits
                 .get(current_index)
-                .ok_or_else(|| "replay state missing the in-progress plan commit")?;
+                .ok_or("replay state missing the in-progress plan commit")?;
             let cherry_message = repo
                 .find_commit(*current_commit_oid)?
                 .summary()
@@ -3635,7 +3620,7 @@ async fn try_complete_pending_merge(
         let message = state
             .implementation_message
             .as_deref()
-            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+            .ok_or("missing implementation commit message for squashed merge state")?;
         let _ = commit_in_progress_squash(message, head_oid)?;
         let _ = clear_conflict_state(&spec.slug);
         display::info("Conflicts resolved; implementation commit created for squashed merge.");
@@ -3822,7 +3807,7 @@ async fn try_auto_resolve_conflicts(
         let implementation_message = state
             .implementation_message
             .as_deref()
-            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+            .ok_or("missing implementation commit message for squashed merge state")?;
         let start_oid = Oid::from_str(&replay.start_oid)?;
         let mut applied_commits: Vec<Oid> = replay
             .applied_commits
@@ -3838,7 +3823,7 @@ async fn try_auto_resolve_conflicts(
         let current_index = applied_commits.len();
         let current_commit_oid = source_commits
             .get(current_index)
-            .ok_or_else(|| "replay state missing the in-progress plan commit")?;
+            .ok_or("replay state missing the in-progress plan commit")?;
         let cherry_message = repo
             .find_commit(*current_commit_oid)?
             .summary()
@@ -3910,7 +3895,7 @@ async fn try_auto_resolve_conflicts(
         let message = state
             .implementation_message
             .as_deref()
-            .ok_or_else(|| "missing implementation commit message for squashed merge state")?;
+            .ok_or("missing implementation commit message for squashed merge state")?;
         let implementation_oid = commit_in_progress_squash(message, head_oid)?;
         clear_conflict_state(&state.slug)?;
         display::info("Backend resolved the conflicts; implementation commit recorded.");

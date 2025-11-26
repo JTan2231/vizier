@@ -497,11 +497,10 @@ pub fn gc_jobs(
         }
         if finished_at < cutoff {
             let paths = paths_for(jobs_root, &id);
-            if paths.job_dir.exists() {
-                if fs::remove_dir_all(&paths.job_dir).is_ok() {
+            if paths.job_dir.exists()
+                && fs::remove_dir_all(&paths.job_dir).is_ok() {
                     removed += 1;
                 }
-            }
         }
     }
 

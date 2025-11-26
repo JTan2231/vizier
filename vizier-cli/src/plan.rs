@@ -238,7 +238,7 @@ pub fn ensure_unique_slug(
 }
 
 pub fn trim_trailing_newlines(text: &str) -> &str {
-    let trimmed = text.trim_end_matches(|c| c == '\n' || c == '\r');
+    let trimmed = text.trim_end_matches(['\n', '\r']);
     if trimmed.is_empty() { "" } else { trimmed }
 }
 
@@ -405,7 +405,7 @@ impl PlanSlugInventory {
         }
 
         let mut branches = repo.branches(Some(BranchType::Local))?;
-        while let Some(branch_res) = branches.next() {
+        for branch_res in branches {
             let (branch, _) = branch_res?;
             let Some(name) = branch.name()? else {
                 continue;
@@ -595,7 +595,7 @@ fn extract_section(document: &str, header: &str) -> Option<String> {
     let mut lines = after_header.lines();
 
     let mut collected = Vec::new();
-    while let Some(line) = lines.next() {
+    for line in lines {
         if line.starts_with("## ") {
             break;
         }

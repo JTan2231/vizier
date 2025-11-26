@@ -699,7 +699,7 @@ fn resolve_review_options(
     let plan = cmd
         .plan
         .clone()
-        .ok_or_else(|| "plan argument is required for vizier review")?;
+        .ok_or("plan argument is required for vizier review")?;
     let config = config::get_config();
     let repo_root = vcs::repo_root().ok();
     let mut cicd_gate = CicdGateOptions::from_config(&config.merge.cicd_gate);
@@ -749,7 +749,7 @@ fn resolve_merge_options(
     let plan = cmd
         .plan
         .clone()
-        .ok_or_else(|| "plan argument is required for vizier merge")?;
+        .ok_or("plan argument is required for vizier merge")?;
     let config = config::get_config();
     let default_conflict_auto_resolve = config::MergeConflictsConfig::default().auto_resolve;
     let conflict_source = if config.merge.conflicts.auto_resolve == default_conflict_auto_resolve {
@@ -816,11 +816,10 @@ fn resolve_merge_options(
     if let Some(mainline) = cmd.squash_mainline {
         squash_mainline = Some(mainline);
     }
-    if let Some(mainline) = squash_mainline {
-        if mainline == 0 {
+    if let Some(mainline) = squash_mainline
+        && mainline == 0 {
             return Err("squash mainline parent index must be at least 1".into());
         }
-    }
 
     Ok(MergeOptions {
         plan,
@@ -1303,11 +1302,9 @@ fn render_help_with_pager(
     if let Some(pager) = std::env::var("VIZIER_PAGER")
         .ok()
         .filter(|value| !value.trim().is_empty())
-    {
-        if try_page_output(&pager, &help_text).is_ok() {
+        && try_page_output(&pager, &help_text).is_ok() {
             return Ok(());
         }
-    }
 
     if matches!(pager_mode, PagerMode::Always | PagerMode::Auto)
         && try_page_output("less -FRSX", &help_text).is_ok()
@@ -1338,17 +1335,16 @@ fn strip_ansi_codes(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            if chars.peek() == Some(&'[') {
+        if ch == '\x1b'
+            && chars.peek() == Some(&'[') {
                 chars.next();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if ('@'..='~').contains(&c) {
                         break;
                     }
                 }
                 continue;
             }
-        }
         output.push(ch);
     }
     output
@@ -1503,8 +1499,8 @@ mod tests {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if crate::completions::try_handle_completion(|| Cli::command())
-        .map_err(|err| Box::<dyn std::error::Error>::from(err))?
+    if crate::completions::try_handle_completion(Cli::command)
+        .map_err(Box::<dyn std::error::Error>::from)?
     {
         return Ok(());
     }
@@ -1700,7 +1696,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("could not find session file".into());
         };
 
-        let _ = auditor::Auditor::replace_messages(&messages);
+        auditor::Auditor::replace_messages(&messages);
     }
 
     cfg.no_session = cli.global.no_session;
@@ -1754,7 +1750,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = match cli.command {
         Commands::Completions(cmd) => {
-            crate::completions::write_registration(cmd.shell.into(), || Cli::command())?;
+            crate::completions::write_registration(cmd.shell.into(), Cli::command)?;
             Ok(())
         }
         Commands::Complete(_) => Ok(()),
@@ -1859,11 +1855,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let session_path = auditor::Auditor::persist_session_log().map(|artifact| {
             auditor_cleanup.persisted = true;
             display::info(format!("Session saved to {}", artifact.display_path()));
-            if auditor_cleanup.print_json {
-                if let Ok(contents) = std::fs::read_to_string(&artifact.path) {
+            if auditor_cleanup.print_json
+                && let Ok(contents) = std::fs::read_to_string(&artifact.path) {
                     println!("{contents}");
                 }
-            }
             artifact.display_path()
         });
 
