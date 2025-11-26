@@ -1,10 +1,17 @@
 # Vizier
 
-**A managed VCS harness for using agents.**
+**A managed VCS harness for using agents.** *(Experimental — expect breaking changes)*
 
-Vizier is the control plane between your agents and your Git repository. It's not an AI assistant — it's the infrastructure that lets you safely use *your* agents (Claude Code, Cursor, custom scripts) without letting them write directly to your repo.
+Vizier is the control plane between your agents and your code. The intention here is that we have composable, reversible, and containable means of changing our code while enforcing meaningful development practices.
 
-**Bring Your Own Agent.** Vizier doesn't care which agent you use. It cares *how* that agent interacts with version control: isolated branches, audited commits, narrative tracking, and compliance gates.
+Because development practices can vary so widely, the intention here is that every possible step can be configured. To name a few surfaces:
+- Git interactions
+- What agents are run, when, and how
+- How agent outputs are displayed
+- CICD gating
+- Prompts
+
+Hopefully, things are simple enough that both you and your agent will quickly get a handle on personalization.
 
 ## How to Use It
 
@@ -60,6 +67,8 @@ Agent      : backend agent • runtime codex • scope ask • exit 0 • elapse
 Exit code  : 0
 Duration   : 16.73s
 ```
+
+Basically all of Vizier's operations, by default, append to the git history. Check the `git log` often to see the changes Vizier makes.
 
 A variety of the built-in prompts encourage the agent to maintain a `.vizier/narrative/snapshot.md` file as an at-a-glance outline of the project state--this is intended for both future agent and human eyes. And of course, the prompts can be configured to change or ignore this entirely.
 
