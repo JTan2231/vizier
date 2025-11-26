@@ -670,6 +670,26 @@ impl Auditor {
         .await
     }
 
+    /// Builds the prompt string sent to the agent runner, embedding the user
+    /// message for commit flows so the diff is present in the request payload.
+    fn render_prompt(
+        system_prompt: &str,
+        user_message: &str,
+        prompt_variant: Option<SystemPrompt>,
+    ) -> String {
+        if user_message.trim().is_empty() {
+            return system_prompt.to_string();
+        }
+
+        if !matches!(prompt_variant, Some(SystemPrompt::Commit)) {
+            return system_prompt.to_string();
+        }
+
+        format!(
+            "{system_prompt}\n\n<userMessage>\n{user_message}\n</userMessage>\n"
+        )
+    }
+
     /// Basic LLM request with tool usage
     /// NOTE: Returns the _entire_ conversation, up to date with the LLM's responses
     pub async fn llm_request_with_tools(
@@ -682,6 +702,7 @@ impl Auditor {
         Self::record_agent(agent, prompt_variant);
         let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
+        let rendered_prompt = Self::render_prompt(&system_prompt, &user_message, prompt_variant);
         let mut messages = AUDITOR.lock().unwrap().messages.clone();
         messages.push(Message::user(user_message));
         Self::replace_messages(&messages);
@@ -694,7 +715,7 @@ impl Auditor {
         };
         let messages_clone = messages.clone();
         let opts_clone = runtime_opts.clone();
-        let prompt_clone = system_prompt.clone();
+        let prompt_clone = rendered_prompt.clone();
         let mut metadata = BTreeMap::new();
         metadata.insert("agent_backend".to_string(), agent.backend.to_string());
         metadata.insert("agent_label".to_string(), opts_clone.label.clone());
@@ -780,6 +801,7 @@ impl Auditor {
 
         let runtime_opts = agent.agent_runtime.clone();
         let agent_scope = agent.scope;
+        let rendered_prompt = Self::render_prompt(&system_prompt, &user_message, prompt_variant);
         let mut messages = AUDITOR.lock().unwrap().messages.clone();
         messages.push(Message::user(user_message));
         Self::replace_messages(&messages);
@@ -819,7 +841,7 @@ impl Auditor {
             }
         }
         let request = AgentRequest {
-            prompt: system_prompt.clone(),
+            prompt: rendered_prompt.clone(),
             repo_root,
             command: runtime_opts.command.clone(),
             progress_filter: runtime_opts.progress_filter.clone(),
@@ -1009,7 +1031,7 @@ impl SessionArtifact {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommitMessageBuilder, CommitMessageType, find_project_root};
+    use super::{Auditor, CommitMessageBuilder, CommitMessageType, SystemPrompt, find_project_root};
     use std::fs;
     use tempfile::tempdir;
 
@@ -1072,6 +1094,37 @@ mod tests {
             message.starts_with("VIZIER NARRATIVE CHANGE"),
             "missing summary should keep generic header"
         );
+    }
+
+    #[test]
+    fn render_prompt_wraps_user_message() {
+        let prompt = "base prompt";
+        let user_msg = "diff --git a/file b/file";
+        let rendered =
+            Auditor::render_prompt(prompt, user_msg, Some(SystemPrompt::Commit));
+
+        assert!(rendered.contains(prompt));
+        assert!(rendered.contains("<userMessage>"));
+        assert!(rendered.contains(user_msg));
+        assert!(rendered.contains("</userMessage>"));
+    }
+
+    #[test]
+    fn render_prompt_passthrough_on_empty_user_message() {
+        let prompt = "base prompt";
+        let rendered =
+            Auditor::render_prompt(prompt, "", Some(SystemPrompt::Documentation));
+
+        assert_eq!(rendered, prompt);
+    }
+
+    #[test]
+    fn render_prompt_passthrough_for_non_commit_variant() {
+        let prompt = "base prompt";
+        let rendered =
+            Auditor::render_prompt(prompt, "instructions", Some(SystemPrompt::Documentation));
+
+        assert_eq!(rendered, prompt);
     }
 }
 
