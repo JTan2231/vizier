@@ -21,7 +21,6 @@ use crate::actions::*;
 mod completions;
 mod jobs;
 mod plan;
-use uuid::Uuid;
 use crate::jobs::JobStatus;
 
 /// A CLI for LLM project management.
@@ -1746,53 +1745,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if cli.global.background && cli.global.background_job_id.is_none() {
-        if !config::get_config().workflow.background.enabled {
-            display::emit(
-                LogLevel::Error,
-                "--background is disabled for this repository ([workflow.background].enabled = false)",
-            );
-            return Err("background execution disabled".into());
-        }
-
-        if !background_supported(&cli.command) {
-            display::emit(
-                LogLevel::Error,
-                "--background is only supported for ask/draft/approve/review/merge/save",
-            );
-            return Err("unsupported background command".into());
-        }
-
-        if let Err(err) = ensure_background_safe(&cli.command) {
-            display::emit(LogLevel::Error, err.to_string());
-            return Err(err);
-        }
-
-        let job_id = Uuid::new_v4().to_string();
-        let child_args = build_background_child_args(
-            &raw_args,
-            &job_id,
-            &config::get_config().workflow.background,
+        display::emit(
+            LogLevel::Error,
+            "--background is experimental and currently disabled; run commands in the foreground for this release",
         );
-        let recorded_args = user_friendly_args(&raw_args);
-        let metadata = build_job_metadata(&cli.command, &config::get_config(), cli_agent_override.as_ref());
-        let config_snapshot = Some(background_config_snapshot(&config::get_config()));
-        let binary = std::env::current_exe()?;
-        let launch = jobs::launch_background_job(
-            &project_root,
-            &jobs_root,
-            &binary,
-            &job_id,
-            &child_args,
-            &recorded_args,
-            Some(metadata),
-            config_snapshot,
-        )?;
-
-        println!(
-            "Background job {} started (stdout: {}, stderr: {})",
-            launch.record.id, launch.record.stdout_path, launch.record.stderr_path
-        );
-        return Ok(());
+        return Err("background execution disabled for this release".into());
     }
 
     let result = match cli.command {

@@ -13,14 +13,14 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Pin review to Gemini while leaving other scopes on Codex: set `[agents.review] backend = "gemini"` (optionally `agent.label = "gemini"` if you moved the shim) and run `vizier plan --json` to confirm the resolved backend before `vizier review`. CLI override: `vizier review --backend gemini` for one-offs.
 - Tighten merge CI/CD gates: set `[merge.cicd_gate] script = "./cicd.sh"`, `retries = 3`, and (optionally) `auto_resolve = true` so Vizier retries failures up to three times with agent remediation. Override per run with `--cicd-script`, `--cicd-retries`, and `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Disable auto-commit for inspection: set `[workflow] no_commit_default = true` to hold assistant edits dirty/staged across ask/save/draft/approve/review. For a single run, pass `--no-commit`; re-run without it before merging so history is finalized.
-- Run long Vizier commands in the background: keep `[workflow.background] enabled = true` (default) and tune `quiet`/`progress` so `--background` detaches cleanly; set `enabled = false` to forbid background mode in governance-restricted repos.
+- Background execution (experimental): `[workflow.background]` still controls the intended future posture for background runs, but in this release the `--background` flag is disabled and causes the CLI to exit with an error instead of detaching.
 - Swap prompt text for a single scope: add `[agents.merge.prompts.merge_conflict] path = ".vizier/MERGE_CONFLICT_PROMPT.md"` (or `text = """..."""`) to override just merge-conflict prompting without touching other commands.
 
 ## Override matrix (config vs CLI)
 - Agent backend/command/label: `[agents.<scope>] backend|[agent].{command,label}`; CLI `--backend`, `--agent-command`, `--agent-label` override all scopes for the current run.
 - Prompt selection: `[agents.<scope>.prompts.<kind>]` (`text`/`path` + nested `[agent]` overrides) → legacy `[prompts.*]` → `.vizier/*PROMPT*.md` → baked defaults; no CLI flag exists. Inspect with `vizier plan --json`.
 - Workflow hold: `[workflow].no_commit_default` (default false) ↔ CLI `--no-commit` flag.
-- Background posture: `[workflow.background].{enabled,quiet,progress}` (default true/true/never) shapes how `--background` runs are launched; background mode is rejected when `enabled = false`.
+- Background posture (experimental): `[workflow.background].{enabled,quiet,progress}` (default true/true/never) is surfaced via `vizier plan`, but the CLI currently rejects `--background` regardless of these settings.
 - Merge gates: `[merge.cicd_gate].{script,retries,auto_resolve}` ↔ CLI `--cicd-script`, `--cicd-retries`, `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Merge history: `[merge].squash` / `[merge].squash_mainline` ↔ CLI `--squash`/`--no-squash`, `--squash-mainline`.
 - Display/help: pager defaults are TTY-only; use `--pager`/`--no-pager` or `$VIZIER_PAGER` to force/disable. `--no-ansi` strips color; `-q/-v/-vv` and `--progress` tune verbosity.
@@ -36,7 +36,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 
 ## Workflow and gate settings
 - Workflow defaults: `[workflow].no_commit_default` (default false) pairs with `--no-commit` to hold assistant edits for manual review across ask/save/draft/approve/review.
-- Background jobs: `[workflow.background]` governs `--background` posture (enabled/quiet/progress). Only ask/draft/approve/review/merge/save support `--background`; background runs force `--no-ansi`/`--no-pager`, apply the configured quiet/progress defaults, and require non-interactive flags (`--yes` for approve/merge; `--review-only` or `--yes` for review).
+- Background jobs (experimental): `[workflow.background]` describes how background runs will behave when (re)enabled, but in the current release `--background` exits with an error and background execution is unavailable; `vizier jobs ...` remains available for inspecting any existing experimental jobs.
 - Review checks: `[review.checks].commands = [ ... ]`; `vizier review` runs these unless `--skip-checks`, falling back to cargo check/test when unset in a Cargo repo.
 - Merge behavior: `[merge].squash` (default true; `--squash`/`--no-squash`), `[merge].squash_mainline` (mainline parent for merge-heavy plan branches; `--squash-mainline <n>`), and `[merge.conflicts].auto_resolve` (default false; `--auto-resolve-conflicts`/`--no-auto-resolve-conflicts`).
 - CI/CD gate: `[merge.cicd_gate]` controls `script` (default none), `auto_resolve` (default false; gate remediation toggle), and `retries` (default 1). CLI overrides: `--cicd-script`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, `--cicd-retries`. `vizier review` runs this gate once per review with auto-fix disabled; `vizier merge` enforces it before completing.
