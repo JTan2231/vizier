@@ -8,7 +8,10 @@ Vizier is the control plane between your agents and your Git repository. It's no
 
 ## How to Use It
 
-**Prerequisites**: Rust toolchain (for building from source), Git 2.x+
+**Prerequisites**:
+- Rust toolchain to build from source
+- The built-in agent scripts use `jq` to parse events, but this can be changed to whatever you like
+- Automated testing relies on `git`
 
 ```bash
 # Install from source
@@ -30,7 +33,7 @@ vizier save -m "feat: add retry with exponential backoff"
 
 ```bash
 # 1. Create a plan on a draft branch
-vizier draft "add rate limiting to API client"
+vizier draft --name rate-limiting "add rate limiting to API client"
 
 # 2. Implement the plan (agent-backed)
 vizier approve rate-limiting
@@ -38,23 +41,30 @@ vizier approve rate-limiting
 # 3. Review and optionally apply fixes
 vizier review rate-limiting
 
-# 4. Merge to main with embedded plan
-vizier merge rate-limiting
+# 4. Merge to main with embedded plan and let the agent deal with merge conflicts
+vizier merge rate-limiting --auto-resolve-conflicts
 ```
 
 ## What to Expect
 
-**After running commands, you'll see:**
+For the clearest example, check out this project's commit history.
+
+**After running commands, you'll see something like:**
 ```
-Outcome: Save complete
-Files: src/client.rs (M), .vizier/.snapshot (M)
-Session: .vizier/sessions/abc123/session.json
+Outcome    : Save complete
+Session    : .vizier/sessions/3ab53405-72c1-42c6-a763-1d9bec689ed9/session.json
+Code commit: 957ccbf4
+Mode       : auto
+Narrative  : committed
+Agent      : backend agent • runtime codex • scope ask • exit 0 • elapsed 16.73s
+Exit code  : 0
+Duration   : 16.73s
 ```
 
-Vizier maintains `.vizier/.snapshot` (project state overview) and narrative docs under `.vizier/narrative/threads/` as you work. Every change is Git-tracked and auditable. Your working tree stays clean via temporary worktrees. No external services, no lock-in — just Git with opinions about commit hygiene.
+A variety of the built-in prompts encourage the agent to maintain a `.vizier/narrative/snapshot.md` file as an at-a-glance outline of the project state--this is intended for both future agent and human eyes. And of course, the prompts can be configured to change or ignore this entirely.
 
 **Configuration:** See `example-config.toml` and `docs/config-reference.md` for agent backends, workflow settings, and prompt customization.
 
 ---
 
-For questions, issues, or contributions, see `.vizier/.snapshot` for project status and `AGENTS.md` for agent integration notes.
+This is mostly just an exploration of how I meaningfully work with agents. Ideas or suggestions for change are wholly welcome.
