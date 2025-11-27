@@ -7,17 +7,17 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Without `--config-file`, Vizier overlays `~/.config/vizier/config.toml` (or platform equivalent) with `.vizier/config.toml`/`.json` in the repo; missing keys inherit from the lower layer.
 - `--config-file <path>` replaces the search. If no config files are found, Vizier falls back to `$VIZIER_CONFIG_FILE` when it points at an existing file.
 - `VIZIER_CONFIG_DIR`/`XDG_CONFIG_HOME`/`APPDATA`/`HOME`/`USERPROFILE` influence the global config location; `VIZIER_AGENT_SHIMS_DIR` can point at bundled agent shims when you relocate them.
-- Use `vizier plan --json` to see the merged config (per-command backend selection, prompt profiles, gate settings) before running draft/approve/review/merge.
+- Use `vizier plan --json` to see the merged config (per-command agent selection, prompt profiles, gate settings) before running draft/approve/review/merge.
 
 ## Quick-start scenarios
-- Pin review to Gemini while leaving other scopes on Codex: set `[agents.review] backend = "gemini"` (optionally `agent.label = "gemini"` if you moved the shim) and run `vizier plan --json` to confirm the resolved backend before `vizier review`. CLI override: `vizier review --backend gemini` for one-offs.
+- Pin review to Gemini while leaving other scopes on Codex: set `[agents.review] agent = "gemini"` (optionally override `[agents.review.agent].command` if you moved the shim) and run `vizier plan --json` to confirm the resolved selector before `vizier review`. CLI override: `vizier review --agent gemini` for one-offs.
 - Tighten merge CI/CD gates: set `[merge.cicd_gate] script = "./cicd.sh"`, `retries = 3`, and (optionally) `auto_resolve = true` so Vizier retries failures up to three times with agent remediation. Override per run with `--cicd-script`, `--cicd-retries`, and `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Disable auto-commit for inspection: set `[workflow] no_commit_default = true` to hold assistant edits dirty/staged across ask/save/draft/approve/review. For a single run, pass `--no-commit`; re-run without it before merging so history is finalized.
 - Background execution (experimental): `[workflow.background]` still controls the intended future posture for background runs, but in this release the `--background` flag is disabled and causes the CLI to exit with an error instead of detaching.
 - Swap prompt text for a single scope: add `[agents.merge.prompts.merge_conflict] path = ".vizier/MERGE_CONFLICT_PROMPT.md"` (or `text = """..."""`) to override just merge-conflict prompting without touching other commands.
 
 ## Override matrix (config vs CLI)
-- Agent backend/command/label: `[agents.<scope>] backend|[agent].{command,label}`; CLI `--backend`, `--agent-command`, `--agent-label` override all scopes for the current run.
+- Agent selector/runtime: `[agents.<scope>] agent` picks the shim (`codex`, `gemini`, or a custom name) and `[agents.<scope>.agent]` customizes the runtime command/filter/output; CLI `--agent`, `--agent-command`, `--agent-label` override all scopes for the current run.
 - Prompt selection: `[agents.<scope>.prompts.<kind>]` (`text`/`path` + nested `[agent]` overrides) → legacy `[prompts.*]` → `.vizier/*PROMPT*.md` → baked defaults; no CLI flag exists. Inspect with `vizier plan --json`.
 - Workflow hold: `[workflow].no_commit_default` (default false) ↔ CLI `--no-commit` flag.
 - Background posture (experimental): `[workflow.background].{enabled,quiet,progress}` (default true/true/never) is surfaced via `vizier plan`, but the CLI currently rejects `--background` regardless of these settings.
@@ -27,12 +27,12 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Checks/review: `[review.checks].commands` ↔ CLI `vizier review --skip-checks` (to skip) or config to set the commands; merge CI/CD gate is reused during review with auto-fix disabled.
 
 ## Agents, prompts, and documentation toggles
-- `backend` (root or `[agents.default]`): `agent` (Codex-style shim; default) or `gemini`. Unsupported/wire backends and `fallback_backend` keys are rejected.
-- Agent runtime: `[agent]` or `[agents.<scope>.agent]` provide `label` (bundled shim name), `command` (custom script), optional `progress_filter`, `output` (`auto`/wrapped JSON), and `enable_script_wrapper` (wraps non-shim scripts). Defaults are inferred from the backend (`codex`/`gemini` shims plus their filters when unset).
-- Per-scope backend overrides: `[agents.ask|save|draft|approve|review|merge] backend=<kind>`; CLI `--backend/--agent-label/--agent-command` override all scopes for the current run.
+- `agent` (root or `[agents.default]`): selector for the bundled shim (`codex` by default, `gemini` as the alternate) or any custom shim name you’ve installed. Unsupported `agent = "wire"` entries and `fallback_backend` keys are rejected.
+- Agent runtime overrides: `[agents.<scope>.agent]` provide `command` (custom script), optional `progress_filter`, `output` (`auto`/wrapped JSON), and `enable_script_wrapper` (wraps non-shim scripts). Defaults are inferred from the selector; drop down to this table only when you need to point at a non-bundled script.
+- Per-scope selector overrides: `[agents.ask|save|draft|approve|review|merge] agent="<selector>"`; CLI `--agent/--agent-label/--agent-command` override all scopes for the current run.
 - Documentation prompt toggles: `[agents.<scope>.documentation]` with `enabled` (default true), `include_snapshot` (default true), and `include_narrative_docs` (default true). Disable or trim context for conflict auto-resolve or other low-context flows. Narrative context now comes exclusively from `.vizier/narrative/`; legacy `.vizier/todo_*.md` files are no longer read.
-- Prompt text and per-prompt backend overrides: `[agents.<scope>.prompts.<kind>]` sets `text`/`path` plus nested `[agent]` overrides for that scope+kind; fall back to `[prompts.<scope>]`, `.vizier/*.md` prompt files, `[prompts]`, then baked-in defaults. Prompt kinds: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict` (see `docs/prompt-config-matrix.md` for the scope×kind map).
-- Progress filters attach by label: when `progress_filter` is unset, Vizier looks for a bundled `filter.sh` under the configured `agent.label` (Codex, Gemini, or any custom shim with a sibling filter) and wires it automatically.
+- Prompt text and per-prompt agent overrides: `[agents.<scope>.prompts.<kind>]` sets `text`/`path` plus nested `[agent]` runtime overrides for that scope+kind; fall back to `[prompts.<scope>]`, `.vizier/*.md` prompt files, `[prompts]`, then baked-in defaults. Prompt kinds: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict` (see `docs/prompt-config-matrix.md` for the scope×kind map).
+- Progress filters attach by selector: when `progress_filter` is unset, Vizier looks for a bundled `filter.sh` under the configured selector (Codex, Gemini, or any custom shim with a sibling filter) and wires it automatically.
 
 ## Workflow and gate settings
 - Workflow defaults: `[workflow].no_commit_default` (default false) pairs with `--no-commit` to hold assistant edits for manual review across ask/save/draft/approve/review.
@@ -42,9 +42,9 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - CI/CD gate: `[merge.cicd_gate]` controls `script` (default none), `auto_resolve` (default false; gate remediation toggle), and `retries` (default 1). CLI overrides: `--cicd-script`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, `--cicd-retries`. `vizier review` runs this gate once per review with auto-fix disabled; `vizier merge` enforces it before completing.
 
 ## Inspecting and selecting agents per command
-- Each assistant command resolves to a single backend: `[agents.default]` seeds all scopes; per-scope tables override; CLI flags win. Misconfigured backends cause the command to fail rather than falling back.
-- Runtime resolution order: `agent.command` (custom script) → bundled shim from `agent.label` → backend-specific default shim (`codex`/`gemini`). Progress filters default to the shim’s bundled filter when unset.
-- `vizier plan --json` surfaces the resolved backend, shim/command path, prompt source, and documentation toggles per scope so you can confirm the effective settings before running.
+- Each assistant command resolves to a single selector: `[agents.default]` seeds all scopes; per-scope tables override; CLI flags win. Misconfigured selectors/scripts cause the command to fail rather than falling back.
+- Runtime resolution order: `[agents.<scope>.agent].command` (custom script) → bundled shim for the chosen selector. Progress filters default to the shim’s bundled filter when unset.
+- `vizier plan --json` surfaces the resolved selector, shim/command path, prompt source, and documentation toggles per scope so you can confirm the effective settings before running.
 
 ## Help, pager, and display levers
 - `--no-ansi` disables ANSI even on TTY; non-TTY always omits ANSI. Quiet (`-q`) suppresses progress chatter but still prints help/output when explicitly requested.
@@ -57,5 +57,6 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Pending-commit posture: `.vizier` edits and narrative updates follow the pending-commit gate; use `--no-commit`/`[workflow].no_commit_default` to hold changes for inspection.
 
 ## Deprecated and rejected keys
-- `fallback_backend`/`fallback-backend` and any `backend="wire"` entries are rejected; fix configs instead of relying on silent fallback.
+- `backend = ...` entries still parse for compatibility but emit warnings; migrate to `agent = ...` and drop `agent.label` in favor of selectors plus explicit `[agent]` command overrides when needed.
+- `fallback_backend`/`fallback-backend` and any `agent|backend="wire"` entries are rejected; fix configs instead of relying on silent fallback.
 - Legacy prompt keys still work (`[prompts]`, `.vizier/BASE_SYSTEM_PROMPT.md`), but `[agents.<scope>.prompts.<kind>]` is the primary surface and should stay in sync with `docs/prompt-config-matrix.md`.

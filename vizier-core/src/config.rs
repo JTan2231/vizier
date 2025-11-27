@@ -9,8 +9,7 @@ use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
     REVIEW_PROMPT,
     agent::{AgentRunner, ScriptRunner},
-    display,
-    tools, tree,
+    display, tools, tree,
 };
 
 lazy_static! {
@@ -219,7 +218,7 @@ impl DocumentationSettingsOverride {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOverrides {
-    pub backend: Option<BackendKind>,
+    pub selector: Option<String>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
     pub documentation: DocumentationSettingsOverride,
     pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
@@ -245,15 +244,15 @@ impl PromptOverrides {
 
 impl AgentOverrides {
     pub fn is_empty(&self) -> bool {
-        self.backend.is_none()
+        self.selector.is_none()
             && self.agent_runtime.is_none()
             && self.documentation.is_empty()
             && self.prompt_overrides.is_empty()
     }
 
     pub fn merge(&mut self, other: &AgentOverrides) {
-        if let Some(backend) = other.backend {
-            self.backend = Some(backend);
+        if let Some(selector) = other.selector.as_ref() {
+            self.selector = Some(selector.clone());
         }
 
         if let Some(runtime) = other.agent_runtime.as_ref() {
@@ -275,6 +274,7 @@ impl AgentOverrides {
 #[derive(Clone)]
 pub struct AgentSettings {
     pub scope: CommandScope,
+    pub selector: String,
     pub backend: BackendKind,
     pub runner: Option<Arc<dyn AgentRunner>>,
     pub agent_runtime: ResolvedAgentRuntime,
@@ -402,12 +402,6 @@ impl AgentRuntimeOptions {
 
 impl Default for AgentRuntimeOptions {
     fn default() -> Self {
-        Self::default_for_backend(BackendKind::Agent)
-    }
-}
-
-impl AgentRuntimeOptions {
-    pub fn default_for_backend(_backend: BackendKind) -> Self {
         Self {
             label: None,
             command: Vec::new(),
@@ -416,12 +410,14 @@ impl AgentRuntimeOptions {
             enable_script_wrapper: false,
         }
     }
+}
 
-    pub fn normalized_for_backend(&self, backend: BackendKind) -> Self {
+impl AgentRuntimeOptions {
+    pub fn normalized_for_selector(&self, selector: &str) -> Self {
         let mut runtime = self.clone();
 
         if runtime.label.is_none() {
-            runtime.label = Some(default_label_for_backend(backend).to_string());
+            runtime.label = Some(selector.to_string());
         }
 
         runtime
@@ -481,6 +477,7 @@ pub struct PromptSelection {
 #[derive(Clone)]
 pub struct Config {
     pub no_session: bool,
+    pub agent_selector: String,
     pub backend: BackendKind,
     pub agent_runtime: AgentRuntimeOptions,
     pub review: ReviewConfig,
@@ -705,7 +702,7 @@ pub struct WorkflowLayer {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigLayer {
-    pub backend: Option<BackendKind>,
+    pub agent_selector: Option<String>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
     pub review: ReviewLayer,
     pub merge: MergeLayer,
@@ -733,9 +730,11 @@ impl Config {
             }
         }
 
+        let selector = default_selector_for_backend(BackendKind::Agent).to_string();
         Self {
             no_session: false,
-            backend: BackendKind::Agent,
+            agent_selector: selector.clone(),
+            backend: backend_kind_for_selector(&selector),
             agent_runtime: AgentRuntimeOptions::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
@@ -757,8 +756,9 @@ impl Config {
     }
 
     pub fn apply_layer(&mut self, layer: &ConfigLayer) {
-        if let Some(backend) = layer.backend {
-            self.backend = backend;
+        if let Some(selector) = layer.agent_selector.as_ref() {
+            self.agent_selector = selector.clone();
+            self.backend = backend_kind_for_selector(selector);
         }
 
         if let Some(runtime) = layer.agent_runtime.as_ref() {
@@ -1021,6 +1021,9 @@ const MODEL_KEY_PATHS: &[&[&str]] = &[
 const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
 const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
 const FALLBACK_BACKEND_DEPRECATION_MESSAGE: &str = "fallback_backend entries are no longer supported. Vizier now fails fast when the configured agent backend fails; remove fallback_backend from your config and re-run.";
+const BACKEND_KEY_DEPRECATION_MESSAGE: &str =
+    "backend entries are deprecated; set `agent = \"codex\" | \"gemini\" | <shim>` instead.";
+const AGENT_LABEL_DEPRECATION_MESSAGE: &str = "agent.label is deprecated; use the parent `agent = \"<shim>\"` selector or override agent.command for custom scripts.";
 const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["reasoning_effort"],
     &["reasoning-effort"],
@@ -1084,6 +1087,7 @@ const MERGE_CONFLICT_PROMPT_KEY_PATHS: &[&[&str]] = &[
 
 #[derive(Clone)]
 struct AgentSettingsBuilder {
+    selector: String,
     backend: BackendKind,
     agent_runtime: AgentRuntimeOptions,
     documentation: DocumentationSettings,
@@ -1091,16 +1095,18 @@ struct AgentSettingsBuilder {
 
 impl AgentSettingsBuilder {
     fn new(cfg: &Config) -> Self {
+        let selector = cfg.agent_selector.clone();
         Self {
-            backend: cfg.backend,
+            selector: selector.clone(),
+            backend: backend_kind_for_selector(&selector),
             agent_runtime: cfg.agent_runtime.clone(),
             documentation: DocumentationSettings::default(),
         }
     }
 
     fn apply(&mut self, overrides: &AgentOverrides) {
-        if let Some(backend) = overrides.backend {
-            self.backend = backend;
+        if let Some(selector) = overrides.selector.as_ref() {
+            self.set_selector(selector);
         }
 
         if let Some(runtime) = overrides.agent_runtime.as_ref() {
@@ -1125,8 +1131,8 @@ impl AgentSettingsBuilder {
     }
 
     fn apply_cli_override(&mut self, overrides: &AgentOverrides) {
-        if let Some(backend) = overrides.backend {
-            self.backend = backend;
+        if let Some(selector) = overrides.selector.as_ref() {
+            self.set_selector(selector);
         }
 
         if let Some(runtime) = overrides.agent_runtime.as_ref() {
@@ -1160,18 +1166,29 @@ impl AgentSettingsBuilder {
         }
     }
 
+    fn set_selector<S: AsRef<str>>(&mut self, selector: S) {
+        let normalized = selector.as_ref().trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return;
+        }
+        self.backend = backend_kind_for_selector(&normalized);
+        self.selector = normalized;
+    }
+
     fn build(
         &self,
         scope: CommandScope,
         prompt: Option<PromptSelection>,
         cli_override: Option<&AgentOverrides>,
     ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        let agent_runtime = self.agent_runtime.normalized_for_backend(self.backend);
+        let agent_runtime = self.agent_runtime.normalized_for_selector(&self.selector);
 
-        let resolved_runtime = resolve_agent_runtime(agent_runtime.clone(), self.backend)?;
+        let resolved_runtime =
+            resolve_agent_runtime(agent_runtime.clone(), &self.selector, self.backend)?;
 
         Ok(AgentSettings {
             scope,
+            selector: self.selector.clone(),
             backend: self.backend,
             runner: resolve_agent_runner(self.backend)?,
             agent_runtime: resolved_runtime,
@@ -1182,10 +1199,26 @@ impl AgentSettingsBuilder {
     }
 }
 
-pub fn default_label_for_backend(backend: BackendKind) -> &'static str {
+pub fn backend_kind_for_selector(selector: &str) -> BackendKind {
+    match selector.trim().to_ascii_lowercase().as_str() {
+        "gemini" => BackendKind::Gemini,
+        _ => BackendKind::Agent,
+    }
+}
+
+fn default_selector_for_backend(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::Gemini => "gemini",
         BackendKind::Agent => "codex",
+    }
+}
+
+fn normalize_selector_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_ascii_lowercase())
     }
 }
 
@@ -1271,12 +1304,16 @@ fn find_first_in_shim_dirs(candidates: Vec<String>) -> Option<PathBuf> {
 
 fn resolve_agent_runtime(
     runtime: AgentRuntimeOptions,
+    selector: &str,
     backend: BackendKind,
 ) -> Result<ResolvedAgentRuntime, Box<dyn std::error::Error>> {
-    let mut label = runtime
-        .label
-        .clone()
-        .unwrap_or_else(|| default_label_for_backend(backend).to_string());
+    let mut label = runtime.label.clone().unwrap_or_else(|| {
+        if selector.trim().is_empty() {
+            default_selector_for_backend(backend).to_string()
+        } else {
+            selector.to_string()
+        }
+    });
     let mut progress_filter = runtime.progress_filter.clone();
     let output = AgentOutputHandling::Wrapped;
 
@@ -1286,7 +1323,7 @@ fn resolve_agent_runtime(
 
     if !runtime.command.is_empty() {
         if label.is_empty() {
-            label = default_label_for_backend(backend).to_string();
+            label = default_selector_for_backend(backend).to_string();
         } else if runtime.label.is_none() {
             label = command_label(&runtime.command).unwrap_or(label);
         }
@@ -1395,25 +1432,6 @@ fn parse_agent_overrides(
 
     let mut overrides = AgentOverrides::default();
 
-    if let Some(raw_backend) = find_string(value, BACKEND_KEY_PATHS) {
-        let trimmed = raw_backend.trim();
-        if trimmed.eq_ignore_ascii_case("wire") {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                WIRE_BACKEND_REMOVED_MESSAGE,
-            )));
-        }
-
-        if let Some(backend) = BackendKind::from_str(trimmed) {
-            overrides.backend = Some(backend);
-        } else if !trimmed.is_empty() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
-            )));
-        }
-    }
-
     if find_string(value, MODEL_KEY_PATHS).is_some() {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1428,9 +1446,56 @@ fn parse_agent_overrides(
         )));
     }
 
-    if let Some(runtime_value) = value_at_path(value, &["agent"]) {
-        if let Some(parsed) = parse_agent_runtime_override(runtime_value)? {
+    if let Some(agent_value) = value.get("agent") {
+        if let Some(raw) = agent_value.as_str() {
+            if overrides.selector.is_none() {
+                if let Some(selector) = normalize_selector_value(raw) {
+                    overrides.selector = Some(selector);
+                }
+            }
+        } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
+            if overrides.selector.is_none() {
+                if let Some(label) = parsed.label.as_ref() {
+                    display::warn(AGENT_LABEL_DEPRECATION_MESSAGE.to_string());
+                    overrides.selector = Some(label.clone());
+                }
+            }
             overrides.agent_runtime = Some(parsed);
+        }
+    }
+
+    if let Some(raw_backend) = find_string(value, BACKEND_KEY_PATHS) {
+        let trimmed = raw_backend.trim();
+        if trimmed.eq_ignore_ascii_case("wire") {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                WIRE_BACKEND_REMOVED_MESSAGE,
+            )));
+        }
+
+        if let Some(backend) = BackendKind::from_str(trimmed) {
+            if overrides.selector.is_none() {
+                let fallback = match trimmed.to_ascii_lowercase().as_str() {
+                    "codex" => "codex".to_string(),
+                    other => match backend {
+                        BackendKind::Gemini => "gemini".to_string(),
+                        BackendKind::Agent => {
+                            if other == "agent" {
+                                default_selector_for_backend(BackendKind::Agent).to_string()
+                            } else {
+                                other.to_string()
+                            }
+                        }
+                    },
+                };
+                display::warn(BACKEND_KEY_DEPRECATION_MESSAGE.to_string());
+                overrides.selector = Some(fallback);
+            }
+        } else if !trimmed.is_empty() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
+            )));
         }
     }
 
@@ -1706,6 +1771,26 @@ impl ConfigLayer {
             )));
         }
 
+        if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                FALLBACK_BACKEND_DEPRECATION_MESSAGE,
+            )));
+        }
+
+        if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
+            if let Some(raw) = agent_value.as_str() {
+                if let Some(selector) = normalize_selector_value(raw) {
+                    layer.agent_selector = Some(selector);
+                }
+            } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
+                if parsed.label.is_some() {
+                    display::warn(AGENT_LABEL_DEPRECATION_MESSAGE.to_string());
+                }
+                layer.agent_runtime = Some(parsed);
+            }
+        }
+
         if let Some(raw_backend) = find_string(&file_config, BACKEND_KEY_PATHS) {
             let trimmed = raw_backend.trim();
             if trimmed.eq_ignore_ascii_case("wire") {
@@ -1716,25 +1801,28 @@ impl ConfigLayer {
             }
 
             if let Some(backend) = BackendKind::from_str(trimmed) {
-                layer.backend = Some(backend);
+                if layer.agent_selector.is_none() {
+                    let selector = match trimmed.to_ascii_lowercase().as_str() {
+                        "codex" => "codex".to_string(),
+                        other => match backend {
+                            BackendKind::Gemini => "gemini".to_string(),
+                            BackendKind::Agent => {
+                                if other == "agent" {
+                                    default_selector_for_backend(BackendKind::Agent).to_string()
+                                } else {
+                                    other.to_string()
+                                }
+                            }
+                        },
+                    };
+                    display::warn(BACKEND_KEY_DEPRECATION_MESSAGE.to_string());
+                    layer.agent_selector = Some(selector);
+                }
             } else if !trimmed.is_empty() {
                 return Err(Box::new(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
                 )));
-            }
-        }
-
-        if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                FALLBACK_BACKEND_DEPRECATION_MESSAGE,
-            )));
-        }
-
-        if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
-            if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
-                layer.agent_runtime = Some(parsed);
             }
         }
 
@@ -2436,7 +2524,7 @@ include_narrative_docs = true
     #[test]
     fn test_fallback_backend_rejected_in_root_config() {
         let toml = r#"
-backend = "codex"
+agent = "codex"
 fallback_backend = "wire"
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
@@ -2458,7 +2546,7 @@ fallback_backend = "wire"
     fn test_fallback_backend_rejected_in_agent_scope() {
         let toml = r#"
 [agents.ask]
-backend = "wire"
+agent = "codex"
 fallback_backend = "codex"
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
@@ -2556,7 +2644,7 @@ auto_resolve = true
         fs::write(
             &global_path,
             r#"
-backend = "agent"
+agent = "codex"
 
 [merge.cicd_gate]
 script = "./scripts/global-ci.sh"
@@ -2576,7 +2664,7 @@ commands = ["echo global"]
             &repo_path,
             r#"
 [agents.default]
-backend = "gemini"
+agent = "gemini"
 
 [merge.cicd_gate]
 auto_resolve = true
@@ -2596,9 +2684,9 @@ documentation = "repo documentation prompt"
         ]);
 
         assert_eq!(
-            cfg.agent_defaults.backend,
-            Some(BackendKind::Gemini),
-            "repo backend override should win over global defaults"
+            cfg.agent_defaults.selector.as_deref(),
+            Some("gemini"),
+            "repo agent selector should win over global defaults"
         );
         assert_eq!(
             cfg.merge.cicd_gate.script,
@@ -2698,7 +2786,7 @@ documentation = "repo documentation prompt"
             r#"
 [agents.default.prompts.documentation]
 path = "profile_documentation.md"
-backend = "gemini"
+agent = "gemini"
 "#,
         )
         .expect("write config");
@@ -2797,7 +2885,7 @@ profile = "deprecated"
         }
 
         let runtime = AgentRuntimeOptions::default();
-        let resolved = resolve_agent_runtime(runtime, BackendKind::Agent)
+        let resolved = resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
             .expect("bundled shim should resolve from env");
 
         match original {
@@ -2823,7 +2911,7 @@ profile = "deprecated"
         runtime.command = vec!["/opt/custom-agent".to_string(), "--flag".to_string()];
         runtime.label = Some("custom".to_string());
 
-        let resolved = resolve_agent_runtime(runtime, BackendKind::Agent)
+        let resolved = resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
             .expect("explicit command should resolve");
         assert_eq!(resolved.label, "custom");
         assert_eq!(
@@ -2852,7 +2940,8 @@ profile = "deprecated"
     #[test]
     fn default_gemini_runtime_sets_progress_filter() {
         let mut cfg = Config::default();
-        cfg.backend = BackendKind::Gemini;
+        cfg.agent_selector = "gemini".to_string();
+        cfg.backend = backend_kind_for_selector(&cfg.agent_selector);
 
         let agent = cfg
             .resolve_agent_settings(CommandScope::Ask, None)

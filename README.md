@@ -76,7 +76,7 @@ Basically all of Vizier's operations, by default, append to the git history. Che
 
 A variety of the built-in prompts encourage the agent to maintain a `.vizier/narrative/snapshot.md` file as an at-a-glance outline of the project state--this is intended for both future agent and human eyes. And of course, the prompts can be configured to change or ignore this entirely.
 
-**Configuration:** See `example-config.toml` and `docs/config-reference.md` for agent backends, workflow settings, and prompt customization.
+**Configuration:** See `example-config.toml` and `docs/config-reference.md` for agent selectors, workflow settings, and prompt customization.
 
 ---
 

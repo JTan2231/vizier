@@ -80,8 +80,12 @@ struct GlobalOpts {
     #[arg(short = 'n', long = "no-session", global = true)]
     no_session: bool,
 
-    /// Backend for assistant-backed commands (`agent` or `gemini`). Overrides config for this run; commands fail fast when the selected backend rejects the run.
-    #[arg(long = "backend", value_enum, global = true)]
+    /// Agent selector to run for assistant-backed commands (e.g., `codex`, `gemini`, or a custom shim name). Overrides config for this run.
+    #[arg(long = "agent", value_name = "SELECTOR", global = true)]
+    agent: Option<String>,
+
+    /// Deprecated backend selector (`agent` or `gemini`). Use `--agent` instead.
+    #[arg(long = "backend", value_enum, global = true, hide = true)]
     backend: Option<BackendArg>,
 
     /// Bundled agent shim label to run (for example, `codex` or `gemini`); overrides config until the end of this invocation
@@ -129,6 +133,7 @@ impl Default for GlobalOpts {
             no_pager: false,
             load_session: None,
             no_session: false,
+            agent: None,
             backend: None,
             agent_label: None,
             agent_command: None,
@@ -1003,8 +1008,19 @@ fn build_cli_agent_overrides(
 ) -> Result<Option<config::AgentOverrides>, Box<dyn std::error::Error>> {
     let mut overrides = config::AgentOverrides::default();
 
+    if let Some(agent) = opts.agent.as_ref() {
+        if !agent.trim().is_empty() {
+            overrides.selector = Some(agent.trim().to_ascii_lowercase());
+        }
+    }
+
     if let Some(backend) = opts.backend {
-        overrides.backend = Some(backend.into());
+        display::warn("`--backend` is deprecated; use `--agent <selector>` instead.");
+        let selector = match backend {
+            BackendArg::Agent => "codex",
+            BackendArg::Gemini => "gemini",
+        };
+        overrides.selector = Some(selector.to_string());
     }
 
     if let Some(label) = opts
@@ -1092,6 +1108,7 @@ fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
 fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
     json!({
         "backend": cfg.backend.to_string(),
+        "agent_selector": cfg.agent_selector,
         "agent": {
             "label": cfg.agent_runtime.label,
             "command": cfg.agent_runtime.command,
@@ -1114,8 +1131,10 @@ fn build_job_metadata(
 ) -> jobs::JobMetadata {
     let mut metadata = jobs::JobMetadata::default();
     metadata.background_quiet = Some(cfg.workflow.background.quiet);
-    metadata.background_progress = Some(progress_label(cfg.workflow.background.progress).to_string());
+    metadata.background_progress =
+        Some(progress_label(cfg.workflow.background.progress).to_string());
     metadata.config_backend = Some(cfg.backend.to_string());
+    metadata.config_agent_selector = Some(cfg.agent_selector.clone());
     metadata.config_agent_label = cfg.agent_runtime.label.clone();
     if !cfg.agent_runtime.command.is_empty() {
         metadata.config_agent_command = Some(cfg.agent_runtime.command.clone());
@@ -1124,6 +1143,7 @@ fn build_job_metadata(
     if let Some(scope) = command_scope_for(command) {
         metadata.scope = Some(scope.as_str().to_string());
         if let Ok(agent) = cfg.resolve_agent_settings(scope, cli_agent_override) {
+            metadata.agent_selector = Some(agent.selector.clone());
             metadata.agent_backend = Some(agent.backend.to_string());
             metadata.agent_label = Some(agent.agent_runtime.label.clone());
             if !agent.agent_runtime.command.is_empty() {
@@ -1160,6 +1180,7 @@ fn build_job_metadata(
 fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
     let mut metadata = jobs::JobMetadata::default();
     if let Some(context) = auditor::Auditor::latest_agent_context() {
+        metadata.agent_selector = Some(context.selector);
         metadata.agent_backend = Some(context.backend.to_string());
         metadata.agent_label = Some(context.backend_label);
     }
@@ -1171,7 +1192,8 @@ fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
         }
     }
 
-    if metadata.agent_backend.is_none()
+    if metadata.agent_selector.is_none()
+        && metadata.agent_backend.is_none()
         && metadata.agent_label.is_none()
         && metadata.agent_exit_code.is_none()
         && metadata
@@ -1200,14 +1222,15 @@ fn background_supported(command: &Commands) -> bool {
 
 fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        Commands::Approve(cmd) if !cmd.assume_yes => Err(
-            "--background for vizier approve requires --yes to skip interactive prompts".into(),
-        ),
-        Commands::Merge(cmd) if !cmd.assume_yes => Err(
-            "--background for vizier merge requires --yes to skip interactive prompts".into(),
-        ),
+        Commands::Approve(cmd) if !cmd.assume_yes => {
+            Err("--background for vizier approve requires --yes to skip interactive prompts".into())
+        }
+        Commands::Merge(cmd) if !cmd.assume_yes => {
+            Err("--background for vizier merge requires --yes to skip interactive prompts".into())
+        }
         Commands::Review(cmd) if !cmd.assume_yes && !cmd.review_only => Err(
-            "--background for vizier review requires --yes or --review-only to avoid prompts".into(),
+            "--background for vizier review requires --yes or --review-only to avoid prompts"
+                .into(),
         ),
         _ => Ok(()),
     }
@@ -1705,8 +1728,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cfg.no_session = cli.global.no_session;
 
-    if let Some(backend_arg) = cli.global.backend {
-        cfg.backend = backend_arg.into();
+    if let Some(selector) = cli
+        .global
+        .agent
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.agent_selector = selector.to_ascii_lowercase();
+        cfg.backend = config::backend_kind_for_selector(&cfg.agent_selector);
+    } else if let Some(backend_arg) = cli.global.backend {
+        display::warn("`--backend` is deprecated; use `--agent` instead.");
+        cfg.agent_selector = match backend_arg {
+            BackendArg::Agent => "codex".to_string(),
+            BackendArg::Gemini => "gemini".to_string(),
+        };
+        cfg.backend = config::backend_kind_for_selector(&cfg.agent_selector);
     }
 
     if let Some(label) = cli

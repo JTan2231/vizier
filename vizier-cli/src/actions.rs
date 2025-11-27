@@ -61,6 +61,7 @@ fn format_block_with_indent(rows: Vec<(String, String)>, indent: usize) -> Strin
 
 #[derive(Debug, Serialize)]
 struct ConfigReport {
+    agent: String,
     backend: String,
     agent_backend: Option<String>,
     no_session: bool,
@@ -73,6 +74,7 @@ struct ConfigReport {
 
 #[derive(Debug, Serialize)]
 struct ScopeReport {
+    agent: String,
     backend: String,
     documentation: DocumentationReport,
     agent_runtime: Option<AgentRuntimeReport>,
@@ -171,6 +173,7 @@ fn scope_report(agent: &config::AgentSettings) -> ScopeReport {
     let runtime = Some(runtime_report(&agent.agent_runtime));
 
     ScopeReport {
+        agent: agent.selector.clone(),
         backend: agent.backend.to_string(),
         documentation: documentation_report(&agent.documentation),
         agent_runtime: runtime,
@@ -192,6 +195,7 @@ fn build_config_report(
     }
 
     Ok(ConfigReport {
+        agent: cfg.agent_selector.clone(),
         backend: cfg.backend.to_string(),
         agent_backend,
         no_session: cfg.no_session,
@@ -278,7 +282,10 @@ fn documentation_label(docs: &DocumentationReport) -> String {
 }
 
 fn format_scope_rows(scope: &ScopeReport) -> Vec<(String, String)> {
-    let mut rows = vec![("Backend".to_string(), scope.backend.clone())];
+    let mut rows = vec![
+        ("Agent".to_string(), scope.agent.clone()),
+        ("Backend".to_string(), scope.backend.clone()),
+    ];
 
     rows.push((
         "Documentation prompt".to_string(),
@@ -346,6 +353,7 @@ fn format_merge_rows(report: &MergeReport) -> Vec<(String, String)> {
 
 fn format_global_rows(report: &ConfigReport) -> Vec<(String, String)> {
     vec![
+        ("Agent".to_string(), report.agent.clone()),
         ("Backend".to_string(), report.backend.clone()),
         (
             "Agent backend".to_string(),
@@ -445,7 +453,8 @@ pub fn run_plan_summary(
 
 fn format_agent_value() -> Option<String> {
     auditor::Auditor::latest_agent_context().map(|context| {
-        let mut parts = vec![format!("backend {}", context.backend)];
+        let mut parts = vec![format!("agent {}", context.selector)];
+        parts.push(format!("backend {}", context.backend));
         if !context.backend_label.is_empty() {
             parts.push(format!("runtime {}", context.backend_label));
         }
@@ -1684,7 +1693,7 @@ pub async fn run_draft(
     require_agent_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier draft requires an agent-style backend; update [agents.draft] or pass --backend agent|gemini",
+        "vizier draft requires an agent-capable selector; update [agents.draft] or pass --agent codex|gemini",
     )?;
 
     let DraftArgs {
@@ -2000,6 +2009,7 @@ fn emit_test_display_summary(
             "Agent display test succeeded".to_string(),
         ),
         ("Scope".to_string(), agent.scope.as_str().to_string()),
+        ("Agent".to_string(), agent.selector.clone()),
         ("Backend".to_string(), agent.backend.to_string()),
         ("Exit code".to_string(), response.exit_code.to_string()),
         (
@@ -2146,7 +2156,7 @@ pub async fn run_approve(
     require_agent_backend(
         agent,
         config::PromptKind::Documentation,
-        "vizier approve requires an agent-style backend; update [agents.approve] or pass --backend agent|gemini",
+        "vizier approve requires an agent-capable selector; update [agents.approve] or pass --agent codex|gemini",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -2292,7 +2302,7 @@ pub async fn run_review(
     require_agent_backend(
         agent,
         config::PromptKind::Review,
-        "vizier review requires an agent-style backend; update [agents.review] or pass --backend agent|gemini",
+        "vizier review requires an agent-capable selector; update [agents.review] or pass --agent codex|gemini",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -2460,7 +2470,7 @@ pub async fn run_merge(
         require_agent_backend(
             agent,
             config::PromptKind::MergeConflict,
-            "Agent-based conflict resolution requires an agent-style backend; update [agents.merge] or rerun with --backend agent|gemini",
+            "Agent-based conflict resolution requires an agent-capable selector; update [agents.merge] or rerun with --agent codex|gemini",
         )?;
     }
     display::warn(opts.conflict_auto_resolve.status_line());

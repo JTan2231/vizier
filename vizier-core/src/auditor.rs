@@ -110,6 +110,7 @@ pub struct AuditorCleanup {
 pub struct AgentInvocationContext {
     pub backend: config::BackendKind,
     pub backend_label: String,
+    pub selector: String,
     pub scope: config::CommandScope,
     pub prompt_kind: SystemPrompt,
     pub command: Vec<String>,
@@ -267,6 +268,7 @@ impl Auditor {
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
                 backend_label,
+                selector: settings.selector.clone(),
                 scope: settings.scope,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
                 command: settings.agent_runtime.command.clone(),
@@ -516,16 +518,12 @@ impl Auditor {
                 reasoning_effort: None,
                 scope: Some(ctx.scope.as_str().to_string()),
             },
-            None => {
-                SessionModelInfo {
-                    provider: cfg.backend.to_string(),
-                    name: cfg.agent_runtime.label.clone().unwrap_or_else(|| {
-                        config::default_label_for_backend(cfg.backend).to_string()
-                    }),
-                    reasoning_effort: None,
-                    scope: None,
-                }
-            }
+            None => SessionModelInfo {
+                provider: cfg.backend.to_string(),
+                name: cfg.agent_selector.clone(),
+                reasoning_effort: None,
+                scope: None,
+            },
         }
     }
 
