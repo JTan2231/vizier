@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/sh
 set -euo pipefail
 
 cargo build --release
