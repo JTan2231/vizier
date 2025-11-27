@@ -124,7 +124,6 @@ struct ReviewReport {
 struct BackgroundReport {
     enabled: bool,
     quiet: bool,
-    progress: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,11 +203,6 @@ fn build_config_report(
             background: BackgroundReport {
                 enabled: cfg.workflow.background.enabled,
                 quiet: cfg.workflow.background.quiet,
-                progress: match cfg.workflow.background.progress {
-                    display::ProgressMode::Auto => "auto".to_string(),
-                    display::ProgressMode::Never => "never".to_string(),
-                    display::ProgressMode::Always => "always".to_string(),
-                },
             },
         },
         merge: MergeReport {
@@ -371,10 +365,6 @@ fn format_global_rows(report: &ConfigReport) -> Vec<(String, String)> {
         (
             "Background quiet".to_string(),
             report.workflow.background.quiet.to_string(),
-        ),
-        (
-            "Background progress".to_string(),
-            report.workflow.background.progress.clone(),
         ),
     ]
 }

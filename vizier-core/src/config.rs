@@ -575,7 +575,6 @@ impl MergeConfig {
 pub struct BackgroundConfig {
     pub enabled: bool,
     pub quiet: bool,
-    pub progress: display::ProgressMode,
 }
 
 impl Default for BackgroundConfig {
@@ -583,7 +582,6 @@ impl Default for BackgroundConfig {
         Self {
             enabled: true,
             quiet: true,
-            progress: display::ProgressMode::Never,
         }
     }
 }
@@ -596,10 +594,6 @@ impl BackgroundConfig {
 
         if let Some(quiet) = layer.quiet {
             self.quiet = quiet;
-        }
-
-        if let Some(progress) = layer.progress {
-            self.progress = progress;
         }
     }
 }
@@ -691,7 +685,6 @@ pub struct ReviewLayer {
 pub struct BackgroundLayer {
     pub enabled: Option<bool>,
     pub quiet: Option<bool>,
-    pub progress: Option<display::ProgressMode>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1922,14 +1915,6 @@ impl ConfigLayer {
                         ) {
                             layer.workflow.background.quiet = Some(quiet);
                         }
-
-                        if let Some(progress) = parse_progress_mode(
-                            background_table
-                                .get("progress")
-                                .or_else(|| background_table.get("progress_mode")),
-                        ) {
-                            layer.workflow.background.progress = Some(progress);
-                        }
                     }
                 }
             }
@@ -2166,17 +2151,6 @@ fn parse_bool(value: Option<&serde_json::Value>) -> Option<bool> {
                 None
             }
         }
-        _ => None,
-    }
-}
-
-fn parse_progress_mode(value: Option<&serde_json::Value>) -> Option<display::ProgressMode> {
-    let raw = value?;
-    let text = raw.as_str()?.trim().to_ascii_lowercase();
-    match text.as_str() {
-        "auto" => Some(display::ProgressMode::Auto),
-        "never" => Some(display::ProgressMode::Never),
-        "always" => Some(display::ProgressMode::Always),
         _ => None,
     }
 }

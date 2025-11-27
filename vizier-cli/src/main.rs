@@ -60,10 +60,6 @@ struct GlobalOpts {
     #[arg(long = "no-ansi", global = true)]
     no_ansi: bool,
 
-    /// Progress display mode for long-running operations (`auto` = TTY-only, `never` suppresses spinners/history, `always` forces them)
-    #[arg(long = "progress", value_enum, default_value_t = ProgressArg::Auto, global = true)]
-    progress: ProgressArg,
-
     /// Page help output when available; defaults to TTY-only paging and honors $VIZIER_PAGER
     #[arg(long = "pager", action = ArgAction::SetTrue, global = true, conflicts_with = "no_pager")]
     pager: bool,
@@ -128,7 +124,6 @@ impl Default for GlobalOpts {
             quiet: false,
             debug: false,
             no_ansi: false,
-            progress: ProgressArg::Auto,
             pager: false,
             no_pager: false,
             load_session: None,
@@ -145,13 +140,6 @@ impl Default for GlobalOpts {
             background_job_id: None,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum ProgressArg {
-    Auto,
-    Never,
-    Always,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,16 +201,6 @@ impl From<JobLogStreamArg> for jobs::LogStream {
             JobLogStreamArg::Stdout => jobs::LogStream::Stdout,
             JobLogStreamArg::Stderr => jobs::LogStream::Stderr,
             JobLogStreamArg::Both => jobs::LogStream::Both,
-        }
-    }
-}
-
-impl From<ProgressArg> for display::ProgressMode {
-    fn from(value: ProgressArg) -> Self {
-        match value {
-            ProgressArg::Auto => display::ProgressMode::Auto,
-            ProgressArg::Never => display::ProgressMode::Never,
-            ProgressArg::Always => display::ProgressMode::Always,
         }
     }
 }
@@ -1085,14 +1063,6 @@ fn pager_mode_from_args(args: &[String]) -> PagerMode {
     }
 }
 
-fn progress_label(mode: display::ProgressMode) -> &'static str {
-    match mode {
-        display::ProgressMode::Auto => "auto",
-        display::ProgressMode::Never => "never",
-        display::ProgressMode::Always => "always",
-    }
-}
-
 fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     match command {
         Commands::Ask(_) => Some(config::CommandScope::Ask),
@@ -1118,7 +1088,6 @@ fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
             "background": {
                 "enabled": cfg.workflow.background.enabled,
                 "quiet": cfg.workflow.background.quiet,
-                "progress": progress_label(cfg.workflow.background.progress),
             },
         },
     })
@@ -1131,8 +1100,6 @@ fn build_job_metadata(
 ) -> jobs::JobMetadata {
     let mut metadata = jobs::JobMetadata::default();
     metadata.background_quiet = Some(cfg.workflow.background.quiet);
-    metadata.background_progress =
-        Some(progress_label(cfg.workflow.background.progress).to_string());
     metadata.config_backend = Some(cfg.backend.to_string());
     metadata.config_agent_selector = Some(cfg.agent_selector.clone());
     metadata.config_agent_label = cfg.agent_runtime.label.clone();
@@ -1286,15 +1253,6 @@ fn build_background_child_args(
         flag_present(&args, Some('q'), "--quiet") || flag_present(&args, Some('v'), "--verbose");
     if cfg.quiet && !quiet_flagged && !flag_present(&args, Some('d'), "--debug") {
         args.push("--quiet".to_string());
-    }
-
-    if !flag_present(&args, None, "--progress") {
-        args.push("--progress".to_string());
-        args.push(match cfg.progress {
-            display::ProgressMode::Auto => "auto".to_string(),
-            display::ProgressMode::Never => "never".to_string(),
-            display::ProgressMode::Always => "always".to_string(),
-        });
     }
 
     if !flag_present(&args, None, "--no-pager") && !flag_present(&args, None, "--pager") {
@@ -1585,12 +1543,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         verbosity = display::Verbosity::Debug;
     }
 
-    let ansi_enabled = !cli.global.no_ansi && stdout_is_tty && stderr_is_tty;
-
     display::set_display_config(display::DisplayConfig {
         verbosity,
-        progress: cli.global.progress.into(),
-        ansi_enabled,
         stdout_is_tty,
         stderr_is_tty,
     });

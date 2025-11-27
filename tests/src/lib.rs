@@ -852,12 +852,6 @@ no_commit_default = true
         "workflow.background.quiet should appear in the report"
     );
     assert_eq!(
-        json.pointer("/workflow/background/progress")
-            .and_then(Value::as_str),
-        Some("never"),
-        "workflow.background.progress should appear in the report"
-    );
-    assert_eq!(
         json.pointer("/merge/cicd_gate/script")
             .and_then(Value::as_str),
         Some("./alt-cicd.sh"),

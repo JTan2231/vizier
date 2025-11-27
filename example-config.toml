@@ -65,8 +65,6 @@ no_commit_default = false
 enabled = true
 # Silence progress chatter in background jobs unless explicitly overridden
 quiet = true
-# Control progress display for background jobs (auto|never|always)
-progress = "never"
 
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]

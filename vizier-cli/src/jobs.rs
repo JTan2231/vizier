@@ -70,7 +70,6 @@ pub struct JobMetadata {
     pub config_agent_label: Option<String>,
     pub config_agent_command: Option<Vec<String>>,
     pub background_quiet: Option<bool>,
-    pub background_progress: Option<String>,
     pub agent_exit_code: Option<i32>,
 }
 
@@ -178,9 +177,6 @@ fn merge_metadata(
             }
             if base.background_quiet.is_none() {
                 base.background_quiet = update.background_quiet;
-            }
-            if base.background_progress.is_none() {
-                base.background_progress = update.background_progress;
             }
             if update.agent_exit_code.is_some() {
                 base.agent_exit_code = update.agent_exit_code;

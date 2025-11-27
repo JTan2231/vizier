@@ -20,10 +20,10 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Agent selector/runtime: `[agents.<scope>] agent` picks the shim (`codex`, `gemini`, or a custom name) and `[agents.<scope>.agent]` customizes the runtime command/filter/output; CLI `--agent`, `--agent-command`, `--agent-label` override all scopes for the current run.
 - Prompt selection: `[agents.<scope>.prompts.<kind>]` (`text`/`path` + nested `[agent]` overrides) → legacy `[prompts.*]` → `.vizier/*PROMPT*.md` → baked defaults; no CLI flag exists. Inspect with `vizier plan --json`.
 - Workflow hold: `[workflow].no_commit_default` (default false) ↔ CLI `--no-commit` flag.
-- Background posture (experimental): `[workflow.background].{enabled,quiet,progress}` (default true/true/never) is surfaced via `vizier plan`, but the CLI currently rejects `--background` regardless of these settings.
+- Background posture (experimental): `[workflow.background].{enabled,quiet}` (default true/true) is surfaced via `vizier plan`, but the CLI currently rejects `--background` regardless of these settings.
 - Merge gates: `[merge.cicd_gate].{script,retries,auto_resolve}` ↔ CLI `--cicd-script`, `--cicd-retries`, `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Merge history: `[merge].squash` / `[merge].squash_mainline` ↔ CLI `--squash`/`--no-squash`, `--squash-mainline`.
-- Display/help: pager defaults are TTY-only; use `--pager`/`--no-pager` or `$VIZIER_PAGER` to force/disable. `--no-ansi` strips color; `-q/-v/-vv` and `--progress` tune verbosity.
+- Display/help: pager defaults are TTY-only; use `--pager`/`--no-pager` or `$VIZIER_PAGER` to force/disable. `--no-ansi` strips color; `-q/-v/-vv` control verbosity.
 - Checks/review: `[review.checks].commands` ↔ CLI `vizier review --skip-checks` (to skip) or config to set the commands; merge CI/CD gate is reused during review with auto-fix disabled.
 
 ## Agents, prompts, and documentation toggles
@@ -47,9 +47,9 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - `vizier plan --json` surfaces the resolved selector, shim/command path, prompt source, and documentation toggles per scope so you can confirm the effective settings before running.
 
 ## Help, pager, and display levers
-- `--no-ansi` disables ANSI even on TTY; non-TTY always omits ANSI. Quiet (`-q`) suppresses progress chatter but still prints help/output when explicitly requested.
+- `--no-ansi` disables ANSI even on TTY; non-TTY always omits ANSI. Quiet (`-q`) suppresses progress history but still prints help/output when explicitly requested.
 - Help paging honors `$VIZIER_PAGER` (defaults to `less -FRSX`), uses paging only on TTY by default, and can be forced/disabled via `--pager`/`--no-pager`.
-- `--progress auto|never|always` gates spinner/history output; `-v`/`-vv` lift stderr verbosity; `--json` prints outcome JSON to stdout where available.
+- Progress is now purely line-based: `-v`/`-vv` lift stderr verbosity while `--json` prints outcome JSON to stdout where available.
 
 ## Repo plumbing and git hygiene
 - Push control: `--push` pushes the current branch after mutating history; no config key exists.
