@@ -772,6 +772,10 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
         "plan output should include the resolved backend:\n{stdout}"
     );
     assert!(
+        compact.contains("Stop-conditionscript:unset"),
+        "plan output should include approve.stop_condition.script status:\n{stdout}"
+    );
+    assert!(
         compact.contains("CI/CDscript:./cicd.sh"),
         "plan output should include merge.cicd_gate.script:\n{stdout}"
     );
@@ -801,6 +805,9 @@ fn test_plan_json_respects_config_file_and_overrides() -> TestResult {
         &config_path,
         r#"
 agent = "codex"
+[approve.stop_condition]
+script = "./approve-stop.sh"
+retries = 7
 [merge.cicd_gate]
 script = "./alt-cicd.sh"
 auto_resolve = false
@@ -862,6 +869,18 @@ no_commit_default = true
             .and_then(Value::as_u64),
         Some(5),
         "merge.cicd_gate.retries from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/approve/stop_condition/script")
+            .and_then(Value::as_str),
+        Some("./approve-stop.sh"),
+        "approve.stop_condition.script from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/approve/stop_condition/retries")
+            .and_then(Value::as_u64),
+        Some(7),
+        "approve.stop_condition.retries from the config file should appear in the report"
     );
     assert_eq!(
         json.pointer("/review/checks/0").and_then(Value::as_str),
@@ -2417,6 +2436,320 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
     assert!(
         stdout.contains("Gate fixes") && stdout.contains("amend:"),
         "merge summary should report the amended implementation commit: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_approve_stop_condition_passes_on_first_attempt() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "stop-pass", "stop condition pass spec"])?;
+    clean_workdir(&repo)?;
+
+    let log_path = repo.path().join("approve-stop-pass.log");
+    let script_path = write_cicd_script(
+        &repo,
+        "approve-stop-pass.sh",
+        &format!(
+            "#!/bin/sh\nset -eu\necho \"stop-called\" >> \"{}\"\nexit 0\n",
+            log_path.display()
+        ),
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+
+    let before_logs = gather_session_logs(&repo)?;
+    let approve = repo.vizier_output(&[
+        "approve",
+        "stop-pass",
+        "--yes",
+        "--stop-condition-script",
+        &script_flag,
+    ])?;
+    assert!(
+        approve.status.success(),
+        "vizier approve with passing stop-condition should succeed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    assert!(
+        log_path.exists(),
+        "stop-condition script should run at least once"
+    );
+    let contents = fs::read_to_string(&log_path)?;
+    let lines: Vec<_> = contents.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "stop-condition script should run exactly once when it passes on the first attempt, got {} lines",
+        lines.len()
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    let new_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier approve to create a session log".to_string())?;
+    let contents = fs::read_to_string(new_log)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    let operations = json
+        .get("operations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let attempt_ops: Vec<_> = operations
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| kind == "approve_stop_condition_attempt")
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(
+        attempt_ops.len(),
+        1,
+        "expected exactly one stop-condition attempt record"
+    );
+    let attempt_details = attempt_ops[0]
+        .get("details")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "approve_stop_condition_attempt missing details".to_string())?;
+    assert_eq!(
+        attempt_details.get("attempt").and_then(Value::as_u64),
+        Some(1),
+        "attempt record should mark the first run"
+    );
+    assert_eq!(
+        attempt_details.get("status").and_then(Value::as_str),
+        Some("passed"),
+        "attempt record should show passed status: {:?}",
+        attempt_details
+    );
+    let stop_op = operations
+        .iter()
+        .find(|entry| entry.get("kind").and_then(Value::as_str) == Some("approve_stop_condition"))
+        .cloned()
+        .ok_or_else(|| "expected approve_stop_condition operation in session log".to_string())?;
+    let details = stop_op
+        .get("details")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "approve_stop_condition operation missing details".to_string())?;
+    assert_eq!(
+        details.get("status").and_then(Value::as_str),
+        Some("passed"),
+        "stop-condition status should be passed: {details:?}"
+    );
+    assert_eq!(
+        details.get("attempts").and_then(Value::as_u64),
+        Some(1),
+        "stop-condition attempts should be 1 when it passes on the first run: {details:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_approve_stop_condition_retries_then_passes() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "stop-retry", "stop condition retry spec"])?;
+    clean_workdir(&repo)?;
+
+    let counter_path = repo.path().join("approve-stop-count.txt");
+    let log_path = repo.path().join("approve-stop-retry.log");
+    let script_path = write_cicd_script(
+        &repo,
+        "approve-stop-retry.sh",
+        &format!(
+            "#!/bin/sh\nset -eu\nCOUNT_FILE=\"{}\"\nif [ -f \"$COUNT_FILE\" ]; then\n  n=$(cat \"$COUNT_FILE\")\nelse\n  n=0\nfi\nn=$((n+1))\necho \"$n\" > \"$COUNT_FILE\"\necho \"run $n\" >> \"{}\"\nif [ \"$n\" -lt 2 ]; then\n  exit 1\nfi\nexit 0\n",
+            counter_path.display(),
+            log_path.display()
+        ),
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+
+    let before_logs = gather_session_logs(&repo)?;
+    let approve = repo.vizier_output(&[
+        "approve",
+        "stop-retry",
+        "--yes",
+        "--stop-condition-script",
+        &script_flag,
+        "--stop-condition-retries",
+        "3",
+    ])?;
+    assert!(
+        approve.status.success(),
+        "vizier approve with retrying stop-condition should succeed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    let contents = fs::read_to_string(&counter_path)?;
+    assert_eq!(
+        contents.trim(),
+        "2",
+        "stop-condition script should have run twice before passing, got counter contents: {contents}"
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    let new_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier approve to create a session log".to_string())?;
+    let contents = fs::read_to_string(new_log)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    let operations = json
+        .get("operations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let attempt_ops: Vec<_> = operations
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| kind == "approve_stop_condition_attempt")
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(
+        attempt_ops.len(),
+        2,
+        "expected two stop-condition attempt records when a retry occurs"
+    );
+    let attempt_statuses: Vec<_> = attempt_ops
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("details")
+                .and_then(Value::as_object)
+                .and_then(|details| details.get("status"))
+                .and_then(Value::as_str)
+        })
+        .collect();
+    assert_eq!(
+        attempt_statuses,
+        vec!["failed", "passed"],
+        "attempt records should capture the failed then passed sequence: {:?}",
+        attempt_statuses
+    );
+    let stop_op = operations
+        .iter()
+        .find(|entry| entry.get("kind").and_then(Value::as_str) == Some("approve_stop_condition"))
+        .cloned()
+        .ok_or_else(|| "expected approve_stop_condition operation in session log".to_string())?;
+    let details = stop_op
+        .get("details")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "approve_stop_condition operation missing details".to_string())?;
+    assert_eq!(
+        details.get("status").and_then(Value::as_str),
+        Some("passed"),
+        "stop-condition status should be passed after retries: {details:?}"
+    );
+    assert_eq!(
+        details.get("attempts").and_then(Value::as_u64),
+        Some(2),
+        "stop-condition attempts should be 2 when it fails once then passes: {details:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_approve_stop_condition_exhausts_retries_and_fails() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "stop-fail", "stop condition failure spec"])?;
+    clean_workdir(&repo)?;
+
+    let log_path = repo.path().join("approve-stop-fail.log");
+    let script_path = write_cicd_script(
+        &repo,
+        "approve-stop-fail.sh",
+        &format!(
+            "#!/bin/sh\nset -eu\necho \"fail\" >> \"{}\"\nexit 1\n",
+            log_path.display()
+        ),
+    )?;
+    let script_flag = script_path.to_string_lossy().to_string();
+
+    let before_logs = gather_session_logs(&repo)?;
+    let approve = repo.vizier_output(&[
+        "approve",
+        "stop-fail",
+        "--yes",
+        "--stop-condition-script",
+        &script_flag,
+        "--stop-condition-retries",
+        "2",
+    ])?;
+    assert!(
+        !approve.status.success(),
+        "vizier approve should fail when the stop-condition never passes"
+    );
+    let stderr = String::from_utf8_lossy(&approve.stderr);
+    assert!(
+        stderr.contains("Plan worktree preserved at"),
+        "stderr should mention preserved worktree for failed stop-condition: {stderr}"
+    );
+
+    let contents = fs::read_to_string(&log_path)?;
+    let attempts = contents.lines().count();
+    assert!(
+        attempts >= 3,
+        "stop-condition script should run at least three times when retries are exhausted (saw {attempts} runs)"
+    );
+
+    let after_logs = gather_session_logs(&repo)?;
+    let new_log = new_session_log(&before_logs, &after_logs)
+        .ok_or_else(|| "expected vizier approve to create a session log".to_string())?;
+    let contents = fs::read_to_string(new_log)?;
+    let json: Value = serde_json::from_str(&contents)?;
+    let operations = json
+        .get("operations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let attempt_ops: Vec<_> = operations
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| kind == "approve_stop_condition_attempt")
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(
+        attempt_ops.len(),
+        3,
+        "expected three stop-condition attempt records when retries are exhausted"
+    );
+    assert!(
+        attempt_ops.iter().all(|entry| {
+            entry
+                .get("details")
+                .and_then(Value::as_object)
+                .and_then(|details| details.get("status"))
+                .and_then(Value::as_str)
+                == Some("failed")
+        }),
+        "all attempt records should be failed when the stop condition never passes: {:?}",
+        attempt_ops
+    );
+    let stop_op = operations
+        .iter()
+        .find(|entry| entry.get("kind").and_then(Value::as_str) == Some("approve_stop_condition"))
+        .cloned()
+        .ok_or_else(|| "expected approve_stop_condition operation in session log".to_string())?;
+    let details = stop_op
+        .get("details")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "approve_stop_condition operation missing details".to_string())?;
+    assert_eq!(
+        details.get("status").and_then(Value::as_str),
+        Some("failed"),
+        "stop-condition status should be failed when retries are exhausted: {details:?}"
+    );
+    assert_eq!(
+        details.get("attempts").and_then(Value::as_u64),
+        Some(3),
+        "stop-condition attempts should be 3 when retries=2 and the script never passes: {details:?}"
     );
     Ok(())
 }

@@ -66,6 +66,7 @@ struct ConfigReport {
     agent_backend: Option<String>,
     no_session: bool,
     workflow: WorkflowReport,
+    approve: ApproveReport,
     merge: MergeReport,
     review: ReviewReport,
     agent_runtime_default: Option<AgentRuntimeReport>,
@@ -92,6 +93,17 @@ struct AgentRuntimeReport {
 enum RuntimeResolutionReport {
     BundledShim { label: String, path: String },
     ProvidedCommand,
+}
+
+#[derive(Debug, Serialize)]
+struct ApproveReport {
+    stop_condition: ApproveStopConditionReport,
+}
+
+#[derive(Debug, Serialize)]
+struct ApproveStopConditionReport {
+    script: Option<String>,
+    retries: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,6 +191,19 @@ fn scope_report(agent: &config::AgentSettings) -> ScopeReport {
     }
 }
 
+fn format_approve_rows(report: &ApproveReport) -> Vec<(String, String)> {
+    vec![
+        (
+            "Stop-condition script".to_string(),
+            value_or_unset(report.stop_condition.script.clone(), "unset"),
+        ),
+        (
+            "Stop-condition retries".to_string(),
+            format_number(report.stop_condition.retries as usize),
+        ),
+    ]
+}
+
 fn build_config_report(
     cfg: &config::Config,
     cli_override: Option<&config::AgentOverrides>,
@@ -203,6 +228,17 @@ fn build_config_report(
             background: BackgroundReport {
                 enabled: cfg.workflow.background.enabled,
                 quiet: cfg.workflow.background.quiet,
+            },
+        },
+        approve: ApproveReport {
+            stop_condition: ApproveStopConditionReport {
+                script: cfg
+                    .approve
+                    .stop_condition
+                    .script
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                retries: cfg.approve.stop_condition.retries,
             },
         },
         merge: MergeReport {
@@ -377,6 +413,16 @@ fn print_config_report(report: &ConfigReport) {
     if !global_block.is_empty() {
         println!("Global/Workflow:");
         println!("{global_block}");
+        printed = true;
+    }
+
+    let approve_block = format_label_value_block(&format_approve_rows(&report.approve), 2);
+    if !approve_block.is_empty() {
+        if printed {
+            println!();
+        }
+        println!("Approve:");
+        println!("{approve_block}");
         printed = true;
     }
 
@@ -762,12 +808,19 @@ pub struct ListOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct ApproveStopCondition {
+    pub script: Option<PathBuf>,
+    pub retries: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct ApproveOptions {
     pub plan: Option<String>,
     pub list_only: bool,
     pub target: Option<String>,
     pub branch_override: Option<String>,
     pub assume_yes: bool,
+    pub stop_condition: ApproveStopCondition,
     pub push_after: bool,
 }
 
@@ -942,6 +995,8 @@ struct CicdScriptResult {
     stdout: String,
     stderr: String,
 }
+
+type StopConditionScriptResult = CicdScriptResult;
 
 impl CicdScriptResult {
     fn success(&self) -> bool {
@@ -2208,20 +2263,138 @@ pub async fn run_approve(
     let worktree_path = worktree.path().to_path_buf();
     let plan_path = worktree.plan_path(&spec.slug);
     let mut worktree = Some(worktree);
+    let stop_script = opts.stop_condition.script.clone();
+    let mut stop_attempts: u32 = 0;
+    let mut last_stop_result: Option<StopConditionScriptResult> = None;
+    let mut remaining_retries = opts.stop_condition.retries;
+    let mut stop_status = if stop_script.is_some() { "failed" } else { "none" };
 
-    let approval = apply_plan_in_worktree(
-        &spec,
-        &plan_meta,
-        &worktree_path,
-        &plan_path,
-        opts.push_after,
-        commit_mode,
-        agent,
-    )
-    .await;
+    let mut last_plan_commit: Option<String> = None;
+    let approval = loop {
+        let result = apply_plan_in_worktree(
+            &spec,
+            &plan_meta,
+            &worktree_path,
+            &plan_path,
+            commit_mode,
+            agent,
+        )
+        .await;
+
+        match result {
+            Err(err) => {
+                if stop_script.is_none() {
+                    stop_status = "none";
+                }
+                break Err(err);
+            }
+            Ok(plan_result) => {
+                if commit_mode.should_commit() {
+                    last_plan_commit = plan_result.commit_oid.clone();
+                }
+                let Some(script_path) = stop_script.as_ref() else {
+                    stop_status = "none";
+                    break Ok(plan_result);
+                };
+
+                let stop_result = match run_stop_condition_script(script_path, &worktree_path) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        stop_status = "failed";
+                        break Err(err);
+                    }
+                };
+
+                stop_attempts += 1;
+                log_stop_condition_result(script_path, &stop_result, stop_attempts);
+                record_stop_condition_attempt(
+                    "approve",
+                    script_path,
+                    stop_attempts,
+                    &stop_result,
+                );
+                let success = stop_result.success();
+                last_stop_result = Some(stop_result);
+
+                if success {
+                    stop_status = "passed";
+                    break Ok(plan_result);
+                }
+
+                if remaining_retries == 0 {
+                    stop_status = "failed";
+                    let message = format!(
+                        "Approve stop-condition script `{}` did not succeed after {} attempt(s); inspect {} for partial changes and script logs.",
+                        script_path.display(),
+                        stop_attempts,
+                        worktree_path.display()
+                    );
+                    break Err(Box::<dyn std::error::Error>::from(message));
+                }
+
+                remaining_retries -= 1;
+                display::info(format!(
+                    "Approve stop-condition not yet satisfied; retrying plan application ({} retries remaining).",
+                    remaining_retries
+                ));
+            }
+        }
+    };
+
+    if stop_script.is_some() {
+        record_stop_condition_summary(
+            "approve",
+            stop_script.as_deref(),
+            stop_status,
+            stop_attempts,
+            last_stop_result.as_ref(),
+        );
+    } else {
+        record_stop_condition_summary("approve", None, "none", 0, None);
+    }
 
     match approval {
         Ok(result) => {
+            if opts.push_after {
+                if commit_mode.should_commit() {
+                    if last_plan_commit.is_some() {
+                        push_origin_if_requested(true)?;
+                    } else {
+                        display::info("Push skipped because no commit was created during approve.");
+                    }
+                } else {
+                    display::info("Push skipped because --no-commit left approval changes pending.");
+                }
+            }
+
+            let stop_condition_label = if let Some(script) = stop_script.as_ref() {
+                let repo_root = repo_root().ok();
+                let label = stop_condition_script_label(script, repo_root.as_deref());
+                match stop_status {
+                    "passed" => format!(
+                        "passed ({}; attempts {})",
+                        label,
+                        format_number(stop_attempts as usize)
+                    ),
+                    "failed" => {
+                        let exit_label = last_stop_result
+                            .as_ref()
+                            .and_then(|res| res.status.code())
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "signal".to_string());
+                        format!(
+                            "failed ({}; attempts {}; exit {})",
+                            label,
+                            format_number(stop_attempts as usize),
+                            exit_label
+                        )
+                    }
+                    _ => format!("configured ({})", label),
+                }
+            } else {
+                "none".to_string()
+            };
+
             if commit_mode.should_commit() {
                 if let Some(tree) = worktree.take()
                     && let Err(err) = tree.cleanup() {
@@ -2235,6 +2408,7 @@ pub async fn run_approve(
                     ("Outcome".to_string(), "Plan implemented".to_string()),
                     ("Plan".to_string(), spec.slug.clone()),
                     ("Branch".to_string(), spec.branch.clone()),
+                    ("Stop condition".to_string(), stop_condition_label.clone()),
                     ("Review".to_string(), spec.diff_command()),
                 ];
                 if let Some(commit_oid) = result.commit_oid.as_ref() {
@@ -2256,6 +2430,7 @@ pub async fn run_approve(
                     ("Plan".to_string(), spec.slug.clone()),
                     ("Branch".to_string(), spec.branch.clone()),
                     ("Worktree".to_string(), worktree_path.display().to_string()),
+                    ("Stop condition".to_string(), stop_condition_label),
                     ("Review".to_string(), spec.diff_command()),
                 ];
                 append_agent_rows(&mut rows, current_verbosity());
@@ -4533,6 +4708,116 @@ fn log_cicd_result(script: &Path, result: &CicdScriptResult, attempt: u32) {
     }
 }
 
+fn run_stop_condition_script(
+    script: &Path,
+    worktree_root: &Path,
+) -> Result<StopConditionScriptResult, Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let output = Command::new("sh")
+        .arg(script)
+        .current_dir(worktree_root)
+        .output()
+        .map_err(|err| {
+            format!(
+                "failed to run approve stop-condition script {}: {err}",
+                script.display()
+            )
+        })?;
+    Ok(StopConditionScriptResult {
+        status: output.status,
+        duration: start.elapsed(),
+        stdout: clip_log(&output.stdout),
+        stderr: clip_log(&output.stderr),
+    })
+}
+
+fn log_stop_condition_result(
+    script: &Path,
+    result: &StopConditionScriptResult,
+    attempt: u32,
+) {
+    let label = if result.success() { "passed" } else { "failed" };
+    let status = result.status_label();
+    let duration = format!("{:.2}s", result.duration.as_secs_f64());
+    let message = format!(
+        "Approve stop-condition `{}` {label} ({status}; {duration}) [attempt {attempt}]",
+        script.display()
+    );
+    if result.success() {
+        display::info(message);
+    } else {
+        display::warn(message);
+        log_cicd_stream("stdout", &result.stdout);
+        log_cicd_stream("stderr", &result.stderr);
+    }
+}
+
+fn stop_condition_script_label(script: &Path, repo_root: Option<&Path>) -> String {
+    repo_root
+        .and_then(|root| script.strip_prefix(root).ok())
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| script.display().to_string())
+}
+
+fn record_stop_condition_summary(
+    scope: &str,
+    script: Option<&Path>,
+    status: &str,
+    attempts: u32,
+    last_result: Option<&StopConditionScriptResult>,
+) {
+    let repo_root = repo_root().ok();
+    let script_label = script.map(|path| stop_condition_script_label(path, repo_root.as_deref()));
+    let (exit_code, duration_ms, stdout, stderr) = if let Some(result) = last_result {
+        (
+            result.status.code(),
+            Some(result.duration.as_millis()),
+            result.stdout.clone(),
+            result.stderr.clone(),
+        )
+    } else {
+        (None, None, String::new(), String::new())
+    };
+
+    Auditor::record_operation(
+        "approve_stop_condition",
+        json!({
+            "scope": scope,
+            "script": script_label,
+            "status": status,
+            "attempts": attempts,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "stdout": stdout,
+            "stderr": stderr,
+        }),
+    );
+}
+
+fn record_stop_condition_attempt(
+    scope: &str,
+    script: &Path,
+    attempt: u32,
+    result: &StopConditionScriptResult,
+) {
+    let repo_root = repo_root().ok();
+    let script_label = stop_condition_script_label(script, repo_root.as_deref());
+    let status = if result.success() { "passed" } else { "failed" };
+    Auditor::record_operation(
+        "approve_stop_condition_attempt",
+        json!({
+            "scope": scope,
+            "script": script_label,
+            "attempt": attempt,
+            "status": status,
+            "exit_code": result.status.code(),
+            "duration_ms": result.duration.as_millis(),
+            "stdout": result.stdout.clone(),
+            "stderr": result.stderr.clone(),
+        }),
+    );
+}
+
 fn run_cicd_gate_for_review(
     gate_opts: &CicdGateOptions,
 ) -> Result<ReviewGateResult, Box<dyn std::error::Error>> {
@@ -4799,7 +5084,6 @@ async fn apply_plan_in_worktree(
     plan_meta: &plan::PlanMetadata,
     worktree_path: &Path,
     _plan_path: &Path,
-    push_after: bool,
     commit_mode: CommitMode,
     agent: &config::AgentSettings,
 ) -> Result<PlanApplyResult, Box<dyn std::error::Error>> {
@@ -4880,12 +5164,6 @@ async fn apply_plan_in_worktree(
         let oid = vcs::commit_staged(&commit_message, false)?;
         clear_narrative_tracker(&narrative_paths);
         commit_oid = Some(oid.to_string());
-
-        if push_after {
-            push_origin_if_requested(true)?;
-        }
-    } else if push_after {
-        display::info("Push skipped because --no-commit left changes pending.");
     } else if !narrative_paths.is_empty() {
         display::info(
             "Narrative assets updated with --no-commit; changes left pending in the plan worktree.",

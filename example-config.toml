@@ -55,6 +55,11 @@ script = "./cicd.sh"
 auto_resolve = true
 retries = 2
 
+# Optional stop-condition for `vizier approve`: when configured, the agent is re-run on the draft branch until this script exits 0 or the retry budget is exhausted.
+# [approve.stop_condition]
+# script = "./scripts/approve-stop.sh"
+# retries = 3
+
 # Global workflow defaults (apply unless CLI overrides them)
 [workflow]
 # When true, assistant-backed commands hold their edits for manual commits until you rerun without --no-commit.

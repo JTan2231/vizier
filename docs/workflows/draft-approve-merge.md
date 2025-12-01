@@ -108,6 +108,12 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - `vizier approve --branch feature/foo` — when your work diverges from `draft/<slug>` naming.
 - `vizier approve -y` — skip the confirmation prompt.
 
+**Optional stop-condition**
+- Configure `[approve.stop_condition]` in `.vizier/config.toml` (and optionally override per run with `vizier approve --stop-condition-script <PATH> --stop-condition-retries <COUNT>`) to gate approve on a repo-local shell script.
+- When a stop-condition script is set, Vizier always runs the agent at least once, then executes `sh <script>` from the approve worktree. A zero exit code means “done”; any non-zero exit triggers another agent attempt while retries remain.
+- `retries` counts extra attempts after the first agent run. With the default `retries = 3`, approve can invoke the agent up to four times before giving up. If the script never exits 0, `vizier approve` fails, preserves the worktree, and prints guidance pointing at the worktree path and script output.
+- Stop-condition scripts are best used for lightweight local checks (idempotence, smoke tests) that can safely run multiple times against the evolving draft branch; they should tolerate being re-run and avoid destructive side effects.
+
 **Git effects**
 - Only `draft/<slug>` receives commits. The target branch and your working tree never change.
 - Vizier prints `review with "git diff <target>...<draft/<slug>>"` so you can inspect the diff immediately.

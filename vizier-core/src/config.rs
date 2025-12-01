@@ -480,6 +480,7 @@ pub struct Config {
     pub agent_selector: String,
     pub backend: BackendKind,
     pub agent_runtime: AgentRuntimeOptions,
+    pub approve: ApproveConfig,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
     pub workflow: WorkflowConfig,
@@ -488,6 +489,52 @@ pub struct Config {
     repo_prompts: HashMap<SystemPrompt, RepoPrompt>,
     global_prompts: HashMap<SystemPrompt, String>,
     scoped_prompts: HashMap<(CommandScope, SystemPrompt), String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApproveStopConditionConfig {
+    pub script: Option<PathBuf>,
+    pub retries: u32,
+}
+
+impl Default for ApproveStopConditionConfig {
+    fn default() -> Self {
+        Self {
+            script: None,
+            retries: 3,
+        }
+    }
+}
+
+impl ApproveStopConditionConfig {
+    fn apply_layer(&mut self, layer: &ApproveStopConditionLayer) {
+        if let Some(script) = layer.script.as_ref() {
+            self.script = Some(script.clone());
+        }
+
+        if let Some(retries) = layer.retries {
+            self.retries = retries;
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ApproveConfig {
+    pub stop_condition: ApproveStopConditionConfig,
+}
+
+impl Default for ApproveConfig {
+    fn default() -> Self {
+        Self {
+            stop_condition: ApproveStopConditionConfig::default(),
+        }
+    }
+}
+
+impl ApproveConfig {
+    fn apply_layer(&mut self, layer: &ApproveLayer) {
+        self.stop_condition.apply_layer(&layer.stop_condition);
+    }
 }
 
 #[derive(Clone)]
@@ -694,9 +741,21 @@ pub struct WorkflowLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApproveStopConditionLayer {
+    pub script: Option<PathBuf>,
+    pub retries: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApproveLayer {
+    pub stop_condition: ApproveStopConditionLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigLayer {
     pub agent_selector: Option<String>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
+    pub approve: ApproveLayer,
     pub review: ReviewLayer,
     pub merge: MergeLayer,
     pub workflow: WorkflowLayer,
@@ -729,6 +788,7 @@ impl Config {
             agent_selector: selector.clone(),
             backend: backend_kind_for_selector(&selector),
             agent_runtime: AgentRuntimeOptions::default(),
+            approve: ApproveConfig::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
             workflow: WorkflowConfig::default(),
@@ -757,6 +817,8 @@ impl Config {
         if let Some(runtime) = layer.agent_runtime.as_ref() {
             self.agent_runtime.apply_override(runtime);
         }
+
+        self.approve.apply_layer(&layer.approve);
 
         if let Some(commands) = layer.review.checks.as_ref() {
             self.review.checks.commands = commands.clone();
@@ -1830,6 +1892,26 @@ impl ConfigLayer {
             layer.review.checks = Some(commands);
         }
 
+        if let Some(stop_condition) =
+            value_at_path(&file_config, &["approve", "stop_condition"])
+        {
+            if let Some(object) = stop_condition.as_object() {
+                if let Some(script_value) = object
+                    .get("script")
+                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+                {
+                    layer.approve.stop_condition.script = Some(PathBuf::from(script_value));
+                }
+
+                if let Some(retries) = parse_u32(object.get("retries"))
+                    .or_else(|| parse_u32(object.get("max_retries")))
+                    .or_else(|| parse_u32(object.get("max_attempts")))
+                {
+                    layer.approve.stop_condition.retries = Some(retries);
+                }
+            }
+        }
+
         if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"]) {
             if let Some(gate_object) = cicd_gate.as_object() {
                 if let Some(script_value) = gate_object
@@ -2596,6 +2678,53 @@ retries = 3
     }
 
     #[test]
+    fn test_approve_stop_condition_defaults() {
+        let cfg = Config::default();
+        assert_eq!(cfg.approve.stop_condition.script, None);
+        assert_eq!(cfg.approve.stop_condition.retries, 3);
+    }
+
+    #[test]
+    fn test_approve_stop_condition_config_from_toml() {
+        let toml = r#"
+[approve.stop_condition]
+script = "./scripts/approve-stop.sh"
+retries = 5
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = Config::from_toml(file.path().to_path_buf())
+            .expect("parse approve stop-condition config");
+        assert_eq!(
+            cfg.approve.stop_condition.script,
+            Some(PathBuf::from("./scripts/approve-stop.sh"))
+        );
+        assert_eq!(cfg.approve.stop_condition.retries, 5);
+    }
+
+    #[test]
+    fn test_approve_stop_condition_config_from_json() {
+        let json = r#"
+        {
+            "approve": {
+                "stop_condition": {
+                    "script": "./scripts/approve-check.sh",
+                    "max_attempts": "4"
+                }
+            }
+        }
+        "#;
+        let file = write_json_file(json);
+        let cfg = Config::from_json(file.path().to_path_buf())
+            .expect("parse approve stop-condition config");
+        assert_eq!(
+            cfg.approve.stop_condition.script,
+            Some(PathBuf::from("./scripts/approve-check.sh"))
+        );
+        assert_eq!(cfg.approve.stop_condition.retries, 4);
+    }
+
+    #[test]
     fn test_merge_conflict_auto_resolve_from_toml() {
         let toml = r#"
 [merge.conflicts]
@@ -2620,6 +2749,10 @@ auto_resolve = true
             r#"
 agent = "codex"
 
+[approve.stop_condition]
+script = "./scripts/global-approve-stop.sh"
+retries = 5
+
 [merge.cicd_gate]
 script = "./scripts/global-ci.sh"
 retries = 4
@@ -2639,6 +2772,9 @@ commands = ["echo global"]
             r#"
 [agents.default]
 agent = "gemini"
+
+[approve.stop_condition]
+retries = 2
 
 [merge.cicd_gate]
 auto_resolve = true
@@ -2674,6 +2810,15 @@ documentation = "repo documentation prompt"
         assert_eq!(
             cfg.merge.cicd_gate.retries, 4,
             "numeric config should fall back to the global layer when repo omits it"
+        );
+        assert_eq!(
+            cfg.approve.stop_condition.script,
+            Some(PathBuf::from("./scripts/global-approve-stop.sh")),
+            "global approve.stop_condition.script should be preserved when repo omits it"
+        );
+        assert_eq!(
+            cfg.approve.stop_condition.retries, 2,
+            "repo approve.stop_condition.retries should override global default"
         );
         assert!(
             cfg.merge.conflicts.auto_resolve,

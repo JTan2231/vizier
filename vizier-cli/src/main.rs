@@ -372,6 +372,14 @@ struct ApproveCmd {
     /// Skip the confirmation prompt before applying the plan on the draft branch
     #[arg(long = "yes", short = 'y')]
     assume_yes: bool,
+
+    /// Path to an approve stop-condition script (defaults to approve.stop_condition.script)
+    #[arg(long = "stop-condition-script", value_name = "PATH")]
+    stop_condition_script: Option<PathBuf>,
+
+    /// Number of stop-condition retries before giving up (`approve.stop_condition.retries` by default)
+    #[arg(long = "stop-condition-retries", value_name = "COUNT")]
+    stop_condition_retries: Option<u32>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -665,12 +673,51 @@ fn resolve_approve_options(
         );
     }
 
+    let config = config::get_config();
+    let repo_root = vcs::repo_root().ok();
+
+    let mut stop_script = config
+        .approve
+        .stop_condition
+        .script
+        .clone()
+        .map(|path| resolve_cicd_script_path(&path, repo_root.as_deref()));
+
+    if let Some(script) = cmd.stop_condition_script.as_ref() {
+        stop_script = Some(resolve_cicd_script_path(script, repo_root.as_deref()));
+    }
+
+    if let Some(script) = stop_script.as_ref() {
+        let metadata = std::fs::metadata(script).map_err(|err| {
+            format!(
+                "unable to read approve stop-condition script {}: {err}",
+                script.display()
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "approve stop-condition script {} must be a file",
+                script.display()
+            )
+            .into());
+        }
+    }
+
+    let mut stop_retries = config.approve.stop_condition.retries;
+    if let Some(retries) = cmd.stop_condition_retries {
+        stop_retries = retries;
+    }
+
     Ok(ApproveOptions {
         plan: cmd.plan.clone(),
         list_only: cmd.list,
         target: cmd.target.clone(),
         branch_override: cmd.branch.clone(),
         assume_yes: cmd.assume_yes,
+        stop_condition: ApproveStopCondition {
+            script: stop_script,
+            retries: stop_retries,
+        },
         push_after,
     })
 }

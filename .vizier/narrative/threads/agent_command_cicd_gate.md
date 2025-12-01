@@ -24,7 +24,8 @@ Acceptance criteria
 Status
 - Merge-time CI/CD gate shipped for `vizier merge` via `[merge.cicd_gate]` plus per-run overrides; README, workflow docs, and integration tests (`test_merge_cicd_gate_executes_script`, `test_merge_cicd_gate_failure_blocks_merge`, `test_merge_cicd_gate_auto_fix_applies_changes`) are in place.
 - Review now executes the merge CI/CD gate before critique (auto-resolve forced off, gate result logged to the Auditor and fed into the critique prompt/commit message) so reviewers see gate status alongside check results; failures warn but do not auto-fix or block the critique flow.
-- Remaining work focuses on generalizing the gate abstraction beyond merge/review (ask/save/draft/approve), emitting structured gate facts into Outcome/session logs, and allowing repositories to define reusable named gate profiles instead of merge-only wiring.
+- Approve now supports a stop-condition gate: `[approve.stop_condition]` plus CLI overrides re-run the agent until a repo-local script passes (default three extra attempts), audit every script attempt (status/exit/stdout/stderr), and defer pushes until the passing run; epilogues expose script labels and attempt counts while Outcome/JSON alignment is still pending.
+- Remaining work focuses on unifying these per-command gates under reusable profiles (ask/save/draft/approve/review), surfacing structured gate facts in Outcome/session logs, and decoupling gate definitions from merge-specific wiring.
 
 Pointers
 - Agent workflow orchestration thread in `.vizier/narrative/snapshot.md` (Active threads: Agent workflow orchestration).
