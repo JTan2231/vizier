@@ -1,15 +1,8 @@
-use std::error::Error;
-use std::io::{IsTerminal, stderr};
-
-use crossterm::{
-    cursor::MoveToColumn,
-    execute,
-    terminal::{Clear, ClearType},
-};
 use lazy_static::lazy_static;
 use serde_json::Value;
+use std::error::Error;
+use std::io::IsTerminal;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::time::{self, Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verbosity {
@@ -17,13 +10,6 @@ pub enum Verbosity {
     Normal,
     Info,
     Debug,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProgressMode {
-    Auto,
-    Never,
-    Always,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,8 +23,6 @@ pub enum LogLevel {
 #[derive(Clone, Copy, Debug)]
 pub struct DisplayConfig {
     pub verbosity: Verbosity,
-    pub progress: ProgressMode,
-    pub ansi_enabled: bool,
     pub stdout_is_tty: bool,
     pub stderr_is_tty: bool,
 }
@@ -50,8 +34,6 @@ impl Default for DisplayConfig {
 
         Self {
             verbosity: Verbosity::Normal,
-            progress: ProgressMode::Auto,
-            ansi_enabled: stdout_is_tty || stderr_is_tty,
             stdout_is_tty,
             stderr_is_tty,
         }
@@ -190,91 +172,19 @@ impl ProgressEvent {
 
 #[derive(Clone, Copy)]
 struct DisplayRuntime {
-    show_spinner: bool,
-    show_line_updates: bool,
-    line_once: bool,
     verbosity: Verbosity,
     log_events: bool,
+    info_once: bool,
 }
 
 impl DisplayRuntime {
     fn from_config(cfg: DisplayConfig) -> Self {
-        let show_spinner = matches!(cfg.progress, ProgressMode::Auto | ProgressMode::Always)
-            && cfg.stderr_is_tty
-            && cfg.stdout_is_tty
-            && cfg.ansi_enabled
-            && !matches!(cfg.verbosity, Verbosity::Quiet);
-
-        let show_line_updates = !show_spinner
-            && (matches!(cfg.verbosity, Verbosity::Debug)
-                || (matches!(cfg.verbosity, Verbosity::Info)
-                    && matches!(cfg.progress, ProgressMode::Always)));
-
-        let line_once = matches!(cfg.verbosity, Verbosity::Info)
-            && matches!(cfg.progress, ProgressMode::Always)
-            && !show_spinner;
-
         Self {
-            show_spinner,
-            show_line_updates,
-            line_once,
             verbosity: cfg.verbosity,
             log_events: !matches!(cfg.verbosity, Verbosity::Quiet),
+            info_once: matches!(cfg.verbosity, Verbosity::Info),
         }
     }
-}
-
-async fn render_spinner_runtime(mut rx: Receiver<Status>, runtime: DisplayRuntime) {
-    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let mut index = 0usize;
-    let mut last_message = String::from("Working");
-    let mut ticker = time::interval(Duration::from_millis(80));
-
-    loop {
-        tokio::select! {
-            Some(status) = rx.recv() => {
-                match status {
-                    Status::Working(msg) => {
-                        last_message = msg;
-                        render_spinner_frame(spinner_frames[index % spinner_frames.len()], &last_message);
-                        index = index.wrapping_add(1);
-                    }
-                    Status::Event(event) => {
-                        if runtime.log_events {
-                            clear_spinner_line();
-                            emit_progress_event(&event, runtime);
-                            render_spinner_frame(
-                                spinner_frames[index % spinner_frames.len()],
-                                &last_message,
-                            );
-                        }
-                    }
-                    Status::Done => {
-                        clear_spinner_line();
-                        break;
-                    }
-                    Status::Error(e) => {
-                        clear_spinner_line();
-                        emit(LogLevel::Error, format!("Error: {}", e));
-                        break;
-                    }
-                }
-            }
-            _ = ticker.tick() => {
-                render_spinner_frame(spinner_frames[index % spinner_frames.len()], &last_message);
-                index = index.wrapping_add(1);
-            }
-        }
-    }
-}
-
-fn render_spinner_frame(frame: &str, message: &str) {
-    let _ = execute!(stderr(), MoveToColumn(0), Clear(ClearType::CurrentLine));
-    eprint!("{} {}", frame, message);
-}
-
-fn clear_spinner_line() {
-    let _ = execute!(stderr(), MoveToColumn(0), Clear(ClearType::CurrentLine));
 }
 
 async fn render_line_runtime(mut rx: Receiver<Status>, runtime: DisplayRuntime) {
@@ -285,7 +195,7 @@ async fn render_line_runtime(mut rx: Receiver<Status>, runtime: DisplayRuntime) 
             Status::Working(msg) => {
                 if runtime.verbosity == Verbosity::Debug {
                     debug(format!("Working: {}", msg));
-                } else if runtime.line_once && !printed_once {
+                } else if runtime.info_once && !printed_once {
                     info(format!("Working: {}", msg));
                     printed_once = true;
                 }
@@ -303,14 +213,7 @@ async fn render_line_runtime(mut rx: Receiver<Status>, runtime: DisplayRuntime) 
 }
 
 async fn display_status(rx: Receiver<Status>, runtime: DisplayRuntime) {
-    if runtime.show_spinner {
-        render_spinner_runtime(rx, runtime).await;
-    } else if runtime.show_line_updates {
-        render_line_runtime(rx, runtime).await;
-    } else {
-        // Drain the channel to ensure all errors propagate even when quiet.
-        render_line_runtime(rx, runtime).await;
-    }
+    render_line_runtime(rx, runtime).await;
 }
 
 pub async fn call_with_status<F, Fut, T>(f: F) -> Result<T, Box<dyn Error>>

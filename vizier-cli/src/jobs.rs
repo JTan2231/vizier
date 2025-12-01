@@ -61,14 +61,15 @@ pub struct JobMetadata {
     pub plan: Option<String>,
     pub branch: Option<String>,
     pub revision: Option<String>,
+    pub agent_selector: Option<String>,
     pub agent_backend: Option<String>,
     pub agent_label: Option<String>,
     pub agent_command: Option<Vec<String>>,
     pub config_backend: Option<String>,
+    pub config_agent_selector: Option<String>,
     pub config_agent_label: Option<String>,
     pub config_agent_command: Option<Vec<String>>,
     pub background_quiet: Option<bool>,
-    pub background_progress: Option<String>,
     pub agent_exit_code: Option<i32>,
 }
 
@@ -120,7 +121,10 @@ fn relative_path(project_root: &Path, path: &Path) -> String {
 }
 
 fn is_empty_vec(value: &Option<Vec<String>>) -> bool {
-    value.as_ref().map(|entries| entries.is_empty()).unwrap_or(true)
+    value
+        .as_ref()
+        .map(|entries| entries.is_empty())
+        .unwrap_or(true)
 }
 
 fn merge_metadata(
@@ -147,6 +151,9 @@ fn merge_metadata(
             if base.revision.is_none() {
                 base.revision = update.revision;
             }
+            if base.agent_selector.is_none() {
+                base.agent_selector = update.agent_selector;
+            }
             if base.agent_backend.is_none() {
                 base.agent_backend = update.agent_backend;
             }
@@ -155,6 +162,9 @@ fn merge_metadata(
             }
             if is_empty_vec(&base.agent_command) {
                 base.agent_command = update.agent_command;
+            }
+            if base.config_agent_selector.is_none() {
+                base.config_agent_selector = update.config_agent_selector;
             }
             if base.config_backend.is_none() {
                 base.config_backend = update.config_backend;
@@ -167,9 +177,6 @@ fn merge_metadata(
             }
             if base.background_quiet.is_none() {
                 base.background_quiet = update.background_quiet;
-            }
-            if base.background_progress.is_none() {
-                base.background_progress = update.background_progress;
             }
             if update.agent_exit_code.is_some() {
                 base.agent_exit_code = update.agent_exit_code;
@@ -334,10 +341,7 @@ pub fn list_records(jobs_root: &Path) -> Result<Vec<JobRecord>, Box<dyn std::err
 
         match load_record(&paths) {
             Ok(record) => records.push(record),
-            Err(err) => display::warn(format!(
-                "unable to load background job {}: {}",
-                job_id, err
-            )),
+            Err(err) => display::warn(format!("unable to load background job {}: {}", job_id, err)),
         }
     }
 

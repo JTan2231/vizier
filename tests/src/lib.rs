@@ -654,7 +654,7 @@ fn test_repo_config_overrides_env_config() -> TestResult {
         &repo_config,
         r#"
 [agents.default]
-backend = "agent"
+agent = "codex"
 "#,
     )?;
 
@@ -663,7 +663,7 @@ backend = "agent"
         &env_config,
         r#"
 [agents.default]
-backend = "codex"
+agent = "gemini"
 "#,
     )?;
 
@@ -713,7 +713,7 @@ fn test_env_config_used_when_repo_config_missing() -> TestResult {
         &env_config,
         r#"
 [agents.default]
-backend = "agent"
+agent = "codex"
 "#,
     )?;
 
@@ -764,6 +764,10 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
         "plan should print a resolved config header:\n{stdout}"
     );
     assert!(
+        compact.contains("Agent:codex"),
+        "plan output should include the resolved agent selector:\n{stdout}"
+    );
+    assert!(
         compact.contains("Backend:agent"),
         "plan output should include the resolved backend:\n{stdout}"
     );
@@ -796,7 +800,7 @@ fn test_plan_json_respects_config_file_and_overrides() -> TestResult {
     fs::write(
         &config_path,
         r#"
-backend = "agent"
+agent = "codex"
 [merge.cicd_gate]
 script = "./alt-cicd.sh"
 auto_resolve = false
@@ -810,7 +814,7 @@ no_commit_default = true
 
     let output = repo
         .vizier_cmd_with_config(&config_path)
-        .args(["--backend", "gemini", "plan", "--json"])
+        .args(["--agent", "gemini", "plan", "--json"])
         .output()?;
     assert!(
         output.status.success(),
@@ -820,9 +824,14 @@ no_commit_default = true
     let json: Value = serde_json::from_slice(&output.stdout)?;
 
     assert_eq!(
+        json.get("agent").and_then(Value::as_str),
+        Some("gemini"),
+        "CLI agent override should win even when config file is provided"
+    );
+    assert_eq!(
         json.get("backend").and_then(Value::as_str),
         Some("gemini"),
-        "CLI backend override should win even when config file is provided"
+        "backend kind should reflect the resolved agent selector"
     );
     assert_eq!(
         json.pointer("/workflow/no_commit_default")
@@ -841,12 +850,6 @@ no_commit_default = true
             .and_then(Value::as_bool),
         Some(true),
         "workflow.background.quiet should appear in the report"
-    );
-    assert_eq!(
-        json.pointer("/workflow/background/progress")
-            .and_then(Value::as_str),
-        Some("never"),
-        "workflow.background.progress should appear in the report"
     );
     assert_eq!(
         json.pointer("/merge/cicd_gate/script")
@@ -869,6 +872,11 @@ no_commit_default = true
         json.pointer("/scopes/ask/backend").and_then(Value::as_str),
         Some("gemini"),
         "per-scope backend should reflect CLI overrides"
+    );
+    assert_eq!(
+        json.pointer("/scopes/ask/agent").and_then(Value::as_str),
+        Some("gemini"),
+        "per-scope agent selector should reflect CLI overrides"
     );
     Ok(())
 }
@@ -1164,8 +1172,6 @@ printf '%s' "$last"
         &config_path,
         format!(
             r#"
-backend = "agent"
-
 [agent]
 command = ["{}"]
 output = "wrapped-json"
@@ -1278,8 +1284,6 @@ done
         &config_path,
         format!(
             r#"
-backend = "agent"
-
 [agent]
 command = ["{}"]
 output = "wrapped-json"

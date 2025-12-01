@@ -1,16 +1,18 @@
 # Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults. When no --config-file is provided, Vizier loads the global config first (if it exists) and overlays .vizier/config.toml so repo entries override while missing keys inherit your personal defaults; VIZIER_CONFIG_FILE is only used when neither config file is present. See docs/config-reference.md for the full catalogue of keys, defaults, and CLI overrides.
 # Global defaults (apply unless overridden below)
-backend = "agent"
-# Commands fail fast when the selected backend is unavailable; there is no fallback toggle.
-# Supported backends: `agent` (runs a shell script) or `gemini`.
-# Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims (`codex/agent.sh`, `gemini/agent.sh`) install under `share/vizier/agents/`; pick them via `label` or set `command` to your own script.
+agent = "codex"
+# Commands fail fast when the selected agent shim is unavailable; there is no fallback toggle.
+# Supported selectors: bundled `codex`/`gemini` or any custom shim name present under share/vizier/agents/.
+# Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims install under `share/vizier/agents/`; pick them via the selector above or override the runtime command per scope.
 
-# Base agent runtime wiring shared by agent-backed commands unless a scoped override says otherwise
-[agent]
-label = "codex"                      # Use a bundled shim by label (codex/agent.sh or gemini/agent.sh)
-# command = ["/usr/local/share/vizier/agents/codex/agent.sh"] # Or point directly at a custom script
+# Example: route every scope through your own script. Update the `[agents.default]` entry below (or
+# whichever scopes you care about) so `agent = "custom"` and then uncomment this block to point
+# Vizier at your script. Only one `agent` key can exist at the root of the file, so remove the scalar
+# `agent = "codex"` above when this table is active.
+# [agent]
+# command = ["/usr/local/share/vizier/agents/codex/agent.sh"] # Or point directly at your script
 # output = "auto"                    # auto|wrapped-json; auto wraps bundled shims
-# progress_filter = "./examples/agents/codex/filter.sh" # Optional progress-to-stderr filter; defaults to the bundled codex filter when label=codex
+# progress_filter = ["./examples/agents/codex/filter.sh"] # Optional progress-to-stderr filter; defaults when selector=codex
 # Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
@@ -22,12 +24,11 @@ path = "./prompts/documentation.md"
 
 [agents.draft.prompts.implementation_plan]
 path = "./prompts/plan.md"
-backend = "agent"
+agent = "codex"
 
 [agents.review.prompts.review]
 path = "./prompts/review.md"
-[agents.review.prompts.review.agent]
-label = "codex"
+agent = "codex"
 
 # Order of operations the configured backend will run during `vizier review` unless `--skip-checks` is passed
 [review.checks]
@@ -64,39 +65,30 @@ no_commit_default = false
 enabled = true
 # Silence progress chatter in background jobs unless explicitly overridden
 quiet = true
-# Control progress display for background jobs (auto|never|always)
-progress = "never"
 
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
-backend = "agent"
-
-# Fine-tune how the default agent backend runs (label or explicit command)
-[agents.default.agent]
-label = "codex"
-# command = ["./examples/agents/codex/agent.sh"]
-# output = "auto"                    # Leave unset to auto-wrap bundled shims
-# progress_filter = "./examples/agents/codex/filter.sh" # Optional; defaults to bundled Codex filter when label=codex and no command is provided
-
-# Keep save flows on the agent backend so narrative edits always use the same backend
-[agents.save]
-backend = "agent"
-
-# The remaining plan workflow commands stay on the agent backend and inherit the defaults
-[agents.draft]
-backend = "agent"
-
-[agents.approve]
-backend = "agent"
-
-[agents.review]
-backend = "agent"
+agent = "codex"
 
 # Example: route review through Gemini instead of Codex via a script shim
 # [agents.review]
-# backend = "gemini"
+# agent = "gemini"
 # [agents.review.agent]
 # command = ["./examples/agents/gemini/agent.sh"]
+
+# Keep save flows on the codex stack so narrative edits always use the same selector
+[agents.save]
+agent = "codex"
+
+# The remaining plan workflow commands stay on the codex stack and inherit the defaults
+[agents.draft]
+agent = "codex"
+
+[agents.approve]
+agent = "codex"
+
+[agents.review]
+agent = "codex"
 
 # Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts
 [agents.merge.documentation]
@@ -105,4 +97,4 @@ include_snapshot = false
 include_narrative_docs = false
 
 [agents.merge]
-backend = "agent"
+agent = "codex"

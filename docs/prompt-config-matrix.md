@@ -8,7 +8,7 @@ This document is the canonical reference for how Vizier maps CLI commands (“sc
 Use this as the single place to answer:
 - “Which prompt text does this command use?”
 - “Where do I put a custom template?”
-- “Which knobs let me change backend or documentation behavior?”
+- “Which knobs let me change agent or documentation behavior?”
 
 ## Scope × prompt-kind usage
 
@@ -21,7 +21,7 @@ The table below shows which prompt kinds each scope actually uses in the current
 | `draft` | *Not used* (draft flows only use `implementation_plan`)                                                 | *Not used*                                                 | Plan template for `vizier draft` (implementation plan Markdown)    | *Not used*                                                        | *Not used*                                                     |
 | `approve` | System prompt for `vizier approve` when implementing a stored plan on the draft branch                | Commit messages come from Codex summaries, not the commit prompt template | *Defined in config but not used by CLI today*                      | *Not used*                                                        | *Not used*                                                     |
 | `review`| System prompt for optional “fix-up” passes after `vizier review` critiques                              | Commit messages come from Codex summaries, not the commit prompt template | *Not used*                                                         | Critique template for `vizier review` (plan vs diff vs checks)    | *Not used*                                                     |
-| `merge` | System prompt for `vizier merge`’s narrative refresh step on the plan branch (`refresh_plan_branch`)    | *Not used*                                                 | *Not used*                                                         | CI/CD auto-fix flows reuse agent settings for `review` kind only for backend/docs toggles; the text template is built-in | Conflict-resolution template for `vizier merge --auto-resolve-conflicts` |
+| `merge` | System prompt for `vizier merge`’s narrative refresh step on the plan branch (`refresh_plan_branch`)    | *Not used*                                                 | *Not used*                                                         | CI/CD auto-fix flows reuse agent settings for `review` kind only for agent/docs toggles; the text template is built-in | Conflict-resolution template for `vizier merge --auto-resolve-conflicts` |
 
 Notes:
 - “System prompt” means the **documentation-style** wrapper that carries snapshot + narrative doc context (via `<snapshot>`/`<narrativeDocs>` blocks) plus `<task>`/`<instruction>` payloads.
@@ -40,7 +40,7 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
    - Optional nested agent overrides: `[agents.<scope>.prompts.<kind>.agent]` (see below)
    - Effect:
      - Sets the exact template text for this scope+kind.
-     - May attach backend/agent-runtime/documentation overrides just for this pairing.
+     - May attach agent/runtime/documentation overrides just for this pairing.
 
 2. **Scoped prompt section**  
    - Table: `[prompts.<scope>]`  
@@ -111,7 +111,7 @@ Agent behavior for a given scope+kind can be customized in two layers:
 1. **Scope-wide agent overrides**
    - Table: `[agents.<scope>]`
    - Keys:
-     - `backend = "agent" | "gemini"`
+     - `agent = "codex" | "gemini" | "<custom shim>"`
      - `[agents.<scope>.agent]` for runtime wiring (`label` / `command` plus `output` and optional `progress_filter` when wrapping JSON streams)
      - `[agents.<scope>.documentation]` for documentation prompt toggles (see above)
 
@@ -122,7 +122,7 @@ Agent behavior for a given scope+kind can be customized in two layers:
      path = "./prompts/review.md"
 
      [agents.review.prompts.review.agent]
-     backend = "agent"
+     agent = "codex"
      [agents.review.prompts.review.agent.agent]
      label = "codex"                  # or set `command = [...]`
      ```
@@ -130,7 +130,7 @@ Agent behavior for a given scope+kind can be customized in two layers:
    - These overrides apply only when that **scope+kind** is in use; other prompt kinds for the same scope inherit from `[agents.<scope>]` and `[agents.default]`.
 
 Remember:
-- Each command resolves to a single backend; misconfigured backends cause the command to fail rather than silently falling back.
+- Each command resolves to a single agent selector; misconfigured entries cause the command to fail rather than silently falling back.
 
 ## Where to look for concrete examples
 
