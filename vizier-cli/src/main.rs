@@ -1,5 +1,5 @@
 use std::{
-    io::{IsTerminal, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -21,6 +21,7 @@ use crate::actions::*;
 mod completions;
 mod jobs;
 mod plan;
+mod workspace;
 use crate::jobs::JobStatus;
 
 /// A CLI for LLM project management.
@@ -216,6 +217,12 @@ enum Commands {
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
 
+    /// Create or reuse a plan workspace and print its path
+    Cd(CdCmd),
+
+    /// Remove Vizier-managed plan workspaces
+    Clean(CleanCmd),
+
     /// Print the resolved configuration (global + repo + CLI overrides) and exit
     Plan(PlanCmd),
 
@@ -286,6 +293,32 @@ struct ListCmd {
     /// Target branch to compare against (defaults to detected primary)
     #[arg(long = "target", value_name = "BRANCH")]
     target: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+struct CdCmd {
+    /// Plan slug to open a workspace for (tab-completes from pending plans)
+    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
+    plan: Option<String>,
+
+    /// Branch to use instead of draft/<plan>
+    #[arg(long = "branch", value_name = "BRANCH")]
+    branch: Option<String>,
+
+    /// Print only the workspace path (no formatted outcome block)
+    #[arg(long = "path-only", action = ArgAction::SetTrue)]
+    path_only: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+struct CleanCmd {
+    /// Plan slug to clean (omit to remove all Vizier-managed workspaces)
+    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
+    plan: Option<String>,
+
+    /// Remove workspaces without prompting for confirmation
+    #[arg(long = "yes", short = 'y')]
+    assume_yes: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -661,6 +694,41 @@ fn resolve_list_options(cmd: &ListCmd) -> ListOptions {
     ListOptions {
         target: cmd.target.clone(),
     }
+}
+
+fn resolve_cd_options(cmd: &CdCmd) -> Result<CdOptions, Box<dyn std::error::Error>> {
+    let plan = cmd
+        .plan
+        .as_deref()
+        .ok_or("plan argument is required for vizier cd")?;
+    let slug = crate::plan::sanitize_name_override(plan).map_err(|err| {
+        Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+    })?;
+    let branch = cmd
+        .branch
+        .clone()
+        .unwrap_or_else(|| crate::plan::default_branch_for_slug(&slug));
+
+    Ok(CdOptions {
+        slug,
+        branch,
+        path_only: cmd.path_only,
+    })
+}
+
+fn resolve_clean_options(cmd: &CleanCmd) -> Result<CleanOptions, Box<dyn std::error::Error>> {
+    let slug = if let Some(plan) = cmd.plan.as_deref() {
+        Some(crate::plan::sanitize_name_override(plan).map_err(|err| {
+            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+        })?)
+    } else {
+        None
+    };
+
+    Ok(CleanOptions {
+        slug,
+        assume_yes: cmd.assume_yes,
+    })
 }
 
 fn resolve_approve_options(
@@ -1848,6 +1916,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
+        Commands::Cd(cmd) => run_cd(resolve_cd_options(&cmd)?),
+        Commands::Clean(cmd) => run_clean(resolve_clean_options(&cmd)?),
         Commands::Plan(_) => run_plan_summary(cli_agent_override.as_ref(), cli.global.json),
         Commands::Jobs(cmd) => run_jobs_command(&project_root, &jobs_root, cmd),
 

@@ -37,6 +37,7 @@ use vizier_core::{
 };
 
 use crate::plan;
+use crate::workspace;
 
 fn clip_message(msg: &str) -> String {
     const LIMIT: usize = 90;
@@ -805,6 +806,19 @@ pub struct DraftArgs {
 #[derive(Debug, Clone)]
 pub struct ListOptions {
     pub target: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CdOptions {
+    pub slug: String,
+    pub branch: String,
+    pub path_only: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CleanOptions {
+    pub slug: Option<String>,
+    pub assume_yes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1948,6 +1962,162 @@ pub async fn run_draft(
 
 pub fn run_list(opts: ListOptions) -> Result<(), Box<dyn std::error::Error>> {
     list_pending_plans(opts.target)
+}
+
+pub fn run_cd(opts: CdOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let mut store = workspace::WorkspaceStore::load(&repo_root)?;
+    let status = store.ensure_workspace(&opts.slug, &opts.branch)?;
+
+    if matches!(status.clean, Some(false)) {
+        display::warn(format!(
+            "workspace {} has uncommitted or untracked changes",
+            status.path.display()
+        ));
+    }
+
+    println!("{}", status.path.display());
+    if opts.path_only || matches!(current_verbosity(), Verbosity::Quiet) {
+        return Ok(());
+    }
+
+    let mut rows = vec![
+        (
+            "Outcome".to_string(),
+            if status.created {
+                "Workspace created".to_string()
+            } else {
+                "Workspace ready".to_string()
+            },
+        ),
+        ("Plan".to_string(), opts.slug),
+        ("Branch".to_string(), status.branch),
+        ("Worktree".to_string(), status.worktree_name),
+        ("Path".to_string(), status.path.display().to_string()),
+    ];
+
+    if matches!(status.clean, Some(false)) {
+        rows.push((
+            "Note".to_string(),
+            "workspace has uncommitted changes".to_string(),
+        ));
+    }
+
+    println!("{}", format_block(rows));
+    Ok(())
+}
+
+pub fn run_clean(opts: CleanOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let mut store = workspace::WorkspaceStore::load(&repo_root)?;
+    let candidates = store.discover(opts.slug.as_deref())?;
+
+    if candidates.is_empty() {
+        println!("Outcome: no Vizier workspaces found");
+        return Ok(());
+    }
+
+    if !opts.assume_yes {
+        let mut header = vec![(
+            "Outcome".to_string(),
+            format!(
+                "Remove {} workspace{}",
+                format_number(candidates.len()),
+                if candidates.len() == 1 { "" } else { "s" }
+            ),
+        )];
+        if let Some(slug) = opts.slug.as_ref() {
+            header.push(("Plan".to_string(), slug.clone()));
+        }
+        println!("{}", format_block(header));
+        println!();
+
+        for (idx, candidate) in candidates.iter().enumerate() {
+            let mut rows = vec![
+                ("Plan".to_string(), candidate.slug.clone()),
+                ("Path".to_string(), candidate.path.display().to_string()),
+            ];
+            if let Some(branch) = candidate.branch.as_ref() {
+                rows.push(("Branch".to_string(), branch.clone()));
+            }
+            if !candidate.registered {
+                rows.push((
+                    "Note".to_string(),
+                    "not registered with git worktree".to_string(),
+                ));
+            }
+            if candidate.path.exists() {
+                if let Ok(clean) = workspace::worktree_cleanliness(&candidate.path) {
+                    if !clean {
+                        rows.push((
+                            "Note".to_string(),
+                            "workspace has uncommitted changes".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                rows.push(("Note".to_string(), "workspace path missing".to_string()));
+            }
+            println!("{}", format_block_with_indent(rows, 2));
+            if idx + 1 < candidates.len() {
+                println!();
+            }
+        }
+
+        if !prompt_for_confirmation("Remove the workspaces above? [y/N]: ")? {
+            println!("Outcome: clean cancelled");
+            return Ok(());
+        }
+    }
+
+    let mut removed = 0usize;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for candidate in &candidates {
+        let mut removed_this = false;
+        if candidate.registered || candidate.path.exists() {
+            match workspace::remove_workspace(&repo_root, candidate) {
+                Ok(_) => removed_this = true,
+                Err(err) => failed.push((candidate.slug.clone(), err.to_string())),
+            }
+        } else {
+            removed_this = true;
+        }
+
+        if removed_this {
+            removed += 1;
+            store.forget(&candidate.slug);
+        }
+    }
+
+    store.save()?;
+
+    let mut rows = vec![(
+        "Outcome".to_string(),
+        if failed.is_empty() {
+            format!(
+                "Removed {} workspace{}",
+                format_number(removed),
+                if removed == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "Removed {} workspace{} ({} failed)",
+                format_number(removed),
+                if removed == 1 { "" } else { "s" },
+                format_number(failed.len())
+            )
+        },
+    )];
+    if let Some(slug) = opts.slug.as_ref() {
+        rows.push(("Plan".to_string(), slug.clone()));
+    }
+    println!("{}", format_block(rows));
+
+    for (slug, message) in failed {
+        display::warn(format!("Failed to remove workspace {slug}: {message}"));
+    }
+
+    Ok(())
 }
 
 const DEFAULT_TEST_PROMPT: &str = "Smoke-test the configured agent: emit a few progress updates (no writes, keep it short) and a final response.";

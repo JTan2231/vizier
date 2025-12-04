@@ -49,6 +49,15 @@ Need to see what’s pending before approving or merging? Run `vizier list [--ta
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
+### Workspace convenience commands
+
+Need a stable place to poke around a plan branch without juggling `git worktree` yourself? Vizier now reserves reusable workspaces under `.vizier/tmp-worktrees/workspace-<slug>` and tracks them in a tiny manifest so you can hop in/out safely:
+
+- `vizier cd <slug> [--branch BRANCH] [--path-only]` — creates or reuses the workspace for `draft/<slug>` (or `--branch`) and prints its path on the first line for use with `cd $(vizier cd <slug> --path-only)`. It does not change your shell; use the printed path to enter the worktree. If the workspace is dirty, Vizier emits a warning so you know to reconcile changes before cleaning.
+- `vizier clean [<slug>] [--yes]` — deletes Vizier-managed workspaces (and their git worktree registrations). With a slug it targets one workspace; with no slug it prunes them all after confirmation or `--yes`.
+
+These workspaces are distinct from the short-lived draft/approve/review/merge worktrees, so cleaning them won’t interfere with in-flight plan automation.
+
 ### Holding commits with `--no-commit`
 
 All plan workflow commands except `vizier merge` honor the global `--no-commit` flag (or `[workflow] no_commit_default = true` in `.vizier/config.toml`). When active, Vizier still runs the configured agent and writes artifacts, but it leaves the plan worktree dirty instead of committing or pushing:
