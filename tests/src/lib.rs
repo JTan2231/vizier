@@ -514,6 +514,33 @@ fn test_save_with_staged_files() -> TestResult {
 }
 
 #[test]
+fn test_save_with_staged_change_and_unstaged_deletion() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before = count_commits_from_head(&repo.repo())?;
+
+    repo.write("b", "staged change")?;
+    repo.git(&["add", "b"])?;
+    fs::remove_file(repo.path().join("c"))?;
+
+    let status = repo.vizier_cmd().arg("save").status()?;
+    assert!(status.success(), "vizier save exited with {status:?}");
+
+    let repo_handle = repo.repo();
+    let after = count_commits_from_head(&repo_handle)?;
+    assert_eq!(
+        after - before,
+        1,
+        "save should create a single combined commit with deletion"
+    );
+    let files = files_changed_in_commit(&repo_handle, "HEAD")?;
+    assert!(
+        files.contains("b") && files.contains("c"),
+        "expected commit to include staged change + deletion, got {files:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_save_without_code_changes() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let before = count_commits_from_head(&repo.repo())?;
@@ -544,6 +571,31 @@ fn test_save_without_code_changes() -> TestResult {
     assert!(
         files.contains(".vizier/narrative/snapshot.md") && !files.contains("a"),
         "expected commit to contain only narrative assets when code changes are skipped, got {files:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_save_with_deleted_narrative_file() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before = count_commits_from_head(&repo.repo())?;
+
+    fs::remove_file(repo.path().join(".vizier/narrative/threads/demo.md"))?;
+
+    let mut cmd = repo.vizier_cmd();
+    cmd.arg("save");
+    cmd.env("VIZIER_IT_SKIP_VIZIER_CHANGE", "1");
+    let status = cmd.status()?;
+    assert!(status.success(), "vizier save exited with {status:?}");
+
+    let repo_handle = repo.repo();
+    let after = count_commits_from_head(&repo_handle)?;
+    assert_eq!(after - before, 1, "save should create a single commit");
+
+    let files = files_changed_in_commit(&repo_handle, "HEAD")?;
+    assert!(
+        files.contains(".vizier/narrative/threads/demo.md"),
+        "expected commit to include deleted narrative file, got {files:?}"
     );
     Ok(())
 }

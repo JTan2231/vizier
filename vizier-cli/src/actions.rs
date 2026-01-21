@@ -1348,7 +1348,7 @@ fn stage_narrative_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Err
     }
 
     let refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
-    vcs::stage(Some(refs))?;
+    vcs::stage_paths_allow_missing(&refs)?;
     Ok(())
 }
 
@@ -5754,8 +5754,10 @@ async fn refresh_plan_branch(
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
     let mut allowed_paths = narrative_paths.clone();
     let plan_rel = spec.plan_rel_path();
-    if !worktree_path.join(&plan_rel).exists() {
-        allowed_paths.push(plan_rel.to_string_lossy().replace('\\', "/"));
+    let plan_rel_string = plan_rel.to_string_lossy().replace('\\', "/");
+    let plan_missing = !worktree_path.join(&plan_rel).exists();
+    if plan_missing {
+        allowed_paths.push(plan_rel_string.clone());
     }
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
@@ -5787,7 +5789,9 @@ async fn refresh_plan_branch(
     let commit_message = builder.build();
 
     stage_narrative_paths(&narrative_paths)?;
-    vcs::stage(Some(vec!["."]))?;
+    if plan_missing {
+        vcs::stage_paths_allow_missing(&[plan_rel_string.as_str()])?;
+    }
     trim_staged_vizier_paths(&allowed_paths)?;
     let commit_oid = vcs::commit_staged(&commit_message, false)?;
     clear_narrative_tracker(&narrative_paths);

@@ -223,7 +223,7 @@ fn diff_tree_to_workdir_tolerant<'repo>(
 
     match repo.diff_tree_to_workdir_with_index(base, Some(&mut opts)) {
         Ok(diff) => Ok(diff),
-        Err(err) if err.class() == ErrorClass::Os && err.code() == ErrorCode::NotFound => {
+        Err(err) if err.code() == ErrorCode::NotFound => {
             let mut staged_opts = configure_diff_options(pathspec);
             let mut workdir_opts = configure_diff_options(pathspec);
 
@@ -847,14 +847,68 @@ fn stage_impl(repo: &Repository, paths: Option<Vec<&str>>) -> Result<(), Error> 
     Ok(())
 }
 
+fn remove_path_allow_missing(index: &mut Index, path: &Path) -> Result<(), Error> {
+    match index.remove_path(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.code() == ErrorCode::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn stage_paths_allow_missing_impl(repo: &Repository, paths: &[&str]) -> Result<(), Error> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut index = repo.index()?;
+
+    for raw in paths {
+        let norm = normalize_pathspec(raw);
+        let p = std::path::Path::new(&norm);
+        if p.is_dir() {
+            match index.add_all([p], IndexAddOption::DEFAULT, None) {
+                Ok(()) => {}
+                Err(err) if err.code() == ErrorCode::NotFound => {
+                    remove_path_allow_missing(&mut index, p)?;
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            match index.add_path(p) {
+                Ok(()) => {}
+                Err(err) if err.code() == ErrorCode::NotFound => {
+                    remove_path_allow_missing(&mut index, p)?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    index.write()?;
+    Ok(())
+}
+
 pub fn stage(paths: Option<Vec<&str>>) -> Result<(), Error> {
     let repo = Repository::open(".")?;
     stage_impl(&repo, paths)
 }
 
+pub fn stage_paths_allow_missing(paths: &[&str]) -> Result<(), Error> {
+    let repo = Repository::open(".")?;
+    stage_paths_allow_missing_impl(&repo, paths)
+}
+
 pub fn stage_in<P: AsRef<Path>>(repo_path: P, paths: Option<Vec<&str>>) -> Result<(), Error> {
     let repo = Repository::open(repo_path)?;
     stage_impl(&repo, paths)
+}
+
+pub fn stage_paths_allow_missing_in<P: AsRef<Path>>(
+    repo_path: P,
+    paths: &[&str],
+) -> Result<(), Error> {
+    let repo = Repository::open(repo_path)?;
+    stage_paths_allow_missing_impl(&repo, paths)
 }
 
 fn stage_all_impl(repo: &Repository) -> Result<(), Error> {
@@ -2038,25 +2092,33 @@ fn unstage_impl(repo: &Repository, paths: Option<Vec<&str>>) -> Result<(), Error
             let head = match repo.head() {
                 Ok(h) => h,
                 Err(_) => {
-                    let mut idx = repo.index()?;
-                    for p in spec {
-                        idx.remove_path(p)?;
+                    for p in &owned {
+                        remove_path_allow_missing(&mut index, p.as_path())?;
                     }
 
-                    idx.write()?;
+                    index.write()?;
                     return Ok(());
                 }
             };
 
             let head_obj = head.resolve()?.peel(git2::ObjectType::Commit)?;
 
-            repo.reset_default(Some(&head_obj), &spec)?;
+            match repo.reset_default(Some(&head_obj), &spec) {
+                Ok(()) => {}
+                Err(err) if err.code() == ErrorCode::NotFound => {
+                    for p in &owned {
+                        remove_path_allow_missing(&mut index, p.as_path())?;
+                    }
+                    index.write()?;
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         (Some(list), None) => {
             for raw in list {
                 let norm = normalize_pathspec(raw);
-                index.remove_path(std::path::Path::new(&norm))?;
+                remove_path_allow_missing(&mut index, std::path::Path::new(&norm))?;
             }
 
             index.write()?;
@@ -2629,6 +2691,23 @@ mod tests {
     }
 
     #[test]
+    fn diff_handles_staged_change_with_unstaged_deletion() {
+        let repo = TestRepo::new();
+
+        repo.write("keep.txt", "base\n");
+        repo.write("gone.txt", "base\n");
+        raw_commit(repo.repo(), "base");
+
+        repo.append("keep.txt", "change\n");
+        stage_in(repo.path(), Some(vec!["keep.txt"])).expect("stage keep.txt");
+        fs::remove_file(repo.join("gone.txt")).unwrap();
+
+        let diff = get_diff(repo.path_str(), Some("HEAD"), None).expect("diff with deletion");
+        assert!(diff.contains("keep.txt"));
+        assert!(diff.contains("gone.txt"));
+    }
+
+    #[test]
     fn diff_with_excludes() {
         let repo = TestRepo::new();
 
@@ -2827,6 +2906,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stage_paths_allow_missing_stages_deletions() {
+        let repo = TestRepo::new();
+
+        repo.write("gone.txt", "base\n");
+        raw_commit(repo.repo(), "base");
+
+        fs::remove_file(repo.join("gone.txt")).unwrap();
+        stage_paths_allow_missing_in(repo.path(), &["gone.txt"]).expect("stage missing path");
+
+        let staged = snapshot_staged(repo.path_str()).expect("snapshot staged");
+        assert!(
+            staged
+                .iter()
+                .any(|s| matches!(s.kind, super::StagedKind::Deleted) && s.path == "gone.txt"),
+            "expected deleted file to be staged"
+        );
+    }
+
     // --- unstage: specific paths & entire index (born HEAD) ------------------
 
     #[test]
@@ -2854,6 +2952,18 @@ mod tests {
         unstage_in(repo.path(), None).expect("unstage all");
         let after_all = snapshot_staged(repo.path_str()).expect("snapshot after unstage all");
         assert!(after_all.is_empty());
+    }
+
+    #[test]
+    fn unstage_missing_path_is_noop() {
+        let repo = TestRepo::new();
+
+        repo.write("a.txt", "A0\n");
+        raw_commit(repo.repo(), "base");
+
+        unstage_in(repo.path(), Some(vec!["missing.txt"])).expect("unstage missing");
+        let staged = snapshot_staged(repo.path_str()).expect("snapshot staged after missing");
+        assert!(staged.is_empty());
     }
 
     // --- unstage: unborn HEAD behavior --------------------------------------
