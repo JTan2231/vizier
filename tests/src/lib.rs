@@ -691,7 +691,7 @@ agent = "gemini"
 
     let after_logs = gather_session_logs(&repo)?;
     let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| "expected vizier ask to produce a new session log")?;
+        .ok_or("expected vizier ask to produce a new session log")?;
     let contents = fs::read_to_string(new_log)?;
     let json: Value = serde_json::from_str(&contents)?;
     assert_eq!(
@@ -741,7 +741,7 @@ agent = "codex"
 
     let after_logs = gather_session_logs(&repo)?;
     let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| "expected vizier ask to create a session log")?;
+        .ok_or("expected vizier ask to create a session log")?;
     let contents = fs::read_to_string(new_log)?;
     let json: Value = serde_json::from_str(&contents)?;
     assert_eq!(
@@ -1112,9 +1112,9 @@ fn test_session_log_captures_token_usage_totals() -> TestResult {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let contents = session_log_contents_from_output(&repo, &stdout)?;
     let session_json: Value = serde_json::from_str(&contents)?;
-    let agent = session_json.get("agent").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "session log missing agent run data")
-    })?;
+    let agent = session_json
+        .get("agent")
+        .ok_or_else(|| io::Error::other("session log missing agent run data"))?;
     assert_eq!(
         agent.get("exit_code").and_then(Value::as_i64),
         Some(0),
@@ -1357,13 +1357,13 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
 
     let after = gather_session_logs(&repo)?;
     let session_path = new_session_log(&before, &after)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "missing new session log"))?
+        .ok_or_else(|| io::Error::other("missing new session log"))?
         .clone();
     let contents = fs::read_to_string(&session_path)?;
     let session_json: Value = serde_json::from_str(&contents)?;
-    let agent = session_json.get("agent").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "session log missing agent run data")
-    })?;
+    let agent = session_json
+        .get("agent")
+        .ok_or_else(|| io::Error::other("session log missing agent run data"))?;
     assert_eq!(
         agent.get("exit_code").and_then(Value::as_i64),
         Some(0),
@@ -1524,16 +1524,16 @@ fn test_draft_reports_token_usage() -> TestResult {
 
     let after_logs = gather_session_logs(&repo)?;
     let session_path = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "expected session log for draft"))?;
-    let contents = fs::read_to_string(&session_path)?;
+        .ok_or_else(|| io::Error::other("expected session log for draft"))?;
+    let contents = fs::read_to_string(session_path)?;
     let session_json: Value = serde_json::from_str(&contents)?;
-    let agent = session_json.get("agent").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "session log missing agent run data")
-    })?;
+    let agent = session_json
+        .get("agent")
+        .ok_or_else(|| io::Error::other("session log missing agent run data"))?;
     let exit_code = agent
         .get("exit_code")
         .and_then(Value::as_i64)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "agent.exit_code missing"))?;
+        .ok_or_else(|| io::Error::other("agent.exit_code missing"))?;
     assert_eq!(exit_code, 0, "agent exit code should be recorded");
     let stderr = agent
         .get("stderr")
@@ -1563,7 +1563,7 @@ fn test_draft_creates_branch_and_plan() -> TestResult {
 
     let after_logs = gather_session_logs(&repo)?;
     let session_log = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| "expected vizier draft to create a session log")?;
+        .ok_or("expected vizier draft to create a session log")?;
     assert!(
         session_log.exists(),
         "session log should exist at {}",
@@ -1868,12 +1868,7 @@ fn test_cd_creates_and_reuses_workspace() -> TestResult {
         String::from_utf8_lossy(&first.stderr)
     );
     let stdout_first = String::from_utf8_lossy(&first.stdout);
-    let path_first = stdout_first
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let path_first = stdout_first.lines().next().unwrap_or("").trim().to_string();
     assert!(
         !path_first.is_empty(),
         "cd should print the workspace path on the first line:\n{stdout_first}"
@@ -2943,7 +2938,12 @@ fn test_approve_stop_condition_retries_then_passes() -> TestResult {
 #[test]
 fn test_approve_stop_condition_exhausts_retries_and_fails() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "stop-fail", "stop condition failure spec"])?;
+    repo.vizier_output(&[
+        "draft",
+        "--name",
+        "stop-fail",
+        "stop condition failure spec",
+    ])?;
     clean_workdir(&repo)?;
 
     let log_path = repo.path().join("approve-stop-fail.log");
@@ -3776,7 +3776,7 @@ fn test_test_display_can_write_session_when_opted_in() -> TestResult {
     );
     let after_logs = gather_session_logs(&repo)?;
     let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or_else(|| "expected test-display to write a session log when --session is set")?;
+        .ok_or("expected test-display to write a session log when --session is set")?;
     let contents = fs::read_to_string(new_log)?;
     let json: Value = serde_json::from_str(&contents)?;
     assert_eq!(

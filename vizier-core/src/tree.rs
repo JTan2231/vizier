@@ -33,7 +33,7 @@ fn insert_path(tree: &mut FileTree, path: &std::path::Path) {
 
         if let Some(child) = tree.children.iter_mut().find(|c| c.path == first_path) {
             if path.components().count() > 1 {
-                insert_path(child, &path.strip_prefix(first).unwrap());
+                insert_path(child, path.strip_prefix(first).unwrap());
             }
         } else {
             let mut new_tree = FileTree {
@@ -42,7 +42,7 @@ fn insert_path(tree: &mut FileTree, path: &std::path::Path) {
             };
 
             if path.components().count() > 1 {
-                insert_path(&mut new_tree, &path.strip_prefix(first).unwrap());
+                insert_path(&mut new_tree, path.strip_prefix(first).unwrap());
             }
 
             tree.children.push(new_tree);

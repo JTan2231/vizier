@@ -661,12 +661,10 @@ fn prompt_selection(
     agent: &config::AgentSettings,
 ) -> Result<&config::PromptSelection, Box<dyn std::error::Error>> {
     agent.prompt_selection().ok_or_else(|| {
-        io::Error::other(
-            format!(
-                "agent for `{}` is missing a resolved prompt; call AgentSettings::for_prompt first",
-                agent.scope.as_str()
-            ),
-        )
+        io::Error::other(format!(
+            "agent for `{}` is missing a resolved prompt; call AgentSettings::for_prompt first",
+            agent.scope.as_str()
+        ))
         .into()
     })
 }
@@ -1628,9 +1626,7 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
         .status()?;
 
     if !status.success() {
-        return Err(Box::new(std::io::Error::other(
-            "Editor command failed",
-        )));
+        return Err(Box::new(std::io::Error::other("Editor command failed")));
     }
 
     let user_message = match fs::read_to_string(&temp_path) {
@@ -1642,9 +1638,10 @@ fn get_editor_message() -> Result<String, Box<dyn std::error::Error>> {
             contents
         }
         Err(e) => {
-            return Err(Box::new(std::io::Error::other(
-                format!("Error reading file: {}", e),
-            )));
+            return Err(Box::new(std::io::Error::other(format!(
+                "Error reading file: {}",
+                e
+            ))));
         }
     };
 
@@ -2236,20 +2233,22 @@ pub async fn run_refine(
                     worktree_path.display(),
                     opts.branch
                 ));
-            } else if let Some(tree) = worktree.take() {
-                if let Err(err) = tree.cleanup() {
-                    display::warn(format!(
-                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
-                        err
-                    ));
-                }
+            } else if let Some(tree) = worktree.take()
+                && let Err(err) = tree.cleanup()
+            {
+                display::warn(format!(
+                    "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                    err
+                ));
             }
 
             let mut rows = vec![
                 (
                     "Outcome".to_string(),
                     match outcome.mode {
-                        agent_prompt::PlanRefineMode::Questions => "Plan questions ready".to_string(),
+                        agent_prompt::PlanRefineMode::Questions => {
+                            "Plan questions ready".to_string()
+                        }
                         agent_prompt::PlanRefineMode::Update => "Plan refined".to_string(),
                     },
                 ),
@@ -2257,10 +2256,7 @@ pub async fn run_refine(
                 ("Branch".to_string(), opts.branch.clone()),
             ];
             if outcome.keep_worktree {
-                rows.push((
-                    "Worktree".to_string(),
-                    worktree_path.display().to_string(),
-                ));
+                rows.push(("Worktree".to_string(), worktree_path.display().to_string()));
             }
             append_agent_rows(&mut rows, current_verbosity());
             println!("{}", format_block(rows));
@@ -2375,13 +2371,13 @@ pub fn run_clean(opts: CleanOptions) -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
             if candidate.path.exists() {
-                if let Ok(clean) = workspace::worktree_cleanliness(&candidate.path) {
-                    if !clean {
-                        rows.push((
-                            "Note".to_string(),
-                            "workspace has uncommitted changes".to_string(),
-                        ));
-                    }
+                if let Ok(clean) = workspace::worktree_cleanliness(&candidate.path)
+                    && !clean
+                {
+                    rows.push((
+                        "Note".to_string(),
+                        "workspace has uncommitted changes".to_string(),
+                    ));
                 }
             } else {
                 rows.push(("Note".to_string(), "workspace path missing".to_string()));
@@ -2765,7 +2761,11 @@ pub async fn run_approve(
     let mut stop_attempts: u32 = 0;
     let mut last_stop_result: Option<StopConditionScriptResult> = None;
     let mut remaining_retries = opts.stop_condition.retries;
-    let mut stop_status = if stop_script.is_some() { "failed" } else { "none" };
+    let mut stop_status = if stop_script.is_some() {
+        "failed"
+    } else {
+        "none"
+    };
 
     let mut last_plan_commit: Option<String> = None;
     let approval = loop {
@@ -2805,12 +2805,7 @@ pub async fn run_approve(
 
                 stop_attempts += 1;
                 log_stop_condition_result(script_path, &stop_result, stop_attempts);
-                record_stop_condition_attempt(
-                    "approve",
-                    script_path,
-                    stop_attempts,
-                    &stop_result,
-                );
+                record_stop_condition_attempt("approve", script_path, stop_attempts, &stop_result);
                 let success = stop_result.success();
                 last_stop_result = Some(stop_result);
 
@@ -2861,7 +2856,9 @@ pub async fn run_approve(
                         display::info("Push skipped because no commit was created during approve.");
                     }
                 } else {
-                    display::info("Push skipped because --no-commit left approval changes pending.");
+                    display::info(
+                        "Push skipped because --no-commit left approval changes pending.",
+                    );
                 }
             }
 
@@ -2895,12 +2892,13 @@ pub async fn run_approve(
 
             if commit_mode.should_commit() {
                 if let Some(tree) = worktree.take()
-                    && let Err(err) = tree.cleanup() {
-                        display::warn(format!(
-                            "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
-                            err
-                        ));
-                    }
+                    && let Err(err) = tree.cleanup()
+                {
+                    display::warn(format!(
+                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                        err
+                    ));
+                }
 
                 let mut rows = vec![
                     ("Outcome".to_string(), "Plan implemented".to_string()),
@@ -3033,12 +3031,13 @@ pub async fn run_review(
         Ok(outcome) => {
             if commit_mode.should_commit() {
                 if let Some(tree) = worktree.take()
-                    && let Err(err) = tree.cleanup() {
-                        display::warn(format!(
-                            "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
-                            err
-                        ));
-                    }
+                    && let Err(err) = tree.cleanup()
+                {
+                    display::warn(format!(
+                        "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+                        err
+                    ));
+                }
             } else if let Some(tree) = worktree.take() {
                 display::info(format!(
                     "Review worktree preserved at {}; inspect branch {} for pending critique/fix artifacts.",
@@ -3265,12 +3264,13 @@ pub async fn run_merge(
     }
 
     if let Some(tree) = worktree.take()
-        && let Err(err) = tree.cleanup() {
-            display::warn(format!(
-                "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
-                err
-            ));
-        }
+        && let Err(err) = tree.cleanup()
+    {
+        display::warn(format!(
+            "temporary worktree cleanup failed ({}); remove manually with `git worktree prune`",
+            err
+        ));
+    }
 
     let current_branch = current_branch_name(&repo)?;
     if current_branch.as_deref() != Some(spec.target_branch.as_str()) {
@@ -3361,12 +3361,13 @@ fn resolve_squash_plan_and_mainline(
                 "Merge history is ambiguous; proceeding with the provided --squash-mainline value.",
             );
         } else if let Some(inferred) = plan.inferred_mainline
-            && inferred != mainline {
-                display::warn(format!(
-                    "Inferred mainline {} differs from provided {}; continuing with the provided value.",
-                    inferred, mainline
-                ));
-            }
+            && inferred != mainline
+        {
+            display::warn(format!(
+                "Inferred mainline {} differs from provided {}; continuing with the provided value.",
+                inferred, mainline
+            ));
+        }
         return Ok((plan, Some(mainline)));
     }
 
@@ -3421,16 +3422,16 @@ async fn execute_legacy_merge(
             (oid, source_tip)
         }
         MergePreparation::Conflicted(conflict) => {
-            match handle_merge_conflict(
+            match handle_merge_conflict(MergeConflictInput {
                 spec,
                 merge_message,
                 conflict,
-                opts.conflict_auto_resolve,
-                opts.conflict_strategy,
-                false,
-                None,
+                setting: opts.conflict_auto_resolve,
+                strategy: opts.conflict_strategy,
+                squash: false,
+                implementation_message: None,
                 agent,
-            )
+            })
             .await?
             {
                 MergeConflictResolution::MergeCommitted {
@@ -3486,17 +3487,17 @@ async fn execute_squashed_merge(
             .await
         }
         CherryPickOutcome::Conflicted(conflict) => {
-            match handle_squash_apply_conflict(
+            match handle_squash_apply_conflict(SquashApplyConflictInput {
                 spec,
                 merge_message,
                 implementation_message,
-                &plan,
-                squash_mainline,
+                plan: &plan,
+                mainline: squash_mainline,
                 conflict,
-                opts.conflict_auto_resolve,
-                opts.conflict_strategy,
+                setting: opts.conflict_auto_resolve,
+                strategy: opts.conflict_strategy,
                 agent,
-            )
+            })
             .await?
             {
                 MergeConflictResolution::SquashImplementationCommitted {
@@ -3533,13 +3534,14 @@ async fn finalize_squashed_merge_from_head(
     let gate = run_cicd_gate_for_merge(spec, opts, agent).await?;
     let ready = merge_ready_from_head(source_oid)?;
     if let Some(expected) = expected_implementation
-        && expected != ready.head_oid {
-            display::warn(format!(
-                "HEAD moved after recording the implementation commit (expected {}, saw {}); finalizing merge from the current HEAD state.",
-                short_hash(&expected.to_string()),
-                short_hash(&ready.head_oid.to_string())
-            ));
-        }
+        && expected != ready.head_oid
+    {
+        display::warn(format!(
+            "HEAD moved after recording the implementation commit (expected {}, saw {}); finalizing merge from the current HEAD state.",
+            short_hash(&expected.to_string()),
+            short_hash(&ready.head_oid.to_string())
+        ));
+    }
     let implementation_head = ready.head_oid;
     let merge_oid = commit_squashed_merge(merge_message, ready)?;
     Ok(MergeExecutionResult {
@@ -3551,17 +3553,32 @@ async fn finalize_squashed_merge_from_head(
     })
 }
 
-async fn handle_squash_apply_conflict(
-    spec: &plan::PlanBranchSpec,
-    merge_message: &str,
-    implementation_message: &str,
-    plan: &vcs::SquashPlan,
+struct SquashApplyConflictInput<'a> {
+    spec: &'a plan::PlanBranchSpec,
+    merge_message: &'a str,
+    implementation_message: &'a str,
+    plan: &'a vcs::SquashPlan,
     mainline: Option<u32>,
     conflict: vcs::CherryPickApplyConflict,
     setting: ConflictAutoResolveSetting,
     strategy: MergeConflictStrategy,
-    agent: &config::AgentSettings,
+    agent: &'a config::AgentSettings,
+}
+
+async fn handle_squash_apply_conflict(
+    input: SquashApplyConflictInput<'_>,
 ) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
+    let SquashApplyConflictInput {
+        spec,
+        merge_message,
+        implementation_message,
+        plan,
+        mainline,
+        conflict,
+        setting,
+        strategy,
+        agent,
+    } = input;
     let files = conflict.files.clone();
     let replay_state = MergeReplayState {
         merge_base_oid: plan.merge_base.to_string(),
@@ -3684,17 +3701,17 @@ async fn run_cicd_gate_for_merge(
         ));
         let truncated_stdout = clip_log(result.stdout.as_bytes());
         let truncated_stderr = clip_log(result.stderr.as_bytes());
-        if let Some(record) = attempt_cicd_auto_fix(
+        if let Some(record) = attempt_cicd_auto_fix(CicdAutoFixInput {
             spec,
             script,
-            fix_attempts,
-            opts.cicd_gate.retries,
-            result.status.code(),
-            &truncated_stdout,
-            &truncated_stderr,
+            attempt: fix_attempts,
+            max_attempts: opts.cicd_gate.retries,
+            exit_code: result.status.code(),
+            stdout: &truncated_stdout,
+            stderr: &truncated_stderr,
             agent,
-            opts.squash,
-        )
+            amend_head: opts.squash,
+        })
         .await?
         {
             match &record {
@@ -3715,30 +3732,45 @@ async fn run_cicd_gate_for_merge(
     }
 }
 
-async fn attempt_cicd_auto_fix(
-    spec: &plan::PlanBranchSpec,
-    script: &Path,
+struct CicdAutoFixInput<'a> {
+    spec: &'a plan::PlanBranchSpec,
+    script: &'a Path,
     attempt: u32,
     max_attempts: u32,
     exit_code: Option<i32>,
-    stdout: &str,
-    stderr: &str,
-    agent: &config::AgentSettings,
+    stdout: &'a str,
+    stderr: &'a str,
+    agent: &'a config::AgentSettings,
     amend_head: bool,
+}
+
+async fn attempt_cicd_auto_fix(
+    input: CicdAutoFixInput<'_>,
 ) -> Result<Option<CicdFixRecord>, Box<dyn std::error::Error>> {
-    let fix_agent = agent.for_prompt(config::PromptKind::Review)?;
-    let prompt = agent_prompt::build_cicd_failure_prompt(
-        &spec.slug,
-        &spec.branch,
-        &spec.target_branch,
+    let CicdAutoFixInput {
+        spec,
         script,
         attempt,
         max_attempts,
         exit_code,
         stdout,
         stderr,
-        &fix_agent.documentation,
-    )
+        agent,
+        amend_head,
+    } = input;
+    let fix_agent = agent.for_prompt(config::PromptKind::Review)?;
+    let prompt = agent_prompt::build_cicd_failure_prompt(agent_prompt::CicdFailurePromptInput {
+        plan_slug: &spec.slug,
+        plan_branch: &spec.branch,
+        target_branch: &spec.target_branch,
+        script_path: script,
+        attempt,
+        max_attempts,
+        exit_code,
+        stdout,
+        stderr,
+        documentation: &fix_agent.documentation,
+    })
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
     let instruction = format!(
         "CI/CD gate script {} failed while merging plan {} (attempt {attempt}/{max_attempts}). Apply fixes so the script succeeds.",
@@ -3997,21 +4029,20 @@ async fn try_complete_pending_merge(
         }
         let mut conflict_paths = Vec::new();
         if let Ok(idx) = repo.index()
-            && let Ok(mut conflicts) = idx.conflicts() {
-                for entry in conflicts.by_ref() {
-                    if let Ok(conflict) = entry {
-                        let path_bytes = conflict
-                            .our
-                            .as_ref()
-                            .or(conflict.their.as_ref())
-                            .or(conflict.ancestor.as_ref())
-                            .map(|entry| entry.path.clone());
-                        if let Some(bytes) = path_bytes {
-                            conflict_paths.push(String::from_utf8_lossy(&bytes).to_string());
-                        }
-                    }
+            && let Ok(mut conflicts) = idx.conflicts()
+        {
+            for conflict in conflicts.by_ref().flatten() {
+                let path_bytes = conflict
+                    .our
+                    .as_ref()
+                    .or(conflict.their.as_ref())
+                    .or(conflict.ancestor.as_ref())
+                    .map(|entry| entry.path.clone());
+                if let Some(bytes) = path_bytes {
+                    conflict_paths.push(String::from_utf8_lossy(&bytes).to_string());
                 }
             }
+        }
         if !conflict_paths.is_empty() {
             let mut index = repo.index()?;
             for path in &conflict_paths {
@@ -4025,21 +4056,20 @@ async fn try_complete_pending_merge(
             let mut idx = repo.index()?;
             let _ = idx.read(true);
             if idx.has_conflicts()
-                && let Ok(mut conflicts) = idx.conflicts() {
-                    for entry in conflicts.by_ref() {
-                        if let Ok(conflict) = entry {
-                            let path_bytes = conflict
-                                .our
-                                .as_ref()
-                                .or(conflict.their.as_ref())
-                                .or(conflict.ancestor.as_ref())
-                                .map(|entry| entry.path.clone());
-                            if let Some(bytes) = path_bytes {
-                                outstanding.push(String::from_utf8_lossy(&bytes).to_string());
-                            }
-                        }
+                && let Ok(mut conflicts) = idx.conflicts()
+            {
+                for conflict in conflicts.by_ref().flatten() {
+                    let path_bytes = conflict
+                        .our
+                        .as_ref()
+                        .or(conflict.their.as_ref())
+                        .or(conflict.ancestor.as_ref())
+                        .map(|entry| entry.path.clone());
+                    if let Some(bytes) = path_bytes {
+                        outstanding.push(String::from_utf8_lossy(&bytes).to_string());
                     }
                 }
+            }
         }
         if !outstanding.is_empty() {
             let mut index = repo.index()?;
@@ -4063,9 +4093,9 @@ async fn try_complete_pending_merge(
                 agent,
             )
             .await?
-            {
-                return Ok(status);
-            }
+        {
+            return Ok(status);
+        }
         display::info(format!(
             "Pending merge state: {:?}, index_conflicts={}, paths={outstanding:?}",
             repo.state(),
@@ -4358,16 +4388,30 @@ async fn maybe_auto_resolve_pending_conflicts(
     }
 }
 
-async fn handle_merge_conflict(
-    spec: &plan::PlanBranchSpec,
-    merge_message: &str,
+struct MergeConflictInput<'a> {
+    spec: &'a plan::PlanBranchSpec,
+    merge_message: &'a str,
     conflict: vcs::MergeConflict,
     setting: ConflictAutoResolveSetting,
     strategy: MergeConflictStrategy,
     squash: bool,
-    implementation_message: Option<&str>,
-    agent: &config::AgentSettings,
+    implementation_message: Option<&'a str>,
+    agent: &'a config::AgentSettings,
+}
+
+async fn handle_merge_conflict(
+    input: MergeConflictInput<'_>,
 ) -> Result<MergeConflictResolution, Box<dyn std::error::Error>> {
+    let MergeConflictInput {
+        spec,
+        merge_message,
+        conflict,
+        setting,
+        strategy,
+        squash,
+        implementation_message,
+        agent,
+    } = input;
     let files = conflict.files.clone();
     let state = MergeConflictState {
         slug: spec.slug.clone(),
@@ -4903,14 +4947,16 @@ async fn perform_review_workflow(
     let gate_context = gate_result.to_prompt_context(repo_root.as_deref());
     let prompt = agent_prompt::build_review_prompt(
         selection,
-        &spec.slug,
-        &spec.branch,
-        &spec.target_branch,
-        &plan_document,
-        &diff_summary,
-        &check_contexts,
-        gate_context.as_ref(),
-        &critique_agent.documentation,
+        agent_prompt::ReviewPromptInput {
+            plan_slug: &spec.slug,
+            branch_name: &spec.branch,
+            target_branch: &spec.target_branch,
+            plan_document: &plan_document,
+            diff_summary: &diff_summary,
+            check_results: &check_contexts,
+            cicd_gate: gate_context.as_ref(),
+            documentation: &critique_agent.documentation,
+        },
     )
     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
@@ -5229,11 +5275,7 @@ fn run_stop_condition_script(
     })
 }
 
-fn log_stop_condition_result(
-    script: &Path,
-    result: &StopConditionScriptResult,
-    attempt: u32,
-) {
+fn log_stop_condition_result(script: &Path, result: &StopConditionScriptResult, attempt: u32) {
     let label = if result.success() { "passed" } else { "failed" };
     let status = result.status_label();
     let duration = format!("{:.2}s", result.duration.as_secs_f64());

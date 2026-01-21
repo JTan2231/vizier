@@ -258,18 +258,18 @@ fn classify_remote_scheme(url: &str) -> RemoteScheme {
 }
 
 fn user_home_dir() -> Option<PathBuf> {
-    if let Some(home) = env::var_os("HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home));
-        }
+    if let Some(home) = env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home));
     }
 
     #[cfg(windows)]
     {
-        if let Some(profile) = env::var_os("USERPROFILE") {
-            if !profile.is_empty() {
-                return Some(PathBuf::from(profile));
-            }
+        if let Some(profile) = env::var_os("USERPROFILE")
+            && !profile.is_empty()
+        {
+            return Some(PathBuf::from(profile));
         }
     }
 
@@ -594,24 +594,20 @@ fn branch_status_line(repo: &Repository) -> String {
         Ok(head) if head.is_branch() => {
             let name = head.shorthand().unwrap_or("HEAD");
             let mut out = format!("## {name}");
-            if let Ok(branch) = repo.find_branch(name, BranchType::Local) {
-                if let Ok(upstream) = branch.upstream() {
-                    if let Ok(Some(up_name)) = upstream.name() {
-                        out.push_str("...");
-                        out.push_str(up_name);
-                    }
+            if let Ok(branch) = repo.find_branch(name, BranchType::Local)
+                && let Ok(upstream) = branch.upstream()
+            {
+                if let Ok(Some(up_name)) = upstream.name() {
+                    out.push_str("...");
+                    out.push_str(up_name);
+                }
 
-                    if let (Some(local_oid), Some(upstream_oid)) =
-                        (head.target(), upstream.get().target())
-                    {
-                        if let Ok((ahead, behind)) =
-                            repo.graph_ahead_behind(local_oid, upstream_oid)
-                        {
-                            if ahead > 0 || behind > 0 {
-                                out.push_str(&format!(" [ahead {ahead}, behind {behind}]"));
-                            }
-                        }
-                    }
+                if let (Some(local_oid), Some(upstream_oid)) =
+                    (head.target(), upstream.get().target())
+                    && let Ok((ahead, behind)) = repo.graph_ahead_behind(local_oid, upstream_oid)
+                    && (ahead > 0 || behind > 0)
+                {
+                    out.push_str(&format!(" [ahead {ahead}, behind {behind}]"));
                 }
             }
             out
@@ -824,7 +820,7 @@ pub fn diff_summary_against_target<P: AsRef<Path>>(
 ///     * if directory → recursive add (matches `git add <dir>`).
 ///     * if file → add that single path.
 /// - `None`: update tracked paths (like `git add -u`), staging modifications/deletions,
-///     but NOT newly untracked files.
+///   but NOT newly untracked files.
 fn stage_impl(repo: &Repository, paths: Option<Vec<&str>>) -> Result<(), Error> {
     let mut index = repo.index()?;
 
@@ -937,12 +933,12 @@ fn add_and_commit_impl(
     // Parent(s)
     let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
 
-    if !allow_empty {
-        if let Some(ref parent) = parent_commit {
-            if parent.tree_id() == tree_id {
-                return Err(git2::Error::from_str("nothing to commit"));
-            }
-        }
+    if !allow_empty
+        && parent_commit
+            .as_ref()
+            .is_some_and(|parent| parent.tree_id() == tree_id)
+    {
+        return Err(git2::Error::from_str("nothing to commit"));
     }
 
     let parents: Vec<&git2::Commit> = match parent_commit.as_ref() {
@@ -1084,20 +1080,19 @@ fn push_current_branch_impl(repo: &Repository, remote_name: &str) -> Result<(), 
         .target()
         .ok_or_else(|| PushError::general("HEAD does not reference a commit"))?;
 
-    if let Ok(branch) = repo.find_branch(branch_name, BranchType::Local) {
-        if let Ok(upstream) = branch.upstream() {
-            if let Some(upstream_oid) = upstream.get().target() {
-                let is_descendant =
-                    repo.graph_descendant_of(head_oid, upstream_oid)
-                        .map_err(|err| {
-                            PushError::from_git("unable to compute fast-forward relationship", err)
-                        })?;
-                if !is_descendant {
-                    return Err(PushError::general(
-                        "push would not be a fast-forward; fetch and merge first",
-                    ));
-                }
-            }
+    if let Ok(branch) = repo.find_branch(branch_name, BranchType::Local)
+        && let Ok(upstream) = branch.upstream()
+        && let Some(upstream_oid) = upstream.get().target()
+    {
+        let is_descendant = repo
+            .graph_descendant_of(head_oid, upstream_oid)
+            .map_err(|err| {
+                PushError::from_git("unable to compute fast-forward relationship", err)
+            })?;
+        if !is_descendant {
+            return Err(PushError::general(
+                "push would not be a fast-forward; fetch and merge first",
+            ));
         }
     }
 
@@ -1160,10 +1155,10 @@ fn push_current_branch_impl(repo: &Repository, remote_name: &str) -> Result<(), 
     let push_statuses: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
     let statuses_for_cb = Rc::clone(&push_statuses);
     callbacks.push_update_reference(move |refname, status| {
-        if let Some(status) = status {
-            if let Ok(mut entries) = statuses_for_cb.try_borrow_mut() {
-                entries.push((refname.to_string(), status.to_string()));
-            }
+        if let Some(status) = status
+            && let Ok(mut entries) = statuses_for_cb.try_borrow_mut()
+        {
+            entries.push((refname.to_string(), status.to_string()));
         }
         Ok(())
     });
@@ -1447,9 +1442,9 @@ pub fn build_squash_plan(source_branch: &str) -> Result<SquashPlan, Error> {
         let commit = repo.find_commit(*oid)?;
         let parent_count = commit.parent_count();
         if parent_count > 1 {
-            let mut parents = Vec::with_capacity(parent_count as usize);
+            let mut parents = Vec::with_capacity(parent_count);
             for idx in 0..parent_count {
-                parents.push(commit.parent_id(idx as usize)?);
+                parents.push(commit.parent_id(idx)?);
             }
             merge_commits.push(MergeCommitSummary {
                 oid: *oid,
@@ -1478,10 +1473,8 @@ pub fn build_squash_plan(source_branch: &str) -> Result<SquashPlan, Error> {
                 None => candidates,
                 Some(existing) => existing.intersection(&candidates).copied().collect(),
             });
-            if let Some(ref set) = possible_mainlines {
-                if set.is_empty() {
-                    ambiguous = true;
-                }
+            if matches!(possible_mainlines, Some(ref set) if set.is_empty()) {
+                ambiguous = true;
             }
         }
     }
@@ -1537,7 +1530,7 @@ pub fn apply_cherry_pick_sequence(
                     "plan branch includes merge commits; rerun vizier merge with --squash-mainline <parent> or --no-squash",
                 ));
             };
-            if mainline_parent == 0 || mainline_parent as usize > parent_count as usize {
+            if mainline_parent == 0 || mainline_parent as usize > parent_count {
                 return Err(Error::from_str(&format!(
                     "squash mainline parent {} is out of range for merge commit {}",
                     mainline_parent,
@@ -1559,10 +1552,10 @@ pub fn apply_cherry_pick_sequence(
         }
         opts.merge_opts(merge_opts);
         let result = repo.cherrypick(&commit, Some(&mut opts));
-        if let Err(err) = result {
-            if err.code() != ErrorCode::MergeConflict {
-                return Err(err);
-            }
+        if let Err(err) = result
+            && err.code() != ErrorCode::MergeConflict
+        {
+            return Err(err);
         }
 
         let mut index = repo.index()?;
@@ -1847,18 +1840,16 @@ pub fn list_conflicted_paths() -> Result<Vec<String>, Error> {
 fn collect_conflict_paths(index: &mut Index) -> Vec<String> {
     let mut files = Vec::new();
     if let Ok(mut conflicts) = index.conflicts() {
-        while let Some(entry) = conflicts.next() {
-            if let Ok(conflict) = entry {
-                let path_bytes = conflict
-                    .our
-                    .as_ref()
-                    .or(conflict.their.as_ref())
-                    .or(conflict.ancestor.as_ref())
-                    .map(|entry| entry.path.clone());
-                if let Some(bytes) = path_bytes {
-                    let path = String::from_utf8_lossy(&bytes).to_string();
-                    files.push(path);
-                }
+        for conflict in conflicts.by_ref().flatten() {
+            let path_bytes = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .map(|entry| entry.path.clone());
+            if let Some(bytes) = path_bytes {
+                let path = String::from_utf8_lossy(&bytes).to_string();
+                files.push(path);
             }
         }
     }
@@ -1889,14 +1880,12 @@ fn materialize_conflicts(repo: &Repository, source_branch: &str) -> Result<(), E
 pub fn detect_primary_branch() -> Option<String> {
     let repo = Repository::discover(".").ok()?;
 
-    if let Ok(ref_remote_head) = repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(symbolic) = ref_remote_head.symbolic_target() {
-            if let Some(name) = symbolic.strip_prefix("refs/remotes/origin/") {
-                if repo.find_branch(name, BranchType::Local).is_ok() {
-                    return Some(name.to_string());
-                }
-            }
-        }
+    if let Ok(ref_remote_head) = repo.find_reference("refs/remotes/origin/HEAD")
+        && let Some(symbolic) = ref_remote_head.symbolic_target()
+        && let Some(name) = symbolic.strip_prefix("refs/remotes/origin/")
+        && repo.find_branch(name, BranchType::Local).is_ok()
+    {
+        return Some(name.to_string());
     }
 
     for candidate in ["main", "master"] {
@@ -1906,18 +1895,16 @@ pub fn detect_primary_branch() -> Option<String> {
     }
 
     let mut newest: Option<(String, i64)> = None;
-    if let Ok(mut branches) = repo.branches(Some(BranchType::Local)) {
-        for branch_res in branches.by_ref() {
-            if let Ok((branch, _)) = branch_res {
-                if let Ok(commit) = branch.get().peel_to_commit() {
-                    let seconds = commit.time().seconds();
-                    if let Ok(Some(name)) = branch.name() {
-                        match newest {
-                            Some((_, current)) if current >= seconds => {}
-                            _ => {
-                                newest = Some((name.to_string(), seconds));
-                            }
-                        }
+    if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+        for (branch, _) in branches.flatten() {
+            if let Ok(commit) = branch.get().peel_to_commit()
+                && let Ok(Some(name)) = branch.name()
+            {
+                let seconds = commit.time().seconds();
+                match newest {
+                    Some((_, current)) if current >= seconds => {}
+                    _ => {
+                        newest = Some((name.to_string(), seconds));
                     }
                 }
             }
@@ -2818,15 +2805,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         kinds.sort_by(|a, b| a.1.cmp(&b.1));
-
-        assert_eq!(
-            kinds.sort(),
-            vec![
-                ("Deleted", "b.txt".to_string()),
-                ("Modified", "a.txt".to_string()),
-            ]
-            .sort()
-        );
+        let mut expected = vec![
+            ("Deleted", "b.txt".to_string()),
+            ("Modified", "a.txt".to_string()),
+        ];
+        expected.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(kinds, expected);
 
         // 2) Now explicitly stage c.txt via stage(Some)
         stage_in(repo.path(), Some(vec!["c.txt"])).expect("stage c.txt");

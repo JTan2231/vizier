@@ -43,7 +43,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs, Debug, Default)]
 struct GlobalOpts {
     /// Increase stderr verbosity (`-v` = info, `-vv` = debug); quiet wins over verbose, and output still honors TTY/--no-ansi gating
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
@@ -116,31 +116,6 @@ struct GlobalOpts {
     /// Internal hook for background child processes; do not set manually
     #[arg(long = "background-job-id", hide = true, global = true)]
     background_job_id: Option<String>,
-}
-
-impl Default for GlobalOpts {
-    fn default() -> Self {
-        Self {
-            verbose: 0,
-            quiet: false,
-            debug: false,
-            no_ansi: false,
-            pager: false,
-            no_pager: false,
-            load_session: None,
-            no_session: false,
-            agent: None,
-            backend: None,
-            agent_label: None,
-            agent_command: None,
-            json: false,
-            config_file: None,
-            push: false,
-            no_commit: false,
-            background: false,
-            background_job_id: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -710,9 +685,7 @@ fn resolve_draft_spec(cmd: &DraftCmd) -> Result<ResolvedInput, Box<dyn std::erro
     resolve_prompt_input(cmd.spec.as_deref(), cmd.file.as_deref())
 }
 
-fn resolve_refine_options(
-    cmd: &RefineCmd,
-) -> Result<RefineOptions, Box<dyn std::error::Error>> {
+fn resolve_refine_options(cmd: &RefineCmd) -> Result<RefineOptions, Box<dyn std::error::Error>> {
     let plan = cmd
         .plan
         .as_deref()
@@ -959,9 +932,10 @@ fn resolve_merge_options(
         squash_mainline = Some(mainline);
     }
     if let Some(mainline) = squash_mainline
-        && mainline == 0 {
-            return Err("squash mainline parent index must be at least 1".into());
-        }
+        && mainline == 0
+    {
+        return Err("squash mainline parent index must be at least 1".into());
+    }
 
     Ok(MergeOptions {
         plan,
@@ -1144,10 +1118,10 @@ fn build_cli_agent_overrides(
 ) -> Result<Option<config::AgentOverrides>, Box<dyn std::error::Error>> {
     let mut overrides = config::AgentOverrides::default();
 
-    if let Some(agent) = opts.agent.as_ref() {
-        if !agent.trim().is_empty() {
-            overrides.selector = Some(agent.trim().to_ascii_lowercase());
-        }
+    if let Some(agent) = opts.agent.as_ref()
+        && !agent.trim().is_empty()
+    {
+        overrides.selector = Some(agent.trim().to_ascii_lowercase());
     }
 
     if let Some(backend) = opts.backend {
@@ -1221,6 +1195,7 @@ fn pager_mode_from_args(args: &[String]) -> PagerMode {
     }
 }
 
+#[allow(dead_code)]
 fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     match command {
         Commands::Ask(_) => Some(config::CommandScope::Ask),
@@ -1234,6 +1209,7 @@ fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     }
 }
 
+#[allow(dead_code)]
 fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
     json!({
         "backend": cfg.backend.to_string(),
@@ -1252,16 +1228,19 @@ fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
     })
 }
 
+#[allow(dead_code)]
 fn build_job_metadata(
     command: &Commands,
     cfg: &config::Config,
     cli_agent_override: Option<&config::AgentOverrides>,
 ) -> jobs::JobMetadata {
-    let mut metadata = jobs::JobMetadata::default();
-    metadata.background_quiet = Some(cfg.workflow.background.quiet);
-    metadata.config_backend = Some(cfg.backend.to_string());
-    metadata.config_agent_selector = Some(cfg.agent_selector.clone());
-    metadata.config_agent_label = cfg.agent_runtime.label.clone();
+    let mut metadata = jobs::JobMetadata {
+        background_quiet: Some(cfg.workflow.background.quiet),
+        config_backend: Some(cfg.backend.to_string()),
+        config_agent_selector: Some(cfg.agent_selector.clone()),
+        config_agent_label: cfg.agent_runtime.label.clone(),
+        ..Default::default()
+    };
     if !cfg.agent_runtime.command.is_empty() {
         metadata.config_agent_command = Some(cfg.agent_runtime.command.clone());
     }
@@ -1338,6 +1317,7 @@ fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
     }
 }
 
+#[allow(dead_code)]
 fn background_supported(command: &Commands) -> bool {
     matches!(
         command,
@@ -1351,6 +1331,7 @@ fn background_supported(command: &Commands) -> bool {
     )
 }
 
+#[allow(dead_code)]
 fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Commands::Approve(cmd) if !cmd.assume_yes => {
@@ -1367,6 +1348,7 @@ fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::
     }
 }
 
+#[allow(dead_code)]
 fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     let mut skip_next = false;
@@ -1391,6 +1373,7 @@ fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
     args
 }
 
+#[allow(dead_code)]
 fn user_friendly_args(raw_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(binary) = raw_args.first() {
@@ -1400,6 +1383,7 @@ fn user_friendly_args(raw_args: &[String]) -> Vec<String> {
     args
 }
 
+#[allow(dead_code)]
 fn build_background_child_args(
     raw_args: &[String],
     job_id: &str,
@@ -1448,9 +1432,10 @@ fn render_help_with_pager(
     if let Some(pager) = std::env::var("VIZIER_PAGER")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        && try_page_output(&pager, &help_text).is_ok() {
-            return Ok(());
-        }
+        && try_page_output(&pager, &help_text).is_ok()
+    {
+        return Ok(());
+    }
 
     if matches!(pager_mode, PagerMode::Always | PagerMode::Auto)
         && try_page_output("less -FRSX", &help_text).is_ok()
@@ -1481,16 +1466,15 @@ fn strip_ansi_codes(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\x1b'
-            && chars.peek() == Some(&'[') {
-                chars.next();
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
-                        break;
-                    }
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
                 }
-                continue;
             }
+            continue;
+        }
         output.push(ch);
     }
     output
@@ -1589,57 +1573,6 @@ fn resolve_prompt_input(
                 Err("no MESSAGE provided; pass a message, use '-', or pipe stdin".into())
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    #[test]
-    fn resolve_ask_message_reads_file_contents() -> Result<(), Box<dyn std::error::Error>> {
-        let mut tmp = tempfile::NamedTempFile::new()?;
-        write!(tmp, "File-backed prompt")?;
-
-        let cmd = AskCmd {
-            message: None,
-            file: Some(tmp.path().to_path_buf()),
-        };
-
-        let resolved = resolve_ask_message(&cmd)?;
-        assert_eq!(resolved, "File-backed prompt");
-        Ok(())
-    }
-
-    #[test]
-    fn resolve_ask_message_rejects_both_sources() {
-        let cmd = AskCmd {
-            message: Some("inline".to_string()),
-            file: Some(PathBuf::from("ignored")),
-        };
-
-        let err = resolve_ask_message(&cmd).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("cannot provide both MESSAGE and --file"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_ask_message_rejects_empty_file() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = tempfile::NamedTempFile::new()?;
-
-        let cmd = AskCmd {
-            message: None,
-            file: Some(tmp.path().to_path_buf()),
-        };
-
-        let err = resolve_ask_message(&cmd)
-            .expect_err("empty file should produce an error for ask input");
-        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
-        Ok(())
     }
 }
 
@@ -1888,9 +1821,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_agent_override = build_cli_agent_overrides(&cli.global)?;
 
     let push_after = cli.global.push;
-    let commit_mode = if cli.global.no_commit {
-        CommitMode::HoldForReview
-    } else if workflow_defaults.no_commit_default {
+    let commit_mode = if cli.global.no_commit || workflow_defaults.no_commit_default {
         CommitMode::HoldForReview
     } else {
         CommitMode::AutoCommit
@@ -2024,9 +1955,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auditor_cleanup.persisted = true;
             display::info(format!("Session saved to {}", artifact.display_path()));
             if auditor_cleanup.print_json
-                && let Ok(contents) = std::fs::read_to_string(&artifact.path) {
-                    println!("{contents}");
-                }
+                && let Ok(contents) = std::fs::read_to_string(&artifact.path)
+            {
+                println!("{contents}");
+            }
             artifact.display_path()
         });
 
@@ -2047,4 +1979,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn resolve_ask_message_reads_file_contents() -> Result<(), Box<dyn std::error::Error>> {
+        let mut tmp = tempfile::NamedTempFile::new()?;
+        write!(tmp, "File-backed prompt")?;
+
+        let cmd = AskCmd {
+            message: None,
+            file: Some(tmp.path().to_path_buf()),
+        };
+
+        let resolved = resolve_ask_message(&cmd)?;
+        assert_eq!(resolved, "File-backed prompt");
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_ask_message_rejects_both_sources() {
+        let cmd = AskCmd {
+            message: Some("inline".to_string()),
+            file: Some(PathBuf::from("ignored")),
+        };
+
+        let err = resolve_ask_message(&cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot provide both MESSAGE and --file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_ask_message_rejects_empty_file() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::NamedTempFile::new()?;
+
+        let cmd = AskCmd {
+            message: None,
+            file: Some(tmp.path().to_path_buf()),
+        };
+
+        let err = resolve_ask_message(&cmd)
+            .expect_err("empty file should produce an error for ask input");
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        Ok(())
+    }
 }

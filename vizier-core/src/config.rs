@@ -83,7 +83,7 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "agent" | "codex" => Some(Self::Agent),
             "gemini" => Some(Self::Gemini),
@@ -102,6 +102,14 @@ impl std::fmt::Display for BackendKind {
             BackendKind::Agent => write!(f, "agent"),
             BackendKind::Gemini => write!(f, "gemini"),
         }
+    }
+}
+
+impl std::str::FromStr for BackendKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or_else(|| format!("unknown backend `{value}`"))
     }
 }
 
@@ -315,15 +323,10 @@ impl AgentSettings {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AgentOutputMode {
+    #[default]
     Auto,
-}
-
-impl Default for AgentOutputMode {
-    fn default() -> Self {
-        AgentOutputMode::Auto
-    }
 }
 
 impl AgentOutputMode {
@@ -527,17 +530,9 @@ impl ApproveStopConditionConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ApproveConfig {
     pub stop_condition: ApproveStopConditionConfig,
-}
-
-impl Default for ApproveConfig {
-    fn default() -> Self {
-        Self {
-            stop_condition: ApproveStopConditionConfig::default(),
-        }
-    }
 }
 
 impl ApproveConfig {
@@ -546,43 +541,19 @@ impl ApproveConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ReviewConfig {
     pub checks: ReviewChecksConfig,
 }
 
-impl Default for ReviewConfig {
-    fn default() -> Self {
-        Self {
-            checks: ReviewChecksConfig::default(),
-        }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ReviewChecksConfig {
     pub commands: Vec<String>,
 }
 
-impl Default for ReviewChecksConfig {
-    fn default() -> Self {
-        Self {
-            commands: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MergeConflictsConfig {
     pub auto_resolve: bool,
-}
-
-impl Default for MergeConflictsConfig {
-    fn default() -> Self {
-        Self {
-            auto_resolve: false,
-        }
-    }
 }
 
 impl MergeConflictsConfig {
@@ -654,19 +625,10 @@ impl BackgroundConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct WorkflowConfig {
     pub no_commit_default: bool,
     pub background: BackgroundConfig,
-}
-
-impl Default for WorkflowConfig {
-    fn default() -> Self {
-        Self {
-            no_commit_default: false,
-            background: BackgroundConfig::default(),
-        }
-    }
 }
 
 impl WorkflowConfig {
@@ -774,8 +736,8 @@ pub struct ConfigLayer {
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
 }
 
-impl Config {
-    pub fn default() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         let prompt_directory = tools::try_get_vizier_dir().map(std::path::PathBuf::from);
         let mut repo_prompts = HashMap::new();
 
@@ -808,7 +770,9 @@ impl Config {
             scoped_prompts: HashMap::new(),
         }
     }
+}
 
+impl Config {
     pub fn from_layers(layers: &[ConfigLayer]) -> Self {
         let mut config = Self::default();
         for layer in layers {
@@ -967,10 +931,9 @@ impl Config {
             .agent_scopes
             .get(&scope)
             .and_then(|value| value.prompt_overrides.get(&kind))
+            && let Some(selection) = Self::selection_from_override(scope, kind, scoped, scope)
         {
-            if let Some(selection) = Self::selection_from_override(scope, kind, scoped, scope) {
-                return Some(selection);
-            }
+            return Some(selection);
         }
 
         if let Some(defaults) = self.agent_defaults.prompt_overrides.get(&kind) {
@@ -1016,10 +979,10 @@ impl Config {
             builder.apply(overrides);
         }
 
-        if let Some(overrides) = cli_override {
-            if !overrides.is_empty() {
-                builder.apply_cli_override(overrides);
-            }
+        if let Some(overrides) = cli_override
+            && !overrides.is_empty()
+        {
+            builder.apply_cli_override(overrides);
         }
 
         builder.build(scope, None, cli_override)
@@ -1053,10 +1016,10 @@ impl Config {
             builder.apply_prompt_overrides(scoped_prompt);
         }
 
-        if let Some(overrides) = cli_override {
-            if !overrides.is_empty() {
-                builder.apply_cli_override(overrides);
-            }
+        if let Some(overrides) = cli_override
+            && !overrides.is_empty()
+        {
+            builder.apply_cli_override(overrides);
         }
 
         let prompt = if kind == PromptKind::Documentation
@@ -1315,12 +1278,12 @@ fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            dirs.push(dir.join("agents"));
-            if let Some(prefix) = dir.parent() {
-                dirs.push(prefix.join("share").join("vizier").join("agents"));
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        dirs.push(dir.join("agents"));
+        if let Some(prefix) = dir.parent() {
+            dirs.push(prefix.join("share").join("vizier").join("agents"));
         }
     }
 
@@ -1475,10 +1438,10 @@ fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a 
 
 fn find_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<String> {
     for path in paths {
-        if let Some(serde_json::Value::String(s)) = value_at_path(value, path) {
-            if !s.is_empty() {
-                return Some(s.clone());
-            }
+        if let Some(serde_json::Value::String(s)) = value_at_path(value, path)
+            && !s.is_empty()
+        {
+            return Some(s.clone());
         }
     }
 
@@ -1519,17 +1482,17 @@ fn parse_agent_overrides(
 
     if let Some(agent_value) = value.get("agent") {
         if let Some(raw) = agent_value.as_str() {
-            if overrides.selector.is_none() {
-                if let Some(selector) = normalize_selector_value(raw) {
-                    overrides.selector = Some(selector);
-                }
+            if overrides.selector.is_none()
+                && let Some(selector) = normalize_selector_value(raw)
+            {
+                overrides.selector = Some(selector);
             }
         } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
-            if overrides.selector.is_none() {
-                if let Some(label) = parsed.label.as_ref() {
-                    display::warn(AGENT_LABEL_DEPRECATION_MESSAGE.to_string());
-                    overrides.selector = Some(label.clone());
-                }
+            if overrides.selector.is_none()
+                && let Some(label) = parsed.label.as_ref()
+            {
+                display::warn(AGENT_LABEL_DEPRECATION_MESSAGE);
+                overrides.selector = Some(label.clone());
             }
             overrides.agent_runtime = Some(parsed);
         }
@@ -1544,7 +1507,7 @@ fn parse_agent_overrides(
             )));
         }
 
-        if let Some(backend) = BackendKind::from_str(trimmed) {
+        if let Some(backend) = BackendKind::parse(trimmed) {
             if overrides.selector.is_none() {
                 let fallback = match trimmed.to_ascii_lowercase().as_str() {
                     "codex" => "codex".to_string(),
@@ -1559,7 +1522,7 @@ fn parse_agent_overrides(
                         }
                     },
                 };
-                display::warn(BACKEND_KEY_DEPRECATION_MESSAGE.to_string());
+                display::warn(BACKEND_KEY_DEPRECATION_MESSAGE);
                 overrides.selector = Some(fallback);
             }
         } else if !trimmed.is_empty() {
@@ -1664,10 +1627,10 @@ fn parse_prompt_path(
     };
 
     let mut resolved = PathBuf::from(raw_path);
-    if resolved.is_relative() {
-        if let Some(base) = base_dir {
-            resolved = base.join(resolved);
-        }
+    if resolved.is_relative()
+        && let Some(base) = base_dir
+    {
+        resolved = base.join(resolved);
     }
 
     Ok(Some(resolved))
@@ -1676,12 +1639,12 @@ fn parse_prompt_path(
 fn parse_inline_prompt_text(entry: &serde_json::Value) -> Option<&str> {
     let object = entry.as_object()?;
     for key in ["text", "prompt", "template", "inline"] {
-        if let Some(value) = object.get(key) {
-            if let Some(text) = value.as_str() {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed);
-                }
+        if let Some(value) = object.get(key)
+            && let Some(text) = value.as_str()
+        {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
             }
         }
     }
@@ -1856,7 +1819,7 @@ impl ConfigLayer {
                 }
             } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
                 if parsed.label.is_some() {
-                    display::warn(AGENT_LABEL_DEPRECATION_MESSAGE.to_string());
+                    display::warn(AGENT_LABEL_DEPRECATION_MESSAGE);
                 }
                 layer.agent_runtime = Some(parsed);
             }
@@ -1871,7 +1834,7 @@ impl ConfigLayer {
                 )));
             }
 
-            if let Some(backend) = BackendKind::from_str(trimmed) {
+            if let Some(backend) = BackendKind::parse(trimmed) {
                 if layer.agent_selector.is_none() {
                     let selector = match trimmed.to_ascii_lowercase().as_str() {
                         "codex" => "codex".to_string(),
@@ -1886,7 +1849,7 @@ impl ConfigLayer {
                             }
                         },
                     };
-                    display::warn(BACKEND_KEY_DEPRECATION_MESSAGE.to_string());
+                    display::warn(BACKEND_KEY_DEPRECATION_MESSAGE);
                     layer.agent_selector = Some(selector);
                 }
             } else if !trimmed.is_empty() {
@@ -1908,112 +1871,110 @@ impl ConfigLayer {
             layer.review.checks = Some(commands);
         }
 
-        if let Some(stop_condition) =
-            value_at_path(&file_config, &["approve", "stop_condition"])
+        if let Some(stop_condition) = value_at_path(&file_config, &["approve", "stop_condition"])
+            && let Some(object) = stop_condition.as_object()
         {
-            if let Some(object) = stop_condition.as_object() {
-                if let Some(script_value) = object
-                    .get("script")
-                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
-                {
-                    layer.approve.stop_condition.script = Some(PathBuf::from(script_value));
-                }
+            if let Some(script_value) = object
+                .get("script")
+                .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+            {
+                layer.approve.stop_condition.script = Some(PathBuf::from(script_value));
+            }
 
-                if let Some(retries) = parse_u32(object.get("retries"))
-                    .or_else(|| parse_u32(object.get("max_retries")))
-                    .or_else(|| parse_u32(object.get("max_attempts")))
-                {
-                    layer.approve.stop_condition.retries = Some(retries);
+            if let Some(retries) = parse_u32(object.get("retries"))
+                .or_else(|| parse_u32(object.get("max_retries")))
+                .or_else(|| parse_u32(object.get("max_attempts")))
+            {
+                layer.approve.stop_condition.retries = Some(retries);
+            }
+        }
+
+        if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"])
+            && let Some(gate_object) = cicd_gate.as_object()
+        {
+            if let Some(script_value) = gate_object
+                .get("script")
+                .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+            {
+                layer.merge.cicd_gate.script = Some(PathBuf::from(script_value));
+            }
+
+            if let Some(auto_value) = parse_bool(gate_object.get("auto_resolve")) {
+                layer.merge.cicd_gate.auto_resolve = Some(auto_value);
+            } else if let Some(auto_value) = parse_bool(gate_object.get("auto-fix")) {
+                layer.merge.cicd_gate.auto_resolve = Some(auto_value);
+            }
+
+            if let Some(retries) = parse_u32(gate_object.get("retries")) {
+                layer.merge.cicd_gate.retries = Some(retries);
+            } else if let Some(retries) = parse_u32(gate_object.get("max_retries")) {
+                layer.merge.cicd_gate.retries = Some(retries);
+            } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
+                layer.merge.cicd_gate.retries = Some(retries);
+            }
+        }
+
+        if let Some(merge_table) = value_at_path(&file_config, &["merge"])
+            && let Some(table) = merge_table.as_object()
+        {
+            if let Some(squash) = parse_bool(
+                table
+                    .get("squash")
+                    .or_else(|| table.get("squash_default"))
+                    .or_else(|| table.get("squash-default")),
+            ) {
+                layer.merge.squash_default = Some(squash);
+            }
+
+            if let Some(mainline) = parse_u32(
+                table
+                    .get("squash_mainline")
+                    .or_else(|| table.get("squash-mainline")),
+            ) {
+                layer.merge.squash_mainline = Some(mainline);
+            }
+
+            if let Some(conflicts_value) = table.get("conflicts")
+                && let Some(conflicts) = conflicts_value.as_object()
+            {
+                let auto_resolve = conflicts
+                    .get("auto_resolve")
+                    .or_else(|| conflicts.get("auto-resolve"))
+                    .or_else(|| conflicts.get("auto_resolve_conflicts"))
+                    .or_else(|| conflicts.get("auto-resolve-conflicts"))
+                    .and_then(|value| parse_bool(Some(value)));
+                if let Some(auto) = auto_resolve {
+                    layer.merge.conflicts.auto_resolve = Some(auto);
                 }
             }
         }
 
-        if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"]) {
-            if let Some(gate_object) = cicd_gate.as_object() {
-                if let Some(script_value) = gate_object
-                    .get("script")
-                    .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
-                {
-                    layer.merge.cicd_gate.script = Some(PathBuf::from(script_value));
-                }
-
-                if let Some(auto_value) = parse_bool(gate_object.get("auto_resolve")) {
-                    layer.merge.cicd_gate.auto_resolve = Some(auto_value);
-                } else if let Some(auto_value) = parse_bool(gate_object.get("auto-fix")) {
-                    layer.merge.cicd_gate.auto_resolve = Some(auto_value);
-                }
-
-                if let Some(retries) = parse_u32(gate_object.get("retries")) {
-                    layer.merge.cicd_gate.retries = Some(retries);
-                } else if let Some(retries) = parse_u32(gate_object.get("max_retries")) {
-                    layer.merge.cicd_gate.retries = Some(retries);
-                } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
-                    layer.merge.cicd_gate.retries = Some(retries);
-                }
+        if let Some(workflow_value) = value_at_path(&file_config, &["workflow"])
+            && let Some(workflow_table) = workflow_value.as_object()
+        {
+            if let Some(no_commit) = parse_bool(workflow_table.get("no_commit_default"))
+                .or_else(|| parse_bool(workflow_table.get("no-commit-default")))
+            {
+                layer.workflow.no_commit_default = Some(no_commit);
             }
-        }
 
-        if let Some(merge_table) = value_at_path(&file_config, &["merge"]) {
-            if let Some(table) = merge_table.as_object() {
-                if let Some(squash) = parse_bool(
-                    table
-                        .get("squash")
-                        .or_else(|| table.get("squash_default"))
-                        .or_else(|| table.get("squash-default")),
+            if let Some(background_value) = workflow_table.get("background")
+                && let Some(background_table) = background_value.as_object()
+            {
+                if let Some(enabled) = parse_bool(
+                    background_table
+                        .get("enabled")
+                        .or_else(|| background_table.get("allow")),
                 ) {
-                    layer.merge.squash_default = Some(squash);
+                    layer.workflow.background.enabled = Some(enabled);
                 }
 
-                if let Some(mainline) = parse_u32(
-                    table
-                        .get("squash_mainline")
-                        .or_else(|| table.get("squash-mainline")),
+                if let Some(quiet) = parse_bool(
+                    background_table
+                        .get("quiet")
+                        .or_else(|| background_table.get("silent")),
                 ) {
-                    layer.merge.squash_mainline = Some(mainline);
-                }
-
-                if let Some(conflicts_value) = table.get("conflicts") {
-                    if let Some(conflicts) = conflicts_value.as_object() {
-                        let auto_resolve = conflicts
-                            .get("auto_resolve")
-                            .or_else(|| conflicts.get("auto-resolve"))
-                            .or_else(|| conflicts.get("auto_resolve_conflicts"))
-                            .or_else(|| conflicts.get("auto-resolve-conflicts"))
-                            .and_then(|value| parse_bool(Some(value)));
-                        if let Some(auto) = auto_resolve {
-                            layer.merge.conflicts.auto_resolve = Some(auto);
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(workflow_value) = value_at_path(&file_config, &["workflow"]) {
-            if let Some(workflow_table) = workflow_value.as_object() {
-                if let Some(no_commit) = parse_bool(workflow_table.get("no_commit_default"))
-                    .or_else(|| parse_bool(workflow_table.get("no-commit-default")))
-                {
-                    layer.workflow.no_commit_default = Some(no_commit);
-                }
-
-                if let Some(background_value) = workflow_table.get("background") {
-                    if let Some(background_table) = background_value.as_object() {
-                        if let Some(enabled) = parse_bool(
-                            background_table
-                                .get("enabled")
-                                .or_else(|| background_table.get("allow")),
-                        ) {
-                            layer.workflow.background.enabled = Some(enabled);
-                        }
-
-                        if let Some(quiet) = parse_bool(
-                            background_table
-                                .get("quiet")
-                                .or_else(|| background_table.get("silent")),
-                        ) {
-                            layer.workflow.background.quiet = Some(quiet);
-                        }
-                    }
+                    layer.workflow.background.quiet = Some(quiet);
                 }
             }
         }
@@ -3064,9 +3025,11 @@ profile = "deprecated"
 
     #[test]
     fn resolve_runtime_uses_provided_command() {
-        let mut runtime = AgentRuntimeOptions::default();
-        runtime.command = vec!["/opt/custom-agent".to_string(), "--flag".to_string()];
-        runtime.label = Some("custom".to_string());
+        let runtime = AgentRuntimeOptions {
+            label: Some("custom".to_string()),
+            command: vec!["/opt/custom-agent".to_string(), "--flag".to_string()],
+            ..Default::default()
+        };
 
         let resolved = resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
             .expect("explicit command should resolve");
@@ -3175,24 +3138,28 @@ profile = "deprecated"
         let mut cfg = Config::default();
         cfg.agent_runtime.command = vec!["base-cmd".to_string()];
 
-        let mut defaults = AgentOverrides::default();
-        defaults.agent_runtime = Some(AgentRuntimeOverride {
-            label: Some("default".to_string()),
-            command: Some(vec!["default-cmd".to_string()]),
-            progress_filter: None,
-            output: None,
-            enable_script_wrapper: None,
-        });
+        let defaults = AgentOverrides {
+            agent_runtime: Some(AgentRuntimeOverride {
+                label: Some("default".to_string()),
+                command: Some(vec!["default-cmd".to_string()]),
+                progress_filter: None,
+                output: None,
+                enable_script_wrapper: None,
+            }),
+            ..Default::default()
+        };
         cfg.agent_defaults = defaults;
 
-        let mut scoped = AgentOverrides::default();
-        scoped.agent_runtime = Some(AgentRuntimeOverride {
-            label: Some("scoped".to_string()),
-            command: Some(vec!["scoped-cmd".to_string()]),
-            progress_filter: None,
-            output: None,
-            enable_script_wrapper: None,
-        });
+        let scoped = AgentOverrides {
+            agent_runtime: Some(AgentRuntimeOverride {
+                label: Some("scoped".to_string()),
+                command: Some(vec!["scoped-cmd".to_string()]),
+                progress_filter: None,
+                output: None,
+                enable_script_wrapper: None,
+            }),
+            ..Default::default()
+        };
         cfg.agent_scopes.insert(CommandScope::Ask, scoped);
 
         let ask = cfg
@@ -3215,14 +3182,16 @@ profile = "deprecated"
         );
         assert_eq!(save.agent_runtime.label, "default");
 
-        let mut cli_override = AgentOverrides::default();
-        cli_override.agent_runtime = Some(AgentRuntimeOverride {
-            label: Some("cli".to_string()),
-            command: Some(vec!["cli-cmd".to_string(), "--flag".to_string()]),
-            progress_filter: None,
-            output: None,
-            enable_script_wrapper: None,
-        });
+        let cli_override = AgentOverrides {
+            agent_runtime: Some(AgentRuntimeOverride {
+                label: Some("cli".to_string()),
+                command: Some(vec!["cli-cmd".to_string(), "--flag".to_string()]),
+                progress_filter: None,
+                output: None,
+                enable_script_wrapper: None,
+            }),
+            ..Default::default()
+        };
 
         let ask_with_cli = cfg
             .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))

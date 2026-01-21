@@ -49,6 +49,7 @@ pub struct JobPaths {
     pub stderr_path: PathBuf,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LaunchResult {
     pub record: JobRecord,
@@ -202,6 +203,7 @@ fn load_record(paths: &JobPaths) -> Result<JobRecord, Box<dyn std::error::Error>
     Ok(record)
 }
 
+#[allow(dead_code, clippy::too_many_arguments)]
 pub fn launch_background_job(
     project_root: &Path,
     jobs_root: &Path,
@@ -501,10 +503,9 @@ pub fn gc_jobs(
         }
         if finished_at < cutoff {
             let paths = paths_for(jobs_root, &id);
-            if paths.job_dir.exists()
-                && fs::remove_dir_all(&paths.job_dir).is_ok() {
-                    removed += 1;
-                }
+            if paths.job_dir.exists() && fs::remove_dir_all(&paths.job_dir).is_ok() {
+                removed += 1;
+            }
         }
     }
 

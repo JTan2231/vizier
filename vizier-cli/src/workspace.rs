@@ -158,10 +158,10 @@ impl WorkspaceStore {
         let mut candidates: BTreeMap<String, WorkspaceCandidate> = BTreeMap::new();
 
         for (slug, entry) in &self.manifest.entries {
-            if let Some(filter) = slug_filter {
-                if slug != filter {
-                    continue;
-                }
+            if let Some(filter) = slug_filter
+                && slug != filter
+            {
+                continue;
             }
 
             let path = self.repo_root.join(&entry.path);
@@ -186,22 +186,24 @@ impl WorkspaceStore {
             };
             let slug = slug.to_string();
 
-            if let Some(filter) = slug_filter {
-                if slug != filter {
-                    continue;
-                }
+            if let Some(filter) = slug_filter
+                && slug != filter
+            {
+                continue;
             }
 
             if let Ok(worktree) = repo.find_worktree(worktree_name) {
                 let path = worktree.path().to_path_buf();
                 let branch = head_branch(&path).ok();
-                let entry = candidates.entry(slug.clone()).or_insert_with(|| WorkspaceCandidate {
-                    slug: slug.clone(),
-                    branch: branch.clone(),
-                    path: path.clone(),
-                    worktree_name: worktree_name.to_string(),
-                    registered: true,
-                });
+                let entry = candidates
+                    .entry(slug.clone())
+                    .or_insert_with(|| WorkspaceCandidate {
+                        slug: slug.clone(),
+                        branch: branch.clone(),
+                        path: path.clone(),
+                        worktree_name: worktree_name.to_string(),
+                        registered: true,
+                    });
 
                 entry.registered = true;
                 entry.path = path;
@@ -226,20 +228,24 @@ impl WorkspaceStore {
                 if !name_str.starts_with(WORKSPACE_DIR_PREFIX) {
                     continue;
                 }
-                let slug = name_str.trim_start_matches(WORKSPACE_DIR_PREFIX).to_string();
-                if let Some(filter) = slug_filter {
-                    if slug != filter {
-                        continue;
-                    }
+                let slug = name_str
+                    .trim_start_matches(WORKSPACE_DIR_PREFIX)
+                    .to_string();
+                if let Some(filter) = slug_filter
+                    && slug != filter
+                {
+                    continue;
                 }
 
-                candidates.entry(slug.clone()).or_insert_with(|| WorkspaceCandidate {
-                    slug: slug.clone(),
-                    branch: None,
-                    path: entry.path(),
-                    worktree_name: workspace_worktree_name(&slug),
-                    registered: false,
-                });
+                candidates
+                    .entry(slug.clone())
+                    .or_insert_with(|| WorkspaceCandidate {
+                        slug: slug.clone(),
+                        branch: None,
+                        path: entry.path(),
+                        worktree_name: workspace_worktree_name(&slug),
+                        registered: false,
+                    });
             }
         }
 

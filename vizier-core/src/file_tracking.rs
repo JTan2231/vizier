@@ -116,10 +116,10 @@ impl FileTracker {
 
         let mut tracker = FILE_TRACKER.lock().unwrap();
         for path in changed {
-            if tracker.updated_files.insert(path.clone()) {
-                if !tracker.all_files.iter().any(|p| p == &path) {
-                    tracker.all_files.push(path);
-                }
+            if tracker.updated_files.insert(path.clone())
+                && !tracker.all_files.iter().any(|p| p == &path)
+            {
+                tracker.all_files.push(path);
             }
         }
 
@@ -146,10 +146,10 @@ impl FileTracker {
                 continue;
             }
 
-            if let Some(delta) = entry.index_to_workdir() {
-                if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
-                    files.push(Self::normalize_repo_path(path));
-                }
+            if let Some(delta) = entry.index_to_workdir()
+                && let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path())
+            {
+                files.push(Self::normalize_repo_path(path));
             }
         }
 
@@ -187,7 +187,9 @@ fn is_canonical_story_path(path: &str) -> bool {
     }
 
     let normalized = path.replace('\\', "/");
-    let trimmed = normalized.trim_start_matches("./").trim_start_matches(".vizier/");
+    let trimmed = normalized
+        .trim_start_matches("./")
+        .trim_start_matches(".vizier/");
 
     if tools::is_snapshot_file(trimmed) {
         return true;

@@ -127,10 +127,10 @@ impl Drop for AuditorCleanup {
         if let Some(artifact) = Auditor::persist_session_log() {
             display::info(format!("Session saved to {}", artifact.display_path()));
 
-            if self.print_json {
-                if let Ok(contents) = fs::read_to_string(&artifact.path) {
-                    println!("{}", contents);
-                }
+            if self.print_json
+                && let Ok(contents) = fs::read_to_string(&artifact.path)
+            {
+                println!("{}", contents);
             }
         }
     }
@@ -232,6 +232,12 @@ pub struct Auditor {
     operations: Vec<serde_json::Value>,
 }
 
+impl Default for Auditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Auditor {
     pub fn new() -> Self {
         let now = Utc::now();
@@ -257,9 +263,9 @@ impl Auditor {
         auditor.messages.push(message);
     }
 
-    pub fn replace_messages(messages: &Vec<Message>) {
+    pub fn replace_messages(messages: &[Message]) {
         let mut auditor = AUDITOR.lock().unwrap();
-        auditor.messages = messages.clone();
+        auditor.messages = messages.to_owned();
     }
 
     fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
@@ -451,10 +457,7 @@ impl Auditor {
             return None;
         }
 
-        let project_root = match find_project_root().ok().flatten() {
-            Some(root) => root,
-            None => return None,
-        };
+        let project_root = find_project_root().ok().flatten()?;
 
         let log = {
             let auditor = AUDITOR.lock().ok()?;
@@ -638,8 +641,7 @@ impl Auditor {
 
         let session_path = sessions_dir.join("session.json");
         let tmp_path = sessions_dir.join("session.json.tmp");
-        let buffer = serde_json::to_vec_pretty(log)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let buffer = serde_json::to_vec_pretty(log).map_err(std::io::Error::other)?;
         let mut tmp = File::create(&tmp_path)?;
         tmp.write_all(&buffer)?;
         tmp.sync_all()?;
@@ -683,9 +685,7 @@ impl Auditor {
             return system_prompt.to_string();
         }
 
-        format!(
-            "{system_prompt}\n\n<userMessage>\n{user_message}\n</userMessage>\n"
-        )
+        format!("{system_prompt}\n\n<userMessage>\n{user_message}\n</userMessage>\n")
     }
 
     /// Basic LLM request with tool usage
@@ -1027,105 +1027,6 @@ impl SessionArtifact {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Auditor, CommitMessageBuilder, CommitMessageType, SystemPrompt, find_project_root};
-    use std::fs;
-    use tempfile::tempdir;
-
-    #[test]
-    fn detects_worktree_root_with_git_file() {
-        let tmp = tempdir().unwrap();
-        let worktree = tmp.path().join("worktree");
-        fs::create_dir(&worktree).unwrap();
-        let nested = worktree.join("nested");
-        fs::create_dir(&nested).unwrap();
-
-        let git_dir = tmp.path().join("actual.git");
-        fs::create_dir(&git_dir).unwrap();
-        fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", git_dir.display()),
-        )
-        .unwrap();
-
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&nested).unwrap();
-        let detected = find_project_root().unwrap().expect("worktree root");
-        assert_eq!(
-            detected.canonicalize().unwrap(),
-            worktree.canonicalize().unwrap()
-        );
-        std::env::set_current_dir(prev).unwrap();
-    }
-
-    #[test]
-    fn commit_builder_uses_summary_as_header() {
-        let mut builder = CommitMessageBuilder::new(
-            "feat: tighten CLI epilogue\n\n- ensure Outcome lines match Auditor facts".to_string(),
-        );
-        builder.set_header(CommitMessageType::CodeChange);
-
-        let message = builder.build();
-        assert!(
-            message.starts_with("feat: tighten CLI epilogue"),
-            "expected descriptive header, got '{}'",
-            message
-        );
-        assert!(
-            !message.contains("VIZIER CODE CHANGE"),
-            "should not fall back to generic header when summary exists"
-        );
-        assert!(
-            message.contains("\n\n- ensure Outcome lines match Auditor facts"),
-            "original body should remain after metadata"
-        );
-    }
-
-    #[test]
-    fn commit_builder_falls_back_when_summary_missing() {
-        let mut builder = CommitMessageBuilder::new("\n".to_string());
-        builder.set_header(CommitMessageType::NarrativeChange);
-
-        let message = builder.build();
-        assert!(
-            message.starts_with("VIZIER NARRATIVE CHANGE"),
-            "missing summary should keep generic header"
-        );
-    }
-
-    #[test]
-    fn render_prompt_wraps_user_message() {
-        let prompt = "base prompt";
-        let user_msg = "diff --git a/file b/file";
-        let rendered =
-            Auditor::render_prompt(prompt, user_msg, Some(SystemPrompt::Commit));
-
-        assert!(rendered.contains(prompt));
-        assert!(rendered.contains("<userMessage>"));
-        assert!(rendered.contains(user_msg));
-        assert!(rendered.contains("</userMessage>"));
-    }
-
-    #[test]
-    fn render_prompt_passthrough_on_empty_user_message() {
-        let prompt = "base prompt";
-        let rendered =
-            Auditor::render_prompt(prompt, "", Some(SystemPrompt::Documentation));
-
-        assert_eq!(rendered, prompt);
-    }
-
-    #[test]
-    fn render_prompt_passthrough_for_non_commit_variant() {
-        let prompt = "base prompt";
-        let rendered =
-            Auditor::render_prompt(prompt, "instructions", Some(SystemPrompt::Documentation));
-
-        assert_eq!(rendered, prompt);
-    }
-}
-
 impl CommitMessageBuilder {
     pub fn new(body: String) -> Self {
         Self {
@@ -1249,5 +1150,104 @@ impl CommitMessageType {
             CommitMessageType::Conversation => "VIZIER CONVERSATION",
             CommitMessageType::NarrativeChange => "VIZIER NARRATIVE CHANGE",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Auditor, CommitMessageBuilder, CommitMessageType, SystemPrompt, find_project_root,
+    };
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn detects_worktree_root_with_git_file() {
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir(&worktree).unwrap();
+        let nested = worktree.join("nested");
+        fs::create_dir(&nested).unwrap();
+
+        let git_dir = tmp.path().join("actual.git");
+        fs::create_dir(&git_dir).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )
+        .unwrap();
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&nested).unwrap();
+        let detected = find_project_root().unwrap().expect("worktree root");
+        assert_eq!(
+            detected.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap()
+        );
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    fn commit_builder_uses_summary_as_header() {
+        let mut builder = CommitMessageBuilder::new(
+            "feat: tighten CLI epilogue\n\n- ensure Outcome lines match Auditor facts".to_string(),
+        );
+        builder.set_header(CommitMessageType::CodeChange);
+
+        let message = builder.build();
+        assert!(
+            message.starts_with("feat: tighten CLI epilogue"),
+            "expected descriptive header, got '{}'",
+            message
+        );
+        assert!(
+            !message.contains("VIZIER CODE CHANGE"),
+            "should not fall back to generic header when summary exists"
+        );
+        assert!(
+            message.contains("\n\n- ensure Outcome lines match Auditor facts"),
+            "original body should remain after metadata"
+        );
+    }
+
+    #[test]
+    fn commit_builder_falls_back_when_summary_missing() {
+        let mut builder = CommitMessageBuilder::new("\n".to_string());
+        builder.set_header(CommitMessageType::NarrativeChange);
+
+        let message = builder.build();
+        assert!(
+            message.starts_with("VIZIER NARRATIVE CHANGE"),
+            "missing summary should keep generic header"
+        );
+    }
+
+    #[test]
+    fn render_prompt_wraps_user_message() {
+        let prompt = "base prompt";
+        let user_msg = "diff --git a/file b/file";
+        let rendered = Auditor::render_prompt(prompt, user_msg, Some(SystemPrompt::Commit));
+
+        assert!(rendered.contains(prompt));
+        assert!(rendered.contains("<userMessage>"));
+        assert!(rendered.contains(user_msg));
+        assert!(rendered.contains("</userMessage>"));
+    }
+
+    #[test]
+    fn render_prompt_passthrough_on_empty_user_message() {
+        let prompt = "base prompt";
+        let rendered = Auditor::render_prompt(prompt, "", Some(SystemPrompt::Documentation));
+
+        assert_eq!(rendered, prompt);
+    }
+
+    #[test]
+    fn render_prompt_passthrough_for_non_commit_variant() {
+        let prompt = "base prompt";
+        let rendered =
+            Auditor::render_prompt(prompt, "instructions", Some(SystemPrompt::Documentation));
+
+        assert_eq!(rendered, prompt);
     }
 }

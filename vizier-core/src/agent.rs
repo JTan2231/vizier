@@ -105,7 +105,7 @@ impl ProgressHook {
     pub async fn send_event(&self, event: ProgressEvent) {
         match self {
             ProgressHook::Display(tx) => {
-                let _ = tx.send(Status::Event(event)).await;
+                let _ = tx.send(Status::Event(Box::new(event))).await;
             }
             ProgressHook::Plain(tx) => {
                 let _ = tx.send(event).await;
@@ -558,13 +558,10 @@ impl AgentRunner for ScriptRunner {
                                             ));
                                             continue;
                                         }
-                                        return Err(AgentError::Io(io::Error::new(
-                                            io::ErrorKind::Other,
-                                            format!(
-                                                "failed to spawn progress filter `{}`: {}",
-                                                filter_program, err
-                                            ),
-                                        )));
+                                        return Err(AgentError::Io(io::Error::other(format!(
+                                            "failed to spawn progress filter `{}`: {}",
+                                            filter_program, err
+                                        ))));
                                     }
                                 }
                             }
@@ -575,13 +572,10 @@ impl AgentRunner for ScriptRunner {
                             None => match filter.spawn() {
                                 Ok(child) => child,
                                 Err(err) => {
-                                    return Err(AgentError::Io(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        format!(
-                                            "failed to spawn progress filter `{}`: {}",
-                                            filter_program, err
-                                        ),
-                                    )));
+                                    return Err(AgentError::Io(io::Error::other(format!(
+                                        "failed to spawn progress filter `{}`: {}",
+                                        filter_program, err
+                                    ))));
                                 }
                             },
                         }
@@ -591,13 +585,10 @@ impl AgentRunner for ScriptRunner {
                     let mut spawned_filter = match filter.spawn() {
                         Ok(child) => child,
                         Err(err) => {
-                            return Err(AgentError::Io(io::Error::new(
-                                io::ErrorKind::Other,
-                                format!(
-                                    "failed to spawn progress filter `{}`: {}",
-                                    filter_program, err
-                                ),
-                            )));
+                            return Err(AgentError::Io(io::Error::other(format!(
+                                "failed to spawn progress filter `{}`: {}",
+                                filter_program, err
+                            ))));
                         }
                     };
 

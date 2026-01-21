@@ -404,7 +404,7 @@ impl PlanSlugInventory {
             }
         }
 
-        let mut branches = repo.branches(Some(BranchType::Local))?;
+        let branches = repo.branches(Some(BranchType::Local))?;
         for branch_res in branches {
             let (branch, _) = branch_res?;
             let Some(name) = branch.name()? else {
@@ -592,7 +592,7 @@ fn extract_section(document: &str, header: &str) -> Option<String> {
     let needle = format!("## {header}");
     let start = document.find(&needle)?;
     let after_header = &document[start + needle.len()..];
-    let mut lines = after_header.lines();
+    let lines = after_header.lines();
 
     let mut collected = Vec::new();
     for line in lines {

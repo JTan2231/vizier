@@ -13,9 +13,7 @@ pub struct Tool;
 // TODO: We should only default to the current directory if there isn't a configured target
 //       directory (for more automated/transient uses)
 fn resolve_vizier_dir() -> Option<String> {
-    let start_dir = std::env::current_dir()
-        .ok()
-        .expect("Couldn't grab the current working directory");
+    let start_dir = std::env::current_dir().expect("Couldn't grab the current working directory");
     let mut current = start_dir.clone();
     let mut levels_up = 0;
 
@@ -57,8 +55,7 @@ pub fn try_get_narrative_dir() -> Option<String> {
 }
 
 pub fn snapshot_path() -> PathBuf {
-    try_snapshot_path()
-        .unwrap_or_else(|| PathBuf::from(get_narrative_dir()).join(SNAPSHOT_FILE))
+    try_snapshot_path().unwrap_or_else(|| PathBuf::from(get_narrative_dir()).join(SNAPSHOT_FILE))
 }
 
 pub fn try_snapshot_path() -> Option<PathBuf> {
@@ -68,11 +65,7 @@ pub fn try_snapshot_path() -> Option<PathBuf> {
         return Some(existing);
     }
 
-    Some(
-        vizier_root
-            .join(NARRATIVE_DIR)
-            .join(SNAPSHOT_FILE),
-    )
+    Some(vizier_root.join(NARRATIVE_DIR).join(SNAPSHOT_FILE))
 }
 
 pub fn read_snapshot() -> String {
@@ -139,10 +132,10 @@ fn find_snapshot_anywhere(vizier_root: &Path) -> Option<PathBuf> {
             };
 
             if file_type.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions") {
-                        continue;
-                    }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions")
+                {
+                    continue;
                 }
 
                 stack.push(path);
@@ -181,11 +174,11 @@ pub fn build_llm_response(tool_output: String, guard: &CaptureGuard) -> String {
     let mut response = format!("<tool_output>{}</tool_output>", tool_output);
 
     let (out, err) = guard.take_both();
-    if out.len() > 0 {
+    if !out.is_empty() {
         response = format!("<stdout>{}</stdout>", out);
     }
 
-    if err.len() > 0 {
+    if !err.is_empty() {
         response = format!("<stderr>{}</stderr>", err);
     }
 
@@ -196,7 +189,7 @@ pub fn diff() -> String {
     let guard = CaptureGuard::start();
     match vcs::get_diff(".", None, None) {
         Ok(d) => build_llm_response(d, &guard),
-        Err(e) => return llm_error(&format!("Error getting diff: {}", e)),
+        Err(e) => llm_error(&format!("Error getting diff: {}", e)),
     }
 }
 
@@ -205,7 +198,7 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
 
     match vcs::get_log(
         depth.parse::<usize>().unwrap_or(10).max(10),
-        if commit_message_type.len() > 0 {
+        if !commit_message_type.is_empty() {
             Some(vec![commit_message_type])
         } else {
             None
@@ -219,7 +212,7 @@ pub fn git_log(depth: String, commit_message_type: String) -> String {
                 .join("\n"),
             &guard,
         ),
-        Err(e) => return llm_error(&format!("Error getting git log: {}", e)),
+        Err(e) => llm_error(&format!("Error getting git log: {}", e)),
     }
 }
 

@@ -87,7 +87,7 @@ pub fn debug(message: impl AsRef<str>) {
 
 pub enum Status {
     Working(String),
-    Event(ProgressEvent),
+    Event(Box<ProgressEvent>),
     Done,
     Error(String),
 }
@@ -131,20 +131,18 @@ impl ProgressEvent {
         let stage = self
             .phase
             .as_deref()
-            .or_else(|| self.label.as_deref())
+            .or(self.label.as_deref())
             .unwrap_or_else(|| self.kind.label())
             .to_string();
         let summary = self
             .message
-            .as_ref()
-            .map(|s| s.as_str())
+            .as_deref()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .or_else(|| {
                 self.label
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .filter(|s| !s.is_empty() && s != &&stage)
+                    .as_deref()
+                    .filter(|s| !s.is_empty() && *s != stage.as_str())
                     .map(|s| s.to_string())
             });
 
@@ -156,10 +154,10 @@ impl ProgressEvent {
         if let Some(detail) = self.detail.as_ref().filter(|s| !s.is_empty()) {
             scopes.push(detail.as_str());
         }
-        if let Some(path) = self.path.as_ref().filter(|s| !s.is_empty()) {
-            if !scopes.iter().any(|existing| existing == &path.as_str()) {
-                scopes.push(path.as_str());
-            }
+        if let Some(path) = self.path.as_ref().filter(|s| !s.is_empty())
+            && !scopes.iter().any(|existing| existing == &path.as_str())
+        {
+            scopes.push(path.as_str());
         }
 
         if scopes.is_empty() {
@@ -307,16 +305,16 @@ pub fn render_progress_event(event: &ProgressEvent, verbosity: Verbosity) -> Vec
         }
     }
 
-    if matches!(verbosity, Verbosity::Info | Verbosity::Debug) {
-        if let Some(timestamp) = event.timestamp.as_ref().filter(|s| !s.is_empty()) {
-            lines.push(format!("{} timestamp={}", prefix, timestamp));
-        }
+    if matches!(verbosity, Verbosity::Info | Verbosity::Debug)
+        && let Some(timestamp) = event.timestamp.as_ref().filter(|s| !s.is_empty())
+    {
+        lines.push(format!("{} timestamp={}", prefix, timestamp));
     }
 
-    if matches!(verbosity, Verbosity::Debug) {
-        if let Some(raw) = event.raw.as_ref().filter(|s| !s.is_empty()) {
-            lines.push(format!("{} event={}", prefix, raw));
-        }
+    if matches!(verbosity, Verbosity::Debug)
+        && let Some(raw) = event.raw.as_ref().filter(|s| !s.is_empty())
+    {
+        lines.push(format!("{} event={}", prefix, raw));
     }
 
     lines

@@ -50,10 +50,10 @@ pub fn gather_prompt_context() -> Result<PromptContext, AgentError> {
 }
 
 fn load_snapshot() -> String {
-    if let Some(path) = tools::try_snapshot_path() {
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            return contents;
-        }
+    if let Some(path) = tools::try_snapshot_path()
+        && let Ok(contents) = std::fs::read_to_string(&path)
+    {
+        return contents;
     }
 
     String::new()
@@ -175,8 +175,8 @@ pub fn build_documentation_prompt(
 
     let mut prompt = String::new();
     if documentation.use_documentation_prompt {
-        let selection = prompt_selection
-            .ok_or_else(|| AgentError::MissingPrompt(config::PromptKind::Documentation))?;
+        let selection =
+            prompt_selection.ok_or(AgentError::MissingPrompt(config::PromptKind::Documentation))?;
         prompt.push_str(&selection.text);
         prompt.push_str("\n\n");
     }
@@ -301,20 +301,24 @@ pub fn build_plan_refine_prompt(
     Ok(prompt)
 }
 
+pub struct ReviewPromptInput<'a> {
+    pub plan_slug: &'a str,
+    pub branch_name: &'a str,
+    pub target_branch: &'a str,
+    pub plan_document: &'a str,
+    pub diff_summary: &'a str,
+    pub check_results: &'a [crate::agent::ReviewCheckContext],
+    pub cicd_gate: Option<&'a crate::agent::ReviewGateContext>,
+    pub documentation: &'a config::DocumentationSettings,
+}
+
 pub fn build_review_prompt(
     prompt_selection: &config::PromptSelection,
-    plan_slug: &str,
-    branch_name: &str,
-    target_branch: &str,
-    plan_document: &str,
-    diff_summary: &str,
-    check_results: &[crate::agent::ReviewCheckContext],
-    cicd_gate: Option<&crate::agent::ReviewGateContext>,
-    documentation: &config::DocumentationSettings,
+    input: ReviewPromptInput<'_>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
-        documentation.include_snapshot,
-        documentation.include_narrative_docs,
+        input.documentation.include_snapshot,
+        input.documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
@@ -325,41 +329,44 @@ pub fn build_review_prompt(
 
     prompt.push_str("<planMetadata>\n");
     prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
+        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n",
+        plan_slug = input.plan_slug,
+        branch_name = input.branch_name,
+        target_branch = input.target_branch,
     ));
     prompt.push_str("</planMetadata>\n\n");
 
-    if documentation.include_snapshot {
+    if input.documentation.include_snapshot {
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_narrative_docs {
+    if input.documentation.include_narrative_docs {
         append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
     prompt.push_str("<planDocument>\n");
-    if plan_document.trim().is_empty() {
+    if input.plan_document.trim().is_empty() {
         prompt.push_str("(plan document appears empty)\n");
     } else {
-        prompt.push_str(plan_document.trim());
+        prompt.push_str(input.plan_document.trim());
         prompt.push('\n');
     }
     prompt.push_str("</planDocument>\n\n");
 
     prompt.push_str("<diffSummary>\n");
-    if diff_summary.trim().is_empty() {
+    if input.diff_summary.trim().is_empty() {
         prompt.push_str("(diff between plan branch and target branch was empty or unavailable)\n");
     } else {
-        prompt.push_str(diff_summary.trim());
+        prompt.push_str(input.diff_summary.trim());
         prompt.push('\n');
     }
     prompt.push_str("</diffSummary>\n\n");
 
     prompt.push_str("<checkResults>\n");
-    if check_results.is_empty() {
+    if input.check_results.is_empty() {
         prompt.push_str("No review checks were executed before this critique.\n");
     } else {
-        for check in check_results {
+        for check in input.check_results {
             let status_label = if check.success { "success" } else { "failure" };
             let status_code = check
                 .status_code
@@ -379,7 +386,7 @@ pub fn build_review_prompt(
     prompt.push_str("</checkResults>\n\n");
 
     prompt.push_str("<cicdGate>\n");
-    if let Some(gate) = cicd_gate {
+    if let Some(gate) = input.cicd_gate {
         let status = match gate.status {
             crate::agent::ReviewGateStatus::Passed => "passed",
             crate::agent::ReviewGateStatus::Failed => "failed",
@@ -467,21 +474,23 @@ pub fn build_merge_conflict_prompt(
     Ok(prompt)
 }
 
-pub fn build_cicd_failure_prompt(
-    plan_slug: &str,
-    plan_branch: &str,
-    target_branch: &str,
-    script_path: &Path,
-    attempt: u32,
-    max_attempts: u32,
-    exit_code: Option<i32>,
-    stdout: &str,
-    stderr: &str,
-    documentation: &config::DocumentationSettings,
-) -> Result<String, AgentError> {
+pub struct CicdFailurePromptInput<'a> {
+    pub plan_slug: &'a str,
+    pub plan_branch: &'a str,
+    pub target_branch: &'a str,
+    pub script_path: &'a Path,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub exit_code: Option<i32>,
+    pub stdout: &'a str,
+    pub stderr: &'a str,
+    pub documentation: &'a config::DocumentationSettings,
+}
+
+pub fn build_cicd_failure_prompt(input: CicdFailurePromptInput<'_>) -> Result<String, AgentError> {
     let context = load_context_if_needed(
-        documentation.include_snapshot,
-        documentation.include_narrative_docs,
+        input.documentation.include_snapshot,
+        input.documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
 
@@ -494,43 +503,47 @@ pub fn build_cicd_failure_prompt(
 
     prompt.push_str("<planMetadata>\n");
     prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nplan_branch: {plan_branch}\ntarget_branch: {target_branch}\n"
+        "plan_slug: {plan_slug}\nplan_branch: {plan_branch}\ntarget_branch: {target_branch}\n",
+        plan_slug = input.plan_slug,
+        plan_branch = input.plan_branch,
+        target_branch = input.target_branch,
     ));
     prompt.push_str("</planMetadata>\n\n");
 
     prompt.push_str("<cicdContext>\n");
     prompt.push_str(&format!(
         "script_path: {}\nattempt: {}\nmax_attempts: {}\nexit_code: {}\n",
-        script_path.display(),
-        attempt,
-        max_attempts,
-        exit_code
+        input.script_path.display(),
+        input.attempt,
+        input.max_attempts,
+        input
+            .exit_code
             .map(|code| code.to_string())
             .unwrap_or_else(|| "signal".to_string())
     ));
     prompt.push_str("</cicdContext>\n\n");
 
     prompt.push_str("<gateOutput>\nstdout:\n");
-    if stdout.trim().is_empty() {
+    if input.stdout.trim().is_empty() {
         prompt.push_str("(stdout was empty)\n");
     } else {
-        prompt.push_str(stdout.trim());
+        prompt.push_str(input.stdout.trim());
         prompt.push('\n');
     }
     prompt.push_str("\nstderr:\n");
-    if stderr.trim().is_empty() {
+    if input.stderr.trim().is_empty() {
         prompt.push_str("(stderr was empty)\n");
     } else {
-        prompt.push_str(stderr.trim());
+        prompt.push_str(input.stderr.trim());
         prompt.push('\n');
     }
     prompt.push_str("</gateOutput>\n\n");
 
-    if documentation.include_snapshot {
+    if input.documentation.include_snapshot {
         append_snapshot_section(&mut prompt, context.as_ref());
     }
 
-    if documentation.include_narrative_docs {
+    if input.documentation.include_narrative_docs {
         append_narrative_docs_section(&mut prompt, context.as_ref());
     }
 
@@ -585,14 +598,16 @@ mod tests {
         let selection = config::get_config().prompt_for(CommandScope::Review, PromptKind::Review);
         let prompt = build_review_prompt(
             &selection,
-            "slug",
-            "draft/slug",
-            "main",
-            "plan",
-            "diff",
-            &[],
-            None,
-            &DocumentationSettings::default(),
+            ReviewPromptInput {
+                plan_slug: "slug",
+                branch_name: "draft/slug",
+                target_branch: "main",
+                plan_document: "plan",
+                diff_summary: "diff",
+                check_results: &[],
+                cicd_gate: None,
+                documentation: &DocumentationSettings::default(),
+            },
         )
         .unwrap();
 
@@ -647,14 +662,16 @@ mod tests {
         };
         let prompt = build_review_prompt(
             &selection,
-            "slug",
-            "draft/slug",
-            "main",
-            "plan",
-            "diff",
-            &[],
-            Some(&gate),
-            &DocumentationSettings::default(),
+            ReviewPromptInput {
+                plan_slug: "slug",
+                branch_name: "draft/slug",
+                target_branch: "main",
+                plan_document: "plan",
+                diff_summary: "diff",
+                check_results: &[],
+                cicd_gate: Some(&gate),
+                documentation: &DocumentationSettings::default(),
+            },
         )
         .unwrap();
 

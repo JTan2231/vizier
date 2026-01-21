@@ -73,7 +73,7 @@ pub fn default_walker() -> ignore::Walk {
 pub fn get_non_ignored_files() -> Vec<std::path::PathBuf> {
     let mut files = default_walker()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+        .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
         .map(|entry| entry.path().to_owned())
         .collect::<Vec<_>>();
 
@@ -88,10 +88,10 @@ pub fn get_non_ignored_files() -> Vec<std::path::PathBuf> {
                 };
 
                 if file_type.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions") {
-                            continue;
-                        }
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                        && matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions")
+                    {
+                        continue;
                     }
                     extra_dirs.push(path);
                 } else {
