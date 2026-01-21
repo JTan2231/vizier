@@ -128,4 +128,4 @@ Cross-links
 - Session logging ↔ Auditor facts: assistant operations persist audited facts to session.json, and the Outcome epilogue points to the artifact for downstream tooling.
 - Agent workflows ↔ Commit/Doc gates: the same checkpoints that gate architecture docs and pending commits must be surfaced as workflow steps so multi-agent runs stay aligned and auditable.
 - Git hygiene + commit practices ↔ Commit isolation/Architecture-doc/Outcome: commit boundaries and commit messaging conventions carry session IDs, gate status, and doc references so repositories get a consistent, reviewable history for both human and agent commits.
-some snapshot changesome snapshot change
+some snapshot changesome snapshot changesome snapshot changesome snapshot change
