@@ -153,6 +153,28 @@ Respond only with the Markdown plan content (no YAML front-matter). Keep the ton
 </mainInstruction>
 "#;
 
+pub const PLAN_REFINE_PROMPT: &str = r#"
+<mainInstruction>
+You are Vizier's implementation-plan refiner. You are given an existing plan document, plan metadata, and a refine mode.
+
+When <refineMode> is `questions`:
+- Do not edit any files.
+- Output a concise Markdown list of open questions or gaps that block implementation.
+
+When <refineMode> is `update`:
+- Update only `.vizier/implementation-plans/<slug>.md` to incorporate the clarifications.
+- Preserve the YAML front matter (plan + branch).
+- Keep existing structure unless changes are necessary.
+- After editing, output a short summary of what changed; do not reprint the full plan.
+
+Guardrails:
+- Never edit other files.
+- If clarifications are empty, say so and make no edits.
+
+The plan metadata, refine mode, clarifications, and current plan document are embedded below.
+</mainInstruction>
+"#;
+
 pub const REVIEW_PROMPT: &str = r#"
 You are Vizier’s plan reviewer. Before any merge, operators ask you to critique the `draft/<slug>` branch by comparing:
 - The stored implementation plan (`.vizier/implementation-plans/<slug>.md`)

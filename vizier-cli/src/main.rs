@@ -171,6 +171,7 @@ enum ScopeArg {
     Ask,
     Save,
     Draft,
+    Refine,
     Approve,
     Review,
     Merge,
@@ -182,6 +183,7 @@ impl From<ScopeArg> for config::CommandScope {
             ScopeArg::Ask => config::CommandScope::Ask,
             ScopeArg::Save => config::CommandScope::Save,
             ScopeArg::Draft => config::CommandScope::Draft,
+            ScopeArg::Refine => config::CommandScope::Refine,
             ScopeArg::Approve => config::CommandScope::Approve,
             ScopeArg::Review => config::CommandScope::Review,
             ScopeArg::Merge => config::CommandScope::Merge,
@@ -213,6 +215,9 @@ enum Commands {
 
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
+
+    /// Refine a stored plan by surfacing questions or applying clarifications
+    Refine(RefineCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
@@ -286,6 +291,21 @@ struct DraftCmd {
     /// Override the derived plan/branch slug (letters, numbers, dashes only)
     #[arg(long = "name", value_name = "NAME")]
     name: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+struct RefineCmd {
+    /// Plan slug to refine (tab-completes from pending plans)
+    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
+    plan: Option<String>,
+
+    /// Clarifications to apply (omit to request outstanding questions)
+    #[arg(value_name = "BODY")]
+    body: Option<String>,
+
+    /// Draft branch name when it deviates from draft/<plan>
+    #[arg(long = "branch", value_name = "BRANCH")]
+    branch: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -688,6 +708,30 @@ fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error
 
 fn resolve_draft_spec(cmd: &DraftCmd) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
     resolve_prompt_input(cmd.spec.as_deref(), cmd.file.as_deref())
+}
+
+fn resolve_refine_options(
+    cmd: &RefineCmd,
+) -> Result<RefineOptions, Box<dyn std::error::Error>> {
+    let plan = cmd
+        .plan
+        .as_deref()
+        .ok_or("plan argument is required for vizier refine")?;
+    let slug = crate::plan::sanitize_name_override(plan).map_err(|err| {
+        Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+    })?;
+    let branch = cmd
+        .branch
+        .clone()
+        .unwrap_or_else(|| crate::plan::default_branch_for_slug(&slug));
+    let body = cmd.body.as_ref().map(|value| value.trim().to_string());
+    if let Some(text) = body.as_ref()
+        && text.is_empty()
+    {
+        return Err("clarification body cannot be empty".into());
+    }
+
+    Ok(RefineOptions { slug, branch, body })
 }
 
 fn resolve_list_options(cmd: &ListCmd) -> ListOptions {
@@ -1181,6 +1225,7 @@ fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     match command {
         Commands::Ask(_) => Some(config::CommandScope::Ask),
         Commands::Draft(_) => Some(config::CommandScope::Draft),
+        Commands::Refine(_) => Some(config::CommandScope::Refine),
         Commands::Approve(_) => Some(config::CommandScope::Approve),
         Commands::Review(_) => Some(config::CommandScope::Review),
         Commands::Merge(_) => Some(config::CommandScope::Merge),
@@ -1234,6 +1279,10 @@ fn build_job_metadata(
     }
 
     match command {
+        Commands::Refine(cmd) => {
+            metadata.plan = cmd.plan.clone();
+            metadata.branch = cmd.branch.clone();
+        }
         Commands::Approve(cmd) => {
             metadata.plan = cmd.plan.clone();
             metadata.target = cmd.target.clone();
@@ -1294,6 +1343,7 @@ fn background_supported(command: &Commands) -> bool {
         command,
         Commands::Ask(_)
             | Commands::Draft(_)
+            | Commands::Refine(_)
             | Commands::Approve(_)
             | Commands::Review(_)
             | Commands::Merge(_)
@@ -1913,6 +1963,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 commit_mode,
             )
             .await
+        }
+
+        Commands::Refine(cmd) => {
+            let opts = resolve_refine_options(&cmd)?;
+            let agent = config::get_config().resolve_agent_settings(
+                config::CommandScope::Refine,
+                cli_agent_override.as_ref(),
+            )?;
+            log_agent_runtime_resolution(&agent);
+            run_refine(opts, &agent, commit_mode).await
         }
 
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)),

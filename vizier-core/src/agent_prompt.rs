@@ -25,6 +25,21 @@ pub struct PromptContext {
     pub docs: Vec<NarrativeDoc>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum PlanRefineMode {
+    Questions,
+    Update,
+}
+
+impl PlanRefineMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            PlanRefineMode::Questions => "questions",
+            PlanRefineMode::Update => "update",
+        }
+    }
+}
+
 pub fn gather_prompt_context() -> Result<PromptContext, AgentError> {
     let narrative_dir = tools::try_get_narrative_dir();
 
@@ -219,6 +234,69 @@ pub fn build_implementation_plan_prompt(
     prompt.push_str(operator_spec.trim());
     prompt.push('\n');
     prompt.push_str("</operatorSpec>\n");
+
+    Ok(prompt)
+}
+
+pub fn build_plan_refine_prompt(
+    prompt_selection: &config::PromptSelection,
+    plan_slug: &str,
+    branch_name: &str,
+    plan_document: &str,
+    mode: PlanRefineMode,
+    clarifications: Option<&str>,
+    documentation: &config::DocumentationSettings,
+) -> Result<String, AgentError> {
+    let context = load_context_if_needed(
+        documentation.include_snapshot,
+        documentation.include_narrative_docs,
+    )?;
+    let bounds = load_bounds_prompt()?;
+
+    let mut prompt = String::new();
+    prompt.push_str(&prompt_selection.text);
+    prompt.push_str("\n\n");
+    append_bounds_section(&mut prompt, &bounds);
+
+    prompt.push_str("<planMetadata>\n");
+    prompt.push_str(&format!(
+        "plan_slug: {plan_slug}\nbranch: {branch_name}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
+    ));
+    prompt.push_str("</planMetadata>\n\n");
+
+    if documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, context.as_ref());
+    }
+
+    if documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, context.as_ref());
+    }
+
+    prompt.push_str("<refineMode>\n");
+    prompt.push_str(&format!("mode: {}\n", mode.as_str()));
+    prompt.push_str("</refineMode>\n\n");
+
+    prompt.push_str("<clarifications>\n");
+    if let Some(text) = clarifications {
+        if text.trim().is_empty() {
+            prompt.push_str("(clarifications were empty)\n");
+        } else {
+            prompt.push_str(text.trim());
+            prompt.push('\n');
+        }
+    } else {
+        prompt.push_str("(no clarifications provided)\n");
+    }
+    prompt.push_str("</clarifications>\n\n");
+
+    prompt.push_str("<planDocument>\n");
+    if plan_document.trim().is_empty() {
+        prompt.push_str("(plan document appears empty)\n");
+    } else {
+        prompt.push_str(plan_document.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</planDocument>\n");
 
     Ok(prompt)
 }
@@ -519,6 +597,34 @@ mod tests {
         .unwrap();
 
         assert!(prompt.starts_with("custom review"));
+        assert!(prompt.contains("<planDocument>"));
+
+        config::set_config(original);
+    }
+
+    #[test]
+    fn plan_refine_prompt_respects_override() {
+        let _guard = CONFIG_LOCK.lock().unwrap();
+        let original = config::get_config();
+        let mut cfg = original.clone();
+        cfg.set_prompt(PromptKind::PlanRefine, "custom refine".to_string());
+        config::set_config(cfg);
+
+        let selection =
+            config::get_config().prompt_for(CommandScope::Refine, PromptKind::PlanRefine);
+        let prompt = build_plan_refine_prompt(
+            &selection,
+            "slug",
+            "draft/slug",
+            "plan doc",
+            PlanRefineMode::Questions,
+            None,
+            &DocumentationSettings::default(),
+        )
+        .unwrap();
+
+        assert!(prompt.starts_with("custom refine"));
+        assert!(prompt.contains("<refineMode>"));
         assert!(prompt.contains("<planDocument>"));
 
         config::set_config(original);

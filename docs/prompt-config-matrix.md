@@ -2,8 +2,8 @@
 
 This document is the canonical reference for how Vizier maps CLI commands (“scopes”) to prompt templates (“kinds”), and which configuration levers control each pairing.
 
-- **Scopes** (commands): `ask`, `save`, `draft`, `approve`, `review`, `merge`
-- **Prompt kinds**: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict`
+- **Scopes** (commands): `ask`, `save`, `draft`, `refine`, `approve`, `review`, `merge`
+- **Prompt kinds**: `documentation`, `commit`, `implementation_plan`, `plan_refine`, `review`, `merge_conflict`
 
 Use this as the single place to answer:
 - “Which prompt text does this command use?”
@@ -14,19 +14,21 @@ Use this as the single place to answer:
 
 The table below shows which prompt kinds each scope actually uses in the current CLI, and what they are used for at a high level.
 
-| Scope   | `documentation`                                                                                         | `commit`                                                   | `implementation_plan`                                              | `review`                                                          | `merge_conflict`                                               |
-|---------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------|--------------------------------------------------------------------|-------------------------------------------------------------------|----------------------------------------------------------------|
-| `ask`   | System prompt for `vizier ask` and snapshot bootstrap (`vizier init-snapshot`)                          | Commit message template when `vizier ask` produces commits | *Not used*                                                         | *Not used*                                                        | *Not used*                                                     |
-| `save`  | System prompt for `vizier save` (snapshot/narrative updates + optional code edits)                      | Commit message template when `vizier save` produces commits| *Not used*                                                         | *Not used*                                                        | *Not used*                                                     |
-| `draft` | *Not used* (draft flows only use `implementation_plan`)                                                 | *Not used*                                                 | Plan template for `vizier draft` (implementation plan Markdown)    | *Not used*                                                        | *Not used*                                                     |
-| `approve` | System prompt for `vizier approve` when implementing a stored plan on the draft branch                | Commit messages come from Codex summaries, not the commit prompt template | *Defined in config but not used by CLI today*                      | *Not used*                                                        | *Not used*                                                     |
-| `review`| System prompt for optional “fix-up” passes after `vizier review` critiques                              | Commit messages come from Codex summaries, not the commit prompt template | *Not used*                                                         | Critique template for `vizier review` (plan vs diff vs checks)    | *Not used*                                                     |
-| `merge` | System prompt for `vizier merge`’s narrative refresh step on the plan branch (`refresh_plan_branch`)    | *Not used*                                                 | *Not used*                                                         | CI/CD auto-fix flows reuse agent settings for `review` kind only for agent/docs toggles; the text template is built-in | Conflict-resolution template for `vizier merge --auto-resolve-conflicts` |
+| Scope   | `documentation`                                                                                         | `commit`                                                   | `implementation_plan`                                              | `plan_refine`                                                     | `review`                                                          | `merge_conflict`                                               |
+|---------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------|--------------------------------------------------------------------|-------------------------------------------------------------------|-------------------------------------------------------------------|----------------------------------------------------------------|
+| `ask`   | System prompt for `vizier ask` and snapshot bootstrap (`vizier init-snapshot`)                          | Commit message template when `vizier ask` produces commits | *Not used*                                                         | *Not used*                                                        | *Not used*                                                        | *Not used*                                                     |
+| `save`  | System prompt for `vizier save` (snapshot/narrative updates + optional code edits)                      | Commit message template when `vizier save` produces commits| *Not used*                                                         | *Not used*                                                        | *Not used*                                                        | *Not used*                                                     |
+| `draft` | *Not used* (draft flows only use `implementation_plan`)                                                 | *Not used*                                                 | Plan template for `vizier draft` (implementation plan Markdown)    | *Not used*                                                        | *Not used*                                                        | *Not used*                                                     |
+| `refine`| *Not used*                                                                                              | *Not used*                                                 | *Not used*                                                         | Plan refinement template for `vizier refine` (questions or clarifications) | *Not used*                                                | *Not used*                                                     |
+| `approve` | System prompt for `vizier approve` when implementing a stored plan on the draft branch                | Commit messages come from Codex summaries, not the commit prompt template | *Defined in config but not used by CLI today*                      | *Not used*                                                        | *Not used*                                                        | *Not used*                                                     |
+| `review`| System prompt for optional “fix-up” passes after `vizier review` critiques                              | Commit messages come from Codex summaries, not the commit prompt template | *Not used*                                                         | *Not used*                                                        | Critique template for `vizier review` (plan vs diff vs checks)    | *Not used*                                                     |
+| `merge` | System prompt for `vizier merge`’s narrative refresh step on the plan branch (`refresh_plan_branch`)    | *Not used*                                                 | *Not used*                                                         | *Not used*                                                        | CI/CD auto-fix flows reuse agent settings for `review` kind only for agent/docs toggles; the text template is built-in | Conflict-resolution template for `vizier merge --auto-resolve-conflicts` |
 
 Notes:
 - “System prompt” means the **documentation-style** wrapper that carries snapshot + narrative doc context (via `<snapshot>`/`<narrativeDocs>` blocks) plus `<task>`/`<instruction>` payloads.
 - “Commit messages from Codex summaries” means commit bodies are synthesized from Codex’s summary output, not from the `commit` prompt template. You still configure the commit template for cases where Vizier asks the model to write a message from a diff.
 - The `implementation_plan` prompt kind is only used by `vizier draft` today; `vizier approve` consumes the rendered plan document instead of re-prompting with the plan template.
+- The `plan_refine` prompt kind is used by `vizier refine` when it surfaces questions or applies clarifications to a stored plan.
 
 ## Prompt resolution & override order
 
@@ -56,11 +58,12 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
 
 3. **Repo-local prompt files under `.vizier/`**  
    - Vizier looks in `.vizier/` for the first existing file per kind:
-     - `documentation`: `DOCUMENTATION_PROMPT.md`, then `BASE_SYSTEM_PROMPT.md` (legacy)
-     - `commit`: `COMMIT_PROMPT.md`
-     - `implementation_plan`: `IMPLEMENTATION_PLAN_PROMPT.md`
-     - `review`: `REVIEW_PROMPT.md`
-     - `merge_conflict`: `MERGE_CONFLICT_PROMPT.md`
+    - `documentation`: `DOCUMENTATION_PROMPT.md`, then `BASE_SYSTEM_PROMPT.md` (legacy)
+    - `commit`: `COMMIT_PROMPT.md`
+    - `implementation_plan`: `IMPLEMENTATION_PLAN_PROMPT.md`
+    - `plan_refine`: `PLAN_REFINE_PROMPT.md`
+    - `review`: `REVIEW_PROMPT.md`
+    - `merge_conflict`: `MERGE_CONFLICT_PROMPT.md`
 
 4. **Global prompt entries in config**  
    - Table: `[prompts]` (or top-level `DOCUMENTATION_PROMPT` / `COMMIT_PROMPT` / etc. keys).  
@@ -73,11 +76,12 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
 
 5. **Baked-in defaults** (lowest precedence)  
    - Constants in `vizier-core/src/lib.rs`:
-     - `DOCUMENTATION_PROMPT`
-     - `COMMIT_PROMPT`
-     - `IMPLEMENTATION_PLAN_PROMPT`
-     - `REVIEW_PROMPT`
-     - `MERGE_CONFLICT_PROMPT`
+    - `DOCUMENTATION_PROMPT`
+    - `COMMIT_PROMPT`
+    - `IMPLEMENTATION_PLAN_PROMPT`
+    - `PLAN_REFINE_PROMPT`
+    - `REVIEW_PROMPT`
+    - `MERGE_CONFLICT_PROMPT`
 
 In practice:
 - Treat `[agents.<scope>.prompts.<kind>]` as the **primary surface** for customization.
@@ -135,7 +139,7 @@ Remember:
 ## Where to look for concrete examples
 
 - `example-config.toml` — end-to-end examples of:
-  - `[agents.default]` and per-scope `[agents.ask|save|draft|approve|review|merge]`
+  - `[agents.default]` and per-scope `[agents.ask|save|draft|refine|approve|review|merge]`
   - `[agents.<scope>.prompts.<kind>]` for documentation, implementation-plan, and review prompts
   - `[agents.<scope>.documentation]` toggles for merge-time conflict resolution
 - `.vizier/config.toml` — repo-local overrides that travel with Git history.

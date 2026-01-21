@@ -7,12 +7,12 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Without `--config-file`, Vizier overlays `~/.config/vizier/config.toml` (or platform equivalent) with `.vizier/config.toml`/`.json` in the repo; missing keys inherit from the lower layer.
 - `--config-file <path>` replaces the search. If no config files are found, Vizier falls back to `$VIZIER_CONFIG_FILE` when it points at an existing file.
 - `VIZIER_CONFIG_DIR`/`XDG_CONFIG_HOME`/`APPDATA`/`HOME`/`USERPROFILE` influence the global config location; `VIZIER_AGENT_SHIMS_DIR` can point at bundled agent shims when you relocate them.
-- Use `vizier plan --json` to see the merged config (per-command agent selection, prompt profiles, gate settings) before running draft/approve/review/merge.
+- Use `vizier plan --json` to see the merged config (per-command agent selection, prompt profiles, gate settings) before running draft/refine/approve/review/merge.
 
 ## Quick-start scenarios
 - Pin review to Gemini while leaving other scopes on Codex: set `[agents.review] agent = "gemini"` (optionally override `[agents.review.agent].command` if you moved the shim) and run `vizier plan --json` to confirm the resolved selector before `vizier review`. CLI override: `vizier review --agent gemini` for one-offs.
 - Tighten merge CI/CD gates: set `[merge.cicd_gate] script = "./cicd.sh"`, `retries = 3`, and (optionally) `auto_resolve = true` so Vizier retries failures up to three times with agent remediation. Override per run with `--cicd-script`, `--cicd-retries`, and `--auto-cicd-fix/--no-auto-cicd-fix`.
-- Disable auto-commit for inspection: set `[workflow] no_commit_default = true` to hold assistant edits dirty/staged across ask/save/draft/approve/review. For a single run, pass `--no-commit`; re-run without it before merging so history is finalized.
+- Disable auto-commit for inspection: set `[workflow] no_commit_default = true` to hold assistant edits dirty/staged across ask/save/draft/refine/approve/review. For a single run, pass `--no-commit`; re-run without it before merging so history is finalized.
 - Background execution (experimental): `[workflow.background]` still controls the intended future posture for background runs, but in this release the `--background` flag is disabled and causes the CLI to exit with an error instead of detaching.
 - Swap prompt text for a single scope: add `[agents.merge.prompts.merge_conflict] path = ".vizier/MERGE_CONFLICT_PROMPT.md"` (or `text = """..."""`) to override just merge-conflict prompting without touching other commands.
 
@@ -29,13 +29,13 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 ## Agents, prompts, and documentation toggles
 - `agent` (root or `[agents.default]`): selector for the bundled shim (`codex` by default, `gemini` as the alternate) or any custom shim name you’ve installed. Unsupported `agent = "wire"` entries and `fallback_backend` keys are rejected.
 - Agent runtime overrides: `[agents.<scope>.agent]` provide `command` (custom script), optional `progress_filter`, `output` (`auto`/wrapped JSON), and `enable_script_wrapper` (wraps non-shim scripts). Defaults are inferred from the selector; drop down to this table only when you need to point at a non-bundled script.
-- Per-scope selector overrides: `[agents.ask|save|draft|approve|review|merge] agent="<selector>"`; CLI `--agent/--agent-label/--agent-command` override all scopes for the current run.
+- Per-scope selector overrides: `[agents.ask|save|draft|refine|approve|review|merge] agent="<selector>"`; CLI `--agent/--agent-label/--agent-command` override all scopes for the current run.
 - Documentation prompt toggles: `[agents.<scope>.documentation]` with `enabled` (default true), `include_snapshot` (default true), and `include_narrative_docs` (default true). Disable or trim context for conflict auto-resolve or other low-context flows. Narrative context now comes exclusively from `.vizier/narrative/`; legacy `.vizier/todo_*.md` files are no longer read.
-- Prompt text and per-prompt agent overrides: `[agents.<scope>.prompts.<kind>]` sets `text`/`path` plus nested `[agent]` runtime overrides for that scope+kind; fall back to `[prompts.<scope>]`, `.vizier/*.md` prompt files, `[prompts]`, then baked-in defaults. Prompt kinds: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict` (see `docs/prompt-config-matrix.md` for the scope×kind map).
+- Prompt text and per-prompt agent overrides: `[agents.<scope>.prompts.<kind>]` sets `text`/`path` plus nested `[agent]` runtime overrides for that scope+kind; fall back to `[prompts.<scope>]`, `.vizier/*.md` prompt files, `[prompts]`, then baked-in defaults. Prompt kinds: `documentation`, `commit`, `implementation_plan`, `plan_refine`, `review`, `merge_conflict` (see `docs/prompt-config-matrix.md` for the scope×kind map).
 - Progress filters attach by selector: when `progress_filter` is unset, Vizier looks for a bundled `filter.sh` under the configured selector (Codex, Gemini, or any custom shim with a sibling filter) and wires it automatically.
 
 ## Workflow and gate settings
-- Workflow defaults: `[workflow].no_commit_default` (default false) pairs with `--no-commit` to hold assistant edits for manual review across ask/save/draft/approve/review.
+- Workflow defaults: `[workflow].no_commit_default` (default false) pairs with `--no-commit` to hold assistant edits for manual review across ask/save/draft/refine/approve/review.
 - Background jobs (experimental): `[workflow.background]` describes how background runs will behave when (re)enabled, but in the current release `--background` exits with an error and background execution is unavailable; `vizier jobs ...` remains available for inspecting any existing experimental jobs.
 - Review checks: `[review.checks].commands = [ ... ]`; `vizier review` runs these unless `--skip-checks`, falling back to cargo check/test when unset in a Cargo repo.
 - Merge behavior: `[merge].squash` (default true; `--squash`/`--no-squash`), `[merge].squash_mainline` (mainline parent for merge-heavy plan branches; `--squash-mainline <n>`), and `[merge.conflicts].auto_resolve` (default false; `--auto-resolve-conflicts`/`--no-auto-resolve-conflicts`).

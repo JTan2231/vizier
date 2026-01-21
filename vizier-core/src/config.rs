@@ -7,7 +7,7 @@ use lazy_static::lazy_static;
 
 use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
-    REVIEW_PROMPT,
+    PLAN_REFINE_PROMPT, REVIEW_PROMPT,
     agent::{AgentRunner, ScriptRunner},
     display, tools, tree,
 };
@@ -21,6 +21,7 @@ pub enum PromptKind {
     Documentation,
     Commit,
     ImplementationPlan,
+    PlanRefine,
     Review,
     MergeConflict,
 }
@@ -34,6 +35,7 @@ impl PromptKind {
             PromptKind::Documentation,
             PromptKind::Commit,
             PromptKind::ImplementationPlan,
+            PromptKind::PlanRefine,
             PromptKind::Review,
             PromptKind::MergeConflict,
         ];
@@ -45,6 +47,7 @@ impl PromptKind {
             PromptKind::Documentation => "documentation",
             PromptKind::Commit => "commit",
             PromptKind::ImplementationPlan => "implementation_plan",
+            PromptKind::PlanRefine => "plan_refine",
             PromptKind::Review => "review",
             PromptKind::MergeConflict => "merge_conflict",
         }
@@ -55,6 +58,7 @@ impl PromptKind {
             PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md", "BASE_SYSTEM_PROMPT.md"],
             PromptKind::Commit => &["COMMIT_PROMPT.md"],
             PromptKind::ImplementationPlan => &["IMPLEMENTATION_PLAN_PROMPT.md"],
+            PromptKind::PlanRefine => &["PLAN_REFINE_PROMPT.md"],
             PromptKind::Review => &["REVIEW_PROMPT.md"],
             PromptKind::MergeConflict => &["MERGE_CONFLICT_PROMPT.md"],
         }
@@ -65,6 +69,7 @@ impl PromptKind {
             PromptKind::Documentation => DOCUMENTATION_PROMPT,
             PromptKind::Commit => COMMIT_PROMPT,
             PromptKind::ImplementationPlan => IMPLEMENTATION_PLAN_PROMPT,
+            PromptKind::PlanRefine => PLAN_REFINE_PROMPT,
             PromptKind::Review => REVIEW_PROMPT,
             PromptKind::MergeConflict => MERGE_CONFLICT_PROMPT,
         }
@@ -105,6 +110,7 @@ pub enum CommandScope {
     Ask,
     Save,
     Draft,
+    Refine,
     Approve,
     Review,
     Merge,
@@ -116,6 +122,7 @@ impl CommandScope {
             CommandScope::Ask => "ask",
             CommandScope::Save => "save",
             CommandScope::Draft => "draft",
+            CommandScope::Refine => "refine",
             CommandScope::Approve => "approve",
             CommandScope::Review => "review",
             CommandScope::Merge => "merge",
@@ -127,6 +134,7 @@ impl CommandScope {
             CommandScope::Ask,
             CommandScope::Save,
             CommandScope::Draft,
+            CommandScope::Refine,
             CommandScope::Approve,
             CommandScope::Review,
             CommandScope::Merge,
@@ -142,6 +150,7 @@ impl std::str::FromStr for CommandScope {
             "ask" => Ok(CommandScope::Ask),
             "save" => Ok(CommandScope::Save),
             "draft" => Ok(CommandScope::Draft),
+            "refine" => Ok(CommandScope::Refine),
             "approve" => Ok(CommandScope::Approve),
             "review" => Ok(CommandScope::Review),
             "merge" => Ok(CommandScope::Merge),
@@ -1125,6 +1134,13 @@ const IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["prompts", "implementation_plan"],
     &["prompts", "implementation_plan_prompt"],
 ];
+const PLAN_REFINE_PROMPT_KEY_PATHS: &[&[&str]] = &[
+    &["PLAN_REFINE_PROMPT"],
+    &["plan_refine_prompt"],
+    &["prompts", "PLAN_REFINE_PROMPT"],
+    &["prompts", "plan_refine"],
+    &["prompts", "plan_refine_prompt"],
+];
 const REVIEW_PROMPT_KEY_PATHS: &[&[&str]] = &[
     &["REVIEW_PROMPT"],
     &["review_prompt"],
@@ -2018,6 +2034,10 @@ impl ConfigLayer {
                 .insert(PromptKind::ImplementationPlan, prompt);
         }
 
+        if let Some(prompt) = find_string(&file_config, PLAN_REFINE_PROMPT_KEY_PATHS) {
+            layer.global_prompts.insert(PromptKind::PlanRefine, prompt);
+        }
+
         if let Some(prompt) = find_string(&file_config, REVIEW_PROMPT_KEY_PATHS) {
             layer.global_prompts.insert(PromptKind::Review, prompt);
         }
@@ -2197,6 +2217,9 @@ fn prompt_kind_from_key(key: &str) -> Option<PromptKind> {
         "commit" | "commit_prompt" => Some(PromptKind::Commit),
         "implementation_plan" | "implementation_plan_prompt" | "plan" => {
             Some(PromptKind::ImplementationPlan)
+        }
+        "plan_refine" | "plan_refine_prompt" | "refine" | "refine_plan" => {
+            Some(PromptKind::PlanRefine)
         }
         "review" | "review_prompt" => Some(PromptKind::Review),
         "merge_conflict" | "merge_conflict_prompt" | "merge" => Some(PromptKind::MergeConflict),
@@ -2401,6 +2424,7 @@ mod tests {
             "BASE_SYSTEM_PROMPT": "base override",
             "COMMIT_PROMPT": "commit override",
             "IMPLEMENTATION_PLAN_PROMPT": "plan override",
+            "PLAN_REFINE_PROMPT": "refine override",
             "REVIEW_PROMPT": "review override",
             "MERGE_CONFLICT_PROMPT": "merge override"
         }
@@ -2415,6 +2439,7 @@ mod tests {
             cfg.get_prompt(PromptKind::ImplementationPlan),
             "plan override"
         );
+        assert_eq!(cfg.get_prompt(PromptKind::PlanRefine), "refine override");
         assert_eq!(cfg.get_prompt(PromptKind::Review), "review override");
         assert_eq!(cfg.get_prompt(PromptKind::MergeConflict), "merge override");
     }
@@ -2442,6 +2467,7 @@ mod tests {
 documentation = "toml documentation override"
 commit = "toml commit override"
 implementation_plan = "toml plan override"
+plan_refine = "toml refine override"
 review = "toml review override"
 merge_conflict = "toml merge override"
 "#;
@@ -2461,6 +2487,10 @@ merge_conflict = "toml merge override"
             cfg.get_prompt(PromptKind::ImplementationPlan),
             "toml plan override"
         );
+        assert_eq!(
+            cfg.get_prompt(PromptKind::PlanRefine),
+            "toml refine override"
+        );
         assert_eq!(cfg.get_prompt(PromptKind::Review), "toml review override");
         assert_eq!(
             cfg.get_prompt(PromptKind::MergeConflict),
@@ -2476,6 +2506,9 @@ documentation = "ask scope"
 
 [prompts.draft]
 implementation_plan = "draft scope"
+
+[prompts.refine]
+plan_refine = "refine scope"
 "#;
 
         let mut file = NamedTempFile::new().expect("temp toml");
@@ -2501,6 +2534,11 @@ implementation_plan = "draft scope"
             cfg.prompt_for(CommandScope::Draft, PromptKind::ImplementationPlan)
                 .text,
             "draft scope"
+        );
+        assert_eq!(
+            cfg.prompt_for(CommandScope::Refine, PromptKind::PlanRefine)
+                .text,
+            "refine scope"
         );
         assert_eq!(
             cfg.prompt_for(CommandScope::Approve, PromptKind::ImplementationPlan)
