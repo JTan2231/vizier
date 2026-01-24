@@ -142,11 +142,12 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Creates another disposable worktree on `draft/<slug>`, gathers the diff against the target branch, and runs the configured review checks (defaults to `cargo check --all --all-targets` and `cargo test --all --all-targets` when a `Cargo.toml` is present or the `[review.checks]` commands in your config).
 - Streams each check result to stderr so you see passes/failures before the agent speaks. Failures are captured verbatim and wired into the prompt.
 - Builds an agent prompt that includes the snapshot, narrative docs, plan document, diff summary, and the check logs, then prints the Markdown critique directly to stdout (and into the session log) instead of saving `.vizier/reviews/<slug>.md`.
-- Prompts `Apply suggested fixes on draft/<slug>? [y/N]` unless you passed `--review-only` or `-y/--yes`. When accepted, Vizier feeds the agent both the plan document and the in-memory critique text, applies the fixes on `draft/<slug>`, and commits those changes (or leaves them pending with `--no-commit`). The plan document front matter stays lean (`plan` + `branch`) and is no longer mutated by review status updates.
+- Prompts `Apply suggested fixes on draft/<slug>? [y/N]` unless you passed `--review-only`, `--review-file`, or `-y/--yes`. When accepted, Vizier feeds the agent both the plan document and the in-memory critique text, applies the fixes on `draft/<slug>`, and commits those changes (or leaves them pending with `--no-commit`). The plan document front matter stays lean (`plan` + `branch`) and is no longer mutated by review status updates.
 
 **Flags to remember**
 - `vizier review <slug>` — default flow
 - `--review-only` — skip the fix-up prompt; only emit the critique/check results
+- `--review-file` — write the critique to `vizier-review.md` in the repo root and skip fixes
 - `--skip-checks` — jump straight to the critique when your test suite is too heavy for disposable worktrees
 - `-y/--yes` — apply fixes automatically after generating the critique
 - `--target` / `--branch` — override the diff base or plan branch name when needed

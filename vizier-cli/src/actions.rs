@@ -885,6 +885,7 @@ pub struct ReviewOptions {
     pub branch_override: Option<String>,
     pub assume_yes: bool,
     pub review_only: bool,
+    pub review_file: bool,
     pub skip_checks: bool,
     pub cicd_gate: CicdGateOptions,
     pub auto_resolve_requested: bool,
@@ -2971,6 +2972,15 @@ pub async fn run_review(
     })?;
 
     let repo = Repository::discover(".")?;
+    let repo_root_path = repo.workdir().map(|path| path.to_path_buf());
+    let review_file_path = if opts.review_file {
+        let root = repo_root_path
+            .clone()
+            .ok_or("review file output requires a working tree")?;
+        Some(root.join("vizier-review.md"))
+    } else {
+        None
+    };
     let source_ref = repo
         .find_branch(&spec.branch, BranchType::Local)
         .map_err(|_| format!("draft branch {} not found", spec.branch))?;
@@ -3021,6 +3031,7 @@ pub async fn run_review(
             skip_checks: opts.skip_checks,
             cicd_gate: opts.cicd_gate.clone(),
             auto_resolve_requested: opts.auto_resolve_requested,
+            review_file_path,
         },
         commit_mode,
         agent,
@@ -3086,6 +3097,9 @@ pub async fn run_review(
                         .unwrap_or_else(|| "<unknown>".to_string()),
                 ),
             ];
+            if let Some(path) = outcome.review_file_path.as_ref() {
+                rows.insert(4, ("Review file".to_string(), path.clone()));
+            }
             let verbosity = current_verbosity();
             append_agent_rows(&mut rows, verbosity);
             println!("{}", format_block(rows));
@@ -4776,6 +4790,7 @@ struct ReviewExecution {
     skip_checks: bool,
     cicd_gate: CicdGateOptions,
     auto_resolve_requested: bool,
+    review_file_path: Option<PathBuf>,
 }
 
 struct ReviewOutcome {
@@ -4787,6 +4802,7 @@ struct ReviewOutcome {
     branch_mutated: bool,
     fix_commit: Option<String>,
     cicd_gate: ReviewGateResult,
+    review_file_path: Option<String>,
 }
 
 struct PlanApplyResult {
@@ -4990,6 +5006,9 @@ async fn perform_review_workflow(
 
     let critique_text = response.content.trim().to_string();
     emit_review_critique(&spec.slug, &critique_text);
+    if let Some(path) = exec.review_file_path.as_ref() {
+        write_review_file(path, &spec.slug, &critique_text)?;
+    }
 
     let review_diff = vcs::get_diff(".", Some("HEAD"), None)?;
     let mut branch_mutated = !review_diff.trim().is_empty();
@@ -5049,8 +5068,8 @@ async fn perform_review_workflow(
     let mut fix_commit: Option<String> = None;
     let diff_command = spec.diff_command();
 
-    if exec.review_only {
-        display::info("Review-only mode: skipped automatic fix prompt.");
+    if exec.review_only || exec.review_file_path.is_some() {
+        display::info("Review fixes skipped (--review-only or --review-file active).");
     } else {
         let mut apply_fixes = exec.assume_yes;
         if !exec.assume_yes {
@@ -5100,6 +5119,12 @@ async fn perform_review_workflow(
         branch_mutated,
         fix_commit,
         cicd_gate: gate_result,
+        review_file_path: exec.review_file_path.as_ref().map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| path.display().to_string())
+        }),
     })
 }
 
@@ -5448,6 +5473,23 @@ fn collect_diff_summary(
             spec.diff_command()
         )),
     }
+}
+
+fn write_review_file(
+    path: &Path,
+    plan_slug: &str,
+    critique: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut contents = String::new();
+    contents.push_str(&format!("# Review critique for plan {plan_slug}\n\n"));
+    if critique.trim().is_empty() {
+        contents.push_str("(Agent returned an empty critique.)\n");
+    } else {
+        contents.push_str(critique.trim());
+        contents.push('\n');
+    }
+    fs::write(path, contents)?;
+    Ok(())
 }
 
 fn emit_review_critique(plan_slug: &str, critique: &str) {

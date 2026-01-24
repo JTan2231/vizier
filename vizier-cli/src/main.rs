@@ -432,6 +432,10 @@ struct ReviewCmd {
     #[arg(long = "review-only")]
     review_only: bool,
 
+    /// Write the critique to vizier-review.md in the repo root and skip fixes
+    #[arg(long = "review-file")]
+    review_file: bool,
+
     /// Skip running configured review checks (e.g., cargo test); merge CI/CD gate still runs once per review
     #[arg(long = "skip-checks")]
     skip_checks: bool,
@@ -850,6 +854,7 @@ fn resolve_review_options(
         branch_override: cmd.branch.clone(),
         assume_yes: cmd.assume_yes,
         review_only: cmd.review_only,
+        review_file: cmd.review_file,
         skip_checks: cmd.skip_checks,
         cicd_gate,
         auto_resolve_requested,
@@ -1340,8 +1345,8 @@ fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::
         Commands::Merge(cmd) if !cmd.assume_yes => {
             Err("--background for vizier merge requires --yes to skip interactive prompts".into())
         }
-        Commands::Review(cmd) if !cmd.assume_yes && !cmd.review_only => Err(
-            "--background for vizier review requires --yes or --review-only to avoid prompts"
+        Commands::Review(cmd) if !cmd.assume_yes && !cmd.review_only && !cmd.review_file => Err(
+            "--background for vizier review requires --yes, --review-only, or --review-file to avoid prompts"
                 .into(),
         ),
         _ => Ok(()),

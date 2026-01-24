@@ -10,19 +10,9 @@ integration_testing = []
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 clap_complete = { version = "4.5.2", features = ["unstable-dynamic"] }
-rusqlite = "0.35.0"
-sqlite-vec = "0.1.6"
-zerocopy = "0.8.25"
-grep-matcher = "0.1"
-grep-regex = "0.1"
-grep-searcher = "0.1"
-ignore = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-inventory = "0.3"
 tokio = { version = "1", features = ["full"] }
-lazy_static = "1.4"
-fuzzy-matcher = "*"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 uuid = { version = "1.4", features = ["v4"] }

@@ -1,0 +1,42 @@
+# Default-Action Posture (DAP)
+
+Thread: Default-Action Posture (cross: Outcome summaries, stdout/stderr contract + verbosity)
+
+Snapshot anchor
+- Active threads — Default-Action Posture (DAP) (Running Snapshot — updated).
+- Narrative theme — Reduce operator friction; Story-editor discipline; Commit-style epilogues.
+
+Problem/Tension
+- If narrative maintenance is opt-in, the snapshot drifts and operators have to remember “now update the snapshot,” which increases friction and breaks the “snapshot-first” posture.
+- If narrative maintenance is always-on without a clear opt-out and update discipline, the snapshot accumulates noise, duplicates, and speculative “investigate X” entries.
+- Output can accidentally become verbose (or leak internal deltas), undermining the “commit-style epilogue” contract and making runs harder to audit.
+
+Desired behavior (Product-level)
+- Default action: treat user directives as authorization to update `.vizier/narrative/snapshot.md` and (when needed) `.vizier/narrative/threads/*.md`.
+- Explicit opt-out: when users signal “no update” for a turn (e.g., `no-op:` / `discuss-only:`), do not change narrative files.
+- Snapshot discipline: merge into existing threads, update minimally, de-duplicate, and ground claims in observable evidence (code, tests, or user reports).
+- Output contract: respond with only a short, commit-message-like summary of narrative changes; keep detailed diffs/deltas internal to `.vizier` rather than printing them verbatim.
+- Outcome alignment: the standardized Outcome epilogue / outcome.v1 JSON (once implemented) should reflect when DAP acted and which narrative files changed.
+
+Acceptance criteria
+1) Default behavior
+   - Given a directive, the snapshot is updated to reflect the new plot point (or to evolve an existing thread) without spawning duplicates.
+2) Opt-out behavior
+   - Given an explicit “no update” signal, narrative files remain unchanged and the response indicates a no-op.
+3) Noise control
+   - New snapshot entries avoid “investigate X” tasks; each entry ties a tension to a concrete, observable behavior change or acceptance signal.
+4) Output contract
+   - User-facing responses are concise (commit-style) and do not include raw snapshot deltas.
+5) IO contract integration
+   - As Outcome summaries standardize, DAP actions appear in the same stdout/stderr + protocol-mode matrix (no ANSI leakage; deterministic final outcome).
+
+Status
+- DAP is currently a prompt-level contract enforced by the base documentation prompt (`vizier-core/src/lib.rs::DOCUMENTATION_PROMPT` / `SYSTEM_PROMPT_BASE`) plus repository guidance; the CLI-side Outcome standardization needed to fully “close the loop” remains tracked under Outcome summaries + stdout/stderr contract.
+
+Pointers
+- `vizier-core/src/lib.rs` (documentation prompt + scope rules)
+- `.vizier/narrative/snapshot.md` (single canonical snapshot)
+- `.vizier/narrative/threads/stdout_stderr_contract_and_verbosity.md`
+
+Update (2026-01-24)
+- Added a canonical thread doc for DAP and cross-linked it from the snapshot so the “default action” contract has a single home with acceptance criteria.

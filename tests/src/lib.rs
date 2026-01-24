@@ -3177,6 +3177,49 @@ fn test_review_streams_critique() -> TestResult {
 }
 
 #[test]
+fn test_review_writes_markdown_file() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft = repo.vizier_output(&["draft", "--name", "review-file", "review file spec"])?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    clean_workdir(&repo)?;
+    let approve = repo.vizier_output(&["approve", "review-file", "--yes"])?;
+    assert!(
+        approve.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    clean_workdir(&repo)?;
+    let review = repo.vizier_output(&["review", "review-file", "--review-file", "--skip-checks"])?;
+    assert!(
+        review.status.success(),
+        "vizier review failed: {}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+
+    let review_path = repo.path().join("vizier-review.md");
+    assert!(
+        review_path.exists(),
+        "expected vizier-review.md at repo root"
+    );
+    let contents = fs::read_to_string(&review_path)?;
+    assert!(
+        contents.contains("Review critique for plan review-file"),
+        "review file should include the plan header, got:\n{contents}"
+    );
+    assert!(
+        contents.contains("mock agent response"),
+        "review file should include critique text, got:\n{contents}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_review_summary_includes_token_suffix() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let draft = repo.vizier_output(&["draft", "--name", "token-suffix", "suffix spec"])?;
