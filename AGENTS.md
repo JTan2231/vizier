@@ -1,5 +1,7 @@
-Please observe `.vizier/narrative/snapshot.md`, the README.md, and the various prompts in lib.rs before planning so you can get a strong feel for what this project is about.
-Please also take a careful look around the implementation to understand the architectural and styling patterns before implementating
+`.vizier/narrative` contains your guiding light. Do not update unless explicitly instructed to do so.
+Code changes mean `./cicd.sh` validation.
+Code changes mean test updates.
+Code changes mean docs updates.
 
 See `docs/` for system documentation; `docs/prompt-config-matrix.md` is the canonical reference for prompt scopes, kinds, and config levers.
 See `docs/config-reference.md` for the full configuration catalogue (agents/prompts/workflow/gates/display) plus override examples; `vizier plan` echoes the resolved settings.

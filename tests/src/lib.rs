@@ -3195,7 +3195,8 @@ fn test_review_writes_markdown_file() -> TestResult {
     );
 
     clean_workdir(&repo)?;
-    let review = repo.vizier_output(&["review", "review-file", "--review-file", "--skip-checks"])?;
+    let review =
+        repo.vizier_output(&["review", "review-file", "--review-file", "--skip-checks"])?;
     assert!(
         review.status.success(),
         "vizier review failed: {}",
