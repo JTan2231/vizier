@@ -78,6 +78,51 @@ man_src="docs/man/man1/vizier.1"
 manifest_rel="$DATADIR/vizier/install-manifest.txt"
 manifest_path="$DESTDIR$manifest_rel"
 
+is_writable_parent() {
+  target="$1"
+  dir="$target"
+
+  while [ ! -d "$dir" ]; do
+    parent=$(dirname "$dir")
+    if [ "$parent" = "$dir" ]; then
+      break
+    fi
+    dir="$parent"
+  done
+
+  [ -w "$dir" ]
+}
+
+check_install_permissions() {
+  if [ "$dry_run" -eq 1 ] || [ "$uninstall" -eq 1 ]; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    return 0
+  fi
+
+  unwritable=""
+  for path in "$DESTDIR$BINDIR" "$DESTDIR$DATADIR" "$DESTDIR$MANDIR"; do
+    if ! is_writable_parent "$path"; then
+      unwritable="${unwritable}  $path\n"
+    fi
+  done
+
+  if [ -n "$unwritable" ]; then
+    {
+      printf 'error: install destination is not writable\n'
+      printf 'The following paths are not writable by the current user:\n'
+      printf '%b' "$unwritable"
+      printf '\nTry one of:\n'
+      printf '  - sudo ./install.sh\n'
+      printf '  - PREFIX="$HOME/.local" ./install.sh\n'
+      printf '  - DESTDIR=/path/to/stage PREFIX=/usr/local ./install.sh\n'
+    } 1>&2
+    exit 1
+  fi
+}
+
 run() {
   if [ "$dry_run" -eq 1 ]; then
     say "+ $*"
@@ -134,6 +179,8 @@ fi
 if [ ! -f "$man_src" ]; then
   die "missing man page: $man_src"
 fi
+
+check_install_permissions
 
 target_dir=${CARGO_TARGET_DIR:-target}
 bin_src="$target_dir/release/vizier"

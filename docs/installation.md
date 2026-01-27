@@ -27,6 +27,7 @@ sudo ./install.sh
 ```
 
 By default `install.sh` uses `PREFIX=/usr/local`, so a system install typically requires elevated privileges. The script never invokes `sudo` itself.
+`install.sh` also checks that the target directories are writable and exits early with guidance if they are not.
 
 ## Packaging / staging with `DESTDIR`
 
@@ -73,3 +74,4 @@ For staged installs, pass the same `DESTDIR`/`PREFIX` you used during install.
 - `jq not found`: install `jq` (required by `examples/agents/*/filter.sh`).
 - `no bundled agent shim named ...`: install the relevant agent CLI (for example `codex`, `gemini`, `claude`) or configure Vizier to use a custom shim via `.vizier/config.toml` / `~/.config/vizier/config.toml`.
 - `permission denied`: install into a user prefix (for example `PREFIX="$HOME/.local"`) or rerun the install as root.
+- `install destination is not writable`: rerun with `sudo`, set `PREFIX` to a writable directory, or stage with `DESTDIR`.

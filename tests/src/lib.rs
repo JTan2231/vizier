@@ -4310,6 +4310,15 @@ fn run_install_sh(
 }
 
 #[cfg(unix)]
+fn is_root_user() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "0")
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
 fn assert_mode(path: &Path, expected: u32) -> TestResult {
     let mode = fs::metadata(path)?.permissions().mode() & 0o777;
     assert_eq!(mode, expected, "mode mismatch for {}", path.display());
@@ -4501,6 +4510,51 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
     assert!(
         !cargo_target.exists(),
         "expected dry-run to avoid building into CARGO_TARGET_DIR"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn test_install_sh_requires_writable_prefix() -> TestResult {
+    if is_root_user() {
+        return Ok(());
+    }
+
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("src");
+    fs::create_dir_all(&root)?;
+
+    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
+    copy_dir_recursive(
+        &repo_root().join("examples/agents"),
+        &root.join("examples/agents"),
+    )?;
+    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+
+    let prefix = tmp.path().join("prefix");
+    fs::create_dir_all(&prefix)?;
+    let mut perms = fs::metadata(&prefix)?.permissions();
+    perms.set_mode(0o555);
+    fs::set_permissions(&prefix, perms)?;
+
+    let output = run_install_sh(&root, &[], &[("PREFIX", prefix.as_os_str())])?;
+    assert!(
+        !output.status.success(),
+        "expected install.sh to fail for unwritable prefix: status={:?}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("install destination is not writable"),
+        "expected permission hint in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("sudo ./install.sh"),
+        "expected sudo suggestion in stderr: {stderr}"
     );
     Ok(())
 }
