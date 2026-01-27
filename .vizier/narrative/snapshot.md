@@ -3,7 +3,7 @@ Running Snapshot — updated
 Narrative theme
 - Reduce operator friction: conversational intent is authorization to evolve the project. The assistant maintains a living snapshot and task list by default; users can explicitly opt out per turn.
 - Editorial housekeeping: Narrative artifacts now live under `.vizier/narrative/` (snapshot, glossary, and thread docs); legacy TODO files were migrated and the save path should enforce garbage-collection to keep a single canonical thread per tension.
-- Direct narrative edits: Narrative upkeep is done by editing `.vizier/narrative/` files in-repo (no Vizier CLI invocations), keeping snapshot + glossary in lockstep as the canonical story surfaces.
+- Direct narrative edits: Narrative upkeep is done by editing `.vizier/narrative/` files in-repo (no Vizier CLI invocations), staying within repo boundaries and avoiding network access unless explicitly authorized, while keeping snapshot + glossary in lockstep as the canonical story surfaces.
 - Codex-integrated posture: Codex now handles the heavy agent work directly, so Vizier trims internal orchestration threads and focuses on snapshot accuracy plus CLI guardrails.
 - Pluggable agent posture: Vizier must treat “agent” as a swappable backend (Codex today, Claude and others next) with a stable interface for capabilities, prompts, and telemetry, so plan/approve/review flows don’t have to be rewritten each time a new CLI agent is introduced.
 - Config-first posture: Treat configuration as a first-class surface above Git and external agents; new features should ship with repo/CLI knobs and sensible defaults so operators are not forced into an overly opinionated workflow but still get high utility out of the box.

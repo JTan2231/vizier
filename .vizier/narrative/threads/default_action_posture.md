@@ -41,4 +41,4 @@ Pointers
 Update (2026-01-24)
 - Added a canonical thread doc for DAP and cross-linked it from the snapshot so the “default action” contract has a single home with acceptance criteria.
 Update (2026-01-27)
-- Narrative upkeep now expects direct file edits under `.vizier/narrative/` (no Vizier CLI tooling) while preserving the explicit opt-out rule.
+- Narrative upkeep now expects direct file edits under `.vizier/narrative/` (no Vizier CLI tooling), stays within repo boundaries (no network access unless explicitly authorized), and preserves the explicit opt-out rule.

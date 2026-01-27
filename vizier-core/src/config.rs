@@ -608,7 +608,7 @@ impl Default for BackgroundConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            quiet: true,
+            quiet: false,
         }
     }
 }

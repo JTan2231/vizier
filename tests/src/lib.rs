@@ -1005,7 +1005,7 @@ no_commit_default = true
     assert_eq!(
         json.pointer("/workflow/background/quiet")
             .and_then(Value::as_bool),
-        Some(true),
+        Some(false),
         "workflow.background.quiet should appear in the report"
     );
     assert_eq!(
@@ -1259,6 +1259,35 @@ fn test_background_default_spawns_job() -> TestResult {
         job_path.display()
     );
     wait_for_job_completion(&repo, &job_id, Duration::from_secs(20))?;
+    Ok(())
+}
+
+#[test]
+fn test_background_default_is_not_quiet() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo
+        .vizier_cmd_background()
+        .args(["ask", "background stderr"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "background ask failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = extract_job_id(&stdout).ok_or("expected job id in output")?;
+    wait_for_job_completion(&repo, &job_id, Duration::from_secs(20))?;
+
+    let stderr_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(&job_id)
+        .join("stderr.log");
+    let stderr_log = fs::read_to_string(&stderr_path)?;
+    assert!(
+        stderr_log.contains("mock agent running"),
+        "expected background stderr log to include progress output when quiet is not injected:\n{stderr_log}"
+    );
     Ok(())
 }
 
