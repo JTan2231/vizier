@@ -1,0 +1,76 @@
+.TH VIZIER 1 "January 2026" "Vizier" "User Commands"
+.SH NAME
+vizier \- CLI for LLM project management
+.SH SYNOPSIS
+.B vizier
+[\fIGLOBAL OPTIONS\fR]
+\fICOMMAND\fR
+[\fIARGS\fR]
+.SH DESCRIPTION
+Vizier is a CLI tool for managing agent-assisted workflows in a Git repository.
+It maintains repo-local narrative artifacts under
+.I .vizier/
+and provides commands for drafting plans, applying them, reviewing changes, and merging with gates.
+.SH GLOBAL OPTIONS
+.TP
+.BR \-q ", " \-\-quiet
+Silence progress/history output.
+.TP
+.BR \-v ", " \-\-verbose
+Increase stderr verbosity (\fB\-v\fR = info, \fB\-vv\fR = debug).
+.TP
+.BR \-\-no\-ansi
+Disable ANSI control sequences (non-TTY is always plain).
+.TP
+.BR \-\-pager ", " \-\-no\-pager
+Control paging for help output; honors
+.BR VIZIER_PAGER .
+.TP
+.BR \-j ", " \-\-json
+Emit JSON output (command-dependent).
+.TP
+.BR \-\-agent " " \fISELECTOR\fR
+Select a bundled agent shim (for example
+.BR codex " or " gemini )
+or a custom shim label configured in the repository.
+.SH COMMANDS
+.TP
+.BR ask
+Run an assistant-backed task against the repository.
+.TP
+.BR save
+Persist audited changes and update narrative artifacts.
+.TP
+.BR draft ", " approve ", " review ", " merge
+Plan workflow: draft a plan, apply it on a draft branch, review checks/critique, then merge.
+.TP
+.BR list
+List pending plan branches.
+.TP
+.BR plan
+Print the resolved configuration.
+.TP
+.BR jobs
+Inspect background job records.
+.SH ENVIRONMENT
+.TP
+.B VIZIER_AGENT_SHIMS_DIR
+Overrides the search path for bundled agent shims (a directory containing
+.BR codex/ ,
+.BR gemini/ ,
+etc).
+.TP
+.B VIZIER_PAGER
+Pager command used for help output when paging is enabled.
+.TP
+.B VIZIER_CONFIG_DIR
+Overrides where the global configuration is stored.
+.SH FILES
+.TP
+.I .vizier/config.toml
+Repository configuration overlay (when present).
+.TP
+.I .vizier/narrative/snapshot.md
+Canonical snapshot maintained by Vizier workflows.
+.SH SEE ALSO
+.BR git (1)
