@@ -1,5 +1,7 @@
 /target
 Cargo.lock
+
 .vizier/tmp-worktrees/
 .vizier/tmp/
 .vizier/sessions/
+.vizier/jobs/
