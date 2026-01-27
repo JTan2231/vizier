@@ -5,7 +5,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 ## How configuration is loaded
 - CLI flags have the last word; use them for one-off overrides.
 - Without `--config-file`, Vizier overlays `~/.config/vizier/config.toml` (or platform equivalent) with `.vizier/config.toml`/`.json` in the repo; missing keys inherit from the lower layer.
-- `--config-file <path>` replaces the search. If no config files are found, Vizier falls back to `$VIZIER_CONFIG_FILE` when it points at an existing file.
+- `--config-file <path>` (or `--config-file=<path>`) replaces the search. If no config files are found, Vizier falls back to `$VIZIER_CONFIG_FILE` when it points at an existing file.
 - `VIZIER_CONFIG_DIR`/`XDG_CONFIG_HOME`/`APPDATA`/`HOME`/`USERPROFILE` influence the global config location; `VIZIER_AGENT_SHIMS_DIR` can point at bundled agent shims when you relocate them.
 - Use `vizier plan --json` to see the merged config (per-command agent selection, prompt profiles, gate settings) before running draft/refine/approve/review/merge.
 

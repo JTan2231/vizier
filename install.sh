@@ -5,6 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [--dry-run] [--uninstall]
 
+<<<<<<< HEAD
 Build and install Vizier from a clone.
 
 Environment variables:

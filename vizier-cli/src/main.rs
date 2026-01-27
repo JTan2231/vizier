@@ -30,6 +30,7 @@ use crate::jobs::JobStatus;
     name = "vizier",
     version,
     about,
+    disable_help_subcommand = true,
     // Show help when you forget a subcommand
     arg_required_else_help = true,
     // Make version available to subcommands automatically
@@ -185,6 +186,9 @@ impl From<JobLogStreamArg> for jobs::LogStream {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Show a short, workflow-oriented help page (or the full reference with --all)
+    Help(HelpCmd),
+
     /// One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any backend edits) and exits
     Ask(AskCmd),
 
@@ -240,6 +244,23 @@ enum Commands {
     ///   vizier save HEAD~3..HEAD   # explicit range
     ///   vizier save main           # single rev compared to workdir/index
     Save(SaveCmd),
+}
+
+#[derive(ClapArgs, Debug)]
+#[command(group(
+    ArgGroup::new("help_mode")
+        .args(["all", "command"])
+        .multiple(false)
+        .required(false)
+))]
+struct HelpCmd {
+    /// Print the full command reference (Clap help dump)
+    #[arg(short = 'a', long = "all", action = ArgAction::SetTrue)]
+    all: bool,
+
+    /// Show help for a specific subcommand (equivalent to `vizier <command> --help`)
+    #[arg(value_name = "COMMAND")]
+    command: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1416,19 +1437,11 @@ fn build_background_child_args(
 }
 
 fn render_help_with_pager(
-    err: clap::Error,
+    help_text: &str,
     pager_mode: PagerMode,
     stdout_is_tty: bool,
     suppress_pager: bool,
-    ansi_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let rendered = err.render().to_string();
-    let help_text = if ansi_enabled {
-        rendered
-    } else {
-        strip_ansi_codes(&rendered)
-    };
-
     if suppress_pager || !stdout_is_tty || matches!(pager_mode, PagerMode::Never) {
         print!("{help_text}");
         return Ok(());
@@ -1437,19 +1450,107 @@ fn render_help_with_pager(
     if let Some(pager) = std::env::var("VIZIER_PAGER")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        && try_page_output(&pager, &help_text).is_ok()
+        && try_page_output(&pager, help_text).is_ok()
     {
         return Ok(());
     }
 
     if matches!(pager_mode, PagerMode::Always | PagerMode::Auto)
-        && try_page_output("less -FRSX", &help_text).is_ok()
+        && try_page_output("less -FRSX", help_text).is_ok()
     {
         return Ok(());
     }
 
     print!("{help_text}");
     Ok(())
+}
+
+fn curated_help_text() -> &'static str {
+    concat!(
+        "Vizier — LLM-assisted plan workflow\n",
+        "\n",
+        "Workflow:\n",
+        "  vizier draft  --file spec.md --name add-redis\n",
+        "  vizier approve add-redis\n",
+        "  vizier review  add-redis\n",
+        "  vizier merge   add-redis\n",
+        "\n",
+        "Examples:\n",
+        "  vizier draft --name fix-help \"curate root help output\"\n",
+        "  vizier merge fix-help --yes\n",
+        "\n",
+        "More help:\n",
+        "  vizier help --all\n",
+        "  vizier help <command>\n",
+        "  man vizier\n",
+        "\n",
+    )
+}
+
+fn global_arg_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-C" | "--config-file"
+            | "-l"
+            | "--load-session"
+            | "--agent"
+            | "--agent-label"
+            | "--agent-command"
+            | "--backend"
+            | "--background-job-id"
+    )
+}
+
+fn subcommand_from_raw_args(raw_args: &[String]) -> Option<String> {
+    let mut iter = raw_args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+
+        if let Some((flag, _value)) = arg.split_once('=')
+            && global_arg_takes_value(flag)
+        {
+            continue;
+        }
+
+        if arg.starts_with('-') {
+            if global_arg_takes_value(arg) {
+                iter.next();
+            }
+            continue;
+        }
+
+        return Some(arg.to_string());
+    }
+
+    None
+}
+
+fn render_clap_help_text(color_choice: ColorChoice) -> String {
+    Cli::command()
+        .color(color_choice)
+        .render_long_help()
+        .to_string()
+}
+
+fn render_clap_subcommand_help_text(
+    color_choice: ColorChoice,
+    command: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let root = Cli::command().color(color_choice);
+    let args = [
+        "vizier".to_string(),
+        command.to_string(),
+        "--help".to_string(),
+    ];
+    match root.try_get_matches_from(args) {
+        Ok(_) => Err(format!("expected `vizier {command} --help` to display help").into()),
+        Err(err) => match err.kind() {
+            ErrorKind::DisplayHelp => Ok(err.render().to_string()),
+            _ => Err(Box::<dyn std::error::Error>::from(err)),
+        },
+    }
 }
 
 fn try_page_output(command: &str, contents: &str) -> std::io::Result<()> {
@@ -1608,12 +1709,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(matches) => matches,
         Err(err) => match err.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                let rendered = match err.kind() {
+                    ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                        curated_help_text().to_string()
+                    }
+                    ErrorKind::DisplayHelp => {
+                        if subcommand_from_raw_args(&raw_args).is_none() {
+                            curated_help_text().to_string()
+                        } else {
+                            err.render().to_string()
+                        }
+                    }
+                    _ => unreachable!("caller guards ensure help error kinds"),
+                };
+
+                let help_text = if color_choice != ColorChoice::Never {
+                    rendered
+                } else {
+                    strip_ansi_codes(&rendered)
+                };
+
                 render_help_with_pager(
-                    err,
+                    &help_text,
                     pager_mode,
                     stdout_is_tty,
                     quiet_requested || json_requested,
-                    color_choice != ColorChoice::Never,
                 )?;
                 return Ok(());
             }
@@ -1647,6 +1767,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stdout_is_tty,
         stderr_is_tty,
     });
+
+    if let Commands::Help(cmd) = &cli.command {
+        let rendered = if cmd.all {
+            render_clap_help_text(color_choice)
+        } else if let Some(command) = cmd.command.as_deref() {
+            render_clap_subcommand_help_text(color_choice, command)?
+        } else {
+            curated_help_text().to_string()
+        };
+
+        let help_text = if color_choice != ColorChoice::Never {
+            rendered
+        } else {
+            strip_ansi_codes(&rendered)
+        };
+
+        render_help_with_pager(
+            &help_text,
+            pager_mode,
+            stdout_is_tty,
+            quiet_requested || json_requested,
+        )?;
+        return Ok(());
+    }
 
     let project_root = match auditor::find_project_root() {
         Ok(Some(root)) => root,
@@ -1841,6 +1985,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let result = match cli.command {
+        Commands::Help(_) => Ok(()),
         Commands::Completions(cmd) => {
             crate::completions::write_registration(cmd.shell.into(), Cli::command)?;
             Ok(())
@@ -2034,5 +2179,16 @@ mod tests {
             .expect_err("empty file should produce an error for ask input");
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
         Ok(())
+    }
+
+    #[test]
+    fn subcommand_from_raw_args_skips_global_flag_with_equals() {
+        let raw_args = vec![
+            "vizier".to_string(),
+            "--config-file=./vizier.toml".to_string(),
+            "ask".to_string(),
+        ];
+
+        assert_eq!(subcommand_from_raw_args(&raw_args), Some("ask".to_string()));
     }
 }
