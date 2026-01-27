@@ -879,6 +879,7 @@ impl Auditor {
 fn simulate_integration_changes() -> Result<(), Box<dyn std::error::Error>> {
     let skip_code_change = std::env::var("VIZIER_IT_SKIP_CODE_CHANGE").is_ok();
     let skip_vizier_change = std::env::var("VIZIER_IT_SKIP_VIZIER_CHANGE").is_ok();
+    let skip_glossary_change = std::env::var("VIZIER_IT_SKIP_GLOSSARY_CHANGE").is_ok();
 
     if !skip_code_change {
         crate::file_tracking::FileTracker::write("a", "some change")?;
@@ -890,6 +891,12 @@ fn simulate_integration_changes() -> Result<(), Box<dyn std::error::Error>> {
             ".vizier/narrative/snapshot.md",
             "some snapshot change",
         )?;
+        if !skip_glossary_change {
+            crate::file_tracking::FileTracker::write(
+                ".vizier/narrative/glossary.md",
+                "some glossary change",
+            )?;
+        }
         crate::file_tracking::FileTracker::write(
             ".vizier/narrative/threads/demo.md",
             "some narrative change",

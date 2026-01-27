@@ -42,7 +42,7 @@ Want to exercise a scoped agent without touching `.vizier` or Git? `vizier test-
 4. **`vizier review <slug>`** — Runs the merge CI/CD gate before prompting (using `[merge.cicd_gate]` or review `--cicd-*` overrides) and feeds the result into the critique prompt/summary/session log, then runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists). The critique streams to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and you can optionally apply fixes on the plan branch without mutating the plan document’s front matter. Auto-remediation for the gate stays disabled during review; merge still owns CI/CD fixes.
 5. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, replays the plan branch commits onto the target, and (by default) soft-squashes that range into a single implementation commit on the target before writing the non–fast-forward merge commit that embeds the stored plan under an `Implementation Plan:` block. Pass `--no-squash` or set `[merge] squash = false` in `.vizier/config.toml` to keep the legacy “merge straight from the draft branch history” behavior. If the plan branch contains merge commits, squash merges now preflight the history and require either `--squash-mainline <parent index>` (or `[merge] squash_mainline = <n>`) to cherry-pick those merges or `--no-squash` to keep the branch graph intact.
 
-Every step commits code and canonical narrative edits together in a single commit (`.vizier/narrative/snapshot.md` plus notes under `.vizier/narrative/threads/`). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
+Every step commits code and canonical narrative edits together in a single commit (`.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, plus notes under `.vizier/narrative/threads/`). Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
@@ -108,7 +108,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 **What it does**
 - Validates that `draft/<slug>` is based on the current target branch; warns if the branch is behind.
 - Creates a temporary worktree `.vizier/tmp-worktrees/<slug>-<suffix>/` checked out to the plan branch and runs the configured implementation agent against the stored plan document.
-- The agent edits `.vizier/narrative/snapshot.md`, narrative docs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
+- The agent edits `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, narrative docs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
 - Your original checkout stays untouched. On success the temp worktree is removed; on failure it is preserved for debugging and the branch keeps whatever the agent staged.
 - While the agent runs, Vizier prints one `[agent:<scope>] phase — message` line per event (with status, percentage, and file hints) so you get a scrolling history of what the agent is doing. Pass `-q` to suppress them or `-v/-vv` for timestamps/raw JSON.
 
@@ -177,7 +177,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 **Prep work (handled automatically)**
 1. Creates a temporary worktree on the plan branch.
 2. Deletes `.vizier/implementation-plans/<slug>.md` from that branch so the plan doc does not land in the target branch.
-3. Runs a `vizier save`–style agent refresh to make sure `.vizier/narrative/snapshot.md` + narrative docs in the plan branch reflect the latest story before merging.
+3. Runs a `vizier save`–style agent refresh to make sure `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, and narrative docs in the plan branch reflect the latest story before merging.
 4. Cleans up the worktree.
 5. Checks out the target branch locally (switches branches if needed).
 

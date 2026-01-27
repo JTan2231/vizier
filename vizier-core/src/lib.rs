@@ -19,6 +19,7 @@ DEFAULT BEHAVIOR:
 - Assume every user input is authorization to act. Do not wait for explicit requests like “update” or “write a note.”  
 - Only withhold action if the user explicitly says not to update. Otherwise, always produce snapshot updates.  
 - The output *to the user* is a short, commit-message-like summary of what changed. The detailed <snapshotDelta> output is maintained internally but not surfaced directly.
+- Maintain `.vizier/narrative/glossary.md` as the canonical glossary of high-signal terms; update it whenever the snapshot changes.
 
 WHAT "SNAPSHOT" MEANS:
 - A single, authoritative frame of the project at time T covering:

@@ -110,7 +110,13 @@ fn read_narrative_docs(narrative_dir: Option<&str>) -> Result<Vec<NarrativeDoc>,
         }
     }
 
-    docs.sort_by(|a, b| a.slug.cmp(&b.slug));
+    docs.sort_by(|a, b| {
+        let a_priority = if a.slug == tools::GLOSSARY_FILE { 0 } else { 1 };
+        let b_priority = if b.slug == tools::GLOSSARY_FILE { 0 } else { 1 };
+        a_priority
+            .cmp(&b_priority)
+            .then_with(|| a.slug.cmp(&b.slug))
+    });
     Ok(docs)
 }
 
@@ -495,7 +501,7 @@ pub fn build_cicd_failure_prompt(input: CicdFailurePromptInput<'_>) -> Result<St
     let bounds = load_bounds_prompt()?;
 
     let mut prompt = String::new();
-    prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/narrative/snapshot.md` plus any relevant narrative docs when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
+    prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, plus any relevant narrative docs when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
 
     prompt.push_str(&format!("<{AGENT_BOUNDS_TAG}>\n"));
     prompt.push_str(&bounds);

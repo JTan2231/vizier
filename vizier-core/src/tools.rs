@@ -6,6 +6,7 @@ pub const VIZIER_DIR: &str = ".vizier/";
 pub const NARRATIVE_DIR: &str = "narrative/";
 pub const SNAPSHOT_FILE: &str = "snapshot.md";
 pub const LEGACY_SNAPSHOT_FILE: &str = ".snapshot";
+pub const GLOSSARY_FILE: &str = "glossary.md";
 
 #[derive(Clone, Debug, Default)]
 pub struct Tool;
@@ -68,6 +69,15 @@ pub fn try_snapshot_path() -> Option<PathBuf> {
     Some(vizier_root.join(NARRATIVE_DIR).join(SNAPSHOT_FILE))
 }
 
+pub fn glossary_path() -> PathBuf {
+    try_glossary_path().unwrap_or_else(|| PathBuf::from(get_narrative_dir()).join(GLOSSARY_FILE))
+}
+
+pub fn try_glossary_path() -> Option<PathBuf> {
+    let vizier_root = try_get_vizier_dir().map(PathBuf::from)?;
+    Some(vizier_root.join(NARRATIVE_DIR).join(GLOSSARY_FILE))
+}
+
 pub fn read_snapshot() -> String {
     try_snapshot_path()
         .and_then(|path| std::fs::read_to_string(&path).ok())
@@ -82,6 +92,16 @@ pub fn is_snapshot_file(path: &str) -> bool {
         .unwrap_or_default();
 
     matches!(file_name, SNAPSHOT_FILE | LEGACY_SNAPSHOT_FILE)
+}
+
+pub fn is_glossary_file(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let file_name = Path::new(normalized.as_str())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+
+    file_name.eq_ignore_ascii_case(GLOSSARY_FILE)
 }
 
 pub fn story_diff_targets() -> Vec<String> {
@@ -233,7 +253,11 @@ pub fn list_narrative_docs() -> String {
         }
     };
 
-    names.sort();
+    names.sort_by(|a, b| {
+        let a_priority = if a == GLOSSARY_FILE { 0 } else { 1 };
+        let b_priority = if b == GLOSSARY_FILE { 0 } else { 1 };
+        a_priority.cmp(&b_priority).then_with(|| a.cmp(b))
+    });
     names.dedup();
     names.join("; ")
 }

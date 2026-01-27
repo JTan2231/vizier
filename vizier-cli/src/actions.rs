@@ -33,7 +33,7 @@ use vizier_core::{
     bootstrap::{BootstrapOptions, IssuesProvider},
     config,
     display::{self, LogLevel, ProgressEvent, Verbosity, format_label_value_block, format_number},
-    file_tracking, vcs,
+    file_tracking, tools, vcs,
 };
 
 use crate::plan;
@@ -1343,6 +1343,32 @@ fn narrative_change_set(result: &auditor::AuditResult) -> (Vec<String>, Option<S
         .unwrap_or_else(|| (Vec::new(), None))
 }
 
+fn enforce_glossary_pairing(narrative_paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let snapshot_updated = narrative_paths
+        .iter()
+        .any(|path| tools::is_snapshot_file(path));
+    if !snapshot_updated {
+        return Ok(());
+    }
+
+    let glossary_updated = narrative_paths
+        .iter()
+        .any(|path| tools::is_glossary_file(path));
+    if glossary_updated {
+        return Ok(());
+    }
+
+    let glossary_path = tools::glossary_path();
+    let mut message = format!(
+        "Snapshot updates must include a glossary update; edit {} and rerun.",
+        glossary_path.display()
+    );
+    if !glossary_path.exists() {
+        message.push_str(" (Glossary file missing; create it with a \"Glossary\" header.)");
+    }
+    Err(Box::<dyn std::error::Error>::from(message))
+}
+
 fn stage_narrative_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if paths.is_empty() {
         return Ok(());
@@ -1389,9 +1415,7 @@ fn clear_narrative_tracker(paths: &[String]) {
 }
 
 fn build_save_instruction(note: Option<&str>) -> String {
-    let mut instruction =
-        "<instruction>Update the snapshot and supporting narrative docs as needed</instruction>"
-            .to_string();
+    let mut instruction = "<instruction>Update the snapshot, glossary, and supporting narrative docs as needed</instruction>".to_string();
 
     if let Some(text) = note {
         instruction.push_str(&format!(
@@ -1442,6 +1466,7 @@ async fn save(
     let audit_result = auditor::Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_display = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
     let has_narrative_changes = !narrative_paths.is_empty();
 
     let mut summary_rows = vec![(
@@ -1472,7 +1497,7 @@ async fn save(
             } else {
                 narrative_summary
                     .clone()
-                    .unwrap_or_else(|| "Update snapshot and narrative docs".to_string())
+                    .unwrap_or_else(|| "Update snapshot, glossary, and narrative docs".to_string())
             };
 
             let mut message_builder = CommitMessageBuilder::new(commit_body);
@@ -1699,6 +1724,7 @@ pub async fn inline_command(
     };
     let session_display = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
     let has_narrative_changes = !narrative_paths.is_empty();
 
     let post_tool_diff = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"]))?;
@@ -1717,7 +1743,7 @@ pub async fn inline_command(
             } else {
                 narrative_summary
                     .clone()
-                    .unwrap_or_else(|| "Update snapshot and narrative docs".to_string())
+                    .unwrap_or_else(|| "Update snapshot, glossary, and narrative docs".to_string())
             };
 
             let mut builder = CommitMessageBuilder::new(commit_body);
@@ -3821,6 +3847,7 @@ async fn attempt_cicd_auto_fix(
     let audit_result = Auditor::commit_audit().await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -5003,6 +5030,7 @@ async fn perform_review_workflow(
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
 
     let critique_text = response.content.trim().to_string();
     emit_review_critique(&spec.slug, &critique_text);
@@ -5540,7 +5568,7 @@ async fn apply_review_fixes(
     }
     instruction.push_str("</reviewCritique>");
     instruction.push_str(
-        "<note>Update `.vizier/narrative/snapshot.md` and any relevant narrative docs when behavior changes.</note>",
+        "<note>Update `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, and any relevant narrative docs when behavior changes.</note>",
     );
 
     let system_prompt = agent_prompt::build_documentation_prompt(
@@ -5572,6 +5600,7 @@ async fn apply_review_fixes(
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -5684,7 +5713,7 @@ async fn apply_plan_in_worktree(
 
     let plan_rel = spec.plan_rel_path();
     let mut instruction = format!(
-        "<instruction>Read the implementation plan at {} and implement its Execution Plan on this branch. Apply the listed steps, update `.vizier/narrative/snapshot.md` plus any narrative docs as needed, and stage the resulting edits for commit.</instruction>",
+        "<instruction>Read the implementation plan at {} and implement its Execution Plan on this branch. Apply the listed steps, update `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, plus any narrative docs as needed, and stage the resulting edits for commit.</instruction>",
         plan_rel.display()
     );
     instruction.push_str(&format!(
@@ -5724,6 +5753,7 @@ async fn apply_plan_in_worktree(
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
 
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -5794,6 +5824,7 @@ async fn refresh_plan_branch(
     let audit_result = Auditor::commit_audit().await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
+    enforce_glossary_pairing(&narrative_paths)?;
     let mut allowed_paths = narrative_paths.clone();
     let plan_rel = spec.plan_rel_path();
     let plan_rel_string = plan_rel.to_string_lossy().replace('\\', "/");

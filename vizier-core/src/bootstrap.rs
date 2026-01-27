@@ -365,12 +365,16 @@ fn build_instruction(
     message.push_str("- Evidence > speculation: ground in observed behavior, tests, or user-visible constraints.\n");
     message.push_str("- Merge narrative threads; avoid duplicating themes across docs, and always anchor notes to the snapshot slice they extend.\n");
     message.push_str("- Default to Product-level behaviors and acceptance signals; reserve implementation notes for safety/correctness or already-bound constraints.\n");
+    message.push_str(
+        "- Maintain `.vizier/narrative/glossary.md` as the glossary of high-signal terms; update it whenever you change the snapshot.\n",
+    );
 
     message.push_str("\nActions you must take now (use available tools):\n");
     message.push_str("1) Use reading tools as needed to understand code, docs, and history.\n");
     message.push_str("2) Write `.vizier/narrative/snapshot.md`: a single page with CODE STATE (observable surfaces/behaviors) and NARRATIVE STATE (active tensions/threads). Cross-link to any supporting narrative docs you open.\n");
+    message.push_str("3) Create or update `.vizier/narrative/glossary.md` with a \"Glossary\" header and a stable term format that captures high-signal system terms.\n");
     message.push_str(
-        "3) When a tension needs more space than the snapshot affords, open a focused narrative doc under `.vizier/narrative/threads/<slug>.md` (one doc per tension) and anchor it to the snapshot slice it develops.\n",
+        "4) When a tension needs more space than the snapshot affords, open a focused narrative doc under `.vizier/narrative/threads/<slug>.md` (one doc per tension) and anchor it to the snapshot slice it develops.\n",
     );
 
     message.push_str("\nRespond **only** in this format (no prologue):\n");

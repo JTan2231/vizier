@@ -468,7 +468,9 @@ fn test_save() -> TestResult {
 
     let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
     assert!(
-        files.contains("a") && files.contains(".vizier/narrative/snapshot.md"),
+        files.contains("a")
+            && files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md"),
         "combined commit should include code + narrative files, got {files:?}"
     );
 
@@ -507,7 +509,9 @@ fn test_save_with_staged_files() -> TestResult {
     );
     let files = files_changed_in_commit(&repo_handle, "HEAD")?;
     assert!(
-        files.contains("b") && files.contains(".vizier/narrative/snapshot.md"),
+        files.contains("b")
+            && files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md"),
         "combined commit should include staged code and narrative files, got {files:?}"
     );
     Ok(())
@@ -569,7 +573,9 @@ fn test_save_without_code_changes() -> TestResult {
     assert_eq!(after - before, 1, "should create a single commit");
     let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
     assert!(
-        files.contains(".vizier/narrative/snapshot.md") && !files.contains("a"),
+        files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md")
+            && !files.contains("a"),
         "expected commit to contain only narrative assets when code changes are skipped, got {files:?}"
     );
     Ok(())
@@ -596,6 +602,27 @@ fn test_save_with_deleted_narrative_file() -> TestResult {
     assert!(
         files.contains(".vizier/narrative/threads/demo.md"),
         "expected commit to include deleted narrative file, got {files:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_save_requires_glossary_update() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let mut cmd = repo.vizier_cmd();
+    cmd.arg("save");
+    cmd.env("VIZIER_IT_SKIP_GLOSSARY_CHANGE", "1");
+    let output = cmd.output()?;
+    assert!(
+        !output.status.success(),
+        "save should fail when snapshot updates omit glossary updates"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}\n{stdout}");
+    assert!(
+        combined.to_ascii_lowercase().contains("glossary"),
+        "expected glossary requirement message, got: {combined}"
     );
     Ok(())
 }
@@ -638,6 +665,20 @@ fn test_save_no_commit_leaves_pending_changes() -> TestResult {
         status_stdout.contains(".vizier/narrative/snapshot.md"),
         "expected .vizier/narrative/snapshot.md to be dirty after --no-commit save, git status was: {status_stdout}"
     );
+    let glossary_status = Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "status",
+            "--short",
+            ".vizier/narrative/glossary.md",
+        ])
+        .output()?;
+    let glossary_stdout = String::from_utf8_lossy(&glossary_status.stdout);
+    assert!(
+        glossary_stdout.contains(".vizier/narrative/glossary.md"),
+        "expected .vizier/narrative/glossary.md to be dirty after --no-commit save, git status was: {glossary_stdout}"
+    );
 
     let code_status = Command::new("git")
         .args([
@@ -672,7 +713,9 @@ fn test_ask_creates_single_combined_commit() -> TestResult {
     assert_eq!(after - before, 1, "ask should create one combined commit");
     let files = files_changed_in_commit(&repo.repo(), "HEAD")?;
     assert!(
-        files.contains(".vizier/narrative/snapshot.md") && files.contains("a"),
+        files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md")
+            && files.contains("a"),
         "ask commit should include code and narrative assets, got {files:?}"
     );
     Ok(())
@@ -2095,7 +2138,9 @@ fn test_approve_creates_single_combined_commit() -> TestResult {
 
     let files = files_changed_in_commit(&repo_handle, &commit.id().to_string())?;
     assert!(
-        files.contains(".vizier/narrative/snapshot.md") && files.contains("a"),
+        files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md")
+            && files.contains("a"),
         "approve commit should include code and narrative assets, got {files:?}"
     );
     assert!(
@@ -3163,7 +3208,8 @@ fn test_review_streams_critique() -> TestResult {
 
     let files = files_changed_in_commit(&repo_handle, &commit.id().to_string())?;
     assert!(
-        files.contains(".vizier/narrative/snapshot.md"),
+        files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md"),
         "critique commit should include narrative assets, got {files:?}"
     );
     assert!(
