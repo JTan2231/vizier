@@ -607,22 +607,24 @@ fn test_save_with_deleted_narrative_file() -> TestResult {
 }
 
 #[test]
-fn test_save_requires_glossary_update() -> TestResult {
+fn test_save_allows_snapshot_without_glossary_update() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let mut cmd = repo.vizier_cmd();
     cmd.arg("save");
     cmd.env("VIZIER_IT_SKIP_GLOSSARY_CHANGE", "1");
     let output = cmd.output()?;
     assert!(
-        !output.status.success(),
-        "save should fail when snapshot updates omit glossary updates"
+        output.status.success(),
+        "save should succeed even when snapshot updates omit glossary updates"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stderr}\n{stdout}");
     assert!(
-        combined.to_ascii_lowercase().contains("glossary"),
-        "expected glossary requirement message, got: {combined}"
+        !combined
+            .to_ascii_lowercase()
+            .contains("snapshot updates must include a glossary update"),
+        "unexpected glossary enforcement message, got: {combined}"
     );
     Ok(())
 }

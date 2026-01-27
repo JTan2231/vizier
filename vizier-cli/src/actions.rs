@@ -33,7 +33,7 @@ use vizier_core::{
     bootstrap::{BootstrapOptions, IssuesProvider},
     config,
     display::{self, LogLevel, ProgressEvent, Verbosity, format_label_value_block, format_number},
-    file_tracking, tools, vcs,
+    file_tracking, vcs,
 };
 
 use crate::plan;
@@ -1343,32 +1343,6 @@ fn narrative_change_set(result: &auditor::AuditResult) -> (Vec<String>, Option<S
         .unwrap_or_else(|| (Vec::new(), None))
 }
 
-fn enforce_glossary_pairing(narrative_paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let snapshot_updated = narrative_paths
-        .iter()
-        .any(|path| tools::is_snapshot_file(path));
-    if !snapshot_updated {
-        return Ok(());
-    }
-
-    let glossary_updated = narrative_paths
-        .iter()
-        .any(|path| tools::is_glossary_file(path));
-    if glossary_updated {
-        return Ok(());
-    }
-
-    let glossary_path = tools::glossary_path();
-    let mut message = format!(
-        "Snapshot updates must include a glossary update; edit {} and rerun.",
-        glossary_path.display()
-    );
-    if !glossary_path.exists() {
-        message.push_str(" (Glossary file missing; create it with a \"Glossary\" header.)");
-    }
-    Err(Box::<dyn std::error::Error>::from(message))
-}
-
 fn stage_narrative_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if paths.is_empty() {
         return Ok(());
@@ -1466,7 +1440,6 @@ async fn save(
     let audit_result = auditor::Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_display = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
     let has_narrative_changes = !narrative_paths.is_empty();
 
     let mut summary_rows = vec![(
@@ -1724,7 +1697,6 @@ pub async fn inline_command(
     };
     let session_display = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
     let has_narrative_changes = !narrative_paths.is_empty();
 
     let post_tool_diff = vcs::get_diff(".", Some("HEAD"), Some(&[".vizier/"]))?;
@@ -3847,8 +3819,6 @@ async fn attempt_cicd_auto_fix(
     let audit_result = Auditor::commit_audit().await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
-
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
         return Ok(None);
@@ -5030,8 +5000,6 @@ async fn perform_review_workflow(
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
-
     let critique_text = response.content.trim().to_string();
     emit_review_critique(&spec.slug, &critique_text);
     if let Some(path) = exec.review_file_path.as_ref() {
@@ -5600,8 +5568,6 @@ async fn apply_review_fixes(
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
-
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
         display::info("Backend reported no file modifications during fix-up.");
@@ -5753,8 +5719,6 @@ async fn apply_plan_in_worktree(
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
-
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
         return Err("Agent completed without modifying files; nothing new to approve.".into());
@@ -5824,7 +5788,6 @@ async fn refresh_plan_branch(
     let audit_result = Auditor::commit_audit().await?;
     let session_path = audit_result.session_display();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
-    enforce_glossary_pairing(&narrative_paths)?;
     let mut allowed_paths = narrative_paths.clone();
     let plan_rel = spec.plan_rel_path();
     let plan_rel_string = plan_rel.to_string_lossy().replace('\\', "/");
@@ -5965,7 +5928,7 @@ impl Drop for WorkdirGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_agent_request, build_merge_commit_message};
+    use super::{build_agent_request, build_merge_commit_message, build_save_instruction};
     use crate::plan::{PlanBranchSpec, PlanMetadata};
     use git2::Repository;
     use std::fs;
@@ -6092,6 +6055,19 @@ Tidy merge message bodies.
                 .get("agent_command_source")
                 .map(|s| s.as_str()),
             Some("configured")
+        );
+    }
+
+    #[test]
+    fn build_save_instruction_mentions_snapshot_and_glossary() {
+        let instruction = build_save_instruction(None);
+        assert!(
+            instruction.contains("snapshot"),
+            "instruction should mention snapshot: {instruction}"
+        );
+        assert!(
+            instruction.contains("glossary"),
+            "instruction should mention glossary: {instruction}"
         );
     }
 
