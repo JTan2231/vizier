@@ -5,6 +5,7 @@
 - **Agent scope**: Which Vizier command is running (e.g., `ask`, `save`, `draft`, `approve`, `review`, `merge`) and therefore which prompts/bounds/config apply.
 - **Auditor**: The component that records what happened (session logs), summarizes repo edits (A/M/D/R), and constructs commit/outcome metadata from observed facts.
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
+- **Background-by-default**: Workflow posture where assistant-backed commands launch background jobs by default unless `--no-background` is set or stdin input forces a foreground run.
 - **Default-Action Posture (DAP)**: Unless explicitly opted out, user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
@@ -12,7 +13,7 @@
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
-- **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads.
+- **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads, updated directly in-repo alongside the glossary.
 - **Thread doc**: A focused narrative document under `.vizier/narrative/threads/` that expands one tension beyond what fits in the snapshot.
 - **Worktree**: A separate checkout under `.vizier/tmp-worktrees/` used to isolate agent-backed edits from the operator’s main checkout.
 - **Workspace**: A manifest-backed “sticky” worktree under `.vizier/tmp-worktrees/workspace-<slug>` that operators can `vizier cd` into for browsing/editing draft branches.

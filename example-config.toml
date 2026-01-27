@@ -66,9 +66,9 @@ retries = 2
 no_commit_default = false
 
 [workflow.background]
-# Allow/disallow background execution globally
+# Default assistant-backed commands to background jobs (disable to force foreground)
 enabled = true
-# Silence progress chatter in background jobs unless explicitly overridden
+# Silence progress chatter for detached jobs unless the caller set verbosity
 quiet = true
 
 # Default agent stack inherited by every command before CLI flags are processed

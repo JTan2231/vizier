@@ -445,6 +445,56 @@ pub fn tail_job_logs(
     Ok(())
 }
 
+fn read_log_chunk(path: &Path, offset: u64) -> io::Result<(u64, Vec<u8>)> {
+    if !path.exists() {
+        return Ok((offset, Vec::new()));
+    }
+
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let new_offset = file.stream_position()?;
+    Ok((new_offset, buffer))
+}
+
+pub fn follow_job_logs_raw(
+    jobs_root: &Path,
+    job_id: &str,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let paths = paths_for(jobs_root, job_id);
+    let mut stdout_offset = 0u64;
+    let mut stderr_offset = 0u64;
+
+    loop {
+        let mut advanced = false;
+
+        let (next_stdout, stdout_buf) = read_log_chunk(&paths.stdout_path, stdout_offset)?;
+        if !stdout_buf.is_empty() {
+            io::stdout().write_all(&stdout_buf)?;
+            io::stdout().flush()?;
+            advanced = true;
+        }
+        stdout_offset = next_stdout;
+
+        let (next_stderr, stderr_buf) = read_log_chunk(&paths.stderr_path, stderr_offset)?;
+        if !stderr_buf.is_empty() {
+            io::stderr().write_all(&stderr_buf)?;
+            io::stderr().flush()?;
+            advanced = true;
+        }
+        stderr_offset = next_stderr;
+
+        let record = read_record(jobs_root, job_id)?;
+        let running = matches!(record.status, JobStatus::Running | JobStatus::Pending);
+        if !running && !advanced {
+            return Ok(record.exit_code.unwrap_or(1));
+        }
+
+        thread::sleep(StdDuration::from_millis(300));
+    }
+}
+
 pub fn cancel_job(
     project_root: &Path,
     jobs_root: &Path,

@@ -60,6 +60,25 @@ fn format_block_with_indent(rows: Vec<(String, String)>, indent: usize) -> Strin
     format_label_value_block(&rows, indent)
 }
 
+#[derive(Debug)]
+pub struct CancelledError {
+    message: &'static str,
+}
+
+impl CancelledError {
+    pub fn new(message: &'static str) -> Self {
+        Self { message }
+    }
+}
+
+impl std::fmt::Display for CancelledError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CancelledError {}
+
 #[derive(Debug, Serialize)]
 struct ConfigReport {
     agent: String,
@@ -2748,7 +2767,7 @@ pub async fn run_approve(
         spec.show_preview(&plan_meta);
         if !prompt_for_confirmation("Implement plan now? [y/N] ")? {
             println!("Approval cancelled; no changes were made.");
-            return Ok(());
+            return Err(Box::new(CancelledError::new("approval cancelled")));
         }
     }
 
@@ -3240,7 +3259,7 @@ pub async fn run_merge(
         spec.show_preview(&plan_meta);
         if !prompt_for_confirmation("Merge this plan? [y/N] ")? {
             println!("Merge cancelled; no changes were made.");
-            return Ok(());
+            return Err(Box::new(CancelledError::new("merge cancelled")));
         }
     }
 
@@ -5607,7 +5626,7 @@ async fn apply_review_fixes(
     }
 }
 
-fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
+pub(crate) fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
     use std::io::{self, Write};
 
     print!("{prompt}");

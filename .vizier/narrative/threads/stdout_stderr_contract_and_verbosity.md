@@ -34,6 +34,8 @@ Status update (2025-11-15, revised 2025-11-30)
 - Shipped: -q/-v/-vv, --no-ansi, and spinner removal (vizier-core/src/display.rs now only emits line-based history; vizier-cli dropped `--progress`).
 - Outstanding: unify stdout Outcome across commands; implement outcome.v1 schema; ensure non-TTY never sees ANSI and stderr respects verbosity in all paths.
 - Manual `vizier clean` epilogues were removed entirely; TODO hygiene now flows through Default-Action Posture plus the dedicated GC work tracked in the snapshot.
+Update (2026-01-27)
+- Background-by-default now prints a multi-line `Outcome: Background job started` block for detached runs; treat this as a temporary stdout contract exception until the unified Outcome epilogue/JSON lands.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)

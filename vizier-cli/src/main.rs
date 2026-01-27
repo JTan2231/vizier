@@ -10,6 +10,7 @@ use clap::{
 };
 use clap_complete::Shell;
 use serde_json::json;
+use uuid::Uuid;
 use vizier_core::{
     auditor, config,
     display::{self, LogLevel},
@@ -110,9 +111,27 @@ struct GlobalOpts {
     #[arg(long = "no-commit", action = ArgAction::SetTrue, global = true)]
     no_commit: bool,
 
-    /// Run supported commands in the background and return immediately with a job handle
+    /// Run supported assistant-backed commands in the background and return immediately with a job handle (requires MESSAGE/--file when stdin would otherwise be read)
     #[arg(long = "background", action = ArgAction::SetTrue, global = true)]
     background: bool,
+
+    /// Run supported assistant-backed commands in the background and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
+    #[arg(
+        long = "follow",
+        action = ArgAction::SetTrue,
+        global = true,
+        conflicts_with_all = ["background", "no_background"]
+    )]
+    follow: bool,
+
+    /// Force assistant-backed commands to run in the foreground (required for --json output)
+    #[arg(
+        long = "no-background",
+        action = ArgAction::SetTrue,
+        global = true,
+        conflicts_with_all = ["background", "follow"]
+    )]
+    no_background: bool,
 
     /// Internal hook for background child processes; do not set manually
     #[arg(long = "background-job-id", hide = true, global = true)]
@@ -124,6 +143,12 @@ enum PagerMode {
     Auto,
     Always,
     Never,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackgroundMode {
+    Foreground,
+    Background { follow: bool, explicit: bool },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -363,7 +388,7 @@ enum JobsAction {
         job: String,
     },
 
-    /// Tail logs for a background job (stdout/stderr)
+    /// Tail logs for a background job (stdout/stderr); add --follow to stream until completion
     Tail {
         #[arg(value_name = "JOB")]
         job: String,
@@ -371,10 +396,6 @@ enum JobsAction {
         /// Which log to display
         #[arg(long = "stream", value_enum, default_value_t = JobLogStreamArg::Both)]
         stream: JobLogStreamArg,
-
-        /// Continue following the log until the job leaves Running/Pending
-        #[arg(long = "follow", action = ArgAction::SetTrue)]
-        follow: bool,
     },
 
     /// Attach to both stdout and stderr for a running job
@@ -1006,6 +1027,7 @@ fn run_jobs_command(
     project_root: &Path,
     jobs_root: &Path,
     cmd: JobsCmd,
+    follow: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
         JobsAction::List => {
@@ -1104,11 +1126,9 @@ fn run_jobs_command(
             );
             Ok(())
         }
-        JobsAction::Tail {
-            job,
-            stream,
-            follow,
-        } => jobs::tail_job_logs(jobs_root, &job, stream.into(), follow),
+        JobsAction::Tail { job, stream } => {
+            jobs::tail_job_logs(jobs_root, &job, stream.into(), follow)
+        }
         JobsAction::Attach { job } => {
             jobs::tail_job_logs(jobs_root, &job, jobs::LogStream::Both, true)
         }
@@ -1345,16 +1365,16 @@ fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
 
 #[allow(dead_code)]
 fn background_supported(command: &Commands) -> bool {
-    matches!(
-        command,
+    match command {
         Commands::Ask(_)
-            | Commands::Draft(_)
-            | Commands::Refine(_)
-            | Commands::Approve(_)
-            | Commands::Review(_)
-            | Commands::Merge(_)
-            | Commands::Save(_)
-    )
+        | Commands::Draft(_)
+        | Commands::Refine(_)
+        | Commands::Review(_)
+        | Commands::Merge(_)
+        | Commands::Save(_) => true,
+        Commands::Approve(cmd) => !cmd.list,
+        _ => false,
+    }
 }
 
 #[allow(dead_code)]
@@ -1374,6 +1394,149 @@ fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::
     }
 }
 
+fn resolve_background_mode(
+    command: &Commands,
+    global: &GlobalOpts,
+    background: &config::BackgroundConfig,
+) -> Result<BackgroundMode, Box<dyn std::error::Error>> {
+    if global.background_job_id.is_some() {
+        return Ok(BackgroundMode::Foreground);
+    }
+
+    if !background_supported(command) {
+        if global.background {
+            return Err(
+                "background execution is only supported for assistant-backed commands".into(),
+            );
+        }
+        if global.follow && !matches!(command, Commands::Jobs(_)) {
+            return Err(
+                "background execution is only supported for assistant-backed commands".into(),
+            );
+        }
+        return Ok(BackgroundMode::Foreground);
+    }
+
+    if !background.enabled {
+        if global.background || global.follow {
+            return Err(
+                "background execution disabled; enable workflow.background.enabled to detach runs"
+                    .into(),
+            );
+        }
+        return Ok(BackgroundMode::Foreground);
+    }
+
+    if global.no_background {
+        return Ok(BackgroundMode::Foreground);
+    }
+
+    Ok(BackgroundMode::Background {
+        follow: global.follow,
+        explicit: global.background,
+    })
+}
+
+enum PreflightResult {
+    Proceed(Vec<String>),
+    Aborted,
+}
+
+fn stdin_requires_prompt_input(command: &Commands) -> bool {
+    fn needs_stdin(positional: Option<&str>, file: Option<&PathBuf>) -> bool {
+        if file.is_some() {
+            return false;
+        }
+
+        match positional {
+            Some("-") => true,
+            Some(_) => false,
+            None => !std::io::stdin().is_terminal(),
+        }
+    }
+
+    match command {
+        Commands::Ask(cmd) => needs_stdin(cmd.message.as_deref(), cmd.file.as_ref()),
+        Commands::Draft(cmd) => needs_stdin(cmd.spec.as_deref(), cmd.file.as_ref()),
+        _ => false,
+    }
+}
+
+fn preflight_background_prompts(
+    command: &Commands,
+) -> Result<PreflightResult, Box<dyn std::error::Error>> {
+    match command {
+        Commands::Approve(cmd) => {
+            if cmd.assume_yes {
+                return Ok(PreflightResult::Proceed(Vec::new()));
+            }
+            let plan = cmd
+                .plan
+                .as_deref()
+                .ok_or("plan argument is required (use `vizier list` to inspect pending drafts)")?;
+            let spec = plan::PlanBranchSpec::resolve(
+                Some(plan),
+                cmd.branch.as_deref(),
+                cmd.target.as_deref(),
+            )?;
+            let meta = spec.load_metadata()?;
+            spec.show_preview(&meta);
+            if crate::actions::prompt_for_confirmation("Implement plan now? [y/N] ")? {
+                Ok(PreflightResult::Proceed(vec!["--yes".to_string()]))
+            } else {
+                println!("Approval cancelled; no changes were made.");
+                Ok(PreflightResult::Aborted)
+            }
+        }
+        Commands::Merge(cmd) => {
+            if cmd.assume_yes {
+                return Ok(PreflightResult::Proceed(Vec::new()));
+            }
+            let plan = cmd
+                .plan
+                .as_deref()
+                .ok_or("plan argument is required for vizier merge")?;
+            let spec = plan::PlanBranchSpec::resolve(
+                Some(plan),
+                cmd.branch.as_deref(),
+                cmd.target.as_deref(),
+            )?;
+            let meta = spec.load_metadata()?;
+            spec.show_preview(&meta);
+            if crate::actions::prompt_for_confirmation("Merge this plan? [y/N] ")? {
+                Ok(PreflightResult::Proceed(vec!["--yes".to_string()]))
+            } else {
+                println!("Merge cancelled; no changes were made.");
+                Ok(PreflightResult::Aborted)
+            }
+        }
+        Commands::Review(cmd) => {
+            if cmd.assume_yes || cmd.review_only || cmd.review_file {
+                return Ok(PreflightResult::Proceed(Vec::new()));
+            }
+            let plan = cmd
+                .plan
+                .as_deref()
+                .ok_or("plan argument is required for vizier review")?;
+            let spec = plan::PlanBranchSpec::resolve(
+                Some(plan),
+                cmd.branch.as_deref(),
+                cmd.target.as_deref(),
+            )?;
+            let prompt = format!(
+                "Apply suggested fixes on {} after the critique? [y/N] ",
+                spec.branch
+            );
+            if crate::actions::prompt_for_confirmation(&prompt)? {
+                Ok(PreflightResult::Proceed(vec!["--yes".to_string()]))
+            } else {
+                Ok(PreflightResult::Proceed(vec!["--review-only".to_string()]))
+            }
+        }
+        _ => Ok(PreflightResult::Proceed(Vec::new())),
+    }
+}
+
 #[allow(dead_code)]
 fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
@@ -1388,8 +1551,19 @@ fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
             continue;
         }
 
+        if arg == "--follow" || arg.starts_with("--follow=") {
+            continue;
+        }
+
+        if arg == "--no-background" || arg.starts_with("--no-background=") {
+            continue;
+        }
+
         if arg == "--background-job-id" {
             skip_next = true;
+            continue;
+        }
+        if arg.starts_with("--background-job-id=") {
             continue;
         }
 
@@ -1409,13 +1583,28 @@ fn user_friendly_args(raw_args: &[String]) -> Vec<String> {
     args
 }
 
+fn generate_job_id() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+fn emit_background_summary(job_id: &str) {
+    println!("Outcome: Background job started");
+    println!("Job: {job_id}");
+    println!("Status: vizier jobs status {job_id}");
+    println!("Logs: vizier jobs tail {job_id}");
+    println!("Attach: vizier jobs attach {job_id}");
+}
+
 #[allow(dead_code)]
 fn build_background_child_args(
     raw_args: &[String],
     job_id: &str,
     cfg: &config::BackgroundConfig,
+    follow: bool,
+    injected_args: &[String],
 ) -> Vec<String> {
     let mut args = strip_background_flags(raw_args);
+    args.extend(injected_args.iter().cloned());
     args.push("--background-job-id".to_string());
     args.push(job_id.to_string());
 
@@ -1425,7 +1614,7 @@ fn build_background_child_args(
 
     let quiet_flagged =
         flag_present(&args, Some('q'), "--quiet") || flag_present(&args, Some('v'), "--verbose");
-    if cfg.quiet && !quiet_flagged && !flag_present(&args, Some('d'), "--debug") {
+    if cfg.quiet && !follow && !quiet_flagged && !flag_present(&args, Some('d'), "--debug") {
         args.push("--quiet".to_string());
     }
 
@@ -1976,12 +2165,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         CommitMode::AutoCommit
     };
 
-    if cli.global.background && cli.global.background_job_id.is_none() {
-        display::emit(
-            LogLevel::Error,
-            "--background is experimental and currently disabled; run commands in the foreground for this release",
+    let mut background_mode =
+        resolve_background_mode(&cli.command, &cli.global, &workflow_defaults.background)?;
+
+    if matches!(background_mode, BackgroundMode::Background { .. })
+        && stdin_requires_prompt_input(&cli.command)
+    {
+        if cli.global.background || cli.global.follow {
+            return Err(
+                "--background/--follow cannot be used when input is read from stdin; pass --no-background or provide MESSAGE/--file".into(),
+            );
+        }
+        background_mode = BackgroundMode::Foreground;
+    }
+
+    if matches!(background_mode, BackgroundMode::Background { .. }) && cli.global.json {
+        return Err("--json cannot be used with background execution; pass --no-background or disable workflow.background.enabled".into());
+    }
+
+    if let BackgroundMode::Background { explicit: true, .. } = background_mode {
+        ensure_background_safe(&cli.command)?;
+    }
+
+    if let BackgroundMode::Background { follow, explicit } = background_mode {
+        let injected_args = if explicit {
+            Vec::new()
+        } else {
+            match preflight_background_prompts(&cli.command)? {
+                PreflightResult::Proceed(args) => args,
+                PreflightResult::Aborted => {
+                    let _ = std::io::stdout().flush();
+                    std::process::exit(1);
+                }
+            }
+        };
+
+        let job_id = generate_job_id();
+        let child_args = build_background_child_args(
+            &raw_args,
+            &job_id,
+            &workflow_defaults.background,
+            follow,
+            &injected_args,
         );
-        return Err("background execution disabled for this release".into());
+        let recorded_args = user_friendly_args(&raw_args);
+        let metadata = build_job_metadata(
+            &cli.command,
+            &config::get_config(),
+            cli_agent_override.as_ref(),
+        );
+        let config_snapshot = background_config_snapshot(&config::get_config());
+        let binary = std::env::current_exe()?;
+
+        jobs::launch_background_job(
+            &project_root,
+            &jobs_root,
+            &binary,
+            &job_id,
+            &child_args,
+            &recorded_args,
+            Some(metadata),
+            Some(config_snapshot),
+        )?;
+
+        if follow {
+            let exit_code = jobs::follow_job_logs_raw(&jobs_root, &job_id)?;
+            std::process::exit(exit_code);
+        }
+
+        emit_background_summary(&job_id);
+        return Ok(());
     }
 
     let result = match cli.command {
@@ -2060,7 +2313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Cd(cmd) => run_cd(resolve_cd_options(&cmd)?),
         Commands::Clean(cmd) => run_clean(resolve_clean_options(&cmd)?),
         Commands::Plan(_) => run_plan_summary(cli_agent_override.as_ref(), cli.global.json),
-        Commands::Jobs(cmd) => run_jobs_command(&project_root, &jobs_root, cmd),
+        Commands::Jobs(cmd) => run_jobs_command(&project_root, &jobs_root, cmd, cli.global.follow),
 
         Commands::Approve(cmd) => {
             let opts = resolve_approve_options(&cmd, push_after)?;
@@ -2088,6 +2341,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_merge(opts, &agent, commit_mode).await
         }
     };
+
+    let cancelled = result
+        .as_ref()
+        .err()
+        .and_then(|err| err.downcast_ref::<CancelledError>())
+        .is_some();
 
     if let Some(job_id) = cli.global.background_job_id.as_ref() {
         let status = if result.is_ok() {
@@ -2126,6 +2385,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 job_id, err
             ));
         }
+    }
+
+    if cancelled {
+        let _ = std::io::stdout().flush();
+        std::process::exit(1);
     }
 
     result

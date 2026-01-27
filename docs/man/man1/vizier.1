@@ -29,6 +29,17 @@ Control paging for help output; honors
 .BR \-j ", " \-\-json
 Emit JSON output (command-dependent).
 .TP
+.BR \-\-background
+Run assistant-backed commands in the background and return immediately.
+Requires MESSAGE/\fB\-\-file\fR when stdin would otherwise be read.
+.TP
+.BR \-\-follow
+Run assistant-backed commands in the background and attach to logs.
+Requires MESSAGE/\fB\-\-file\fR when stdin would otherwise be read.
+.TP
+.BR \-\-no\-background
+Force assistant-backed commands to run in the foreground (required for \fB\-\-json\fR output).
+.TP
 .BR \-\-agent " " \fISELECTOR\fR
 Select a bundled agent shim (for example
 .BR codex " or " gemini )
