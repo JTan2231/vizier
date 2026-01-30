@@ -12,7 +12,7 @@
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
-- **Repo boundary**: Operational constraint for narrative upkeep: edits stay inside the repository and avoid network access unless explicitly authorized.
+- **Repo boundary**: Operational constraint for narrative upkeep: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
 - **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads, updated directly in-repo alongside the glossary.
 - **Thread doc**: A focused narrative document under `.vizier/narrative/threads/` that expands one tension beyond what fits in the snapshot.

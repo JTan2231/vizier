@@ -71,7 +71,7 @@ struct GlobalOpts {
     #[arg(long = "no-pager", action = ArgAction::SetTrue, global = true, conflicts_with = "pager")]
     no_pager: bool,
 
-    /// Load session context from `.vizier/sessions/<id>/session.json` (or legacy config dir) before running
+    /// Load session context from `.vizier/sessions/<id>/session.json` before running
     #[arg(short = 'l', long = "load-session", global = true)]
     load_session: Option<String>,
 
@@ -82,10 +82,6 @@ struct GlobalOpts {
     /// Agent selector to run for assistant-backed commands (e.g., `codex`, `gemini`, or a custom shim name). Overrides config for this run.
     #[arg(long = "agent", value_name = "SELECTOR", global = true)]
     agent: Option<String>,
-
-    /// Deprecated backend selector (`agent` or `gemini`). Use `--agent` instead.
-    #[arg(long = "backend", value_enum, global = true, hide = true)]
-    backend: Option<BackendArg>,
 
     /// Bundled agent shim label to run (for example, `codex` or `gemini`); overrides config until the end of this invocation
     #[arg(long = "agent-label", value_name = "LABEL", global = true)]
@@ -152,22 +148,6 @@ enum BackgroundMode {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum BackendArg {
-    #[value(alias = "codex")]
-    Agent,
-    Gemini,
-}
-
-impl From<BackendArg> for config::BackendKind {
-    fn from(value: BackendArg) -> Self {
-        match value {
-            BackendArg::Agent => config::BackendKind::Agent,
-            BackendArg::Gemini => config::BackendKind::Gemini,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
 enum ScopeArg {
     Ask,
     Save,
@@ -214,7 +194,7 @@ enum Commands {
     /// Show a short, workflow-oriented help page (or the full reference with --all)
     Help(HelpCmd),
 
-    /// One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any backend edits) and exits
+    /// One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any agent edits) and exits
     Ask(AskCmd),
 
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
@@ -421,15 +401,7 @@ enum JobsAction {
 struct ApproveCmd {
     /// Plan slug to approve (tab-completes from pending plans)
     #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
-    plan: Option<String>,
-
-    /// List pending plan branches instead of approving
-    #[arg(
-        long = "list",
-        hide = true,
-        help = "DEPRECATED: use `vizier list` instead."
-    )]
-    list: bool,
+    plan: String,
 
     /// Destination branch for preview/reference (defaults to detected primary)
     #[arg(long = "target", value_name = "BRANCH")]
@@ -518,12 +490,8 @@ struct MergeCmd {
     assume_yes: bool,
 
     /// Keep the draft branch locally after merge (default is to delete)
-    #[arg(long = "keep-branch", conflicts_with = "legacy_delete_branch")]
+    #[arg(long = "keep-branch")]
     keep_branch: bool,
-
-    /// Deprecated alias for when deletion was opt-in; retained for compatibility
-    #[arg(long = "delete-branch", hide = true)]
-    legacy_delete_branch: bool,
 
     /// Optional note appended to the merge commit body
     #[arg(long = "note", value_name = "TEXT")]
@@ -798,12 +766,6 @@ fn resolve_approve_options(
     cmd: &ApproveCmd,
     push_after: bool,
 ) -> Result<ApproveOptions, Box<dyn std::error::Error>> {
-    if !cmd.list && cmd.plan.is_none() {
-        return Err(
-            "plan argument is required (use `vizier list` to inspect pending drafts)".into(),
-        );
-    }
-
     let config = config::get_config();
     let repo_root = vcs::repo_root().ok();
 
@@ -841,7 +803,6 @@ fn resolve_approve_options(
 
     Ok(ApproveOptions {
         plan: cmd.plan.clone(),
-        list_only: cmd.list,
         target: cmd.target.clone(),
         branch_override: cmd.branch.clone(),
         assume_yes: cmd.assume_yes,
@@ -934,13 +895,6 @@ fn resolve_merge_options(
     } else {
         MergeConflictStrategy::Manual
     };
-
-    if cmd.legacy_delete_branch {
-        display::warn(
-            "--delete-branch is deprecated; vizier merge now deletes draft branches by default. \
-             Pass --keep-branch to retain the branch after merging.",
-        );
-    }
 
     let repo_root = vcs::repo_root().ok();
     let mut cicd_gate = CicdGateOptions::from_config(&config.merge.cicd_gate);
@@ -1170,15 +1124,6 @@ fn build_cli_agent_overrides(
         overrides.selector = Some(agent.trim().to_ascii_lowercase());
     }
 
-    if let Some(backend) = opts.backend {
-        display::warn("`--backend` is deprecated; use `--agent <selector>` instead.");
-        let selector = match backend {
-            BackendArg::Agent => "codex",
-            BackendArg::Gemini => "gemini",
-        };
-        overrides.selector = Some(selector.to_string());
-    }
-
     if let Some(label) = opts
         .agent_label
         .as_ref()
@@ -1258,7 +1203,6 @@ fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
 #[allow(dead_code)]
 fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
     json!({
-        "backend": cfg.backend.to_string(),
         "agent_selector": cfg.agent_selector,
         "agent": {
             "label": cfg.agent_runtime.label,
@@ -1309,7 +1253,7 @@ fn build_job_metadata(
             metadata.branch = cmd.branch.clone();
         }
         Commands::Approve(cmd) => {
-            metadata.plan = cmd.plan.clone();
+            metadata.plan = Some(cmd.plan.clone());
             metadata.target = cmd.target.clone();
             metadata.branch = cmd.branch.clone();
         }
@@ -1365,16 +1309,16 @@ fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
 
 #[allow(dead_code)]
 fn background_supported(command: &Commands) -> bool {
-    match command {
+    matches!(
+        command,
         Commands::Ask(_)
-        | Commands::Draft(_)
-        | Commands::Refine(_)
-        | Commands::Review(_)
-        | Commands::Merge(_)
-        | Commands::Save(_) => true,
-        Commands::Approve(cmd) => !cmd.list,
-        _ => false,
-    }
+            | Commands::Draft(_)
+            | Commands::Refine(_)
+            | Commands::Review(_)
+            | Commands::Merge(_)
+            | Commands::Save(_)
+            | Commands::Approve(_)
+    )
 }
 
 #[allow(dead_code)]
@@ -1470,12 +1414,8 @@ fn preflight_background_prompts(
             if cmd.assume_yes {
                 return Ok(PreflightResult::Proceed(Vec::new()));
             }
-            let plan = cmd
-                .plan
-                .as_deref()
-                .ok_or("plan argument is required (use `vizier list` to inspect pending drafts)")?;
             let spec = plan::PlanBranchSpec::resolve(
-                Some(plan),
+                Some(cmd.plan.as_str()),
                 cmd.branch.as_deref(),
                 cmd.target.as_deref(),
             )?;
@@ -1685,7 +1625,6 @@ fn global_arg_takes_value(arg: &str) -> bool {
             | "--agent"
             | "--agent-label"
             | "--agent-command"
-            | "--backend"
             | "--background-job-id"
     )
 }
@@ -2096,15 +2035,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let messages = if repo_session.exists() {
             auditor::Auditor::load_session_messages_from_path(&repo_session)?
-        } else if let Some(config_dir) = config::base_config_dir() {
-            let legacy = config_dir
-                .join("vizier")
-                .join(format!("{}.json", session_id));
-            if legacy.exists() {
-                auditor::Auditor::load_session_messages_from_path(&legacy)?
-            } else {
-                return Err("could not find session file".into());
-            }
         } else {
             return Err("could not find session file".into());
         };
@@ -2122,13 +2052,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|value| !value.is_empty())
     {
         cfg.agent_selector = selector.to_ascii_lowercase();
-        cfg.backend = config::backend_kind_for_selector(&cfg.agent_selector);
-    } else if let Some(backend_arg) = cli.global.backend {
-        display::warn("`--backend` is deprecated; use `--agent` instead.");
-        cfg.agent_selector = match backend_arg {
-            BackendArg::Agent => "codex".to_string(),
-            BackendArg::Gemini => "gemini".to_string(),
-        };
         cfg.backend = config::backend_kind_for_selector(&cfg.agent_selector);
     }
 

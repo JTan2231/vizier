@@ -44,37 +44,16 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
      - Sets the exact template text for this scope+kind.
      - May attach agent/runtime/documentation overrides just for this pairing.
 
-2. **Scoped prompt section**  
-   - Table: `[prompts.<scope>]`  
-   - Keys are prompt kinds (e.g., `documentation`, `implementation_plan`, `review`, `merge_conflict`).  
-   - Example:
-     ```toml
-     [prompts.ask]
-     documentation = "ask-specific base prompt"
-
-     [prompts.draft]
-     implementation_plan = "draft-specific plan template"
-     ```
-
-3. **Repo-local prompt files under `.vizier/`**  
+2. **Repo-local prompt files under `.vizier/`**  
    - Vizier looks in `.vizier/` for the first existing file per kind:
-    - `documentation`: `DOCUMENTATION_PROMPT.md`, then `BASE_SYSTEM_PROMPT.md` (legacy)
+    - `documentation`: `DOCUMENTATION_PROMPT.md`
     - `commit`: `COMMIT_PROMPT.md`
     - `implementation_plan`: `IMPLEMENTATION_PLAN_PROMPT.md`
     - `plan_refine`: `PLAN_REFINE_PROMPT.md`
     - `review`: `REVIEW_PROMPT.md`
     - `merge_conflict`: `MERGE_CONFLICT_PROMPT.md`
 
-4. **Global prompt entries in config**  
-   - Table: `[prompts]` (or top-level `DOCUMENTATION_PROMPT` / `COMMIT_PROMPT` / etc. keys).  
-   - Example:
-     ```toml
-     [prompts]
-     documentation = "global default base prompt"
-     commit = "global commit template"
-     ```
-
-5. **Baked-in defaults** (lowest precedence)  
+3. **Baked-in defaults** (lowest precedence)  
    - Constants in `vizier-core/src/lib.rs`:
     - `DOCUMENTATION_PROMPT`
     - `COMMIT_PROMPT`
@@ -86,7 +65,6 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
 In practice:
 - Treat `[agents.<scope>.prompts.<kind>]` as the **primary surface** for customization.
 - Use `.vizier/*.md` when you want repo-local prompt files without touching config.
-- Use `[prompts]` only for global defaults or legacy setups.
 
 ## Documentation prompt toggles
 
@@ -108,7 +86,7 @@ include_narrative_docs = false
 - `include_snapshot` and `include_narrative_docs` gate whether the snapshot and narrative docs are embedded for that scope.
 - These settings also apply when documentation-style prompts are used during plan implementation, review fix-up, and merge-time narrative refresh.
 
-## Backend overrides per prompt
+## Agent overrides per prompt
 
 Agent behavior for a given scope+kind can be customized in two layers:
 

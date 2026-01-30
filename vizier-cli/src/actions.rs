@@ -82,8 +82,6 @@ impl std::error::Error for CancelledError {}
 #[derive(Debug, Serialize)]
 struct ConfigReport {
     agent: String,
-    backend: String,
-    agent_backend: Option<String>,
     no_session: bool,
     workflow: WorkflowReport,
     approve: ApproveReport,
@@ -96,7 +94,6 @@ struct ConfigReport {
 #[derive(Debug, Serialize)]
 struct ScopeReport {
     agent: String,
-    backend: String,
     documentation: DocumentationReport,
     agent_runtime: Option<AgentRuntimeReport>,
 }
@@ -205,7 +202,6 @@ fn scope_report(agent: &config::AgentSettings) -> ScopeReport {
 
     ScopeReport {
         agent: agent.selector.clone(),
-        backend: agent.backend.to_string(),
         documentation: documentation_report(&agent.documentation),
         agent_runtime: runtime,
     }
@@ -229,7 +225,6 @@ fn build_config_report(
     cli_override: Option<&config::AgentOverrides>,
 ) -> Result<ConfigReport, Box<dyn std::error::Error>> {
     let default_agent = resolve_default_agent_settings(cfg, cli_override)?;
-    let agent_backend = Some(default_agent.backend.to_string());
     let agent_runtime_default = Some(runtime_report(&default_agent.agent_runtime));
 
     let mut scopes = BTreeMap::new();
@@ -240,8 +235,6 @@ fn build_config_report(
 
     Ok(ConfigReport {
         agent: cfg.agent_selector.clone(),
-        backend: cfg.backend.to_string(),
-        agent_backend,
         no_session: cfg.no_session,
         workflow: WorkflowReport {
             no_commit_default: cfg.workflow.no_commit_default,
@@ -332,10 +325,7 @@ fn documentation_label(docs: &DocumentationReport) -> String {
 }
 
 fn format_scope_rows(scope: &ScopeReport) -> Vec<(String, String)> {
-    let mut rows = vec![
-        ("Agent".to_string(), scope.agent.clone()),
-        ("Backend".to_string(), scope.backend.clone()),
-    ];
+    let mut rows = vec![("Agent".to_string(), scope.agent.clone())];
 
     rows.push((
         "Documentation prompt".to_string(),
@@ -404,11 +394,6 @@ fn format_merge_rows(report: &MergeReport) -> Vec<(String, String)> {
 fn format_global_rows(report: &ConfigReport) -> Vec<(String, String)> {
     vec![
         ("Agent".to_string(), report.agent.clone()),
-        ("Backend".to_string(), report.backend.clone()),
-        (
-            "Agent backend".to_string(),
-            value_or_unset(report.agent_backend.clone(), "unset"),
-        ),
         ("No session".to_string(), report.no_session.to_string()),
         (
             "No-commit default".to_string(),
@@ -888,8 +873,7 @@ pub struct ApproveStopCondition {
 
 #[derive(Debug, Clone)]
 pub struct ApproveOptions {
-    pub plan: Option<String>,
-    pub list_only: bool,
+    pub plan: String,
     pub target: Option<String>,
     pub branch_override: Option<String>,
     pub assume_yes: bool,
@@ -2698,11 +2682,6 @@ pub async fn run_approve(
     agent: &config::AgentSettings,
     commit_mode: CommitMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if opts.list_only {
-        display::warn("`vizier approve --list` is deprecated; use `vizier list` instead.");
-        return list_pending_plans(opts.target.clone());
-    }
-
     require_agent_backend(
         agent,
         config::PromptKind::Documentation,
@@ -2710,7 +2689,7 @@ pub async fn run_approve(
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
-        opts.plan.as_deref(),
+        Some(opts.plan.as_str()),
         opts.branch_override.as_deref(),
         opts.target.as_deref(),
     )?;

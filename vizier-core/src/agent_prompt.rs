@@ -563,7 +563,7 @@ fn load_bounds_prompt() -> Result<String, AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{self, CommandScope, DocumentationSettings, PromptKind};
+    use crate::config::{self, CommandScope, DocumentationSettings, PromptKind, PromptOverrides};
     use std::sync::Mutex;
 
     static CONFIG_LOCK: Mutex<()> = Mutex::new(());
@@ -573,7 +573,14 @@ mod tests {
         let _guard = CONFIG_LOCK.lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
-        cfg.set_prompt(PromptKind::ImplementationPlan, "custom plan".to_string());
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::ImplementationPlan,
+            PromptOverrides {
+                text: Some("custom plan".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
         config::set_config(cfg);
 
         let selection =
@@ -598,7 +605,14 @@ mod tests {
         let _guard = CONFIG_LOCK.lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
-        cfg.set_prompt(PromptKind::Review, "custom review".to_string());
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::Review,
+            PromptOverrides {
+                text: Some("custom review".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
         config::set_config(cfg);
 
         let selection = config::get_config().prompt_for(CommandScope::Review, PromptKind::Review);
@@ -628,7 +642,14 @@ mod tests {
         let _guard = CONFIG_LOCK.lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
-        cfg.set_prompt(PromptKind::PlanRefine, "custom refine".to_string());
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::PlanRefine,
+            PromptOverrides {
+                text: Some("custom refine".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
         config::set_config(cfg);
 
         let selection =
@@ -695,7 +716,14 @@ mod tests {
         let _guard = CONFIG_LOCK.lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
-        cfg.set_prompt(PromptKind::MergeConflict, "custom merge".to_string());
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::MergeConflict,
+            PromptOverrides {
+                text: Some("custom merge".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
         config::set_config(cfg);
 
         let conflicts = vec!["src/lib.rs".to_string()];

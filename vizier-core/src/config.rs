@@ -9,7 +9,7 @@ use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
     PLAN_REFINE_PROMPT, REVIEW_PROMPT,
     agent::{AgentRunner, ScriptRunner},
-    display, tools, tree,
+    tools, tree,
 };
 
 lazy_static! {
@@ -55,7 +55,7 @@ impl PromptKind {
 
     fn filename_candidates(&self) -> &'static [&'static str] {
         match self {
-            PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md", "BASE_SYSTEM_PROMPT.md"],
+            PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md"],
             PromptKind::Commit => &["COMMIT_PROMPT.md"],
             PromptKind::ImplementationPlan => &["IMPLEMENTATION_PLAN_PROMPT.md"],
             PromptKind::PlanRefine => &["PLAN_REFINE_PROMPT.md"],
@@ -242,10 +242,8 @@ pub struct AgentOverrides {
 }
 
 /// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]` so the same
-/// table controls the template, backend overrides, and agent runtime options for a
-/// specific command/prompt pairing. Legacy `[prompts.*]` keys remain supported,
-/// but repositories should converge on these profiles so operators reason about a
-/// single surface when migrating.
+/// table controls the template, agent overrides, and runtime options for a specific
+/// command/prompt pairing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PromptOverrides {
     pub text: Option<String>,
@@ -462,7 +460,6 @@ struct RepoPrompt {
 pub enum PromptOrigin {
     ScopedConfig { scope: CommandScope },
     RepoFile { path: PathBuf },
-    GlobalConfig,
     Default,
 }
 
@@ -471,7 +468,6 @@ impl PromptOrigin {
         match self {
             PromptOrigin::ScopedConfig { .. } => "scoped-config",
             PromptOrigin::RepoFile { .. } => "repo-file",
-            PromptOrigin::GlobalConfig => "config",
             PromptOrigin::Default => "default",
         }
     }
@@ -499,8 +495,6 @@ pub struct Config {
     pub agent_defaults: AgentOverrides,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
     repo_prompts: HashMap<SystemPrompt, RepoPrompt>,
-    global_prompts: HashMap<SystemPrompt, String>,
-    scoped_prompts: HashMap<(CommandScope, SystemPrompt), String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -730,8 +724,6 @@ pub struct ConfigLayer {
     pub review: ReviewLayer,
     pub merge: MergeLayer,
     pub workflow: WorkflowLayer,
-    pub global_prompts: HashMap<SystemPrompt, String>,
-    pub scoped_prompts: HashMap<(CommandScope, SystemPrompt), String>,
     pub agent_defaults: Option<AgentOverrides>,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
 }
@@ -766,8 +758,6 @@ impl Default for Config {
             agent_defaults: AgentOverrides::default(),
             agent_scopes: HashMap::new(),
             repo_prompts,
-            global_prompts: HashMap::new(),
-            scoped_prompts: HashMap::new(),
         }
     }
 }
@@ -814,14 +804,6 @@ impl Config {
                 .and_modify(|existing| existing.merge(overrides))
                 .or_insert_with(|| overrides.clone());
         }
-
-        for (prompt, value) in layer.global_prompts.iter() {
-            self.set_prompt(*prompt, value.clone());
-        }
-
-        for ((scope, prompt), value) in layer.scoped_prompts.iter() {
-            self.set_scoped_prompt(*scope, *prompt, value.clone());
-        }
     }
 
     pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
@@ -863,32 +845,9 @@ impl Config {
         Ok(Config::from_layers(&[layer]))
     }
 
-    pub fn set_prompt<S: Into<String>>(&mut self, prompt: SystemPrompt, value: S) {
-        self.global_prompts.insert(prompt, value.into());
-    }
-
-    pub fn set_scoped_prompt<S: Into<String>>(
-        &mut self,
-        scope: CommandScope,
-        prompt: SystemPrompt,
-        value: S,
-    ) {
-        self.scoped_prompts.insert((scope, prompt), value.into());
-    }
-
     pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
         if let Some(selection) = self.prompt_from_agent_override(scope, kind) {
             return selection;
-        }
-
-        if let Some(value) = self.scoped_prompts.get(&(scope, kind)) {
-            return PromptSelection {
-                text: value.clone(),
-                kind,
-                requested_scope: scope,
-                origin: PromptOrigin::ScopedConfig { scope },
-                source_path: None,
-            };
         }
 
         if let Some(repo) = self.repo_prompts.get(&kind) {
@@ -900,16 +859,6 @@ impl Config {
                     path: repo.path.clone(),
                 },
                 source_path: Some(repo.path.clone()),
-            };
-        }
-
-        if let Some(value) = self.global_prompts.get(&kind) {
-            return PromptSelection {
-                text: value.clone(),
-                kind,
-                requested_scope: scope,
-                origin: PromptOrigin::GlobalConfig,
-                source_path: None,
             };
         }
 
@@ -1047,10 +996,8 @@ const MODEL_KEY_PATHS: &[&[&str]] = &[
 ];
 const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
 const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
-const FALLBACK_BACKEND_DEPRECATION_MESSAGE: &str = "fallback_backend entries are no longer supported. Vizier now fails fast when the configured agent backend fails; remove fallback_backend from your config and re-run.";
-const BACKEND_KEY_DEPRECATION_MESSAGE: &str =
-    "backend entries are deprecated; set `agent = \"codex\" | \"gemini\" | <shim>` instead.";
-const AGENT_LABEL_DEPRECATION_MESSAGE: &str = "agent.label is deprecated; use the parent `agent = \"<shim>\"` selector or override agent.command for custom scripts.";
+const FALLBACK_BACKEND_DEPRECATION_MESSAGE: &str =
+    "fallback_backend entries are unsupported; remove them from your config.";
 const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["reasoning_effort"],
     &["reasoning-effort"],
@@ -1065,59 +1012,10 @@ const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
     &["flags", "thinking_level"],
     &["flags", "thinking-level"],
 ];
-const WIRE_BACKEND_REMOVED_MESSAGE: &str =
-    "the `wire` backend has been removed. Update your config/CLI flags to use `agent` or `gemini`.";
 const MODEL_CONFIG_REMOVED_MESSAGE: &str =
     "model overrides are no longer supported now that the wire backend has been removed.";
 const REASONING_CONFIG_REMOVED_MESSAGE: &str = "reasoning-effort overrides are no longer supported now that the wire backend has been removed.";
-const DOCUMENTATION_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["DOCUMENTATION_PROMPT"],
-    &["documentation_prompt"],
-    &["prompts", "DOCUMENTATION_PROMPT"],
-    &["prompts", "documentation"],
-    &["prompts", "documentation_prompt"],
-    // Legacy keys
-    &["BASE_SYSTEM_PROMPT"],
-    &["base_system_prompt"],
-    &["prompts", "BASE_SYSTEM_PROMPT"],
-    &["prompts", "base"],
-    &["prompts", "base_system_prompt"],
-];
-const COMMIT_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["COMMIT_PROMPT"],
-    &["commit_prompt"],
-    &["prompts", "COMMIT_PROMPT"],
-    &["prompts", "commit"],
-    &["prompts", "commit_prompt"],
-];
-const IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["IMPLEMENTATION_PLAN_PROMPT"],
-    &["implementation_plan_prompt"],
-    &["prompts", "IMPLEMENTATION_PLAN_PROMPT"],
-    &["prompts", "implementation_plan"],
-    &["prompts", "implementation_plan_prompt"],
-];
-const PLAN_REFINE_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["PLAN_REFINE_PROMPT"],
-    &["plan_refine_prompt"],
-    &["prompts", "PLAN_REFINE_PROMPT"],
-    &["prompts", "plan_refine"],
-    &["prompts", "plan_refine_prompt"],
-];
-const REVIEW_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["REVIEW_PROMPT"],
-    &["review_prompt"],
-    &["prompts", "REVIEW_PROMPT"],
-    &["prompts", "review"],
-    &["prompts", "review_prompt"],
-];
-const MERGE_CONFLICT_PROMPT_KEY_PATHS: &[&[&str]] = &[
-    &["MERGE_CONFLICT_PROMPT"],
-    &["merge_conflict_prompt"],
-    &["prompts", "MERGE_CONFLICT_PROMPT"],
-    &["prompts", "merge_conflict"],
-    &["prompts", "merge_conflict_prompt"],
-];
+// Prompt templates resolve from scoped agent profiles, then repo prompt files, then defaults.
 
 #[derive(Clone)]
 struct AgentSettingsBuilder {
@@ -1488,49 +1386,15 @@ fn parse_agent_overrides(
                 overrides.selector = Some(selector);
             }
         } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
-            if overrides.selector.is_none()
-                && let Some(label) = parsed.label.as_ref()
-            {
-                display::warn(AGENT_LABEL_DEPRECATION_MESSAGE);
-                overrides.selector = Some(label.clone());
-            }
             overrides.agent_runtime = Some(parsed);
         }
     }
 
-    if let Some(raw_backend) = find_string(value, BACKEND_KEY_PATHS) {
-        let trimmed = raw_backend.trim();
-        if trimmed.eq_ignore_ascii_case("wire") {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                WIRE_BACKEND_REMOVED_MESSAGE,
-            )));
-        }
-
-        if let Some(backend) = BackendKind::parse(trimmed) {
-            if overrides.selector.is_none() {
-                let fallback = match trimmed.to_ascii_lowercase().as_str() {
-                    "codex" => "codex".to_string(),
-                    other => match backend {
-                        BackendKind::Gemini => "gemini".to_string(),
-                        BackendKind::Agent => {
-                            if other == "agent" {
-                                default_selector_for_backend(BackendKind::Agent).to_string()
-                            } else {
-                                other.to_string()
-                            }
-                        }
-                    },
-                };
-                display::warn(BACKEND_KEY_DEPRECATION_MESSAGE);
-                overrides.selector = Some(fallback);
-            }
-        } else if !trimmed.is_empty() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
-            )));
-        }
+    if find_string(value, BACKEND_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "backend entries are unsupported; use agent selectors instead",
+        )));
     }
 
     if allow_prompt_children {
@@ -1674,42 +1538,6 @@ fn parse_command_value(value: &serde_json::Value) -> Option<Vec<String>> {
     }
 }
 
-fn parse_scoped_prompt_sections_into_layer(
-    scoped_prompts: &mut HashMap<(CommandScope, SystemPrompt), String>,
-    prompts_value: &serde_json::Value,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(table) = prompts_value.as_object() else {
-        return Ok(());
-    };
-
-    for (key, value) in table {
-        let Ok(scope) = key.parse::<CommandScope>() else {
-            continue;
-        };
-
-        let Some(scope_table) = value.as_object() else {
-            continue;
-        };
-
-        for (prompt_key, prompt_value) in scope_table {
-            let Some(kind) = prompt_kind_from_key(prompt_key) else {
-                continue;
-            };
-
-            let Some(text) = prompt_value.as_str().filter(|s| !s.trim().is_empty()) else {
-                return Err(Box::new(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("[prompts.{key}.{prompt_key}] must be a non-empty string"),
-                )));
-            };
-
-            scoped_prompts.insert((scope, kind), text.to_string());
-        }
-    }
-
-    Ok(())
-}
-
 fn parse_agent_sections_into_layer(
     layer: &mut ConfigLayer,
     agents_value: &serde_json::Value,
@@ -1818,46 +1646,15 @@ impl ConfigLayer {
                     layer.agent_selector = Some(selector);
                 }
             } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
-                if parsed.label.is_some() {
-                    display::warn(AGENT_LABEL_DEPRECATION_MESSAGE);
-                }
                 layer.agent_runtime = Some(parsed);
             }
         }
 
-        if let Some(raw_backend) = find_string(&file_config, BACKEND_KEY_PATHS) {
-            let trimmed = raw_backend.trim();
-            if trimmed.eq_ignore_ascii_case("wire") {
-                return Err(Box::new(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    WIRE_BACKEND_REMOVED_MESSAGE,
-                )));
-            }
-
-            if let Some(backend) = BackendKind::parse(trimmed) {
-                if layer.agent_selector.is_none() {
-                    let selector = match trimmed.to_ascii_lowercase().as_str() {
-                        "codex" => "codex".to_string(),
-                        other => match backend {
-                            BackendKind::Gemini => "gemini".to_string(),
-                            BackendKind::Agent => {
-                                if other == "agent" {
-                                    default_selector_for_backend(BackendKind::Agent).to_string()
-                                } else {
-                                    other.to_string()
-                                }
-                            }
-                        },
-                    };
-                    display::warn(BACKEND_KEY_DEPRECATION_MESSAGE);
-                    layer.agent_selector = Some(selector);
-                }
-            } else if !trimmed.is_empty() {
-                return Err(Box::new(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("unknown backend `{trimmed}`; expected `agent` or `gemini`"),
-                )));
-            }
+        if find_string(&file_config, BACKEND_KEY_PATHS).is_some() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backend entries are unsupported; use agent selectors instead",
+            )));
         }
 
         if let Some(commands) = parse_string_array(value_at_path(
@@ -1979,40 +1776,6 @@ impl ConfigLayer {
             }
         }
 
-        if let Some(prompt) = find_string(&file_config, DOCUMENTATION_PROMPT_KEY_PATHS) {
-            layer
-                .global_prompts
-                .insert(PromptKind::Documentation, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, COMMIT_PROMPT_KEY_PATHS) {
-            layer.global_prompts.insert(PromptKind::Commit, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, IMPLEMENTATION_PLAN_PROMPT_KEY_PATHS) {
-            layer
-                .global_prompts
-                .insert(PromptKind::ImplementationPlan, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, PLAN_REFINE_PROMPT_KEY_PATHS) {
-            layer.global_prompts.insert(PromptKind::PlanRefine, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, REVIEW_PROMPT_KEY_PATHS) {
-            layer.global_prompts.insert(PromptKind::Review, prompt);
-        }
-
-        if let Some(prompt) = find_string(&file_config, MERGE_CONFLICT_PROMPT_KEY_PATHS) {
-            layer
-                .global_prompts
-                .insert(PromptKind::MergeConflict, prompt);
-        }
-
-        if let Some(prompts_table) = value_at_path(&file_config, &["prompts"]) {
-            parse_scoped_prompt_sections_into_layer(&mut layer.scoped_prompts, prompts_table)?;
-        }
-
         if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
             parse_agent_sections_into_layer(&mut layer, agent_value, base_dir)?;
         }
@@ -2031,21 +1794,18 @@ fn parse_agent_runtime_override(
 
     let mut overrides = AgentRuntimeOverride::default();
 
-    let legacy_keys = [
-        "backend",
-        "kind",
-        "profile",
-        "bounds_prompt_path",
-        "bounds_prompt",
-        "extra_args",
-        "binary",
-        "binary_path",
+    let allowed_keys = [
+        "label",
+        "command",
+        "progress_filter",
+        "output",
+        "enable_script_wrapper",
     ];
-    for key in legacy_keys {
-        if object.contains_key(key) {
+    for key in object.keys() {
+        if !allowed_keys.contains(&key.as_str()) {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "agent runtime now accepts only `label` or `command`; `backend`, `profile`, bounds prompts, binary aliases, and extra_args are deprecated. Point `agent.label` at a bundled shim (codex/gemini) or set `agent.command` to your script.",
+                "agent runtime supports only label, command, progress_filter, output, and enable_script_wrapper",
             )));
         }
     }
@@ -2101,13 +1861,7 @@ fn parse_agent_runtime_override(
         }
     }
 
-    if let Some(enable_script) = parse_bool(
-        object
-            .get("enable_script_wrapper")
-            .or_else(|| object.get("enable-script-wrapper"))
-            .or_else(|| object.get("use_script_wrapper"))
-            .or_else(|| object.get("use-script-wrapper")),
-    ) {
+    if let Some(enable_script) = parse_bool(object.get("enable_script_wrapper")) {
         overrides.enable_script_wrapper = Some(enable_script);
     }
 
@@ -2168,22 +1922,12 @@ fn prompt_kind_from_key(key: &str) -> Option<PromptKind> {
     let normalized = key.trim().to_ascii_lowercase().replace('-', "_");
 
     match normalized.as_str() {
-        "documentation"
-        | "documentation_prompt"
-        | "docs"
-        | "doc"
-        | "base"
-        | "base_system_prompt"
-        | "system" => Some(PromptKind::Documentation),
-        "commit" | "commit_prompt" => Some(PromptKind::Commit),
-        "implementation_plan" | "implementation_plan_prompt" | "plan" => {
-            Some(PromptKind::ImplementationPlan)
-        }
-        "plan_refine" | "plan_refine_prompt" | "refine" | "refine_plan" => {
-            Some(PromptKind::PlanRefine)
-        }
-        "review" | "review_prompt" => Some(PromptKind::Review),
-        "merge_conflict" | "merge_conflict_prompt" | "merge" => Some(PromptKind::MergeConflict),
+        "documentation" => Some(PromptKind::Documentation),
+        "commit" => Some(PromptKind::Commit),
+        "implementation_plan" => Some(PromptKind::ImplementationPlan),
+        "plan_refine" => Some(PromptKind::PlanRefine),
+        "review" => Some(PromptKind::Review),
+        "merge_conflict" => Some(PromptKind::MergeConflict),
         _ => None,
     }
 }
@@ -2363,12 +2107,31 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use tempfile::{NamedTempFile, tempdir};
 
     lazy_static! {
         static ref AGENT_SHIM_ENV_LOCK: Mutex<()> = Mutex::new(());
+    }
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let original = std::env::current_dir().expect("read current dir");
+            std::env::set_current_dir(path).expect("set current dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
     }
 
     fn write_json_file(contents: &str) -> NamedTempFile {
@@ -2379,135 +2142,52 @@ mod tests {
     }
 
     #[test]
-    fn test_from_json_overrides_prompts() {
-        let json = r#"
-        {
-            "BASE_SYSTEM_PROMPT": "base override",
-            "COMMIT_PROMPT": "commit override",
-            "IMPLEMENTATION_PLAN_PROMPT": "plan override",
-            "PLAN_REFINE_PROMPT": "refine override",
-            "REVIEW_PROMPT": "review override",
-            "MERGE_CONFLICT_PROMPT": "merge override"
-        }
-        "#;
-        let file = write_json_file(json);
+    fn prompt_profile_overrides_repo_prompt() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let temp_dir = tempdir().expect("create temp dir");
+        let vizier_dir = temp_dir.path().join(".vizier");
+        fs::create_dir_all(&vizier_dir).expect("create .vizier");
+        fs::write(
+            vizier_dir.join("DOCUMENTATION_PROMPT.md"),
+            "repo documentation prompt",
+        )
+        .expect("write repo prompt");
 
-        let cfg = Config::from_json(file.path().to_path_buf()).expect("should parse JSON config");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[agents.default.prompts.documentation]
+text = "profile documentation prompt"
+"#,
+        )
+        .expect("write config");
 
-        assert_eq!(cfg.get_prompt(PromptKind::Documentation), "base override");
-        assert_eq!(cfg.get_prompt(PromptKind::Commit), "commit override");
-        assert_eq!(
-            cfg.get_prompt(PromptKind::ImplementationPlan),
-            "plan override"
-        );
-        assert_eq!(cfg.get_prompt(PromptKind::PlanRefine), "refine override");
-        assert_eq!(cfg.get_prompt(PromptKind::Review), "review override");
-        assert_eq!(cfg.get_prompt(PromptKind::MergeConflict), "merge override");
+        let _cwd = CwdGuard::enter(temp_dir.path());
+        let cfg = Config::from_toml(config_path).expect("parse config");
+        let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation);
+        assert_eq!(selection.text, "profile documentation prompt");
     }
 
     #[test]
-    fn test_from_json_partial_override() {
-        let json = r#"{ "COMMIT_PROMPT": "only commit override" }"#;
-        let file = write_json_file(json);
+    fn repo_prompt_fallback_includes_plan_refine() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let temp_dir = tempdir().expect("create temp dir");
+        let vizier_dir = temp_dir.path().join(".vizier");
+        fs::create_dir_all(&vizier_dir).expect("create .vizier");
+        fs::write(
+            vizier_dir.join("PLAN_REFINE_PROMPT.md"),
+            "repo refine prompt",
+        )
+        .expect("write repo prompt");
 
-        let cfg = Config::from_json(file.path().to_path_buf()).expect("should parse JSON config");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, "").expect("write empty config");
 
-        let default_cfg = Config::default();
-
-        assert_eq!(cfg.get_prompt(PromptKind::Commit), "only commit override");
-        assert_eq!(
-            cfg.get_prompt(PromptKind::Documentation),
-            default_cfg.get_prompt(PromptKind::Documentation)
-        );
-    }
-
-    #[test]
-    fn test_from_toml_prompts_table() {
-        let toml = r#"
-[prompts]
-documentation = "toml documentation override"
-commit = "toml commit override"
-implementation_plan = "toml plan override"
-plan_refine = "toml refine override"
-review = "toml review override"
-merge_conflict = "toml merge override"
-"#;
-
-        let mut file = NamedTempFile::new().expect("failed to create temp toml file");
-        file.write_all(toml.as_bytes())
-            .expect("failed to write toml temp file");
-
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
-
-        assert_eq!(
-            cfg.get_prompt(PromptKind::Documentation),
-            "toml documentation override"
-        );
-        assert_eq!(cfg.get_prompt(PromptKind::Commit), "toml commit override");
-        assert_eq!(
-            cfg.get_prompt(PromptKind::ImplementationPlan),
-            "toml plan override"
-        );
-        assert_eq!(
-            cfg.get_prompt(PromptKind::PlanRefine),
-            "toml refine override"
-        );
-        assert_eq!(cfg.get_prompt(PromptKind::Review), "toml review override");
-        assert_eq!(
-            cfg.get_prompt(PromptKind::MergeConflict),
-            "toml merge override"
-        );
-    }
-
-    #[test]
-    fn test_scoped_prompt_overrides() {
-        let toml = r#"
-[prompts.ask]
-documentation = "ask scope"
-
-[prompts.draft]
-implementation_plan = "draft scope"
-
-[prompts.refine]
-plan_refine = "refine scope"
-"#;
-
-        let mut file = NamedTempFile::new().expect("temp toml");
-        file.write_all(toml.as_bytes())
-            .expect("failed to write toml temp file");
-
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
-        let default_cfg = Config::default();
-
-        assert_eq!(
-            cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation)
-                .text,
-            "ask scope"
-        );
-        assert_eq!(
-            cfg.prompt_for(CommandScope::Save, PromptKind::Documentation)
-                .text,
-            default_cfg
-                .prompt_for(CommandScope::Save, PromptKind::Documentation)
-                .text,
-        );
-        assert_eq!(
-            cfg.prompt_for(CommandScope::Draft, PromptKind::ImplementationPlan)
-                .text,
-            "draft scope"
-        );
-        assert_eq!(
-            cfg.prompt_for(CommandScope::Refine, PromptKind::PlanRefine)
-                .text,
-            "refine scope"
-        );
-        assert_eq!(
-            cfg.prompt_for(CommandScope::Approve, PromptKind::ImplementationPlan)
-                .text,
-            default_cfg
-                .prompt_for(CommandScope::Approve, PromptKind::ImplementationPlan)
-                .text,
-        );
+        let _cwd = CwdGuard::enter(temp_dir.path());
+        let cfg = Config::from_toml(config_path).expect("parse config");
+        let selection = cfg.prompt_for(CommandScope::Refine, PromptKind::PlanRefine);
+        assert_eq!(selection.text, "repo refine prompt");
     }
 
     #[test]
@@ -2592,8 +2272,8 @@ fallback_backend = "wire"
         };
         assert!(
             err.to_string()
-                .contains("fallback_backend entries are no longer supported"),
-            "error message should mention fallback_backend removal: {err}"
+                .contains("fallback_backend entries are unsupported"),
+            "error message should mention fallback_backend rejection: {err}"
         );
     }
 
@@ -2614,8 +2294,48 @@ fallback_backend = "codex"
         };
         assert!(
             err.to_string()
-                .contains("fallback_backend entries are no longer supported"),
-            "error message should mention fallback_backend removal: {err}"
+                .contains("fallback_backend entries are unsupported"),
+            "error message should mention fallback_backend rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn test_backend_key_rejected_in_root_config() {
+        let toml = r#"
+agent = "codex"
+backend = "gemini"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match Config::from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("backend should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("backend entries are unsupported"),
+            "error message should mention backend rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn test_backend_key_rejected_in_agent_scope() {
+        let toml = r#"
+[agents.ask]
+backend = "gemini"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match Config::from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("backend in agents.* should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("backend entries are unsupported"),
+            "error message should mention backend rejection: {err}"
         );
     }
 
@@ -2780,9 +2500,6 @@ auto_resolve = true
 
 [merge.conflicts]
 auto_resolve = true
-
-[prompts]
-documentation = "repo documentation prompt"
 "#,
         )
         .expect("write repo config");
@@ -2828,11 +2545,6 @@ documentation = "repo documentation prompt"
             vec!["echo global"],
             "global review checks should populate when repo config omits them"
         );
-        assert_eq!(
-            cfg.get_prompt(PromptKind::Documentation),
-            "repo documentation prompt",
-            "repo prompt overrides should win over inherited/global templates"
-        );
     }
 
     #[test]
@@ -2853,7 +2565,7 @@ documentation = "repo documentation prompt"
         );
 
         let toml_path = vizier_dir.join("config.toml");
-        fs::write(&toml_path, "backend = \"agent\"").expect("write toml config");
+        fs::write(&toml_path, "agent = \"codex\"").expect("write toml config");
         assert_eq!(
             project_config_path(temp_dir.path()).expect("toml config should override json"),
             toml_path
@@ -2982,7 +2694,7 @@ profile = "deprecated"
             Ok(_) => panic!("legacy agent keys should be rejected"),
             Err(err) => assert!(
                 err.to_string()
-                    .contains("agent runtime now accepts only `label` or `command`"),
+                    .contains("agent runtime supports only label, command, progress_filter, output, and enable_script_wrapper"),
                 "unexpected error: {err}"
             ),
         }

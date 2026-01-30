@@ -918,10 +918,6 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
         "plan output should include the resolved agent selector:\n{stdout}"
     );
     assert!(
-        compact.contains("Backend:agent"),
-        "plan output should include the resolved backend:\n{stdout}"
-    );
-    assert!(
         compact.contains("Stop-conditionscript:unset"),
         "plan output should include approve.stop_condition.script status:\n{stdout}"
     );
@@ -986,11 +982,6 @@ no_commit_default = true
         "CLI agent override should win even when config file is provided"
     );
     assert_eq!(
-        json.get("backend").and_then(Value::as_str),
-        Some("gemini"),
-        "backend kind should reflect the resolved agent selector"
-    );
-    assert_eq!(
         json.pointer("/workflow/no_commit_default")
             .and_then(Value::as_bool),
         Some(true),
@@ -1038,14 +1029,39 @@ no_commit_default = true
         "review checks from the config file should appear in the report"
     );
     assert_eq!(
-        json.pointer("/scopes/ask/backend").and_then(Value::as_str),
-        Some("gemini"),
-        "per-scope backend should reflect CLI overrides"
-    );
-    assert_eq!(
         json.pointer("/scopes/ask/agent").and_then(Value::as_str),
         Some("gemini"),
         "per-scope agent selector should reflect CLI overrides"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_load_session_ignores_legacy_config_dir() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let session_id = "legacy-session";
+    let config_root = TempDir::new()?;
+    let legacy_dir = config_root.path().join("vizier");
+    fs::create_dir_all(&legacy_dir)?;
+    fs::write(
+        legacy_dir.join(format!("{session_id}.json")),
+        r#"[{"role":"User","content":"legacy"}]"#,
+    )?;
+
+    let output = repo
+        .vizier_cmd()
+        .env("VIZIER_CONFIG_DIR", config_root.path())
+        .env("XDG_CONFIG_HOME", config_root.path())
+        .args(["--load-session", session_id, "plan"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "vizier --load-session should require repo-local sessions"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not find session file"),
+        "stderr should mention missing repo session file, got: {stderr}"
     );
     Ok(())
 }
@@ -1375,15 +1391,15 @@ fn test_explicit_background_requires_noninteractive_flags() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let cases = [
         (
-            vec!["approve", "--background"],
+            vec!["approve", "--background", "plan-a"],
             "--background for vizier approve requires --yes",
         ),
         (
-            vec!["merge", "--background"],
+            vec!["merge", "--background", "plan-b"],
             "--background for vizier merge requires --yes",
         ),
         (
-            vec!["review", "--background"],
+            vec!["review", "--background", "plan-c"],
             "--background for vizier review requires --yes",
         ),
     ];
@@ -2669,6 +2685,52 @@ fn test_approve_creates_single_combined_commit() -> TestResult {
 
 #[test]
 fn test_cli_backend_override_rejected_for_approve() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo
+        .vizier_cmd()
+        .args(["--backend", "codex", "approve", "example"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "vizier should reject deprecated --backend flag"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    assert!(
+        stderr.contains("--backend") && stderr.contains("unexpected"),
+        "stderr should mention the rejected --backend flag, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_approve_requires_plan_slug() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_cmd().args(["approve"]).output()?;
+    assert!(
+        !output.status.success(),
+        "vizier approve should fail without a plan slug"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    assert!(
+        stderr.contains("plan") && stderr.contains("required"),
+        "stderr should mention the missing plan argument, got: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_approve_list_flag_rejected() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_cmd().args(["approve", "--list"]).output()?;
+    assert!(
+        !output.status.success(),
+        "vizier approve --list should be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    assert!(
+        stderr.contains("--list") && stderr.contains("unexpected"),
+        "stderr should mention the rejected --list flag, got: {stderr}"
+    );
     Ok(())
 }
 

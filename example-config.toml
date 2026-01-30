@@ -7,16 +7,15 @@ agent = "codex"
 
 # Example: route every scope through your own script. Update the `[agents.default]` entry below (or
 # whichever scopes you care about) so `agent = "custom"` and then uncomment this block to point
-# Vizier at your script. Only one `agent` key can exist at the root of the file, so remove the scalar
-# `agent = "codex"` above when this table is active.
-# [agent]
+# Vizier at your script.
+# [agents.default.agent]
 # command = ["/usr/local/share/vizier/agents/codex/agent.sh"] # Or point directly at your script
 # output = "auto"                    # auto|wrapped-json; auto wraps bundled shims
 # progress_filter = ["./examples/agents/codex/filter.sh"] # Optional progress-to-stderr filter; defaults when selector=codex
 # Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
-# together with backend overrides for that scope+prompt pairing. Available kinds: documentation, commit,
+# together with agent overrides for that scope+prompt pairing. Available kinds: documentation, commit,
 # implementation_plan, plan_refine, review, merge_conflict. See `docs/prompt-config-matrix.md` for the full scope×prompt-kind
 # matrix, fallback order, and documentation toggles.
 [agents.default.prompts.documentation]
@@ -30,7 +29,7 @@ agent = "codex"
 path = "./prompts/review.md"
 agent = "codex"
 
-# Order of operations the configured backend will run during `vizier review` unless `--skip-checks` is passed
+# Order of operations the configured agent will run during `vizier review` unless `--skip-checks` is passed
 [review.checks]
 commands = [
   "cargo fmt -- --check",

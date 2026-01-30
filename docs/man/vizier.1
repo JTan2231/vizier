@@ -9,7 +9,7 @@ Usage: vizier [OPTIONS] <COMMAND>
 
 Commands:
   help           Show a short, workflow-oriented help page (or the full reference with --all)
-  ask            One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any backend edits) and exits
+  ask            One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any agent edits) and exits
   draft          Generate an implementation-plan draft branch from an operator spec in a disposable worktree
   refine         Refine a stored plan by surfacing questions or applying clarifications
   list           List pending implementation-plan branches that are ahead of the target branch
@@ -45,7 +45,7 @@ Options:
           Disable paging for help output even on a TTY
 
   -l, --load-session <LOAD_SESSION>
-          Load session context from `.vizier/sessions/<id>/session.json` (or legacy config dir) before running
+          Load session context from `.vizier/sessions/<id>/session.json` before running
 
   -n, --no-session
           Skip writing session logs (for compliance-sensitive runs)
