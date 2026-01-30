@@ -20,6 +20,16 @@ This installs:
 - `"$HOME/.local/share/vizier/agents/*"`
 - `"$HOME/.local/share/man/man1/vizier.1"`
 
+## Dry run
+
+To preview the install actions without writing files:
+
+```sh
+./install.sh --dry-run
+```
+
+`--dry-run` cannot be combined with `--uninstall`.
+
 ## System install
 
 ```sh

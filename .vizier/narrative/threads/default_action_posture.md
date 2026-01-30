@@ -15,6 +15,7 @@ Desired behavior (Product-level)
 - Default action: treat user directives as authorization to update `.vizier/narrative/snapshot.md` and (when needed) `.vizier/narrative/threads/*.md`.
 - Explicit opt-out: when users signal “no update” for a turn (e.g., `no-op:` / `discuss-only:`), do not change narrative files.
 - Snapshot discipline: merge into existing threads, update minimally, de-duplicate, and ground claims in observable evidence (code, tests, or user reports).
+- Glossary lockstep: when snapshot edits introduce or clarify high-signal terms, update `.vizier/narrative/glossary.md` in the same change.
 - Output contract: respond with only a short, commit-message-like summary of narrative changes; keep detailed diffs/deltas internal to `.vizier` rather than printing them verbatim.
 - Outcome alignment: the standardized Outcome epilogue / outcome.v1 JSON (once implemented) should reflect when DAP acted and which narrative files changed.
 
@@ -27,7 +28,9 @@ Acceptance criteria
    - New snapshot entries avoid “investigate X” tasks; each entry ties a tension to a concrete, observable behavior change or acceptance signal.
 4) Output contract
    - User-facing responses are concise (commit-style) and do not include raw snapshot deltas.
-5) IO contract integration
+5) Glossary lockstep
+   - Snapshot updates that add or alter terms update the glossary in the same change set.
+6) IO contract integration
    - As Outcome summaries standardize, DAP actions appear in the same stdout/stderr + protocol-mode matrix (no ANSI leakage; deterministic final outcome).
 
 Status
@@ -42,3 +45,5 @@ Update (2026-01-24)
 - Added a canonical thread doc for DAP and cross-linked it from the snapshot so the “default action” contract has a single home with acceptance criteria.
 Update (2026-01-27)
 - Narrative upkeep now expects direct file edits under `.vizier/narrative/` (no Vizier CLI tooling), stays within repo boundaries (no network access unless explicitly authorized), and preserves the explicit opt-out rule.
+Update (2026-01-30)
+- Clarified glossary lockstep expectations so snapshot edits and term definitions stay paired under the Default-Action Posture.

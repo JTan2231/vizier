@@ -174,6 +174,10 @@ impl IntegrationRepo {
         let dir = TempDir::new()?;
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
+        let jobs_dir = dir.path().join(".vizier/jobs");
+        if jobs_dir.exists() {
+            fs::remove_dir_all(&jobs_dir)?;
+        }
         ensure_gitignore(dir.path())?;
         write_default_cicd_script(dir.path())?;
         init_repo_at(dir.path())?;
@@ -472,11 +476,54 @@ fn wait_for_job_completion(repo: &IntegrationRepo, job_id: &str, timeout: Durati
     }
 }
 
-fn write_job_record(repo: &IntegrationRepo, job_id: &str, record: Value) -> io::Result<()> {
+fn write_job_record(
+    repo: &IntegrationRepo,
+    job_id: &str,
+    status: &str,
+    created_at: &str,
+    finished_at: Option<&str>,
+    command: &[&str],
+) -> TestResult {
+    let jobs_root = repo.path().join(".vizier/jobs");
+    let job_dir = jobs_root.join(job_id);
+    fs::create_dir_all(&job_dir)?;
+    fs::write(job_dir.join("stdout.log"), "")?;
+    fs::write(job_dir.join("stderr.log"), "")?;
+
+    let record = json!({
+        "id": job_id,
+        "status": status,
+        "command": command,
+        "created_at": created_at,
+        "started_at": created_at,
+        "finished_at": finished_at,
+        "pid": null,
+        "exit_code": null,
+        "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+        "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+        "session_path": null,
+        "outcome_path": null,
+        "metadata": null,
+        "config_snapshot": null
+    });
+
+    fs::write(
+        job_dir.join("job.json"),
+        serde_json::to_string_pretty(&record)?,
+    )?;
+    Ok(())
+}
+
+fn write_job_record_value(repo: &IntegrationRepo, job_id: &str, record: Value) -> TestResult {
     let job_dir = repo.path().join(".vizier/jobs").join(job_id);
     fs::create_dir_all(&job_dir)?;
-    let path = job_dir.join("job.json");
-    fs::write(path, serde_json::to_string_pretty(&record)?)
+    fs::write(job_dir.join("stdout.log"), "")?;
+    fs::write(job_dir.join("stderr.log"), "")?;
+    fs::write(
+        job_dir.join("job.json"),
+        serde_json::to_string_pretty(&record)?,
+    )?;
+    Ok(())
 }
 
 fn list_worktree_names(repo: &Repository) -> Result<Vec<String>, git2::Error> {
@@ -1776,6 +1823,125 @@ enabled = false
 }
 
 #[test]
+fn test_jobs_list_hides_succeeded_by_default() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record(
+        &repo,
+        "job-running",
+        "running",
+        "2026-01-30T02:00:00Z",
+        None,
+        &["vizier", "ask", "running"],
+    )?;
+    write_job_record(
+        &repo,
+        "job-failed",
+        "failed",
+        "2026-01-30T03:00:00Z",
+        Some("2026-01-30T03:30:00Z"),
+        &["vizier", "ask", "failed"],
+    )?;
+    write_job_record(
+        &repo,
+        "job-succeeded",
+        "succeeded",
+        "2026-01-29T23:00:00Z",
+        Some("2026-01-29T23:15:00Z"),
+        &["vizier", "ask", "succeeded"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "list"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-running"),
+        "expected running job listed:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("job-failed"),
+        "expected failed job listed:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("job-succeeded"),
+        "succeeded jobs should be hidden by default:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Hidden : 1 succeeded (use --all to include)"),
+        "expected hidden succeeded hint:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Created: 2026-01-30T02:00:00"),
+        "expected created timestamp for running job:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Failed : 2026-01-30T03:30:00"),
+        "expected failed timestamp for failed job:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Failed :").count(),
+        1,
+        "failed timestamp should appear once:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Created:").count(),
+        2,
+        "created timestamp should appear for each listed job:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_list_all_includes_succeeded() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record(
+        &repo,
+        "job-running",
+        "running",
+        "2026-01-30T02:00:00Z",
+        None,
+        &["vizier", "ask", "running"],
+    )?;
+    write_job_record(
+        &repo,
+        "job-failed",
+        "failed",
+        "2026-01-30T03:00:00Z",
+        Some("2026-01-30T03:30:00Z"),
+        &["vizier", "ask", "failed"],
+    )?;
+    write_job_record(
+        &repo,
+        "job-succeeded",
+        "succeeded",
+        "2026-01-29T23:00:00Z",
+        Some("2026-01-29T23:15:00Z"),
+        &["vizier", "ask", "succeeded"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "list", "--all"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list --all failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-succeeded"),
+        "expected succeeded job listed with --all:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Created:").count(),
+        3,
+        "created timestamp should appear for each listed job:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_jobs_tail_follow_uses_global_flag() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let output = repo
@@ -2583,7 +2749,7 @@ fn test_list_includes_inline_job_commands() -> TestResult {
     );
 
     let job_id = "inline-job-alpha";
-    write_job_record(
+    write_job_record_value(
         &repo,
         job_id,
         json!({

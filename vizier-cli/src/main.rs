@@ -13,7 +13,7 @@ use serde_json::json;
 use uuid::Uuid;
 use vizier_core::{
     auditor, config,
-    display::{self, LogLevel},
+    display::{self, LogLevel, format_label_value_block, format_number},
     tools, vcs,
 };
 
@@ -353,8 +353,12 @@ struct JobsCmd {
 
 #[derive(Subcommand, Debug)]
 enum JobsAction {
-    /// List all tracked background jobs
-    List,
+    /// List tracked background jobs (succeeded hidden by default)
+    List {
+        /// Include succeeded jobs (default hides them)
+        #[arg(long = "all", short = 'a')]
+        all: bool,
+    },
 
     /// Show details for a background job id
     Show {
@@ -984,22 +988,92 @@ fn run_jobs_command(
     follow: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
-        JobsAction::List => {
+        JobsAction::List { all } => {
             let records = jobs::list_records(jobs_root)?;
             if records.is_empty() {
                 println!("Outcome: No background jobs found");
                 return Ok(());
             }
 
-            println!("Background jobs ({})", records.len());
+            let mut hidden_succeeded = 0usize;
+            let mut visible = Vec::new();
             for record in records {
-                let status = jobs::status_label(record.status);
+                if !all && record.status == JobStatus::Succeeded {
+                    hidden_succeeded += 1;
+                } else {
+                    visible.push(record);
+                }
+            }
+
+            if visible.is_empty() {
+                let mut rows = vec![(
+                    "Outcome".to_string(),
+                    if hidden_succeeded > 0 {
+                        "No active background jobs".to_string()
+                    } else {
+                        "No background jobs found".to_string()
+                    },
+                )];
+                if hidden_succeeded > 0 {
+                    rows.push((
+                        "Hidden".to_string(),
+                        format!(
+                            "{} succeeded (use --all to include)",
+                            format_number(hidden_succeeded)
+                        ),
+                    ));
+                }
+                println!("{}", format_label_value_block(&rows, 0));
+                return Ok(());
+            }
+
+            let mut header_rows = vec![(
+                "Outcome".to_string(),
+                format!(
+                    "{} background job{}",
+                    format_number(visible.len()),
+                    if visible.len() == 1 { "" } else { "s" }
+                ),
+            )];
+            if hidden_succeeded > 0 {
+                header_rows.push((
+                    "Hidden".to_string(),
+                    format!(
+                        "{} succeeded (use --all to include)",
+                        format_number(hidden_succeeded)
+                    ),
+                ));
+            }
+            println!("{}", format_label_value_block(&header_rows, 0));
+            println!();
+
+            let visible_len = visible.len();
+            for (idx, record) in visible.into_iter().enumerate() {
+                let status = jobs::status_label(record.status).to_string();
                 let command = if record.command.is_empty() {
                     "<command unavailable>".to_string()
                 } else {
                     record.command.join(" ")
                 };
-                println!("- {} [{}] {}", record.id, status, command);
+                let failed_at = if record.status == JobStatus::Failed {
+                    record
+                        .finished_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "unknown".to_string())
+                } else {
+                    String::new()
+                };
+                let rows = vec![
+                    ("Job".to_string(), record.id),
+                    ("Status".to_string(), status),
+                    ("Created".to_string(), record.created_at.to_rfc3339()),
+                    ("Failed".to_string(), failed_at),
+                    ("Command".to_string(), command),
+                ];
+                println!("{}", format_label_value_block(&rows, 2));
+                if idx + 1 < visible_len {
+                    println!();
+                }
             }
             Ok(())
         }
