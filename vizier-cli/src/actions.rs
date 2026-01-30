@@ -36,6 +36,7 @@ use vizier_core::{
     file_tracking, vcs,
 };
 
+use crate::jobs;
 use crate::plan;
 use crate::workspace;
 
@@ -58,6 +59,68 @@ fn format_block(rows: Vec<(String, String)>) -> String {
 
 fn format_block_with_indent(rows: Vec<(String, String)>, indent: usize) -> String {
     format_label_value_block(&rows, indent)
+}
+
+fn is_active_job(status: jobs::JobStatus) -> bool {
+    matches!(status, jobs::JobStatus::Running | jobs::JobStatus::Pending)
+}
+
+fn job_sort_key(
+    record: &jobs::JobRecord,
+) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+    let started = record.started_at.unwrap_or(record.created_at);
+    (started, record.created_at)
+}
+
+fn select_inline_job<'a>(
+    records: &'a [jobs::JobRecord],
+    entry: &plan::PlanSlugEntry,
+) -> Option<&'a jobs::JobRecord> {
+    let by_plan: Vec<&jobs::JobRecord> = records
+        .iter()
+        .filter(|record| {
+            record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.plan.as_deref())
+                == Some(entry.slug.as_str())
+        })
+        .collect();
+
+    let candidates: Vec<&jobs::JobRecord> = if by_plan.is_empty() {
+        records
+            .iter()
+            .filter(|record| {
+                record
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.branch.as_deref())
+                    == Some(entry.branch.as_str())
+            })
+            .collect()
+    } else {
+        by_plan
+    };
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut active = Vec::new();
+    for record in &candidates {
+        if is_active_job(record.status) {
+            active.push(*record);
+        }
+    }
+
+    let pool = if active.is_empty() {
+        &candidates
+    } else {
+        &active
+    };
+    pool.iter()
+        .copied()
+        .max_by_key(|record| job_sort_key(record))
 }
 
 #[derive(Debug)]
@@ -5630,6 +5693,16 @@ fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std
         return Ok(());
     }
 
+    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+    let jobs_root = repo_root.join(".vizier").join("jobs");
+    let job_records = match jobs::list_records(&jobs_root) {
+        Ok(records) => records,
+        Err(err) => {
+            display::warn(format!("unable to load background jobs: {err}"));
+            Vec::new()
+        }
+    };
+
     let mut header_rows = vec![(
         "Outcome".to_string(),
         format!(
@@ -5650,11 +5723,35 @@ fn list_pending_plans(target_override: Option<String>) -> Result<(), Box<dyn std
 
     for (idx, entry) in entries.iter().enumerate() {
         let summary = entry.summary.replace('"', "'").replace('\n', " ");
-        let rows = vec![
+        let mut rows = vec![
             ("Plan".to_string(), entry.slug.clone()),
             ("Branch".to_string(), entry.branch.clone()),
             ("Summary".to_string(), summary),
         ];
+        if let Some(record) = select_inline_job(&job_records, entry) {
+            rows.push(("Job".to_string(), record.id.clone()));
+            rows.push((
+                "Job status".to_string(),
+                jobs::status_label(record.status).to_string(),
+            ));
+            if let Some(scope) = record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.scope.as_ref())
+            {
+                rows.push(("Job scope".to_string(), scope.to_string()));
+            }
+            if let Some(started_at) = record.started_at {
+                rows.push(("Job started".to_string(), started_at.to_rfc3339()));
+            }
+            let job_id = record.id.clone();
+            rows.push(("Status".to_string(), format!("vizier jobs status {job_id}")));
+            rows.push((
+                "Logs".to_string(),
+                format!("vizier jobs tail --follow {job_id}"),
+            ));
+            rows.push(("Attach".to_string(), format!("vizier jobs attach {job_id}")));
+        }
         println!("{}", format_block_with_indent(rows, 2));
         if idx + 1 < entries.len() {
             println!();
@@ -5926,8 +6023,12 @@ impl Drop for WorkdirGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_agent_request, build_merge_commit_message, build_save_instruction};
+    use super::{
+        build_agent_request, build_merge_commit_message, build_save_instruction, select_inline_job,
+    };
+    use crate::jobs::{JobMetadata, JobRecord, JobStatus};
     use crate::plan::{PlanBranchSpec, PlanMetadata};
+    use chrono::TimeZone;
     use git2::Repository;
     use std::fs;
     use std::path::PathBuf;
@@ -6114,5 +6215,66 @@ Tidy merge message bodies.
             summary.contains("two.txt"),
             "deleted file should be mentioned:\n{summary}"
         );
+    }
+
+    fn job_record(
+        id: &str,
+        status: JobStatus,
+        created_at: chrono::DateTime<chrono::Utc>,
+        started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> JobRecord {
+        JobRecord {
+            id: id.to_string(),
+            status,
+            command: vec!["vizier".to_string(), "approve".to_string()],
+            created_at,
+            started_at,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: "stdout.log".to_string(),
+            stderr_path: "stderr.log".to_string(),
+            session_path: None,
+            outcome_path: None,
+            metadata: Some(JobMetadata {
+                plan: Some("alpha".to_string()),
+                branch: Some("draft/alpha".to_string()),
+                scope: Some("approve".to_string()),
+                ..JobMetadata::default()
+            }),
+            config_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn select_inline_job_prefers_active_and_newest() {
+        let entry = crate::plan::PlanSlugEntry {
+            slug: "alpha".to_string(),
+            branch: "draft/alpha".to_string(),
+            summary: "Alpha spec".to_string(),
+        };
+
+        let finished = job_record(
+            "job-finished",
+            JobStatus::Succeeded,
+            chrono::Utc.with_ymd_and_hms(2026, 1, 20, 10, 0, 0).unwrap(),
+            Some(chrono::Utc.with_ymd_and_hms(2026, 1, 20, 10, 5, 0).unwrap()),
+        );
+        let running = job_record(
+            "job-running",
+            JobStatus::Running,
+            chrono::Utc.with_ymd_and_hms(2026, 1, 21, 9, 0, 0).unwrap(),
+            Some(chrono::Utc.with_ymd_and_hms(2026, 1, 21, 9, 10, 0).unwrap()),
+        );
+        let pending = job_record(
+            "job-pending",
+            JobStatus::Pending,
+            chrono::Utc.with_ymd_and_hms(2026, 1, 22, 8, 0, 0).unwrap(),
+            None,
+        );
+
+        let records = vec![finished, running, pending];
+        let selected = select_inline_job(&records, &entry).expect("job selected");
+        assert_eq!(selected.id, "job-pending");
     }
 }

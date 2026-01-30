@@ -1531,7 +1531,7 @@ fn emit_background_summary(job_id: &str) {
     println!("Outcome: Background job started");
     println!("Job: {job_id}");
     println!("Status: vizier jobs status {job_id}");
-    println!("Logs: vizier jobs tail {job_id}");
+    println!("Logs: vizier jobs tail --follow {job_id}");
     println!("Attach: vizier jobs attach {job_id}");
 }
 
@@ -2293,6 +2293,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             artifact.display_path()
         });
+
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
 
         if let Err(err) = jobs::finalize_job(
             &project_root,

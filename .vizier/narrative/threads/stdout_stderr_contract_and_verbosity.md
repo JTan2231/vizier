@@ -36,6 +36,8 @@ Status update (2025-11-15, revised 2025-11-30)
 - Manual `vizier clean` epilogues were removed entirely; TODO hygiene now flows through Default-Action Posture plus the dedicated GC work tracked in the snapshot.
 Update (2026-01-27)
 - Background-by-default now prints a multi-line `Outcome: Background job started` block for detached runs; treat this as a temporary stdout contract exception until the unified Outcome epilogue/JSON lands.
+Update (2026-01-30)
+- Background job finalization now flushes stdout/stderr before marking jobs complete so `vizier jobs tail --follow` reliably captures the final assistant output.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)

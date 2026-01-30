@@ -75,3 +75,14 @@ For staged installs, pass the same `DESTDIR`/`PREFIX` you used during install.
 - `no bundled agent shim named ...`: install the relevant agent CLI (for example `codex`, `gemini`, `claude`) or configure Vizier to use a custom shim via `.vizier/config.toml` / `~/.config/vizier/config.toml`.
 - `permission denied`: install into a user prefix (for example `PREFIX="$HOME/.local"`) or rerun the install as root.
 - `install destination is not writable`: rerun with `sudo`, set `PREFIX` to a writable directory, or stage with `DESTDIR`.
+
+## Development validation
+
+For the repo gate, run:
+
+```sh
+./cicd.sh
+```
+
+The integration tests serialize their repo/agent harness internally, so you do not need to set
+`RUST_TEST_THREADS=1` when invoking `cargo test` during local debugging.

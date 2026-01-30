@@ -4,7 +4,7 @@ use git2::{
     BranchType, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
     build::CheckoutBuilder,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -13,11 +13,88 @@ use std::io::{self, BufRead, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+// Integration tests spawn external processes, temporary repos, and background jobs. Serialize
+// them to avoid cross-test races, but allow re-entrant locking within a single test.
+struct IntegrationTestLock {
+    state: Mutex<IntegrationTestState>,
+    cvar: Condvar,
+}
+
+#[derive(Default)]
+struct IntegrationTestState {
+    owner: Option<ThreadId>,
+    depth: usize,
+}
+
+impl IntegrationTestLock {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(IntegrationTestState::default()),
+            cvar: Condvar::new(),
+        }
+    }
+
+    fn lock(&'static self) -> IntegrationTestGuard {
+        let current = std::thread::current().id();
+        let mut state = self.state.lock().expect("lock integration test mutex");
+        loop {
+            match state.owner {
+                None => {
+                    state.owner = Some(current);
+                    state.depth = 1;
+                    return IntegrationTestGuard {
+                        lock: self,
+                        owner: current,
+                    };
+                }
+                Some(owner) if owner == current => {
+                    state.depth += 1;
+                    return IntegrationTestGuard {
+                        lock: self,
+                        owner: current,
+                    };
+                }
+                _ => {
+                    state = self
+                        .cvar
+                        .wait(state)
+                        .expect("wait on integration test mutex");
+                }
+            }
+        }
+    }
+}
+
+struct IntegrationTestGuard {
+    lock: &'static IntegrationTestLock,
+    owner: ThreadId,
+}
+
+impl Drop for IntegrationTestGuard {
+    fn drop(&mut self) {
+        let mut state = self.lock.state.lock().expect("lock integration test mutex");
+        if state.owner == Some(self.owner) {
+            state.depth = state.depth.saturating_sub(1);
+            if state.depth == 0 {
+                state.owner = None;
+                self.lock.cvar.notify_all();
+            }
+        }
+    }
+}
+
+static INTEGRATION_TEST_LOCK: OnceLock<IntegrationTestLock> = OnceLock::new();
+
+fn integration_test_lock() -> &'static IntegrationTestLock {
+    INTEGRATION_TEST_LOCK.get_or_init(IntegrationTestLock::new)
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -84,6 +161,7 @@ struct IntegrationRepo {
     dir: TempDir,
     agent_bin_dir: PathBuf,
     vizier_bin: PathBuf,
+    _guard: IntegrationTestGuard,
 }
 
 impl IntegrationRepo {
@@ -92,6 +170,7 @@ impl IntegrationRepo {
     }
 
     fn with_binary(bin: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+        let guard = integration_test_lock().lock();
         let dir = TempDir::new()?;
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
@@ -103,6 +182,7 @@ impl IntegrationRepo {
             dir,
             agent_bin_dir,
             vizier_bin: bin,
+            _guard: guard,
         })
     }
 
@@ -390,6 +470,13 @@ fn wait_for_job_completion(repo: &IntegrationRepo, job_id: &str, timeout: Durati
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+fn write_job_record(repo: &IntegrationRepo, job_id: &str, record: Value) -> io::Result<()> {
+    let job_dir = repo.path().join(".vizier/jobs").join(job_id);
+    fs::create_dir_all(&job_dir)?;
+    let path = job_dir.join("job.json");
+    fs::write(path, serde_json::to_string_pretty(&record)?)
 }
 
 fn list_worktree_names(repo: &Repository) -> Result<Vec<String>, git2::Error> {
@@ -1323,6 +1410,10 @@ fn test_background_follow_streams_logs() -> TestResult {
     assert!(
         stdout.contains("Agent run:"),
         "expected follow stdout to include agent summary:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("mock agent response"),
+        "expected follow stdout to include final assistant output:\n{stdout}"
     );
     Ok(())
 }
@@ -2476,6 +2567,82 @@ fn test_list_outputs_prettified_blocks() -> TestResult {
             "list output missing summary for {slug}: {stdout}"
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_list_includes_inline_job_commands() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let draft_alpha = repo.vizier_output(&["draft", "--name", "alpha", "Alpha spec line"])?;
+    assert!(
+        draft_alpha.status.success(),
+        "vizier draft alpha failed: {}",
+        String::from_utf8_lossy(&draft_alpha.stderr)
+    );
+
+    let job_id = "inline-job-alpha";
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "running",
+            "command": ["vizier", "approve"],
+            "created_at": "2026-01-27T18:42:03Z",
+            "started_at": "2026-01-27T18:42:03Z",
+            "stdout_path": "stdout.log",
+            "stderr_path": "stderr.log",
+            "metadata": {
+                "plan": "alpha",
+                "branch": "draft/alpha",
+                "scope": "approve"
+            }
+        }),
+    )?;
+
+    let list = repo.vizier_output(&["list"])?;
+    assert!(
+        list.status.success(),
+        "vizier list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains(job_id),
+        "list output missing job id: {stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Job status") && line.contains("running")),
+        "list output missing job status line: {stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Job scope") && line.contains("approve")),
+        "list output missing job scope line: {stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Job started") && line.contains("2026-01-27T18:42:03")),
+        "list output missing job started line: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("vizier jobs status {job_id}")),
+        "list output missing status command: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("vizier jobs tail --follow {job_id}")),
+        "list output missing follow logs command: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("vizier jobs attach {job_id}")),
+        "list output missing attach command: {stdout}"
+    );
 
     Ok(())
 }
