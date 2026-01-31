@@ -4,6 +4,7 @@ use std::{
     process::{Command, Stdio},
 };
 
+use chrono::Utc;
 use clap::{
     ArgAction, ArgGroup, Args as ClapArgs, ColorChoice, CommandFactory, FromArgMatches, Parser,
     Subcommand, ValueEnum, error::ErrorKind,
@@ -516,6 +517,10 @@ struct MergeCmd {
     /// Only finalize a previously conflicted merge; fail if no pending Vizier merge exists
     #[arg(long = "complete-conflict")]
     complete_conflict: bool,
+
+    /// Queue this merge to run after any in-flight merge (requires auto-resolve)
+    #[arg(long = "queue")]
+    queue: bool,
 
     /// Path to a CI/CD gate script (defaults to merge.cicd_gate.script)
     #[arg(long = "cicd-script", value_name = "PATH")]
@@ -1117,6 +1122,22 @@ fn run_jobs_command(
                 if let Some(revision) = metadata.revision.as_ref() {
                     println!("Revision: {revision}");
                 }
+                if let Some(queue_id) = metadata.queue_id.as_ref() {
+                    println!("Queue: {queue_id}");
+                    if let Some(entry_id) = metadata.queue_entry_id.as_ref() {
+                        println!("Queue entry: {entry_id}");
+                    }
+                    if let Some(position) = metadata.queue_position {
+                        println!("Queue position: {position}");
+                    }
+                    if let Some(status) = jobs::merge_queue_status_for(jobs_root, queue_id)? {
+                        let blocked = if status.blocked { "blocked" } else { "ready" };
+                        println!("Queue status: {blocked}");
+                        if let Some(reason) = status.blocked_reason {
+                            println!("Queue blocked reason: {reason}");
+                        }
+                    }
+                }
                 if let Some(agent_backend) = metadata.agent_backend.as_ref() {
                     println!("Agent backend: {agent_backend}");
                 }
@@ -1144,20 +1165,47 @@ fn run_jobs_command(
                 .exit_code
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "-".to_string());
+            let mut queue_summary = String::new();
+            if let Some(metadata) = record.metadata.as_ref()
+                && let Some(queue_id) = metadata.queue_id.as_ref()
+            {
+                queue_summary.push_str(&format!(" queue={queue_id}"));
+                if let Some(status) = jobs::merge_queue_status_for(jobs_root, queue_id)? {
+                    let blocked = if status.blocked { "blocked" } else { "ready" };
+                    queue_summary.push_str(&format!(" queue_status={blocked}"));
+                }
+            }
             println!(
-                "{} [{}] exit={} stdout={} stderr={}",
+                "{} [{}] exit={} stdout={} stderr={}{}",
                 record.id,
                 jobs::status_label(record.status),
                 exit,
                 record.stdout_path,
-                record.stderr_path
+                record.stderr_path,
+                queue_summary
             );
             Ok(())
         }
         JobsAction::Tail { job, stream } => {
+            if let Ok(record) = jobs::read_record(jobs_root, &job)
+                && let Some(metadata) = record.metadata.as_ref()
+                && let Some(queue_id) = metadata.queue_id.as_ref()
+                && let Some(status) = jobs::merge_queue_status_for(jobs_root, queue_id)?
+            {
+                let blocked = if status.blocked { "blocked" } else { "ready" };
+                println!("Queue: {queue_id} ({blocked})");
+            }
             jobs::tail_job_logs(jobs_root, &job, stream.into(), follow)
         }
         JobsAction::Attach { job } => {
+            if let Ok(record) = jobs::read_record(jobs_root, &job)
+                && let Some(metadata) = record.metadata.as_ref()
+                && let Some(queue_id) = metadata.queue_id.as_ref()
+                && let Some(status) = jobs::merge_queue_status_for(jobs_root, queue_id)?
+            {
+                let blocked = if status.blocked { "blocked" } else { "ready" };
+                println!("Queue: {queue_id} ({blocked})");
+            }
             jobs::tail_job_logs(jobs_root, &job, jobs::LogStream::Both, true)
         }
         JobsAction::Cancel { job } => {
@@ -1587,6 +1635,21 @@ fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
     args
 }
 
+fn strip_merge_queue_flag(raw_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    for (idx, arg) in raw_args.iter().enumerate() {
+        if idx == 0 {
+            args.push(arg.clone());
+            continue;
+        }
+        if arg == "--queue" || arg.starts_with("--queue=") {
+            continue;
+        }
+        args.push(arg.clone());
+    }
+    args
+}
+
 #[allow(dead_code)]
 fn user_friendly_args(raw_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
@@ -1609,6 +1672,293 @@ fn emit_background_summary(job_id: &str) {
     println!("Attach: vizier jobs attach {job_id}");
 }
 
+fn emit_merge_queue_summary(
+    entry: &jobs::MergeQueueEntry,
+    queue_id: &str,
+    active_job_id: Option<&str>,
+    started_job_id: Option<&str>,
+) {
+    println!("Outcome: Merge queued");
+    println!("Queue: {queue_id}");
+    println!("Entry: {}", entry.id);
+    println!("Position: {}", entry.position);
+    if let Some(job_id) = started_job_id {
+        println!("Job: {job_id}");
+        println!("Status: vizier jobs status {job_id}");
+        println!("Logs: vizier jobs tail {job_id}");
+        println!("Attach: vizier jobs attach {job_id}");
+    } else if let Some(job_id) = active_job_id {
+        println!("Active job: {job_id}");
+        println!("Status: vizier jobs status {job_id}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_merge_queue(
+    project_root: &Path,
+    jobs_root: &Path,
+    raw_args: &[String],
+    command: &Commands,
+    cli_agent_override: Option<&config::AgentOverrides>,
+    cfg: &config::Config,
+    background_cfg: &config::BackgroundConfig,
+    follow: bool,
+    opts: &MergeOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let queue_args = strip_merge_queue_flag(raw_args);
+    if flag_present(&queue_args, None, "--no-auto-resolve-conflicts") {
+        return Err("--queue cannot be used with --no-auto-resolve-conflicts".into());
+    }
+
+    let mut injected_args = Vec::new();
+    if !flag_present(&queue_args, Some('y'), "--yes") {
+        injected_args.push("--yes".to_string());
+    }
+    if !flag_present(&queue_args, None, "--auto-resolve-conflicts") {
+        injected_args.push("--auto-resolve-conflicts".to_string());
+    }
+
+    let child_args_base =
+        build_background_child_args_base(&queue_args, background_cfg, false, &injected_args);
+
+    let mut recorded_args = Vec::new();
+    if let Some(binary) = queue_args.first() {
+        recorded_args.push(binary.clone());
+    }
+    recorded_args.extend(child_args_base.clone());
+
+    let config_snapshot = background_config_snapshot(cfg);
+    let mut metadata = build_job_metadata(command, cfg, cli_agent_override);
+
+    let _lock = jobs::MergeQueueLock::acquire(jobs_root)?;
+    let mut queue_state = jobs::load_merge_queue(jobs_root)?;
+
+    if queue_state.blocked {
+        let reason = queue_state
+            .blocked_reason
+            .clone()
+            .unwrap_or_else(|| "merge queue is blocked".to_string());
+        return Err(format!("merge queue blocked: {reason}").into());
+    }
+
+    let mut running_job = jobs::find_running_merge_job(jobs_root)?;
+    if running_job.is_none()
+        && let Some(active_id) = queue_state.active_job_id.clone()
+        && let Ok(record) = jobs::read_record(jobs_root, &active_id)
+        && matches!(record.status, JobStatus::Pending | JobStatus::Running)
+    {
+        running_job = Some(record);
+    }
+    if follow && running_job.is_some() {
+        return Err(
+            "--follow cannot attach to a queued merge; wait for the active job or use `vizier jobs attach`".into(),
+        );
+    }
+    if let Some(running) = running_job.as_ref() {
+        queue_state.active_job_id = Some(running.id.clone());
+        queue_state.active_entry_id = running
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.queue_entry_id.clone());
+        queue_state.active_plan = running.metadata.as_ref().and_then(|meta| meta.plan.clone());
+    } else {
+        queue_state.active_job_id = None;
+        queue_state.active_entry_id = None;
+        queue_state.active_plan = None;
+    }
+
+    let position = queue_state.entries.len() as u32
+        + if queue_state.active_job_id.is_some() {
+            2
+        } else {
+            1
+        };
+    let entry_id = Uuid::new_v4().simple().to_string();
+    metadata.queue_id = Some(queue_state.queue_id.clone());
+    metadata.queue_entry_id = Some(entry_id.clone());
+    metadata.queue_position = Some(position);
+
+    let entry = jobs::MergeQueueEntry {
+        id: entry_id,
+        plan: opts.plan.clone(),
+        target: opts.target.clone(),
+        branch: opts.branch_override.clone(),
+        queued_at: Utc::now(),
+        recorded_args,
+        child_args: child_args_base,
+        position,
+        metadata,
+        config_snapshot: Some(config_snapshot),
+    };
+
+    let queued_entry = entry.clone();
+    queue_state.entries.push(entry);
+
+    let mut launch_entry = None;
+    if queue_state.active_job_id.is_none() && !queue_state.entries.is_empty() {
+        launch_entry = Some(queue_state.entries.remove(0));
+    }
+
+    if let Some(entry) = launch_entry {
+        let started_for_new_entry = entry.id == queued_entry.id;
+        let job_id = generate_job_id();
+        let child_args = append_background_job_id(entry.child_args.clone(), &job_id);
+        queue_state.active_job_id = Some(job_id.clone());
+        queue_state.active_entry_id = Some(entry.id.clone());
+        queue_state.active_plan = Some(entry.plan.clone());
+        queue_state.updated_at = Utc::now();
+
+        if let Err(err) = jobs::launch_background_job(
+            project_root,
+            jobs_root,
+            &std::env::current_exe()?,
+            &job_id,
+            &child_args,
+            &entry.recorded_args,
+            Some(entry.metadata.clone()),
+            entry.config_snapshot.clone(),
+        ) {
+            queue_state.blocked = true;
+            queue_state.blocked_reason = Some(format!("failed to launch queued merge: {err}"));
+            queue_state.active_job_id = None;
+            queue_state.active_entry_id = None;
+            queue_state.active_plan = None;
+            queue_state.entries.insert(0, entry);
+            queue_state.updated_at = Utc::now();
+            jobs::persist_merge_queue(jobs_root, &queue_state)?;
+            return Err(err);
+        }
+
+        jobs::persist_merge_queue(jobs_root, &queue_state)?;
+        drop(_lock);
+
+        if follow {
+            let exit_code = jobs::follow_job_logs_raw(jobs_root, &job_id)?;
+            std::process::exit(exit_code);
+        }
+
+        let (active_job_id, started_job_id) = if started_for_new_entry {
+            (None, Some(job_id.as_str()))
+        } else {
+            (Some(job_id.as_str()), None)
+        };
+        emit_merge_queue_summary(
+            &queued_entry,
+            &queue_state.queue_id,
+            active_job_id,
+            started_job_id,
+        );
+        return Ok(());
+    }
+
+    queue_state.updated_at = Utc::now();
+    jobs::persist_merge_queue(jobs_root, &queue_state)?;
+    drop(_lock);
+    emit_merge_queue_summary(
+        &queued_entry,
+        &queue_state.queue_id,
+        queue_state.active_job_id.as_deref(),
+        None,
+    );
+    Ok(())
+}
+
+fn handle_merge_queue_completion(
+    project_root: &Path,
+    jobs_root: &Path,
+    record: &jobs::JobRecord,
+    status: JobStatus,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(state) = jobs::read_merge_queue(jobs_root)? else {
+        return Ok(());
+    };
+
+    let queue_id = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.queue_id.as_deref());
+    let is_queue_job = queue_id == Some(state.queue_id.as_str())
+        || state.active_job_id.as_deref() == Some(record.id.as_str());
+    if !is_queue_job {
+        return Ok(());
+    }
+
+    let _lock = jobs::MergeQueueLock::acquire(jobs_root)?;
+    let mut queue_state = jobs::load_merge_queue(jobs_root)?;
+
+    if status != JobStatus::Succeeded {
+        let exit = record
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        queue_state.blocked = true;
+        queue_state.blocked_reason = Some(format!(
+            "merge job {} {} (exit {})",
+            record.id,
+            jobs::status_label(status),
+            exit
+        ));
+        queue_state.active_job_id = None;
+        queue_state.active_entry_id = None;
+        queue_state.active_plan = None;
+        queue_state.updated_at = Utc::now();
+        jobs::persist_merge_queue(jobs_root, &queue_state)?;
+        return Ok(());
+    }
+
+    if queue_state.active_job_id.as_deref() == Some(record.id.as_str()) {
+        queue_state.active_job_id = None;
+        queue_state.active_entry_id = None;
+        queue_state.active_plan = None;
+    }
+
+    if queue_state.blocked || queue_state.entries.is_empty() {
+        queue_state.updated_at = Utc::now();
+        jobs::persist_merge_queue(jobs_root, &queue_state)?;
+        return Ok(());
+    }
+
+    if let Some(running) = jobs::find_running_merge_job(jobs_root)?
+        && running.id != record.id
+    {
+        queue_state.updated_at = Utc::now();
+        jobs::persist_merge_queue(jobs_root, &queue_state)?;
+        return Ok(());
+    }
+
+    let entry = queue_state.entries.remove(0);
+    let job_id = generate_job_id();
+    let child_args = append_background_job_id(entry.child_args.clone(), &job_id);
+    queue_state.active_job_id = Some(job_id.clone());
+    queue_state.active_entry_id = Some(entry.id.clone());
+    queue_state.active_plan = Some(entry.plan.clone());
+    queue_state.updated_at = Utc::now();
+
+    if let Err(err) = jobs::launch_background_job(
+        project_root,
+        jobs_root,
+        &std::env::current_exe()?,
+        &job_id,
+        &child_args,
+        &entry.recorded_args,
+        Some(entry.metadata.clone()),
+        entry.config_snapshot.clone(),
+    ) {
+        queue_state.blocked = true;
+        queue_state.blocked_reason = Some(format!("failed to launch queued merge: {err}"));
+        queue_state.active_job_id = None;
+        queue_state.active_entry_id = None;
+        queue_state.active_plan = None;
+        queue_state.entries.insert(0, entry);
+        queue_state.updated_at = Utc::now();
+        jobs::persist_merge_queue(jobs_root, &queue_state)?;
+        return Ok(());
+    }
+
+    jobs::persist_merge_queue(jobs_root, &queue_state)?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 fn build_background_child_args(
     raw_args: &[String],
@@ -1617,10 +1967,20 @@ fn build_background_child_args(
     follow: bool,
     injected_args: &[String],
 ) -> Vec<String> {
-    let mut args = strip_background_flags(raw_args);
-    args.extend(injected_args.iter().cloned());
+    let mut args = build_background_child_args_base(raw_args, cfg, follow, injected_args);
     args.push("--background-job-id".to_string());
     args.push(job_id.to_string());
+    args
+}
+
+fn build_background_child_args_base(
+    raw_args: &[String],
+    cfg: &config::BackgroundConfig,
+    follow: bool,
+    injected_args: &[String],
+) -> Vec<String> {
+    let mut args = strip_background_flags(raw_args);
+    args.extend(injected_args.iter().cloned());
 
     if !flag_present(&args, None, "--no-ansi") {
         args.push("--no-ansi".to_string());
@@ -1636,6 +1996,12 @@ fn build_background_child_args(
         args.push("--no-pager".to_string());
     }
 
+    args
+}
+
+fn append_background_job_id(mut args: Vec<String>, job_id: &str) -> Vec<String> {
+    args.push("--background-job-id".to_string());
+    args.push(job_id.to_string());
     args
 }
 
@@ -2180,6 +2546,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--json cannot be used with background execution; pass --no-background or disable workflow.background.enabled".into());
     }
 
+    if let Commands::Merge(cmd) = &cli.command {
+        let queue_requested = cmd.queue || config::get_config().merge.queue.enabled;
+        if queue_requested && cli.global.background_job_id.is_none() {
+            if !matches!(background_mode, BackgroundMode::Background { .. }) {
+                return Err(
+                    "merge queueing requires background execution; enable workflow.background.enabled or omit --no-background".into(),
+                );
+            }
+
+            if cmd.complete_conflict {
+                return Err("--queue cannot be used with --complete-conflict".into());
+            }
+
+            let opts = resolve_merge_options(cmd, push_after)?;
+            if !opts.conflict_auto_resolve.enabled() {
+                return Err(
+                    "merge queueing requires conflict auto-resolution; set merge.conflicts.auto_resolve = true or pass --auto-resolve-conflicts".into(),
+                );
+            }
+
+            let follow = matches!(
+                background_mode,
+                BackgroundMode::Background { follow: true, .. }
+            );
+            handle_merge_queue(
+                &project_root,
+                &jobs_root,
+                &raw_args,
+                &cli.command,
+                cli_agent_override.as_ref(),
+                &config::get_config(),
+                &workflow_defaults.background,
+                follow,
+                &opts,
+            )?;
+            return Ok(());
+        }
+    }
+
     if let BackgroundMode::Background { explicit: true, .. } = background_mode {
         ensure_background_safe(&cli.command)?;
     }
@@ -2371,7 +2776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::io::stdout().flush();
         let _ = std::io::stderr().flush();
 
-        if let Err(err) = jobs::finalize_job(
+        let finalized = match jobs::finalize_job(
             &project_root,
             &jobs_root,
             job_id,
@@ -2380,10 +2785,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             session_path,
             runtime_job_metadata(),
         ) {
-            display::warn(format!(
-                "unable to update background job {} status: {}",
-                job_id, err
-            ));
+            Ok(record) => Some(record),
+            Err(err) => {
+                display::warn(format!(
+                    "unable to update background job {} status: {}",
+                    job_id, err
+                ));
+                None
+            }
+        };
+
+        if let Some(record) = finalized
+            && let Err(err) =
+                handle_merge_queue_completion(&project_root, &jobs_root, &record, status)
+        {
+            display::warn(format!("unable to advance merge queue: {err}"));
         }
     }
 

@@ -1363,13 +1363,31 @@ pub fn ensure_clean_worktree() -> Result<(), Error> {
         .include_ignored(false)
         .exclude_submodules(true);
     let statuses = repo.statuses(Some(&mut opts))?;
-    if statuses.is_empty() {
-        Ok(())
-    } else {
+    let has_relevant_changes = statuses.iter().any(|entry| {
+        let Some(path) = entry.path() else {
+            return true;
+        };
+        !is_ephemeral_vizier_path(path)
+    });
+    if has_relevant_changes {
         Err(Error::from_str(
             "working tree has uncommitted or untracked changes",
         ))
+    } else {
+        Ok(())
     }
+}
+
+fn is_ephemeral_vizier_path(path: &str) -> bool {
+    const EPHEMERAL_PREFIXES: [&str; 4] = [
+        ".vizier/jobs",
+        ".vizier/sessions",
+        ".vizier/tmp",
+        ".vizier/tmp-worktrees",
+    ];
+    EPHEMERAL_PREFIXES
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{}/", prefix)))
 }
 
 pub fn checkout_branch(name: &str) -> Result<(), Error> {

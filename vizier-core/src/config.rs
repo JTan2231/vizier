@@ -558,10 +558,24 @@ impl MergeConflictsConfig {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct MergeQueueConfig {
+    pub enabled: bool,
+}
+
+impl MergeQueueConfig {
+    fn apply_layer(&mut self, layer: &MergeQueueLayer) {
+        if let Some(enabled) = layer.enabled {
+            self.enabled = enabled;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MergeConfig {
     pub cicd_gate: MergeCicdGateConfig,
     pub conflicts: MergeConflictsConfig,
+    pub queue: MergeQueueConfig,
     pub squash_default: bool,
     pub squash_mainline: Option<u32>,
 }
@@ -571,6 +585,7 @@ impl Default for MergeConfig {
         Self {
             cicd_gate: MergeCicdGateConfig::default(),
             conflicts: MergeConflictsConfig::default(),
+            queue: MergeQueueConfig::default(),
             squash_default: true,
             squash_mainline: None,
         }
@@ -581,6 +596,7 @@ impl MergeConfig {
     fn apply_layer(&mut self, layer: &MergeLayer) {
         self.cicd_gate.apply_layer(&layer.cicd_gate);
         self.conflicts.apply_layer(&layer.conflicts);
+        self.queue.apply_layer(&layer.queue);
 
         if let Some(default_squash) = layer.squash_default {
             self.squash_default = default_squash;
@@ -681,9 +697,15 @@ pub struct MergeConflictsLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeQueueLayer {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeLayer {
     pub cicd_gate: MergeCicdGateLayer,
     pub conflicts: MergeConflictsLayer,
+    pub queue: MergeQueueLayer,
     pub squash_default: Option<bool>,
     pub squash_mainline: Option<u32>,
 }
@@ -1714,6 +1736,16 @@ impl ConfigLayer {
         if let Some(merge_table) = value_at_path(&file_config, &["merge"])
             && let Some(table) = merge_table.as_object()
         {
+            if let Some(queue_value) = table.get("queue") {
+                if let Some(queue_table) = queue_value.as_object() {
+                    if let Some(enabled) = parse_bool(queue_table.get("enabled")) {
+                        layer.merge.queue.enabled = Some(enabled);
+                    }
+                } else if let Some(enabled) = parse_bool(Some(queue_value)) {
+                    layer.merge.queue.enabled = Some(enabled);
+                }
+            }
+
             if let Some(squash) = parse_bool(
                 table
                     .get("squash")
@@ -2394,6 +2426,18 @@ retries = 3
         );
         assert!(!cfg.merge.cicd_gate.auto_resolve);
         assert_eq!(cfg.merge.cicd_gate.retries, 5);
+    }
+
+    #[test]
+    fn test_merge_queue_config_from_toml() {
+        let toml = r#"
+[merge.queue]
+enabled = true
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse merge queue config");
+        assert!(cfg.merge.queue.enabled);
     }
 
     #[test]

@@ -48,6 +48,10 @@ squash = true
 [merge.conflicts]
 auto_resolve = true
 
+# Optional merge queue (serializes merge jobs; requires conflict auto-resolve)
+[merge.queue]
+enabled = true
+
 # Optional CI/CD gate script run during `vizier merge` (auto_resolve here controls gate remediation, not conflict handling)
 [merge.cicd_gate]
 script = "./cicd.sh"

@@ -1,13 +1,14 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::Duration as StdDuration,
 };
+use uuid::Uuid;
 use vizier_core::display;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +63,9 @@ pub struct JobMetadata {
     pub plan: Option<String>,
     pub branch: Option<String>,
     pub revision: Option<String>,
+    pub queue_id: Option<String>,
+    pub queue_entry_id: Option<String>,
+    pub queue_position: Option<u32>,
     pub agent_selector: Option<String>,
     pub agent_backend: Option<String>,
     pub agent_label: Option<String>,
@@ -91,6 +95,48 @@ pub struct JobOutcome {
     pub config_snapshot: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeQueueEntry {
+    pub id: String,
+    pub plan: String,
+    pub target: Option<String>,
+    pub branch: Option<String>,
+    pub queued_at: DateTime<Utc>,
+    pub recorded_args: Vec<String>,
+    pub child_args: Vec<String>,
+    pub position: u32,
+    pub metadata: JobMetadata,
+    #[serde(default)]
+    pub config_snapshot: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeQueueState {
+    pub queue_id: String,
+    pub active_job_id: Option<String>,
+    pub active_entry_id: Option<String>,
+    pub active_plan: Option<String>,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+    pub entries: Vec<MergeQueueEntry>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl MergeQueueState {
+    fn new() -> Self {
+        Self {
+            queue_id: Uuid::new_v4().simple().to_string(),
+            active_job_id: None,
+            active_entry_id: None,
+            active_plan: None,
+            blocked: false,
+            blocked_reason: None,
+            entries: Vec::new(),
+            updated_at: Utc::now(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum LogStream {
     Stdout,
@@ -102,6 +148,107 @@ pub fn ensure_jobs_root(project_root: &Path) -> io::Result<PathBuf> {
     let root = project_root.join(".vizier").join("jobs");
     fs::create_dir_all(&root)?;
     Ok(root)
+}
+
+fn merge_queue_path(jobs_root: &Path) -> PathBuf {
+    jobs_root.join("merge-queue.json")
+}
+
+fn merge_queue_lock_path(jobs_root: &Path) -> PathBuf {
+    jobs_root.join("merge-queue.lock")
+}
+
+pub struct MergeQueueLock {
+    path: PathBuf,
+}
+
+impl MergeQueueLock {
+    pub fn acquire(jobs_root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        fs::create_dir_all(jobs_root)?;
+        let path = merge_queue_lock_path(jobs_root);
+        let mut attempts = 0u32;
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid={}", std::process::id());
+                    return Ok(Self { path });
+                }
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    attempts += 1;
+                    if attempts > 40 {
+                        return Err("merge queue is busy; retry the command".into());
+                    }
+                    thread::sleep(StdDuration::from_millis(50));
+                }
+                Err(err) => return Err(Box::new(err)),
+            }
+        }
+    }
+}
+
+impl Drop for MergeQueueLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub fn load_merge_queue(jobs_root: &Path) -> Result<MergeQueueState, Box<dyn std::error::Error>> {
+    let path = merge_queue_path(jobs_root);
+    if !path.exists() {
+        return Ok(MergeQueueState::new());
+    }
+    let mut buf = String::new();
+    File::open(&path)?.read_to_string(&mut buf)?;
+    let state = serde_json::from_str(&buf)?;
+    Ok(state)
+}
+
+pub fn read_merge_queue(
+    jobs_root: &Path,
+) -> Result<Option<MergeQueueState>, Box<dyn std::error::Error>> {
+    let path = merge_queue_path(jobs_root);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut buf = String::new();
+    File::open(&path)?.read_to_string(&mut buf)?;
+    let state = serde_json::from_str(&buf)?;
+    Ok(Some(state))
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeQueueStatus {
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+}
+
+pub fn merge_queue_status_for(
+    jobs_root: &Path,
+    queue_id: &str,
+) -> Result<Option<MergeQueueStatus>, Box<dyn std::error::Error>> {
+    let Some(state) = read_merge_queue(jobs_root)? else {
+        return Ok(None);
+    };
+    if state.queue_id != queue_id {
+        return Ok(None);
+    }
+    Ok(Some(MergeQueueStatus {
+        blocked: state.blocked,
+        blocked_reason: state.blocked_reason,
+    }))
+}
+
+pub fn persist_merge_queue(
+    jobs_root: &Path,
+    state: &MergeQueueState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(jobs_root)?;
+    let path = merge_queue_path(jobs_root);
+    let tmp = path.with_extension("json.tmp");
+    let contents = serde_json::to_vec_pretty(state)?;
+    fs::write(&tmp, contents)?;
+    fs::rename(tmp, path)?;
+    Ok(())
 }
 
 pub fn paths_for(jobs_root: &Path, job_id: &str) -> JobPaths {
@@ -152,6 +299,15 @@ fn merge_metadata(
             if base.revision.is_none() {
                 base.revision = update.revision;
             }
+            if base.queue_id.is_none() {
+                base.queue_id = update.queue_id;
+            }
+            if base.queue_entry_id.is_none() {
+                base.queue_entry_id = update.queue_entry_id;
+            }
+            if base.queue_position.is_none() {
+                base.queue_position = update.queue_position;
+            }
             if base.agent_selector.is_none() {
                 base.agent_selector = update.agent_selector;
             }
@@ -192,7 +348,10 @@ fn persist_record(paths: &JobPaths, record: &JobRecord) -> Result<(), Box<dyn st
         fs::create_dir_all(parent)?;
     }
 
-    serde_json::to_writer_pretty(File::create(&paths.record_path)?, record)?;
+    let tmp = paths.record_path.with_extension("json.tmp");
+    let contents = serde_json::to_vec_pretty(record)?;
+    fs::write(&tmp, contents)?;
+    fs::rename(tmp, &paths.record_path)?;
     Ok(())
 }
 
@@ -349,6 +508,25 @@ pub fn list_records(jobs_root: &Path) -> Result<Vec<JobRecord>, Box<dyn std::err
 
     records.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(records)
+}
+
+pub fn find_running_merge_job(
+    jobs_root: &Path,
+) -> Result<Option<JobRecord>, Box<dyn std::error::Error>> {
+    let records = list_records(jobs_root)?;
+    for record in records {
+        if !matches!(record.status, JobStatus::Pending | JobStatus::Running) {
+            continue;
+        }
+        let scope = record
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.scope.as_deref());
+        if scope == Some("merge") {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
 }
 
 pub fn read_record(

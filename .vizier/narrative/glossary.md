@@ -13,6 +13,7 @@
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
 - **Integration test lock**: A global mutex held by the integration-test harness so `IntegrationRepo`-backed tests run serially instead of racing on temp repo and agent shim setup.
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.
+- **Merge queue**: The serialized merge job backlog tracked under `.vizier/jobs/merge-queue.json`, used to order background merge operations.
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.

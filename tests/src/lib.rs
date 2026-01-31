@@ -526,6 +526,72 @@ fn write_job_record_value(repo: &IntegrationRepo, job_id: &str, record: Value) -
     Ok(())
 }
 
+fn wait_for_job_active(repo: &IntegrationRepo, job_id: &str, timeout: Duration) -> TestResult {
+    let job_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(job_id)
+        .join("job.json");
+    let start = Instant::now();
+    loop {
+        if start.elapsed() > timeout {
+            return Err(format!("timed out waiting for job {job_id} to start").into());
+        }
+        let Ok(contents) = fs::read_to_string(&job_path) else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        let record: Value = serde_json::from_str(&contents)?;
+        let status = record
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match status {
+            "pending" | "running" => return Ok(()),
+            "succeeded" | "failed" | "cancelled" => {
+                return Err(format!("job {job_id} finished before queueing").into());
+            }
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn list_merge_job_ids(repo: &IntegrationRepo) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let jobs_root = repo.path().join(".vizier/jobs");
+    if !jobs_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for entry in fs::read_dir(&jobs_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let job_id = entry.file_name().to_string_lossy().to_string();
+        let job_path = jobs_root.join(&job_id).join("job.json");
+        if !job_path.exists() {
+            continue;
+        }
+        let contents = fs::read_to_string(&job_path)?;
+        let record: Value = serde_json::from_str(&contents)?;
+        let scope = record
+            .get("metadata")
+            .and_then(|meta| meta.get("scope"))
+            .and_then(Value::as_str);
+        if scope == Some("merge") {
+            ids.push(job_id);
+        }
+    }
+    Ok(ids)
+}
+
+fn read_merge_queue_state(repo: &IntegrationRepo) -> Result<Value, Box<dyn std::error::Error>> {
+    let path = repo.path().join(".vizier/jobs/merge-queue.json");
+    let contents = fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&contents)?)
+}
+
 fn list_worktree_names(repo: &Repository) -> Result<Vec<String>, git2::Error> {
     Ok(repo
         .worktrees()?
@@ -1744,6 +1810,203 @@ fn test_merge_cancel_exits_nonzero() -> TestResult {
         stdout.contains("Merge cancelled"),
         "expected merge cancellation message:\n{stdout}"
     );
+    Ok(())
+}
+
+#[test]
+fn test_merge_queue_serializes_jobs() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let first = "queue-one";
+    let second = "queue-two";
+
+    repo.vizier_output(&["draft", "--name", first, "queue first plan"])?;
+    repo.vizier_output(&["approve", first, "--yes"])?;
+    repo.vizier_output(&["draft", "--name", second, "queue second plan"])?;
+    repo.vizier_output(&["approve", second, "--yes"])?;
+
+    let script_path = write_cicd_script(&repo, "queue-sleep.sh", "sleep 4\n")?;
+    let script_flag = script_path.to_string_lossy();
+
+    let output = repo
+        .vizier_cmd_background()
+        .args([
+            "merge",
+            first,
+            "--queue",
+            "--auto-resolve-conflicts",
+            "--cicd-script",
+            &script_flag,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "queued merge (first) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_job = extract_job_id(&stdout).ok_or("expected job id for first queued merge")?;
+    wait_for_job_active(&repo, &first_job, Duration::from_secs(5))?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args([
+            "merge",
+            second,
+            "--queue",
+            "--auto-resolve-conflicts",
+            "--cicd-script",
+            &script_flag,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "queued merge (second) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&first_job),
+        "queue output should reference the active merge job:\n{stdout}"
+    );
+
+    let queue_state = read_merge_queue_state(&repo)?;
+    let active_job = queue_state
+        .get("active_job_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_eq!(
+        active_job, first_job,
+        "merge queue should track the active job id"
+    );
+    let queued = queue_state
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(|entries| entries.len())
+        .unwrap_or(0);
+    assert_eq!(queued, 1, "expected one queued merge entry");
+
+    wait_for_job_completion(&repo, &first_job, Duration::from_secs(60))?;
+
+    let start = Instant::now();
+    let mut second_job = None;
+    while start.elapsed() < Duration::from_secs(30) {
+        let queue_state = read_merge_queue_state(&repo)?;
+        if let Some(active_id) = queue_state
+            .get("active_job_id")
+            .and_then(Value::as_str)
+            .filter(|id| *id != first_job)
+        {
+            second_job = Some(active_id.to_string());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let second_job = second_job.ok_or("timed out waiting for queued merge job")?;
+    let job_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(&second_job)
+        .join("job.json");
+    assert!(
+        job_path.exists(),
+        "expected queued job record at {}",
+        job_path.display()
+    );
+    wait_for_job_completion(&repo, &second_job, Duration::from_secs(60))?;
+    Ok(())
+}
+
+#[test]
+fn test_merge_queue_requires_auto_resolve() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let slug = "queue-auto-resolve";
+    repo.vizier_output(&["draft", "--name", slug, "queue auto resolve guard"])?;
+    repo.vizier_output(&["approve", slug, "--yes"])?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["merge", slug, "--queue"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected merge queue to fail without auto-resolve"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("auto-resolve"),
+        "queue failure should mention auto-resolve requirement:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_merge_queue_blocks_on_failure() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let first = "queue-fail-one";
+    let second = "queue-fail-two";
+
+    repo.vizier_output(&["draft", "--name", first, "queue fail first plan"])?;
+    repo.vizier_output(&["approve", first, "--yes"])?;
+    repo.vizier_output(&["draft", "--name", second, "queue fail second plan"])?;
+    repo.vizier_output(&["approve", second, "--yes"])?;
+
+    let script_path = write_cicd_script(&repo, "queue-fail.sh", "sleep 4\nexit 1\n")?;
+    let script_flag = script_path.to_string_lossy();
+
+    let output = repo
+        .vizier_cmd_background()
+        .args([
+            "merge",
+            first,
+            "--queue",
+            "--auto-resolve-conflicts",
+            "--cicd-script",
+            &script_flag,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "queued merge (failure) failed to start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_job = extract_job_id(&stdout).ok_or("expected job id for failing merge")?;
+    wait_for_job_active(&repo, &first_job, Duration::from_secs(5))?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args([
+            "merge",
+            second,
+            "--queue",
+            "--auto-resolve-conflicts",
+            "--cicd-script",
+            &script_flag,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "queued merge (second) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    wait_for_job_completion(&repo, &first_job, Duration::from_secs(60))?;
+
+    let queue_state = read_merge_queue_state(&repo)?;
+    let blocked = queue_state
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    assert!(blocked, "merge queue should be blocked after failure");
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        let ids = list_merge_job_ids(&repo)?;
+        if ids.len() > 1 {
+            return Err("queued merge should not start after a failure".into());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
     Ok(())
 }
 

@@ -1022,14 +1022,20 @@ printf '%s\n' "$last"
             timeout: Some(Duration::from_secs(3)),
         };
 
-        let handle =
+        let mut handle =
             tokio::spawn(
                 async move { runner.execute(request, Some(ProgressHook::Plain(tx))).await },
             );
 
-        let first_event = tokio::time::timeout(Duration::from_millis(800), rx.recv())
-            .await
-            .expect("progress should arrive before agent completes");
+        let first_event = tokio::select! {
+            event = rx.recv() => event,
+            result = &mut handle => {
+                panic!("agent completed before progress event: {:?}", result);
+            }
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                panic!("timed out waiting for progress event");
+            }
+        };
         assert!(
             first_event.is_some(),
             "expected progress event before completion"
