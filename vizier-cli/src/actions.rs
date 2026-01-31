@@ -1919,6 +1919,7 @@ pub async fn run_draft(
                 err
             ))
         })?;
+        jobs::record_current_job_worktree(&repo_root, Some(&worktree_name), &worktree_path);
         worktree_created = true;
         let _cwd_guard = WorkdirGuard::enter(&worktree_path)?;
 

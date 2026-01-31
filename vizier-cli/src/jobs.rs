@@ -1,10 +1,12 @@
 use chrono::{DateTime, Duration, Utc};
+use git2::{Repository, WorktreePruneOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Mutex, OnceLock},
     thread,
     time::Duration as StdDuration,
 };
@@ -66,6 +68,9 @@ pub struct JobMetadata {
     pub queue_id: Option<String>,
     pub queue_entry_id: Option<String>,
     pub queue_position: Option<u32>,
+    pub worktree_name: Option<String>,
+    pub worktree_path: Option<String>,
+    pub worktree_owned: Option<bool>,
     pub agent_selector: Option<String>,
     pub agent_backend: Option<String>,
     pub agent_label: Option<String>,
@@ -76,6 +81,8 @@ pub struct JobMetadata {
     pub config_agent_command: Option<Vec<String>>,
     pub background_quiet: Option<bool>,
     pub agent_exit_code: Option<i32>,
+    pub cancel_cleanup_status: Option<CancelCleanupStatus>,
+    pub cancel_cleanup_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +149,57 @@ pub enum LogStream {
     Stdout,
     Stderr,
     Both,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelCleanupStatus {
+    Skipped,
+    Done,
+    Failed,
+}
+
+impl CancelCleanupStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            CancelCleanupStatus::Skipped => "skipped",
+            CancelCleanupStatus::Done => "done",
+            CancelCleanupStatus::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CancelCleanupResult {
+    pub status: CancelCleanupStatus,
+    pub error: Option<String>,
+}
+
+impl CancelCleanupResult {
+    fn skipped() -> Self {
+        Self {
+            status: CancelCleanupStatus::Skipped,
+            error: None,
+        }
+    }
+}
+
+static CURRENT_JOB_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn current_job_id_state() -> &'static Mutex<Option<String>> {
+    CURRENT_JOB_ID.get_or_init(|| Mutex::new(None))
+}
+
+pub fn set_current_job_id(job_id: Option<String>) {
+    let mut state = current_job_id_state().lock().expect("lock current job id");
+    *state = job_id;
+}
+
+pub fn current_job_id() -> Option<String> {
+    current_job_id_state()
+        .lock()
+        .expect("lock current job id")
+        .clone()
 }
 
 pub fn ensure_jobs_root(project_root: &Path) -> io::Result<PathBuf> {
@@ -308,6 +366,15 @@ fn merge_metadata(
             if base.queue_position.is_none() {
                 base.queue_position = update.queue_position;
             }
+            if base.worktree_name.is_none() {
+                base.worktree_name = update.worktree_name;
+            }
+            if base.worktree_path.is_none() {
+                base.worktree_path = update.worktree_path;
+            }
+            if base.worktree_owned.is_none() {
+                base.worktree_owned = update.worktree_owned;
+            }
             if base.agent_selector.is_none() {
                 base.agent_selector = update.agent_selector;
             }
@@ -337,6 +404,12 @@ fn merge_metadata(
             }
             if update.agent_exit_code.is_some() {
                 base.agent_exit_code = update.agent_exit_code;
+            }
+            if update.cancel_cleanup_status.is_some() {
+                base.cancel_cleanup_status = update.cancel_cleanup_status;
+            }
+            if update.cancel_cleanup_error.is_some() {
+                base.cancel_cleanup_error = update.cancel_cleanup_error;
             }
             Some(base)
         }
@@ -673,11 +746,17 @@ pub fn follow_job_logs_raw(
     }
 }
 
-pub fn cancel_job(
+pub struct CancelJobOutcome {
+    pub record: JobRecord,
+    pub cleanup: CancelCleanupResult,
+}
+
+pub fn cancel_job_with_cleanup(
     project_root: &Path,
     jobs_root: &Path,
     job_id: &str,
-) -> Result<JobRecord, Box<dyn std::error::Error>> {
+    cleanup_worktree: bool,
+) -> Result<CancelJobOutcome, Box<dyn std::error::Error>> {
     let record = read_record(jobs_root, job_id)?;
     if !matches!(record.status, JobStatus::Running | JobStatus::Pending) {
         return Err(format!("job {job_id} is not running").into());
@@ -695,15 +774,235 @@ pub fn cancel_job(
         return Err(format!("failed to signal job {job_id} (pid {pid})").into());
     }
 
-    finalize_job(
+    let cleanup = if cleanup_worktree {
+        attempt_cancel_cleanup(project_root, &record, pid)
+    } else {
+        CancelCleanupResult::skipped()
+    };
+
+    let cleanup_metadata = JobMetadata {
+        cancel_cleanup_status: Some(cleanup.status),
+        cancel_cleanup_error: cleanup.error.clone(),
+        ..JobMetadata::default()
+    };
+
+    let record = finalize_job(
         project_root,
         jobs_root,
         job_id,
         JobStatus::Cancelled,
         143,
         None,
-        None,
-    )
+        Some(cleanup_metadata),
+    )?;
+
+    Ok(CancelJobOutcome { record, cleanup })
+}
+
+pub fn record_job_worktree(
+    project_root: &Path,
+    jobs_root: &Path,
+    job_id: &str,
+    worktree_name: Option<&str>,
+    worktree_path: &Path,
+) -> Result<JobRecord, Box<dyn std::error::Error>> {
+    let paths = paths_for(jobs_root, job_id);
+    if !paths.record_path.exists() {
+        return Err(format!("no background job {}", job_id).into());
+    }
+
+    let mut record = load_record(&paths)?;
+    let update = JobMetadata {
+        worktree_owned: Some(true),
+        worktree_path: Some(relative_path(project_root, worktree_path)),
+        worktree_name: worktree_name.map(|name| name.to_string()),
+        ..JobMetadata::default()
+    };
+
+    record.metadata = merge_metadata(record.metadata.take(), Some(update));
+    persist_record(&paths, &record)?;
+    Ok(record)
+}
+
+pub fn record_current_job_worktree(
+    project_root: &Path,
+    worktree_name: Option<&str>,
+    worktree_path: &Path,
+) {
+    let Some(job_id) = current_job_id() else {
+        return;
+    };
+
+    let jobs_root = match ensure_jobs_root(project_root) {
+        Ok(path) => path,
+        Err(err) => {
+            display::warn(format!(
+                "unable to ensure jobs root for worktree recording: {err}"
+            ));
+            return;
+        }
+    };
+
+    if let Err(err) = record_job_worktree(
+        project_root,
+        &jobs_root,
+        &job_id,
+        worktree_name,
+        worktree_path,
+    ) {
+        display::warn(format!(
+            "unable to record worktree metadata for job {}: {err}",
+            job_id
+        ));
+    }
+}
+
+fn attempt_cancel_cleanup(
+    project_root: &Path,
+    record: &JobRecord,
+    pid: u32,
+) -> CancelCleanupResult {
+    if !wait_for_exit(pid, StdDuration::from_secs(2)) {
+        return CancelCleanupResult::skipped();
+    }
+
+    let Some(metadata) = record.metadata.as_ref() else {
+        return CancelCleanupResult::skipped();
+    };
+
+    if metadata.worktree_owned != Some(true) {
+        return CancelCleanupResult::skipped();
+    }
+
+    let Some(worktree_path) = metadata.worktree_path.as_ref() else {
+        return CancelCleanupResult::skipped();
+    };
+
+    let worktree_path = resolve_recorded_path(project_root, worktree_path);
+    let worktree_name = metadata.worktree_name.as_deref();
+    if !worktree_safe_to_remove(project_root, &worktree_path, worktree_name) {
+        return CancelCleanupResult::skipped();
+    }
+
+    match cleanup_worktree(project_root, &worktree_path, worktree_name) {
+        Ok(()) => CancelCleanupResult {
+            status: CancelCleanupStatus::Done,
+            error: None,
+        },
+        Err(err) => CancelCleanupResult {
+            status: CancelCleanupStatus::Failed,
+            error: Some(err),
+        },
+    }
+}
+
+fn resolve_recorded_path(project_root: &Path, recorded: &str) -> PathBuf {
+    let path = PathBuf::from(recorded);
+    if path.is_absolute() {
+        path
+    } else {
+        project_root.join(path)
+    }
+}
+
+fn worktree_safe_to_remove(
+    project_root: &Path,
+    worktree_path: &Path,
+    worktree_name: Option<&str>,
+) -> bool {
+    let tmp_root = project_root.join(".vizier/tmp-worktrees");
+    if !worktree_path.starts_with(&tmp_root) {
+        return false;
+    }
+
+    if let Some(name) = worktree_name
+        && name.starts_with("vizier-workspace-")
+    {
+        return false;
+    }
+
+    if let Some(dir_name) = worktree_path.file_name().and_then(|name| name.to_str())
+        && dir_name.starts_with("workspace-")
+    {
+        return false;
+    }
+
+    true
+}
+
+fn cleanup_worktree(
+    project_root: &Path,
+    worktree_path: &Path,
+    worktree_name: Option<&str>,
+) -> Result<(), String> {
+    let repo = Repository::open(project_root).map_err(|err| err.to_string())?;
+    let mut errors = Vec::new();
+
+    if let Some(name) = worktree_name
+        .map(|value| value.to_string())
+        .or_else(|| find_worktree_name_by_path(&repo, worktree_path))
+        && let Err(err) = prune_worktree(&repo, &name)
+    {
+        errors.push(format!("failed to prune worktree {}: {}", name, err));
+    }
+
+    if worktree_path.exists()
+        && let Err(err) = fs::remove_dir_all(worktree_path)
+    {
+        errors.push(format!(
+            "failed to remove worktree directory {}: {}",
+            worktree_path.display(),
+            err
+        ));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn prune_worktree(repo: &Repository, worktree_name: &str) -> Result<(), git2::Error> {
+    let worktree = repo.find_worktree(worktree_name)?;
+    let mut opts = WorktreePruneOptions::new();
+    opts.valid(true).locked(true).working_tree(true);
+    worktree.prune(Some(&mut opts))
+}
+
+fn find_worktree_name_by_path(repo: &Repository, worktree_path: &Path) -> Option<String> {
+    let target = worktree_path.canonicalize().ok()?;
+    let worktrees = repo.worktrees().ok()?;
+    for name in worktrees.iter().flatten() {
+        if let Ok(worktree) = repo.find_worktree(name)
+            && worktree.path().canonicalize().ok() == Some(target.clone())
+        {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn wait_for_exit(pid: u32, timeout: StdDuration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if !pid_is_running(pid) {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        thread::sleep(StdDuration::from_millis(100));
+    }
+}
+
+fn pid_is_running(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub fn gc_jobs(

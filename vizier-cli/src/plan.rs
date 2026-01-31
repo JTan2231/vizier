@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::jobs;
 use vizier_core::vcs::{
     add_worktree_for_branch, branch_exists, detect_primary_branch, remove_worktree, repo_root,
 };
@@ -102,6 +103,7 @@ impl PlanWorktree {
 
         add_worktree_for_branch(&worktree_name, &worktree_path, branch)
             .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+        jobs::record_current_job_worktree(&repo_root, Some(&worktree_name), &worktree_path);
 
         Ok(Self {
             name: worktree_name,

@@ -74,6 +74,10 @@ enabled = true
 # Silence progress chatter for detached jobs unless the caller set verbosity
 quiet = true
 
+# Optional cleanup for cancelled background jobs (never runs on failures)
+[jobs.cancel]
+cleanup_worktree = false
+
 # Default agent stack inherited by every command before CLI flags are processed
 [agents.default]
 agent = "codex"

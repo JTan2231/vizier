@@ -18,7 +18,7 @@ use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 // Integration tests spawn external processes, temporary repos, and background jobs. Serialize
 // them to avoid cross-test races, but allow re-entrant locking within a single test.
@@ -514,6 +514,17 @@ fn write_job_record(
     Ok(())
 }
 
+fn read_job_record(repo: &IntegrationRepo, job_id: &str) -> TestResult<Value> {
+    let job_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(job_id)
+        .join("job.json");
+    let contents = fs::read_to_string(&job_path)?;
+    let record: Value = serde_json::from_str(&contents)?;
+    Ok(record)
+}
+
 fn write_job_record_value(repo: &IntegrationRepo, job_id: &str, record: Value) -> TestResult {
     let job_dir = repo.path().join(".vizier/jobs").join(job_id);
     fs::create_dir_all(&job_dir)?;
@@ -590,6 +601,44 @@ fn read_merge_queue_state(repo: &IntegrationRepo) -> Result<Value, Box<dyn std::
     let path = repo.path().join(".vizier/jobs/merge-queue.json");
     let contents = fs::read_to_string(&path)?;
     Ok(serde_json::from_str(&contents)?)
+}
+
+fn spawn_detached_sleep(seconds: u64) -> TestResult<u32> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("nohup sleep {seconds} >/dev/null 2>&1 & echo $!"))
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to spawn detached sleep: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let pid = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()?;
+    Ok(pid)
+}
+
+fn terminate_pid(pid: u32) {
+    let _ = Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+        .filter(|status| status.success())
+        .and_then(|_| {
+            Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()
+        });
 }
 
 fn list_worktree_names(repo: &Repository) -> Result<Vec<String>, git2::Error> {
@@ -2233,6 +2282,209 @@ fn test_jobs_tail_follow_uses_global_flag() -> TestResult {
     assert!(
         stdout.contains("[stdout]") || stdout.contains("mock agent response"),
         "expected jobs tail output to include stdout log content:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_cancel_without_cleanup_preserves_worktree() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-cancel-no-cleanup";
+    let worktree_path = repo
+        .path()
+        .join(".vizier/tmp-worktrees")
+        .join("cancel-cleanup");
+    fs::create_dir_all(&worktree_path)?;
+    let pid = spawn_detached_sleep(60)?;
+    let record = json!({
+        "id": job_id,
+        "status": "running",
+        "command": ["vizier", "draft"],
+        "created_at": "2026-01-31T00:00:00Z",
+        "started_at": "2026-01-31T00:00:01Z",
+        "finished_at": null,
+        "pid": pid,
+        "exit_code": null,
+        "stdout_path": "stdout.log",
+        "stderr_path": "stderr.log",
+        "session_path": null,
+        "outcome_path": null,
+        "metadata": {
+            "worktree_path": ".vizier/tmp-worktrees/cancel-cleanup",
+            "worktree_owned": true
+        },
+        "config_snapshot": null
+    });
+    write_job_record_value(&repo, job_id, record)?;
+
+    let cancel = repo
+        .vizier_cmd()
+        .args(["jobs", "cancel", job_id])
+        .output()?;
+    let cancel_ok = cancel.status.success();
+    terminate_pid(pid);
+    assert!(
+        cancel_ok,
+        "vizier jobs cancel failed: {}",
+        String::from_utf8_lossy(&cancel.stderr)
+    );
+    let cancel_stdout = String::from_utf8_lossy(&cancel.stdout);
+    assert!(
+        cancel_stdout.contains("cleanup=skipped"),
+        "expected cancel output to note cleanup skipped:\n{cancel_stdout}"
+    );
+    assert!(
+        worktree_path.exists(),
+        "expected worktree to remain after cancel without cleanup: {}",
+        worktree_path.display()
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    let cleanup_status = record
+        .get("metadata")
+        .and_then(|meta| meta.get("cancel_cleanup_status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_eq!(
+        cleanup_status, "skipped",
+        "expected cancel cleanup status to be skipped"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_cancel_with_cleanup_removes_worktree() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-cancel-cleanup";
+    let worktree_path = repo
+        .path()
+        .join(".vizier/tmp-worktrees")
+        .join("cancel-cleanup");
+    fs::create_dir_all(&worktree_path)?;
+    let pid = spawn_detached_sleep(60)?;
+    let record = json!({
+        "id": job_id,
+        "status": "running",
+        "command": ["vizier", "draft"],
+        "created_at": "2026-01-31T00:00:00Z",
+        "started_at": "2026-01-31T00:00:01Z",
+        "finished_at": null,
+        "pid": pid,
+        "exit_code": null,
+        "stdout_path": "stdout.log",
+        "stderr_path": "stderr.log",
+        "session_path": null,
+        "outcome_path": null,
+        "metadata": {
+            "worktree_path": ".vizier/tmp-worktrees/cancel-cleanup",
+            "worktree_owned": true
+        },
+        "config_snapshot": null
+    });
+    write_job_record_value(&repo, job_id, record)?;
+
+    let cancel = repo
+        .vizier_cmd()
+        .args(["jobs", "cancel", "--cleanup-worktree", job_id])
+        .output()?;
+    let cancel_ok = cancel.status.success();
+    terminate_pid(pid);
+    assert!(
+        cancel_ok,
+        "vizier jobs cancel --cleanup-worktree failed: {}",
+        String::from_utf8_lossy(&cancel.stderr)
+    );
+    let cancel_stdout = String::from_utf8_lossy(&cancel.stdout);
+    assert!(
+        cancel_stdout.contains("cleanup=done"),
+        "expected cancel output to note cleanup done:\n{cancel_stdout}"
+    );
+    assert!(
+        !worktree_path.exists(),
+        "expected worktree to be removed after cleanup: {}",
+        worktree_path.display()
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    let cleanup_status = record
+        .get("metadata")
+        .and_then(|meta| meta.get("cancel_cleanup_status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_eq!(
+        cleanup_status, "done",
+        "expected cancel cleanup status to be done"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_job_failure_does_not_run_cancel_cleanup() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-failed-cleanup";
+    let worktree_path = repo
+        .path()
+        .join(".vizier/tmp-worktrees")
+        .join("failed-cleanup");
+    fs::create_dir_all(&worktree_path)?;
+    let config_path = repo.path().join(".vizier/tmp/cancel-cleanup.toml");
+    fs::create_dir_all(config_path.parent().unwrap())?;
+    fs::write(
+        &config_path,
+        r#"
+[jobs.cancel]
+cleanup_worktree = true
+"#,
+    )?;
+    let record = json!({
+        "id": job_id,
+        "status": "failed",
+        "command": ["vizier", "approve"],
+        "created_at": "2026-01-31T00:00:00Z",
+        "started_at": "2026-01-31T00:00:01Z",
+        "finished_at": "2026-01-31T00:00:03Z",
+        "pid": null,
+        "exit_code": 1,
+        "stdout_path": "stdout.log",
+        "stderr_path": "stderr.log",
+        "session_path": null,
+        "outcome_path": null,
+        "metadata": {
+            "worktree_path": ".vizier/tmp-worktrees/failed-cleanup",
+            "worktree_owned": true
+        },
+        "config_snapshot": null
+    });
+    write_job_record_value(&repo, job_id, record)?;
+
+    let output = repo
+        .vizier_cmd()
+        .args([
+            "--config-file",
+            config_path.to_str().unwrap(),
+            "jobs",
+            "cancel",
+            "--cleanup-worktree",
+            job_id,
+        ])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected cancel on failed job to exit non-zero"
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    let cleanup_field = record
+        .get("metadata")
+        .and_then(|meta| meta.get("cancel_cleanup_status"));
+    assert!(
+        cleanup_field.is_none() || cleanup_field == Some(&Value::Null),
+        "expected cancel cleanup status to be absent on failure"
+    );
+    assert!(
+        worktree_path.exists(),
+        "expected failed job worktree to remain: {}",
+        worktree_path.display()
     );
     Ok(())
 }

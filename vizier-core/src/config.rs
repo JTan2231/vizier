@@ -491,6 +491,7 @@ pub struct Config {
     pub approve: ApproveConfig,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
+    pub jobs: JobsConfig,
     pub workflow: WorkflowConfig,
     pub agent_defaults: AgentOverrides,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
@@ -608,6 +609,30 @@ impl MergeConfig {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct JobsCancelConfig {
+    pub cleanup_worktree: bool,
+}
+
+impl JobsCancelConfig {
+    fn apply_layer(&mut self, layer: &JobsCancelLayer) {
+        if let Some(cleanup) = layer.cleanup_worktree {
+            self.cleanup_worktree = cleanup;
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct JobsConfig {
+    pub cancel: JobsCancelConfig,
+}
+
+impl JobsConfig {
+    fn apply_layer(&mut self, layer: &JobsLayer) {
+        self.cancel.apply_layer(&layer.cancel);
+    }
+}
+
 #[derive(Clone)]
 pub struct BackgroundConfig {
     pub enabled: bool,
@@ -716,6 +741,16 @@ pub struct ReviewLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobsCancelLayer {
+    pub cleanup_worktree: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobsLayer {
+    pub cancel: JobsCancelLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackgroundLayer {
     pub enabled: Option<bool>,
     pub quiet: Option<bool>,
@@ -745,6 +780,7 @@ pub struct ConfigLayer {
     pub approve: ApproveLayer,
     pub review: ReviewLayer,
     pub merge: MergeLayer,
+    pub jobs: JobsLayer,
     pub workflow: WorkflowLayer,
     pub agent_defaults: Option<AgentOverrides>,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
@@ -776,6 +812,7 @@ impl Default for Config {
             approve: ApproveConfig::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
+            jobs: JobsConfig::default(),
             workflow: WorkflowConfig::default(),
             agent_defaults: AgentOverrides::default(),
             agent_scopes: HashMap::new(),
@@ -810,6 +847,7 @@ impl Config {
         }
 
         self.merge.apply_layer(&layer.merge);
+        self.jobs.apply_layer(&layer.jobs);
         self.workflow.apply_layer(&layer.workflow);
 
         if let Some(defaults) = layer.agent_defaults.as_ref() {
@@ -1806,6 +1844,20 @@ impl ConfigLayer {
                     layer.workflow.background.quiet = Some(quiet);
                 }
             }
+        }
+
+        if let Some(jobs_value) = value_at_path(&file_config, &["jobs"])
+            && let Some(jobs_table) = jobs_value.as_object()
+            && let Some(cancel_value) = jobs_table.get("cancel")
+            && let Some(cancel_table) = cancel_value.as_object()
+            && let Some(cleanup) = parse_bool(
+                cancel_table
+                    .get("cleanup_worktree")
+                    .or_else(|| cancel_table.get("cleanup-worktree"))
+                    .or_else(|| cancel_table.get("cleanup")),
+            )
+        {
+            layer.jobs.cancel.cleanup_worktree = Some(cleanup);
         }
 
         if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {

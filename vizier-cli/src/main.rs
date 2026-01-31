@@ -393,6 +393,14 @@ enum JobsAction {
     Cancel {
         #[arg(value_name = "JOB")]
         job: String,
+
+        /// Remove job-owned worktree(s) after the cancellation completes
+        #[arg(long = "cleanup-worktree", action = ArgAction::SetTrue, conflicts_with = "no_cleanup_worktree")]
+        cleanup_worktree: bool,
+
+        /// Skip cleanup even if jobs.cancel.cleanup_worktree is enabled
+        #[arg(long = "no-cleanup-worktree", action = ArgAction::SetTrue)]
+        no_cleanup_worktree: bool,
     },
 
     /// Garbage-collect completed jobs older than N days (default 7)
@@ -1138,6 +1146,12 @@ fn run_jobs_command(
                         }
                     }
                 }
+                if let Some(worktree) = metadata.worktree_path.as_ref() {
+                    println!("Worktree: {worktree}");
+                }
+                if let Some(name) = metadata.worktree_name.as_ref() {
+                    println!("Worktree name: {name}");
+                }
                 if let Some(agent_backend) = metadata.agent_backend.as_ref() {
                     println!("Agent backend: {agent_backend}");
                 }
@@ -1149,6 +1163,12 @@ fn run_jobs_command(
                 }
                 if let Some(exit) = metadata.agent_exit_code {
                     println!("Agent exit: {exit}");
+                }
+                if let Some(cleanup) = metadata.cancel_cleanup_status {
+                    println!("Cancel cleanup: {}", cleanup.label());
+                    if let Some(err) = metadata.cancel_cleanup_error.as_ref() {
+                        println!("Cancel cleanup error: {err}");
+                    }
                 }
             }
             if let Some(config) = record.config_snapshot.as_ref() {
@@ -1208,11 +1228,36 @@ fn run_jobs_command(
             }
             jobs::tail_job_logs(jobs_root, &job, jobs::LogStream::Both, true)
         }
-        JobsAction::Cancel { job } => {
-            let record = jobs::cancel_job(project_root, jobs_root, &job)?;
+        JobsAction::Cancel {
+            job,
+            cleanup_worktree,
+            no_cleanup_worktree,
+        } => {
+            let cleanup_override = if cleanup_worktree {
+                Some(true)
+            } else if no_cleanup_worktree {
+                Some(false)
+            } else {
+                None
+            };
+            let cleanup_enabled = cleanup_override
+                .unwrap_or_else(|| config::get_config().jobs.cancel.cleanup_worktree);
+            let outcome =
+                jobs::cancel_job_with_cleanup(project_root, jobs_root, &job, cleanup_enabled)?;
+            if outcome.cleanup.status == jobs::CancelCleanupStatus::Failed
+                && let Some(err) = outcome.cleanup.error.as_ref()
+            {
+                display::warn(format!(
+                    "cleanup failed for job {}: {}",
+                    outcome.record.id, err
+                ));
+            }
             println!(
-                "Job {} marked cancelled (stdout: {}, stderr: {})",
-                record.id, record.stdout_path, record.stderr_path
+                "Job {} marked cancelled (stdout: {}, stderr: {}, cleanup={})",
+                outcome.record.id,
+                outcome.record.stdout_path,
+                outcome.record.stderr_path,
+                outcome.cleanup.status.label()
             );
             Ok(())
         }
@@ -2315,6 +2360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let cli = Cli::from_arg_matches(&matches)?;
+    jobs::set_current_job_id(cli.global.background_job_id.clone());
 
     let mut verbosity = if cli.global.quiet {
         display::Verbosity::Quiet
