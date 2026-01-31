@@ -5,6 +5,8 @@ This document is the canonical reference for how Vizier maps CLI commands (“sc
 - **Scopes** (commands): `ask`, `save`, `draft`, `refine`, `approve`, `review`, `merge`
 - **Prompt kinds**: `documentation`, `commit`, `implementation_plan`, `plan_refine`, `review`, `merge_conflict`
 
+Only these prompt kind keys are accepted; aliases like `base`, `system`, `plan`, `refine`, and `merge` are rejected.
+
 Use this as the single place to answer:
 - “Which prompt text does this command use?”
 - “Where do I put a custom template?”
@@ -62,6 +64,8 @@ For any given **scope × kind** pair, Vizier resolves prompt text in this order:
     - `REVIEW_PROMPT`
     - `MERGE_CONFLICT_PROMPT`
 
+Prompt text resolution only consults `[agents.<scope>.prompts.<kind>]` and `.vizier/*_PROMPT.md` files; `[prompts]` and `[prompts.<scope>]` tables are ignored, and `.vizier/BASE_SYSTEM_PROMPT.md` is not read.
+
 In practice:
 - Treat `[agents.<scope>.prompts.<kind>]` as the **primary surface** for customization.
 - Use `.vizier/*.md` when you want repo-local prompt files without touching config.
@@ -85,6 +89,7 @@ include_narrative_docs = false
 - When `enabled = false` for a given scope+`documentation` kind, Vizier **skips the documentation template text** but still injects the standard agent bounds and the `<task>`/`<instruction>` payload.
 - `include_snapshot` and `include_narrative_docs` gate whether the snapshot and narrative docs are embedded for that scope.
 - These settings also apply when documentation-style prompts are used during plan implementation, review fix-up, and merge-time narrative refresh.
+- Narrative context is sourced only from `.vizier/narrative/` (snapshot, glossary, threads). `.vizier/todo_*.md` is not read.
 
 ## Agent overrides per prompt
 
@@ -102,10 +107,9 @@ Agent behavior for a given scope+kind can be customized in two layers:
      ```toml
      [agents.review.prompts.review]
      path = "./prompts/review.md"
+     agent = "codex"
 
      [agents.review.prompts.review.agent]
-     agent = "codex"
-     [agents.review.prompts.review.agent.agent]
      label = "codex"                  # or set `command = [...]`
      ```
 
