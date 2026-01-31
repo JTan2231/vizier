@@ -96,6 +96,82 @@ fn integration_test_lock() -> &'static IntegrationTestLock {
     INTEGRATION_TEST_LOCK.get_or_init(IntegrationTestLock::new)
 }
 
+// Integration tests spawn external processes, temporary repos, and background jobs. Serialize
+// them to avoid cross-test races, but allow re-entrant locking within a single test.
+struct IntegrationTestLock {
+    state: Mutex<IntegrationTestState>,
+    cvar: Condvar,
+}
+
+#[derive(Default)]
+struct IntegrationTestState {
+    owner: Option<ThreadId>,
+    depth: usize,
+}
+
+impl IntegrationTestLock {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(IntegrationTestState::default()),
+            cvar: Condvar::new(),
+        }
+    }
+
+    fn lock(&'static self) -> IntegrationTestGuard {
+        let current = std::thread::current().id();
+        let mut state = self.state.lock().expect("lock integration test mutex");
+        loop {
+            match state.owner {
+                None => {
+                    state.owner = Some(current);
+                    state.depth = 1;
+                    return IntegrationTestGuard {
+                        lock: self,
+                        owner: current,
+                    };
+                }
+                Some(owner) if owner == current => {
+                    state.depth += 1;
+                    return IntegrationTestGuard {
+                        lock: self,
+                        owner: current,
+                    };
+                }
+                _ => {
+                    state = self
+                        .cvar
+                        .wait(state)
+                        .expect("wait on integration test mutex");
+                }
+            }
+        }
+    }
+}
+
+struct IntegrationTestGuard {
+    lock: &'static IntegrationTestLock,
+    owner: ThreadId,
+}
+
+impl Drop for IntegrationTestGuard {
+    fn drop(&mut self) {
+        let mut state = self.lock.state.lock().expect("lock integration test mutex");
+        if state.owner == Some(self.owner) {
+            state.depth = state.depth.saturating_sub(1);
+            if state.depth == 0 {
+                state.owner = None;
+                self.lock.cvar.notify_all();
+            }
+        }
+    }
+}
+
+static INTEGRATION_TEST_LOCK: OnceLock<IntegrationTestLock> = OnceLock::new();
+
+fn integration_test_lock() -> &'static IntegrationTestLock {
+    INTEGRATION_TEST_LOCK.get_or_init(IntegrationTestLock::new)
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -639,6 +715,11 @@ fn terminate_pid(pid: u32) {
                 .status()
                 .ok()
         });
+fn write_job_record(repo: &IntegrationRepo, job_id: &str, record: Value) -> io::Result<()> {
+    let job_dir = repo.path().join(".vizier/jobs").join(job_id);
+    fs::create_dir_all(&job_dir)?;
+    let path = job_dir.join("job.json");
+    fs::write(path, serde_json::to_string_pretty(&record)?)
 }
 
 fn list_worktree_names(repo: &Repository) -> Result<Vec<String>, git2::Error> {
@@ -3264,7 +3345,11 @@ fn test_list_includes_inline_job_commands() -> TestResult {
     );
 
     let job_id = "inline-job-alpha";
+<<<<<<< HEAD
     write_job_record_value(
+=======
+    write_job_record(
+>>>>>>> 4c82630... feat: apply plan new-list
         &repo,
         job_id,
         json!({
