@@ -1,0 +1,85 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
+pub enum PromptKind {
+    Documentation,
+    Commit,
+    ImplementationPlan,
+    PlanRefine,
+    Review,
+    MergeConflict,
+}
+
+/// Alias for prompt variants that feed the system prompt builder.
+pub type SystemPrompt = PromptKind;
+
+impl PromptKind {
+    pub fn all() -> &'static [PromptKind] {
+        const ALL: &[PromptKind] = &[
+            PromptKind::Documentation,
+            PromptKind::Commit,
+            PromptKind::ImplementationPlan,
+            PromptKind::PlanRefine,
+            PromptKind::Review,
+            PromptKind::MergeConflict,
+        ];
+        ALL
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PromptKind::Documentation => "documentation",
+            PromptKind::Commit => "commit",
+            PromptKind::ImplementationPlan => "implementation_plan",
+            PromptKind::PlanRefine => "plan_refine",
+            PromptKind::Review => "review",
+            PromptKind::MergeConflict => "merge_conflict",
+        }
+    }
+
+    fn filename_candidates(&self) -> &'static [&'static str] {
+        match self {
+            PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md"],
+            PromptKind::Commit => &["COMMIT_PROMPT.md"],
+            PromptKind::ImplementationPlan => &["IMPLEMENTATION_PLAN_PROMPT.md"],
+            PromptKind::PlanRefine => &["PLAN_REFINE_PROMPT.md"],
+            PromptKind::Review => &["REVIEW_PROMPT.md"],
+            PromptKind::MergeConflict => &["MERGE_CONFLICT_PROMPT.md"],
+        }
+    }
+
+    fn default_template(&self) -> &'static str {
+        match self {
+            PromptKind::Documentation => DOCUMENTATION_PROMPT,
+            PromptKind::Commit => COMMIT_PROMPT,
+            PromptKind::ImplementationPlan => IMPLEMENTATION_PLAN_PROMPT,
+            PromptKind::PlanRefine => PLAN_REFINE_PROMPT,
+            PromptKind::Review => REVIEW_PROMPT,
+            PromptKind::MergeConflict => MERGE_CONFLICT_PROMPT,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromptOrigin {
+    ScopedConfig { scope: CommandScope },
+    RepoFile { path: PathBuf },
+    Default,
+}
+
+impl PromptOrigin {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PromptOrigin::ScopedConfig { .. } => "scoped-config",
+            PromptOrigin::RepoFile { .. } => "repo-file",
+            PromptOrigin::Default => "default",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PromptSelection {
+    pub text: String,
+    pub kind: PromptKind,
+    pub requested_scope: CommandScope,
+    pub origin: PromptOrigin,
+    pub source_path: Option<PathBuf>,
+}

@@ -19,6 +19,8 @@ use vizier_core::{
 };
 
 mod actions;
+mod context;
+mod errors;
 use crate::actions::*;
 mod completions;
 mod jobs;
