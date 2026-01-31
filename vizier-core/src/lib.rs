@@ -203,7 +203,8 @@ pub const MERGE_CONFLICT_PROMPT: &str = r#"
 You are the merge-conflict resolver. A draft branch is being merged back into the target line, and the working tree currently contains Git conflict markers. Your task: reconcile the conflicts listed in <mergeContext>, keep the intended behavior from both sides, and leave every file conflict-free so Vizier can finish the merge.
 
 Guardrails:
-- Operate only inside the repository root; edit files directly and do not run git/CLI commands.
+- Operate only inside the repository root; edit files directly.
+- The only git commands you are allowed to use are those that refer git history. Use this when necessary to get context on what should be in the final code. No other git operations are allowed.
 - Focus on the conflicted files (adjust neighboring context only when strictly necessary).
 - Remove all conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) and ensure the resulting code compiles/behaves coherently.
 - Preserve snapshot metadata and annotations unless a conflict explicitly requires revising them.
