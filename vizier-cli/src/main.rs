@@ -547,11 +547,15 @@ struct JobsCmd {
 
 #[derive(Subcommand, Debug)]
 enum JobsAction {
-    /// List tracked background jobs (succeeded hidden by default)
+    /// List tracked background jobs (succeeded hidden by default; failures optional)
     List {
         /// Include succeeded jobs (default hides them)
         #[arg(long = "all", short = 'a')]
         all: bool,
+
+        /// Hide failed jobs from the visible list (use --all to include them)
+        #[arg(long = "dismiss-failures")]
+        dismiss_failures: bool,
 
         /// Output format (block, table, json); overrides display.lists.jobs.format
         #[arg(long = "format", value_enum)]
@@ -1314,7 +1318,11 @@ fn run_jobs_command(
     emit_json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
-        JobsAction::List { all, format } => {
+        JobsAction::List {
+            all,
+            dismiss_failures,
+            format,
+        } => {
             let mut list_config = config::get_config().display.lists.jobs.clone();
             if let Some(fmt) = format {
                 list_config.format = fmt.into();
@@ -1342,21 +1350,44 @@ fn run_jobs_command(
                 return Ok(());
             }
 
+            let hidden_summary =
+                |hidden_failed: usize, hidden_succeeded: usize| -> Option<String> {
+                    let mut parts = Vec::new();
+                    if hidden_failed > 0 {
+                        parts.push(format!("{} failed", format_number(hidden_failed)));
+                    }
+                    if hidden_succeeded > 0 {
+                        parts.push(format!("{} succeeded", format_number(hidden_succeeded)));
+                    }
+                    if parts.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{} (use --all to include)", parts.join(", ")))
+                    }
+                };
+
             let mut hidden_succeeded = 0usize;
+            let mut hidden_failed = 0usize;
             let mut visible = Vec::new();
             for record in records {
                 if !show_succeeded && record.status == JobStatus::Succeeded {
                     hidden_succeeded += 1;
+                } else if !all && dismiss_failures && record.status == JobStatus::Failed {
+                    hidden_failed += 1;
                 } else {
                     visible.push(record);
                 }
             }
 
+            let hidden_label = hidden_summary(hidden_failed, hidden_succeeded);
             let outcome = if visible.is_empty() {
-                if hidden_succeeded > 0 {
-                    "No active background jobs".to_string()
-                } else {
+                let hidden_total = hidden_failed + hidden_succeeded;
+                if hidden_total == 0 {
                     "No background jobs found".to_string()
+                } else if hidden_failed > 0 {
+                    "No visible background jobs".to_string()
+                } else {
+                    "No active background jobs".to_string()
                 }
             } else {
                 format!(
@@ -1364,14 +1395,6 @@ fn run_jobs_command(
                     format_number(visible.len()),
                     if visible.len() == 1 { "" } else { "s" }
                 )
-            };
-            let hidden_label = if hidden_succeeded > 0 {
-                Some(format!(
-                    "{} succeeded (use --all to include)",
-                    format_number(hidden_succeeded)
-                ))
-            } else {
-                None
             };
 
             let fields = parse_fields(

@@ -106,6 +106,70 @@ fn test_jobs_list_hides_succeeded_by_default() -> TestResult {
 }
 
 #[test]
+fn test_jobs_list_dismiss_failures_hides_failed() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-running",
+        "running",
+        "2026-01-30T02:00:00Z",
+        None,
+        &["vizier", "ask", "running"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-failed",
+        "failed",
+        "2026-01-30T03:00:00Z",
+        Some("2026-01-30T03:30:00Z"),
+        &["vizier", "ask", "failed"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-succeeded",
+        "succeeded",
+        "2026-01-29T23:00:00Z",
+        Some("2026-01-29T23:15:00Z"),
+        &["vizier", "ask", "succeeded"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "list", "--dismiss-failures"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list --dismiss-failures failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-running"),
+        "expected running job listed:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("job-failed"),
+        "failed jobs should be hidden when dismissed:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("job-succeeded"),
+        "succeeded jobs should still be hidden by default:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Hidden : 1 failed, 1 succeeded (use --all to include)"),
+        "expected hidden failed/succeeded hint:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Failed :").count(),
+        0,
+        "failed timestamp should be hidden with dismiss-failures:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Created:").count(),
+        1,
+        "created timestamp should appear for each listed job:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_jobs_list_all_includes_succeeded() -> TestResult {
     let repo = IntegrationRepo::new()?;
     write_job_record_simple(
@@ -143,6 +207,61 @@ fn test_jobs_list_all_includes_succeeded() -> TestResult {
     assert!(
         stdout.contains("job-succeeded"),
         "expected succeeded job listed with --all:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("Created:").count(),
+        3,
+        "created timestamp should appear for each listed job:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_list_all_overrides_dismiss_failures() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-running",
+        "running",
+        "2026-01-30T02:00:00Z",
+        None,
+        &["vizier", "ask", "running"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-failed",
+        "failed",
+        "2026-01-30T03:00:00Z",
+        Some("2026-01-30T03:30:00Z"),
+        &["vizier", "ask", "failed"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-succeeded",
+        "succeeded",
+        "2026-01-29T23:00:00Z",
+        Some("2026-01-29T23:15:00Z"),
+        &["vizier", "ask", "succeeded"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "list", "--dismiss-failures", "--all"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list --dismiss-failures --all failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-failed"),
+        "expected failed job listed with --all override:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("job-succeeded"),
+        "expected succeeded job listed with --all override:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Hidden :"),
+        "expected no hidden summary with --all override:\n{stdout}"
     );
     assert_eq!(
         stdout.matches("Created:").count(),

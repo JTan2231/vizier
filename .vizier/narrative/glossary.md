@@ -5,6 +5,7 @@
 - **Agent scope**: Which Vizier command is running (e.g., `ask`, `save`, `draft`, `approve`, `review`, `merge`) and therefore which prompts/bounds/config apply.
 - **Auditor**: The component that records what happened (session logs), summarizes repo edits (A/M/D/R), and constructs commit/outcome metadata from observed facts.
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
+- **Config reference**: `docs/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings.
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
 - **Background-by-default**: Workflow posture where assistant-backed commands launch background jobs by default unless `--no-background` is set or stdin input forces a foreground run.
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
@@ -17,6 +18,7 @@
 - **Merge queue**: The serialized merge job backlog tracked under `.vizier/jobs/merge-queue.json`, used to order background merge operations; jobs linked to the queue record queue IDs/positions in job metadata so `vizier jobs` can surface queue status.
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
+- **Prompt-config matrix**: `docs/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
 - **Repo boundary**: Operational constraint for narrative upkeep: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
