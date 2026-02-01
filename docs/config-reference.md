@@ -25,6 +25,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Merge gates: `[merge.cicd_gate].{script,retries,auto_resolve}` ↔ CLI `--cicd-script`, `--cicd-retries`, `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Merge history: `[merge].squash` / `[merge].squash_mainline` ↔ CLI `--squash`/`--no-squash`, `--squash-mainline`.
 - Merge queueing: `[merge.queue].enabled` ↔ CLI `--queue` (requires background execution and conflict auto-resolve; cannot be used with `--complete-conflict`, and `--follow` only works when the queue starts immediately).
+- List output: `[display.lists.*].format`/`fields` ↔ CLI `vizier list --format/--fields`, `vizier jobs list --format`, `vizier jobs show --format`; global `--json` overrides formats.
 - Display/help: pager defaults are TTY-only; use `--pager`/`--no-pager` or `$VIZIER_PAGER` to force/disable. `--no-ansi` strips color; `-q/-v/-vv` control verbosity.
 - Checks/review: `[review.checks].commands` ↔ CLI `vizier review --skip-checks` (to skip) or config to set the commands; merge CI/CD gate is reused during review with auto-fix disabled.
 
@@ -45,6 +46,19 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Merge behavior: `[merge].squash` (default true; `--squash`/`--no-squash`), `[merge].squash_mainline` (mainline parent for merge-heavy plan branches; `--squash-mainline <n>`), `[merge.conflicts].auto_resolve` (default false; `--auto-resolve-conflicts`/`--no-auto-resolve-conflicts`), and `[merge.queue].enabled` to serialize merge jobs (`--queue`, requires background execution and conflict auto-resolve; incompatible with `--complete-conflict`).
 - CI/CD gate: `[merge.cicd_gate]` controls `script` (default none), `auto_resolve` (default false; gate remediation toggle), and `retries` (default 1). CLI overrides: `--cicd-script`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, `--cicd-retries`. `vizier review` runs this gate once per review with auto-fix disabled; `vizier merge` enforces it before completing.
 - Approve stop-condition: `[approve.stop_condition]` controls `script` (default none; repo-local shell script) and `retries` (default 3; maximum number of extra agent attempts after the first). When configured, `vizier approve` re-runs the agent on the draft branch until the script exits 0 or the retry budget is exhausted. CLI overrides: `vizier approve --stop-condition-script <PATH>` and `--stop-condition-retries <COUNT>`.
+
+## Commit metadata and merge templates
+- Commit metadata injection: `[commits.meta]` controls whether session IDs, session logs, author notes, and narrative summaries are injected into commit messages. Defaults are enabled, `style = "header"`, `include = ["session_id","session_log","author_note","narrative_summary"]`, and `session_log_path = "relative"` (values: `relative|absolute|none`). Set `style = "trailers"` to move metadata to the end of the message, `both` to duplicate, or `none`/`enabled = false` to omit metadata entirely. Allowed `include` values: `session_id`, `session_log`, `author_note`, `narrative_summary`.
+- Commit metadata labels: `[commits.meta.labels]` overrides the label text used for metadata lines (`session_id`, `session_log`, `author_note`, `narrative_summary`).
+- Fallback subjects: `[commits.fallback_subjects]` sets the subject line used when a commit summary is empty (`code_change`, `narrative_change`, `conversation`).
+- Implementation commit template: `[commits.implementation]` controls the squash implementation commit subject (supports `{slug}`) and which fields appear in the body (`Target branch`, `Plan branch`, `Summary`).
+- Merge commit template: `[commits.merge]` controls the merge commit subject (supports `{slug}`), whether operator notes are included, the operator note label, and plan embedding (`plan_mode = full|summary|none`, `plan_label`).
+
+## List output formatting
+- `vizier list`: `[display.lists.list]` controls `format` (`block|table|json`), header/entry/job/command field ordering, summary truncation (`summary_max_len` default 120, `summary_single_line` default true), and label overrides (`labels`).
+- `vizier jobs list`: `[display.lists.jobs]` controls `format`, whether succeeded jobs are shown (`show_succeeded`), field ordering, and label overrides. CLI `--all` overrides `show_succeeded`.
+- `vizier jobs show`: `[display.lists.jobs_show]` controls `format`, field ordering, and label overrides.
+- CLI overrides: `vizier list --format`, `vizier list --fields` override the list display settings; `vizier jobs list --format` and `vizier jobs show --format` override job display formats. The global `--json` flag forces JSON output for list-style commands regardless of config.
 
 ## Inspecting and selecting agents per command
 - Each assistant command resolves to a single selector: `[agents.default]` seeds all scopes; per-scope tables override; CLI flags win. Misconfigured selectors/scripts cause the command to fail rather than falling back.

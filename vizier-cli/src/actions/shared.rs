@@ -37,6 +37,43 @@ pub(crate) fn format_block_with_indent(rows: Vec<(String, String)>, indent: usiz
     format_label_value_block(&rows, indent)
 }
 
+pub(crate) fn format_table(rows: &[Vec<String>], indent: usize) -> String {
+    if rows.is_empty() {
+        return String::new();
+    }
+
+    let column_count = rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    if column_count == 0 {
+        return String::new();
+    }
+
+    let mut widths = vec![0usize; column_count];
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            widths[idx] = widths[idx].max(cell.chars().count());
+        }
+    }
+
+    let padding = " ".repeat(indent);
+    let mut out = String::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        if row_idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(&padding);
+        for (col, col_width) in widths.iter().enumerate() {
+            let cell = row.get(col).cloned().unwrap_or_default();
+            let padding_width = col_width.saturating_sub(cell.chars().count());
+            out.push_str(&cell);
+            if col + 1 < column_count {
+                out.push_str(&" ".repeat(padding_width + 2));
+            }
+        }
+    }
+
+    out
+}
+
 fn format_agent_value() -> Option<String> {
     auditor::Auditor::latest_agent_context().map(|context| {
         let mut parts = vec![format!("agent {}", context.selector)];

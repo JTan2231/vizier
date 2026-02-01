@@ -412,6 +412,7 @@ async fn perform_review_workflow(
 
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set_for_commit(&audit_result);
     let critique_text = response.content.trim().to_string();
     emit_review_critique(&spec.slug, &critique_text);
@@ -436,7 +437,7 @@ async fn perform_review_workflow(
             let mut builder = CommitMessageBuilder::new(summary);
             builder
                 .set_header(CommitMessageType::NarrativeChange)
-                .with_session_log_path(session_path.clone())
+                .with_session_artifact(session_artifact.clone())
                 .with_narrative_summary(narrative_summary.clone())
                 .with_author_note(format!(
                     "Review critique streamed to terminal; session: {}",
@@ -795,6 +796,7 @@ async fn apply_review_fixes(
 
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_path = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set_for_commit(&audit_result);
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -816,7 +818,7 @@ async fn apply_review_fixes(
         let mut builder = CommitMessageBuilder::new(summary);
         builder
             .set_header(CommitMessageType::CodeChange)
-            .with_session_log_path(session_path.clone())
+            .with_session_artifact(session_artifact.clone())
             .with_narrative_summary(narrative_summary.clone())
             .with_author_note(format!(
                 "Review critique streamed to terminal; session: {}",

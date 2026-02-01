@@ -7,7 +7,7 @@ mod merge;
 mod plan;
 mod review;
 mod save;
-mod shared;
+pub(crate) mod shared;
 mod snapshot_init;
 mod test_display;
 mod types;

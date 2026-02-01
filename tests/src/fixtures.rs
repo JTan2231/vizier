@@ -39,7 +39,7 @@ impl IntegrationTestLock {
         }
     }
 
-    fn lock(&'static self) -> IntegrationTestGuard {
+    pub(crate) fn lock(&'static self) -> IntegrationTestGuard {
         let current = std::thread::current().id();
         let mut state = self.state.lock().expect("lock integration test mutex");
         loop {

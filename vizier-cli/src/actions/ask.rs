@@ -61,7 +61,7 @@ pub(crate) async fn inline_command(
             return Err(e);
         }
     };
-    let session_display = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set_for_commit(&audit_result);
     let has_narrative_changes = !narrative_paths.is_empty();
 
@@ -91,7 +91,7 @@ pub(crate) async fn inline_command(
                 } else {
                     CommitMessageType::NarrativeChange
                 })
-                .with_session_log_path(session_display.clone());
+                .with_session_artifact(session_artifact.clone());
 
             if has_code_changes {
                 builder.with_narrative_summary(narrative_summary.clone());

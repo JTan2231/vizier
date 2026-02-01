@@ -206,6 +206,7 @@ async fn save(
 
     let audit_result = auditor::Auditor::finalize(audit_disposition(commit_mode)).await?;
     let session_display = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set(&audit_result);
     let has_narrative_changes = !narrative_paths.is_empty();
 
@@ -247,7 +248,7 @@ async fn save(
                 } else {
                     CommitMessageType::NarrativeChange
                 })
-                .with_session_log_path(session_display.clone());
+                .with_session_artifact(session_artifact.clone());
 
             if has_code_changes {
                 message_builder.with_narrative_summary(narrative_summary.clone());

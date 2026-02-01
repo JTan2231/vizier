@@ -222,6 +222,7 @@ progress_filter = ["{}"]
 }
 #[test]
 fn codex_shim_forwards_prompt_and_args() -> TestResult {
+    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let bin_dir = tmp.path().join("bin");
     let input_log = tmp.path().join("codex-input.log");
@@ -281,6 +282,7 @@ fn codex_shim_forwards_prompt_and_args() -> TestResult {
 }
 #[test]
 fn gemini_shim_forwards_prompt_and_args() -> TestResult {
+    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let bin_dir = tmp.path().join("bin");
     let input_log = tmp.path().join("gemini-input.log");

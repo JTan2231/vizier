@@ -379,6 +379,8 @@ pub struct Config {
     pub approve: ApproveConfig,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
+    pub commits: CommitConfig,
+    pub display: DisplaySettings,
     pub jobs: JobsConfig,
     pub workflow: WorkflowConfig,
     pub agent_defaults: AgentOverrides,
@@ -424,6 +426,229 @@ pub struct MergeConfig {
     pub queue: MergeQueueConfig,
     pub squash_default: bool,
     pub squash_mainline: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitMetaStyle {
+    Header,
+    Trailers,
+    Both,
+    None,
+}
+
+impl CommitMetaStyle {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "header" => Some(Self::Header),
+            "trailers" | "trailer" => Some(Self::Trailers),
+            "both" => Some(Self::Both),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommitMetaField {
+    SessionId,
+    SessionLog,
+    AuthorNote,
+    NarrativeSummary,
+}
+
+impl CommitMetaField {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_");
+        match normalized.as_str() {
+            "session_id" => Some(Self::SessionId),
+            "session_log" => Some(Self::SessionLog),
+            "author_note" => Some(Self::AuthorNote),
+            "narrative_summary" => Some(Self::NarrativeSummary),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CommitMetaField::SessionId => "session_id",
+            CommitMetaField::SessionLog => "session_log",
+            CommitMetaField::AuthorNote => "author_note",
+            CommitMetaField::NarrativeSummary => "narrative_summary",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitSessionLogPath {
+    Relative,
+    Absolute,
+    None,
+}
+
+impl CommitSessionLogPath {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "relative" => Some(Self::Relative),
+            "absolute" => Some(Self::Absolute),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitMetaLabels {
+    pub session_id: String,
+    pub session_log: String,
+    pub author_note: String,
+    pub narrative_summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitMetaConfig {
+    pub enabled: bool,
+    pub style: CommitMetaStyle,
+    pub include: Vec<CommitMetaField>,
+    pub session_log_path: CommitSessionLogPath,
+    pub labels: CommitMetaLabels,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitFallbackSubjects {
+    pub code_change: String,
+    pub narrative_change: String,
+    pub conversation: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitImplementationField {
+    TargetBranch,
+    PlanBranch,
+    Summary,
+}
+
+impl CommitImplementationField {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_'], " ");
+        match normalized.as_str() {
+            "target branch" => Some(Self::TargetBranch),
+            "plan branch" => Some(Self::PlanBranch),
+            "summary" => Some(Self::Summary),
+            _ => None,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            CommitImplementationField::TargetBranch => "Target branch",
+            CommitImplementationField::PlanBranch => "Plan branch",
+            CommitImplementationField::Summary => "Summary",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitImplementationConfig {
+    pub subject: String,
+    pub fields: Vec<CommitImplementationField>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitMergePlanMode {
+    Full,
+    Summary,
+    None,
+}
+
+impl CommitMergePlanMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "full" => Some(Self::Full),
+            "summary" => Some(Self::Summary),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitMergeConfig {
+    pub subject: String,
+    pub include_operator_note: bool,
+    pub operator_note_label: String,
+    pub plan_mode: CommitMergePlanMode,
+    pub plan_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct CommitConfig {
+    pub meta: CommitMetaConfig,
+    pub fallback_subjects: CommitFallbackSubjects,
+    pub implementation: CommitImplementationConfig,
+    pub merge: CommitMergeConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListFormat {
+    Block,
+    Table,
+    Json,
+}
+
+impl ListFormat {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "block" => Some(Self::Block),
+            "table" => Some(Self::Table),
+            "json" => Some(Self::Json),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayListConfig {
+    pub format: ListFormat,
+    pub header_fields: Vec<String>,
+    pub entry_fields: Vec<String>,
+    pub job_fields: Vec<String>,
+    pub command_fields: Vec<String>,
+    pub summary_max_len: usize,
+    pub summary_single_line: bool,
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayJobsListConfig {
+    pub format: ListFormat,
+    pub show_succeeded: bool,
+    pub fields: Vec<String>,
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayJobsShowConfig {
+    pub format: ListFormat,
+    pub fields: Vec<String>,
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct DisplayListsConfig {
+    pub list: DisplayListConfig,
+    pub jobs: DisplayJobsListConfig,
+    pub jobs_show: DisplayJobsShowConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct DisplaySettings {
+    pub lists: DisplayListsConfig,
 }
 
 #[derive(Clone, Default)]
@@ -482,6 +707,92 @@ pub struct MergeLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitMetaLabelsLayer {
+    pub session_id: Option<String>,
+    pub session_log: Option<String>,
+    pub author_note: Option<String>,
+    pub narrative_summary: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitMetaLayer {
+    pub enabled: Option<bool>,
+    pub style: Option<CommitMetaStyle>,
+    pub include: Option<Vec<CommitMetaField>>,
+    pub session_log_path: Option<CommitSessionLogPath>,
+    pub labels: CommitMetaLabelsLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitFallbackSubjectsLayer {
+    pub code_change: Option<String>,
+    pub narrative_change: Option<String>,
+    pub conversation: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitImplementationLayer {
+    pub subject: Option<String>,
+    pub fields: Option<Vec<CommitImplementationField>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitMergeLayer {
+    pub subject: Option<String>,
+    pub include_operator_note: Option<bool>,
+    pub operator_note_label: Option<String>,
+    pub plan_mode: Option<CommitMergePlanMode>,
+    pub plan_label: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitLayer {
+    pub meta: CommitMetaLayer,
+    pub fallback_subjects: CommitFallbackSubjectsLayer,
+    pub implementation: CommitImplementationLayer,
+    pub merge: CommitMergeLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayListLayer {
+    pub format: Option<ListFormat>,
+    pub header_fields: Option<Vec<String>>,
+    pub entry_fields: Option<Vec<String>>,
+    pub job_fields: Option<Vec<String>>,
+    pub command_fields: Option<Vec<String>>,
+    pub summary_max_len: Option<usize>,
+    pub summary_single_line: Option<bool>,
+    pub labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayJobsListLayer {
+    pub format: Option<ListFormat>,
+    pub show_succeeded: Option<bool>,
+    pub fields: Option<Vec<String>>,
+    pub labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayJobsShowLayer {
+    pub format: Option<ListFormat>,
+    pub fields: Option<Vec<String>>,
+    pub labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayListsLayer {
+    pub list: DisplayListLayer,
+    pub jobs: DisplayJobsListLayer,
+    pub jobs_show: DisplayJobsShowLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayLayer {
+    pub lists: DisplayListsLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewLayer {
     pub checks: Option<Vec<String>>,
 }
@@ -526,6 +837,8 @@ pub struct ConfigLayer {
     pub approve: ApproveLayer,
     pub review: ReviewLayer,
     pub merge: MergeLayer,
+    pub commits: CommitLayer,
+    pub display: DisplayLayer,
     pub jobs: JobsLayer,
     pub workflow: WorkflowLayer,
     pub agent_defaults: Option<AgentOverrides>,

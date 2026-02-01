@@ -58,6 +58,85 @@ script = "./cicd.sh"
 auto_resolve = true
 retries = 2
 
+# Commit metadata controls (defaults shown)
+[commits.meta]
+enabled = true
+style = "header" # header|trailers|both|none
+include = ["session_id", "session_log", "author_note", "narrative_summary"]
+session_log_path = "relative" # relative|absolute|none
+
+[commits.meta.labels]
+session_id = "Session ID"
+session_log = "Session Log"
+author_note = "Author note"
+narrative_summary = "Narrative updates"
+
+[commits.fallback_subjects]
+code_change = "VIZIER CODE CHANGE"
+narrative_change = "VIZIER NARRATIVE CHANGE"
+conversation = "VIZIER CONVERSATION"
+
+[commits.implementation]
+subject = "feat: apply plan {slug}"
+fields = ["Target branch", "Plan branch", "Summary"]
+
+[commits.merge]
+subject = "feat: merge plan {slug}"
+include_operator_note = true
+operator_note_label = "Operator Note"
+plan_mode = "full" # full|summary|none
+plan_label = "Implementation Plan"
+
+# List output formatting (defaults shown)
+[display.lists.list]
+format = "block" # block|table|json
+header_fields = ["Outcome", "Target"]
+entry_fields = ["Plan", "Branch", "Summary"]
+job_fields = ["Job", "Job status", "Job scope", "Job started"]
+command_fields = ["Status", "Logs", "Attach"]
+summary_max_len = 120
+summary_single_line = true
+
+[display.lists.jobs]
+format = "block" # block|table|json
+show_succeeded = false
+fields = ["Job", "Status", "Created", "Failed", "Command"]
+
+[display.lists.jobs_show]
+format = "block" # block|table|json
+fields = [
+  "Job",
+  "Status",
+  "PID",
+  "Started",
+  "Finished",
+  "Exit code",
+  "Stdout",
+  "Stderr",
+  "Session",
+  "Outcome",
+  "Scope",
+  "Plan",
+  "Target",
+  "Branch",
+  "Revision",
+  "Queue",
+  "Queue entry",
+  "Queue position",
+  "Queue status",
+  "Queue blocked reason",
+  "Worktree",
+  "Worktree name",
+  "Agent backend",
+  "Agent label",
+  "Agent command",
+  "Agent exit",
+  "Cancel cleanup",
+  "Cancel cleanup error",
+  "Config snapshot",
+  "Command"
+]
+
 # Optional stop-condition for `vizier approve`: when configured, the agent is re-run on the draft branch until this script exits 0 or the retry budget is exhausted.
 # [approve.stop_condition]
 # script = "./scripts/approve-stop.sh"

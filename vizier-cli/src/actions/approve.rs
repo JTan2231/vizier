@@ -349,7 +349,7 @@ async fn apply_plan_in_worktree(
     }
 
     let audit_result = Auditor::finalize(audit_disposition(commit_mode)).await?;
-    let session_path = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set_for_commit(&audit_result);
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -369,7 +369,7 @@ async fn apply_plan_in_worktree(
     let mut builder = CommitMessageBuilder::new(summary);
     builder
         .set_header(CommitMessageType::CodeChange)
-        .with_session_log_path(session_path.clone())
+        .with_session_artifact(session_artifact.clone())
         .with_narrative_summary(narrative_summary.clone());
 
     let mut commit_oid: Option<String> = None;

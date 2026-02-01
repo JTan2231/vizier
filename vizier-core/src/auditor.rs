@@ -920,7 +920,7 @@ pub enum CommitMessageType {
 pub struct CommitMessageBuilder {
     message_type: Option<CommitMessageType>,
     session_id: String,
-    session_log_path: Option<String>,
+    session_artifact: Option<SessionArtifact>,
     author_note: Option<String>,
     narrative_summary: Option<String>,
     body: String,
@@ -1034,12 +1034,55 @@ impl SessionArtifact {
     }
 }
 
+fn meta_lines(
+    meta: &config::CommitMetaConfig,
+    session_id: &str,
+    session_artifact: Option<&SessionArtifact>,
+    author_note: Option<&String>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for field in &meta.include {
+        match field {
+            config::CommitMetaField::SessionId => {
+                lines.push(format!("{}: {}", meta.labels.session_id, session_id));
+            }
+            config::CommitMetaField::SessionLog => {
+                if matches!(meta.session_log_path, config::CommitSessionLogPath::None) {
+                    continue;
+                }
+                let path = session_artifact.and_then(|artifact| match meta.session_log_path {
+                    config::CommitSessionLogPath::Relative => Some(artifact.display_path()),
+                    config::CommitSessionLogPath::Absolute => {
+                        Some(artifact.path.display().to_string())
+                    }
+                    config::CommitSessionLogPath::None => None,
+                });
+                if let Some(path) = path {
+                    lines.push(format!("{}: {}", meta.labels.session_log, path));
+                }
+            }
+            config::CommitMetaField::AuthorNote => {
+                if let Some(note) = author_note
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                {
+                    lines.push(format!("{}: {}", meta.labels.author_note, note));
+                }
+            }
+            config::CommitMetaField::NarrativeSummary => {}
+        }
+    }
+
+    lines
+}
+
 impl CommitMessageBuilder {
     pub fn new(body: String) -> Self {
         Self {
             message_type: None,
             session_id: AUDITOR.lock().unwrap().session_id.clone(),
-            session_log_path: None,
+            session_artifact: None,
             author_note: None,
             narrative_summary: None,
             body,
@@ -1057,8 +1100,11 @@ impl CommitMessageBuilder {
         self
     }
 
-    pub fn with_session_log_path(&mut self, session_log_path: Option<String>) -> &mut Self {
-        self.session_log_path = session_log_path;
+    pub fn with_session_artifact(
+        &mut self,
+        session_artifact: Option<SessionArtifact>,
+    ) -> &mut Self {
+        self.session_artifact = session_artifact;
 
         self
     }
@@ -1079,23 +1125,34 @@ impl CommitMessageBuilder {
     pub fn build(&self) -> String {
         let (derived_subject, remainder) = Self::split_subject_from_body(&self.body);
         let use_subject = derived_subject.is_some();
+        let cfg = config::get_config();
+        let fallback_subject = self
+            .message_type
+            .as_ref()
+            .map(|ty| ty.fallback_subject(&cfg.commits.fallback_subjects));
         let header = derived_subject
             .clone()
-            .or_else(|| {
-                self.message_type
-                    .as_ref()
-                    .map(|ty| ty.fallback_subject().to_string())
-            })
+            .or_else(|| fallback_subject.map(|value| value.to_string()))
             .unwrap_or_else(|| "VIZIER".to_string());
 
-        let mut message = format!("{}\nSession ID: {}", header, self.session_id);
+        let meta = &cfg.commits.meta;
+        let meta_active = meta.enabled && !matches!(meta.style, config::CommitMetaStyle::None);
+        let meta_fields = meta_lines(
+            meta,
+            &self.session_id,
+            self.session_artifact.as_ref(),
+            self.author_note.as_ref(),
+        );
 
-        if let Some(path) = &self.session_log_path {
-            message = format!("{}\nSession Log: {}", message, path);
-        }
-
-        if let Some(an) = &self.author_note {
-            message = format!("{}\nAuthor note: {}", message, an);
+        let mut message = header.clone();
+        if meta_active
+            && matches!(
+                meta.style,
+                config::CommitMetaStyle::Header | config::CommitMetaStyle::Both
+            )
+            && !meta_fields.is_empty()
+        {
+            message = format!("{}\n{}", message, meta_fields.join("\n"));
         }
 
         let body = if use_subject {
@@ -1110,18 +1167,33 @@ impl CommitMessageBuilder {
             sections.push(body_trimmed.to_string());
         }
 
-        if let Some(summary) = &self.narrative_summary {
+        if meta_active
+            && meta
+                .include
+                .contains(&config::CommitMetaField::NarrativeSummary)
+            && let Some(summary) = &self.narrative_summary
+        {
             let trimmed = summary.trim();
             if !trimmed.is_empty() {
-                sections.push(format!("Narrative updates:\n{}", trimmed));
+                sections.push(format!("{}:\n{}", meta.labels.narrative_summary, trimmed));
             }
         }
 
-        if sections.is_empty() {
-            message
-        } else {
-            format!("{}\n\n{}", message, sections.join("\n\n"))
+        if !sections.is_empty() {
+            message = format!("{}\n\n{}", message, sections.join("\n\n"));
         }
+
+        if meta_active
+            && matches!(
+                meta.style,
+                config::CommitMetaStyle::Trailers | config::CommitMetaStyle::Both
+            )
+            && !meta_fields.is_empty()
+        {
+            message = format!("{}\n\n{}", message, meta_fields.join("\n"));
+        }
+
+        message
     }
 
     fn split_subject_from_body(body: &str) -> (Option<String>, String) {
@@ -1151,11 +1223,11 @@ impl CommitMessageBuilder {
 }
 
 impl CommitMessageType {
-    fn fallback_subject(&self) -> &'static str {
+    fn fallback_subject<'a>(&self, fallback: &'a config::CommitFallbackSubjects) -> &'a str {
         match self {
-            CommitMessageType::CodeChange => "VIZIER CODE CHANGE",
-            CommitMessageType::Conversation => "VIZIER CONVERSATION",
-            CommitMessageType::NarrativeChange => "VIZIER NARRATIVE CHANGE",
+            CommitMessageType::CodeChange => fallback.code_change.as_str(),
+            CommitMessageType::Conversation => fallback.conversation.as_str(),
+            CommitMessageType::NarrativeChange => fallback.narrative_change.as_str(),
         }
     }
 }
@@ -1163,10 +1235,20 @@ impl CommitMessageType {
 #[cfg(test)]
 mod tests {
     use super::{
-        Auditor, CommitMessageBuilder, CommitMessageType, SystemPrompt, find_project_root,
+        Auditor, CommitMessageBuilder, CommitMessageType, SessionArtifact, SystemPrompt,
+        find_project_root,
     };
+    use crate::config;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::tempdir;
+
+    fn with_config<F: FnOnce()>(cfg: config::Config, f: F) {
+        let original = config::get_config();
+        config::set_config(cfg);
+        f();
+        config::set_config(original);
+    }
 
     #[test]
     fn detects_worktree_root_with_git_file() {
@@ -1227,6 +1309,91 @@ mod tests {
             message.starts_with("VIZIER NARRATIVE CHANGE"),
             "missing summary should keep generic header"
         );
+    }
+
+    #[test]
+    fn commit_builder_respects_meta_trailers() {
+        let mut cfg = config::Config::default();
+        cfg.commits.meta.style = config::CommitMetaStyle::Trailers;
+        cfg.commits.meta.include = vec![config::CommitMetaField::SessionId];
+
+        with_config(cfg, || {
+            let mut builder =
+                CommitMessageBuilder::new("feat: footer test\n\nBody text".to_string());
+            builder.set_header(CommitMessageType::CodeChange);
+            let message = builder.build();
+            let lines: Vec<&str> = message.lines().collect();
+            assert_eq!(lines.first().copied(), Some("feat: footer test"));
+            assert!(
+                lines.last().unwrap_or(&"").starts_with("Session ID: "),
+                "expected session id trailer, got {message}"
+            );
+        });
+    }
+
+    #[test]
+    fn commit_builder_respects_meta_labels_and_includes() {
+        let mut cfg = config::Config::default();
+        cfg.commits.meta.include = vec![config::CommitMetaField::SessionId];
+        cfg.commits.meta.labels.session_id = "Vizier-Session".to_string();
+        cfg.commits.meta.session_log_path = config::CommitSessionLogPath::None;
+
+        with_config(cfg, || {
+            let mut builder = CommitMessageBuilder::new("feat: label test".to_string());
+            builder.set_header(CommitMessageType::CodeChange);
+            let message = builder.build();
+            assert!(
+                message.contains("Vizier-Session: "),
+                "expected custom session label, got {message}"
+            );
+            assert!(
+                !message.contains("Session Log:"),
+                "session log line should be omitted"
+            );
+        });
+    }
+
+    #[test]
+    fn commit_builder_uses_fallback_subject_override() {
+        let mut cfg = config::Config::default();
+        cfg.commits.fallback_subjects.narrative_change = "CUSTOM NARRATIVE".to_string();
+
+        with_config(cfg, || {
+            let mut builder = CommitMessageBuilder::new("\n".to_string());
+            builder.set_header(CommitMessageType::NarrativeChange);
+            let message = builder.build();
+            assert!(
+                message.starts_with("CUSTOM NARRATIVE"),
+                "fallback subject should use config override, got {message}"
+            );
+        });
+    }
+
+    #[test]
+    fn commit_builder_uses_absolute_session_log_path() {
+        let mut cfg = config::Config::default();
+        cfg.commits.meta.include = vec![config::CommitMetaField::SessionLog];
+        cfg.commits.meta.session_log_path = config::CommitSessionLogPath::Absolute;
+
+        with_config(cfg, || {
+            let tmp = tempdir().unwrap();
+            let path = tmp.path().join("session.json");
+            fs::write(&path, "{}").unwrap();
+            let artifact = SessionArtifact {
+                id: "abc".to_string(),
+                path: PathBuf::from(&path),
+                relative_path: None,
+            };
+            let mut builder = CommitMessageBuilder::new("feat: path test".to_string());
+            builder
+                .set_header(CommitMessageType::CodeChange)
+                .with_session_artifact(Some(artifact));
+            let message = builder.build();
+            assert!(
+                message.contains(&path.display().to_string()),
+                "expected absolute session log path, got {message}"
+            );
+        });
     }
 
     #[test]

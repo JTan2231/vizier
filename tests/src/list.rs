@@ -136,3 +136,85 @@ fn test_list_includes_inline_job_commands() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn test_list_table_format_from_config() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let config_path = repo.path().join(".vizier").join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[display.lists.list]
+format = "table"
+entry_fields = ["Plan", "Summary"]
+job_fields = []
+command_fields = []
+summary_max_len = 80
+"#,
+    )?;
+
+    let draft_alpha = repo.vizier_output(&["draft", "--name", "alpha", "Alpha spec line"])?;
+    assert!(
+        draft_alpha.status.success(),
+        "vizier draft alpha failed: {}",
+        String::from_utf8_lossy(&draft_alpha.stderr)
+    );
+    let list = repo.vizier_output(&["list"])?;
+    assert!(
+        list.status.success(),
+        "vizier list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    let header = stdout
+        .lines()
+        .find(|line| line.contains("Plan") && line.contains("Summary"))
+        .unwrap_or("");
+    assert!(
+        !header.is_empty(),
+        "expected table header with Plan and Summary: {stdout}"
+    );
+    assert!(
+        stdout.contains("alpha"),
+        "expected plan slug in table output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Branch"),
+        "table output should omit Branch when entry_fields excludes it: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_list_fields_and_format_overrides() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft_alpha = repo.vizier_output(&["draft", "--name", "alpha", "Alpha spec line"])?;
+    assert!(
+        draft_alpha.status.success(),
+        "vizier draft alpha failed: {}",
+        String::from_utf8_lossy(&draft_alpha.stderr)
+    );
+
+    let list = repo.vizier_output(&["list", "--format", "json", "--fields", "Plan,Summary"])?;
+    assert!(
+        list.status.success(),
+        "vizier list --format json failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let json: Value = serde_json::from_slice(&list.stdout)?;
+    let entries = json
+        .get("entries")
+        .and_then(|value| value.as_array())
+        .ok_or("expected entries array in JSON output")?;
+    let entry = entries.first().ok_or("expected at least one entry")?;
+    assert!(entry.get("plan").is_some(), "expected plan field: {json}");
+    assert!(
+        entry.get("summary").is_some(),
+        "expected summary field: {json}"
+    );
+    assert!(
+        entry.get("branch").is_none(),
+        "branch should be omitted when fields override: {json}"
+    );
+    Ok(())
+}

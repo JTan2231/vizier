@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -10,7 +11,7 @@ use clap::{
     Subcommand, ValueEnum, error::ErrorKind,
 };
 use clap_complete::Shell;
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use vizier_core::{
     auditor, config,
@@ -21,6 +22,7 @@ use vizier_core::{
 mod actions;
 mod context;
 mod errors;
+use crate::actions::shared::format_table;
 use crate::actions::*;
 mod completions;
 mod jobs;
@@ -180,6 +182,207 @@ enum JobLogStreamArg {
     Both,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ListFormatArg {
+    Block,
+    Table,
+    Json,
+}
+
+impl From<ListFormatArg> for config::ListFormat {
+    fn from(value: ListFormatArg) -> Self {
+        match value {
+            ListFormatArg::Block => config::ListFormat::Block,
+            ListFormatArg::Table => config::ListFormat::Table,
+            ListFormatArg::Json => config::ListFormat::Json,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum JobsListField {
+    Job,
+    Status,
+    Created,
+    Failed,
+    Command,
+}
+
+impl JobsListField {
+    fn parse(value: &str) -> Option<Self> {
+        match normalize_field_key(value).as_str() {
+            "job" => Some(Self::Job),
+            "status" => Some(Self::Status),
+            "created" => Some(Self::Created),
+            "failed" => Some(Self::Failed),
+            "command" => Some(Self::Command),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Job => "Job",
+            Self::Status => "Status",
+            Self::Created => "Created",
+            Self::Failed => "Failed",
+            Self::Command => "Command",
+        }
+    }
+
+    fn json_key(self) -> &'static str {
+        match self {
+            Self::Job => "job",
+            Self::Status => "status",
+            Self::Created => "created",
+            Self::Failed => "failed",
+            Self::Command => "command",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum JobsShowField {
+    Job,
+    Status,
+    Pid,
+    Started,
+    Finished,
+    ExitCode,
+    Stdout,
+    Stderr,
+    Session,
+    Outcome,
+    Scope,
+    Plan,
+    Target,
+    Branch,
+    Revision,
+    Queue,
+    QueueEntry,
+    QueuePosition,
+    QueueStatus,
+    QueueBlockedReason,
+    Worktree,
+    WorktreeName,
+    AgentBackend,
+    AgentLabel,
+    AgentCommand,
+    AgentExit,
+    CancelCleanup,
+    CancelCleanupError,
+    ConfigSnapshot,
+    Command,
+}
+
+impl JobsShowField {
+    fn parse(value: &str) -> Option<Self> {
+        match normalize_field_key(value).as_str() {
+            "job" => Some(Self::Job),
+            "status" => Some(Self::Status),
+            "pid" => Some(Self::Pid),
+            "started" => Some(Self::Started),
+            "finished" => Some(Self::Finished),
+            "exit code" => Some(Self::ExitCode),
+            "stdout" => Some(Self::Stdout),
+            "stderr" => Some(Self::Stderr),
+            "session" => Some(Self::Session),
+            "outcome" => Some(Self::Outcome),
+            "scope" => Some(Self::Scope),
+            "plan" => Some(Self::Plan),
+            "target" => Some(Self::Target),
+            "branch" => Some(Self::Branch),
+            "revision" => Some(Self::Revision),
+            "queue" => Some(Self::Queue),
+            "queue entry" => Some(Self::QueueEntry),
+            "queue position" => Some(Self::QueuePosition),
+            "queue status" => Some(Self::QueueStatus),
+            "queue blocked reason" => Some(Self::QueueBlockedReason),
+            "worktree" => Some(Self::Worktree),
+            "worktree name" => Some(Self::WorktreeName),
+            "agent backend" => Some(Self::AgentBackend),
+            "agent label" => Some(Self::AgentLabel),
+            "agent command" => Some(Self::AgentCommand),
+            "agent exit" => Some(Self::AgentExit),
+            "cancel cleanup" => Some(Self::CancelCleanup),
+            "cancel cleanup error" => Some(Self::CancelCleanupError),
+            "config snapshot" => Some(Self::ConfigSnapshot),
+            "command" => Some(Self::Command),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Job => "Job",
+            Self::Status => "Status",
+            Self::Pid => "PID",
+            Self::Started => "Started",
+            Self::Finished => "Finished",
+            Self::ExitCode => "Exit code",
+            Self::Stdout => "Stdout",
+            Self::Stderr => "Stderr",
+            Self::Session => "Session",
+            Self::Outcome => "Outcome",
+            Self::Scope => "Scope",
+            Self::Plan => "Plan",
+            Self::Target => "Target",
+            Self::Branch => "Branch",
+            Self::Revision => "Revision",
+            Self::Queue => "Queue",
+            Self::QueueEntry => "Queue entry",
+            Self::QueuePosition => "Queue position",
+            Self::QueueStatus => "Queue status",
+            Self::QueueBlockedReason => "Queue blocked reason",
+            Self::Worktree => "Worktree",
+            Self::WorktreeName => "Worktree name",
+            Self::AgentBackend => "Agent backend",
+            Self::AgentLabel => "Agent label",
+            Self::AgentCommand => "Agent command",
+            Self::AgentExit => "Agent exit",
+            Self::CancelCleanup => "Cancel cleanup",
+            Self::CancelCleanupError => "Cancel cleanup error",
+            Self::ConfigSnapshot => "Config snapshot",
+            Self::Command => "Command",
+        }
+    }
+
+    fn json_key(self) -> &'static str {
+        match self {
+            Self::Job => "job",
+            Self::Status => "status",
+            Self::Pid => "pid",
+            Self::Started => "started",
+            Self::Finished => "finished",
+            Self::ExitCode => "exit_code",
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Session => "session",
+            Self::Outcome => "outcome",
+            Self::Scope => "scope",
+            Self::Plan => "plan",
+            Self::Target => "target",
+            Self::Branch => "branch",
+            Self::Revision => "revision",
+            Self::Queue => "queue",
+            Self::QueueEntry => "queue_entry",
+            Self::QueuePosition => "queue_position",
+            Self::QueueStatus => "queue_status",
+            Self::QueueBlockedReason => "queue_blocked_reason",
+            Self::Worktree => "worktree",
+            Self::WorktreeName => "worktree_name",
+            Self::AgentBackend => "agent_backend",
+            Self::AgentLabel => "agent_label",
+            Self::AgentCommand => "agent_command",
+            Self::AgentExit => "agent_exit",
+            Self::CancelCleanup => "cancel_cleanup",
+            Self::CancelCleanupError => "cancel_cleanup_error",
+            Self::ConfigSnapshot => "config_snapshot",
+            Self::Command => "command",
+        }
+    }
+}
+
 impl From<JobLogStreamArg> for jobs::LogStream {
     fn from(value: JobLogStreamArg) -> Self {
         match value {
@@ -297,6 +500,14 @@ struct ListCmd {
     /// Target branch to compare against (defaults to detected primary)
     #[arg(long = "target", value_name = "BRANCH")]
     target: Option<String>,
+
+    /// Output format (block, table, json); overrides display.lists.list.format
+    #[arg(long = "format", value_enum)]
+    format: Option<ListFormatArg>,
+
+    /// Comma-separated list of entry fields (e.g., Plan,Summary)
+    #[arg(long = "fields", value_name = "FIELDS")]
+    fields: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -341,12 +552,20 @@ enum JobsAction {
         /// Include succeeded jobs (default hides them)
         #[arg(long = "all", short = 'a')]
         all: bool,
+
+        /// Output format (block, table, json); overrides display.lists.jobs.format
+        #[arg(long = "format", value_enum)]
+        format: Option<ListFormatArg>,
     },
 
     /// Show details for a background job id
     Show {
         #[arg(value_name = "JOB")]
         job: String,
+
+        /// Output format (block, table, json); overrides display.lists.jobs_show.format
+        #[arg(long = "format", value_enum)]
+        format: Option<ListFormatArg>,
     },
 
     /// Show a terse status line for a background job id
@@ -698,9 +917,142 @@ fn resolve_draft_spec(cmd: &DraftCmd) -> Result<ResolvedInput, Box<dyn std::erro
     resolve_prompt_input(cmd.spec.as_deref(), cmd.file.as_deref())
 }
 
-fn resolve_list_options(cmd: &ListCmd) -> ListOptions {
-    ListOptions {
+fn resolve_list_options(
+    cmd: &ListCmd,
+    emit_json: bool,
+) -> Result<ListOptions, Box<dyn std::error::Error>> {
+    let fields = if let Some(raw) = cmd.fields.as_ref() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("list fields cannot be empty".into());
+        }
+        let parsed = trimmed
+            .split(',')
+            .map(|field| field.trim())
+            .filter(|field| !field.is_empty())
+            .map(|field| field.to_string())
+            .collect::<Vec<_>>();
+        if parsed.is_empty() {
+            return Err("list fields cannot be empty".into());
+        }
+        Some(parsed)
+    } else {
+        None
+    };
+
+    Ok(ListOptions {
         target: cmd.target.clone(),
+        format: cmd.format.map(Into::into),
+        fields,
+        emit_json,
+    })
+}
+
+fn normalize_field_key(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_labels(labels: &HashMap<String, String>) -> HashMap<String, String> {
+    labels
+        .iter()
+        .map(|(key, value)| (normalize_field_key(key), value.clone()))
+        .collect()
+}
+
+fn resolve_label(labels: &HashMap<String, String>, default_label: &str) -> String {
+    let key = normalize_field_key(default_label);
+    labels
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(|| default_label.to_string())
+}
+
+fn parse_fields<T, F>(context: &str, values: &[String], parser: F) -> Vec<T>
+where
+    F: Fn(&str) -> Option<T>,
+{
+    let mut fields = Vec::new();
+    for value in values {
+        if let Some(field) = parser(value) {
+            fields.push(field);
+        } else {
+            display::warn(format!("{context}: unknown field `{value}`; ignoring"));
+        }
+    }
+    fields
+}
+
+fn jobs_show_field_value(
+    field: JobsShowField,
+    record: &jobs::JobRecord,
+    queue_status: Option<&jobs::MergeQueueStatus>,
+) -> Option<String> {
+    let metadata = record.metadata.as_ref();
+    match field {
+        JobsShowField::Job => Some(record.id.clone()),
+        JobsShowField::Status => Some(jobs::status_label(record.status).to_string()),
+        JobsShowField::Pid => record.pid.map(|pid| pid.to_string()),
+        JobsShowField::Started => record.started_at.map(|value| value.to_rfc3339()),
+        JobsShowField::Finished => record.finished_at.map(|value| value.to_rfc3339()),
+        JobsShowField::ExitCode => record.exit_code.map(|code| code.to_string()),
+        JobsShowField::Stdout => Some(record.stdout_path.clone()),
+        JobsShowField::Stderr => Some(record.stderr_path.clone()),
+        JobsShowField::Session => record.session_path.clone(),
+        JobsShowField::Outcome => record.outcome_path.clone(),
+        JobsShowField::Scope => metadata.and_then(|meta| meta.scope.clone()),
+        JobsShowField::Plan => metadata.and_then(|meta| meta.plan.clone()),
+        JobsShowField::Target => metadata.and_then(|meta| meta.target.clone()),
+        JobsShowField::Branch => metadata.and_then(|meta| meta.branch.clone()),
+        JobsShowField::Revision => metadata.and_then(|meta| meta.revision.clone()),
+        JobsShowField::Queue => metadata.and_then(|meta| meta.queue_id.clone()),
+        JobsShowField::QueueEntry => metadata.and_then(|meta| meta.queue_entry_id.clone()),
+        JobsShowField::QueuePosition => {
+            metadata.and_then(|meta| meta.queue_position.map(|pos| pos.to_string()))
+        }
+        JobsShowField::QueueStatus => queue_status.map(|status| {
+            if status.blocked {
+                "blocked".to_string()
+            } else {
+                "ready".to_string()
+            }
+        }),
+        JobsShowField::QueueBlockedReason => {
+            queue_status.and_then(|status| status.blocked_reason.clone())
+        }
+        JobsShowField::Worktree => metadata.and_then(|meta| meta.worktree_path.clone()),
+        JobsShowField::WorktreeName => metadata.and_then(|meta| meta.worktree_name.clone()),
+        JobsShowField::AgentBackend => metadata.and_then(|meta| meta.agent_backend.clone()),
+        JobsShowField::AgentLabel => metadata.and_then(|meta| meta.agent_label.clone()),
+        JobsShowField::AgentCommand => {
+            metadata.and_then(|meta| meta.agent_command.as_ref().map(|cmd| cmd.join(" ")))
+        }
+        JobsShowField::AgentExit => {
+            metadata.and_then(|meta| meta.agent_exit_code.map(|code| code.to_string()))
+        }
+        JobsShowField::CancelCleanup => metadata.and_then(|meta| {
+            meta.cancel_cleanup_status
+                .map(|status| status.label().to_string())
+        }),
+        JobsShowField::CancelCleanupError => {
+            metadata.and_then(|meta| meta.cancel_cleanup_error.clone())
+        }
+        JobsShowField::ConfigSnapshot => record
+            .config_snapshot
+            .as_ref()
+            .map(|value| value.to_string()),
+        JobsShowField::Command => {
+            if record.command.is_empty() {
+                None
+            } else {
+                Some(record.command.join(" "))
+            }
+        }
     }
 }
 
@@ -959,183 +1311,301 @@ fn run_jobs_command(
     jobs_root: &Path,
     cmd: JobsCmd,
     follow: bool,
+    emit_json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
-        JobsAction::List { all } => {
+        JobsAction::List { all, format } => {
+            let mut list_config = config::get_config().display.lists.jobs.clone();
+            if let Some(fmt) = format {
+                list_config.format = fmt.into();
+            }
+            if emit_json {
+                list_config.format = config::ListFormat::Json;
+            }
+
+            let show_succeeded = if all {
+                true
+            } else {
+                list_config.show_succeeded
+            };
             let records = jobs::list_records(jobs_root)?;
             if records.is_empty() {
-                println!("Outcome: No background jobs found");
+                if matches!(list_config.format, config::ListFormat::Json) {
+                    let payload = json!({
+                        "header": { "outcome": "No background jobs found" },
+                        "jobs": [],
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    println!("Outcome: No background jobs found");
+                }
                 return Ok(());
             }
 
             let mut hidden_succeeded = 0usize;
             let mut visible = Vec::new();
             for record in records {
-                if !all && record.status == JobStatus::Succeeded {
+                if !show_succeeded && record.status == JobStatus::Succeeded {
                     hidden_succeeded += 1;
                 } else {
                     visible.push(record);
                 }
             }
 
-            if visible.is_empty() {
-                let mut rows = vec![(
-                    "Outcome".to_string(),
-                    if hidden_succeeded > 0 {
-                        "No active background jobs".to_string()
-                    } else {
-                        "No background jobs found".to_string()
-                    },
-                )];
+            let outcome = if visible.is_empty() {
                 if hidden_succeeded > 0 {
-                    rows.push((
-                        "Hidden".to_string(),
-                        format!(
-                            "{} succeeded (use --all to include)",
-                            format_number(hidden_succeeded)
-                        ),
-                    ));
+                    "No active background jobs".to_string()
+                } else {
+                    "No background jobs found".to_string()
                 }
-                println!("{}", format_label_value_block(&rows, 0));
-                return Ok(());
-            }
-
-            let mut header_rows = vec![(
-                "Outcome".to_string(),
+            } else {
                 format!(
                     "{} background job{}",
                     format_number(visible.len()),
                     if visible.len() == 1 { "" } else { "s" }
-                ),
-            )];
-            if hidden_succeeded > 0 {
-                header_rows.push((
-                    "Hidden".to_string(),
-                    format!(
-                        "{} succeeded (use --all to include)",
-                        format_number(hidden_succeeded)
-                    ),
-                ));
+                )
+            };
+            let hidden_label = if hidden_succeeded > 0 {
+                Some(format!(
+                    "{} succeeded (use --all to include)",
+                    format_number(hidden_succeeded)
+                ))
+            } else {
+                None
+            };
+
+            let fields = parse_fields(
+                "display.lists.jobs.fields",
+                &list_config.fields,
+                JobsListField::parse,
+            );
+            let labels = normalize_labels(&list_config.labels);
+
+            if matches!(list_config.format, config::ListFormat::Json) {
+                let mut header = Map::new();
+                header.insert("outcome".to_string(), Value::String(outcome));
+                if let Some(hidden) = hidden_label.as_ref() {
+                    header.insert("hidden".to_string(), Value::String(hidden.clone()));
+                }
+                let mut jobs_json = Vec::new();
+                for record in &visible {
+                    let mut obj = Map::new();
+                    for field in &fields {
+                        let value = match field {
+                            JobsListField::Job => Some(record.id.clone()),
+                            JobsListField::Status => {
+                                Some(jobs::status_label(record.status).to_string())
+                            }
+                            JobsListField::Created => Some(record.created_at.to_rfc3339()),
+                            JobsListField::Failed => {
+                                if record.status == JobStatus::Failed {
+                                    record
+                                        .finished_at
+                                        .map(|value| value.to_rfc3339())
+                                        .or_else(|| Some("unknown".to_string()))
+                                } else {
+                                    None
+                                }
+                            }
+                            JobsListField::Command => {
+                                if record.command.is_empty() {
+                                    Some("<command unavailable>".to_string())
+                                } else {
+                                    Some(record.command.join(" "))
+                                }
+                            }
+                        };
+                        if let Some(value) = value {
+                            obj.insert(field.json_key().to_string(), Value::String(value));
+                        }
+                    }
+                    jobs_json.push(Value::Object(obj));
+                }
+                let payload = json!({
+                    "header": header,
+                    "jobs": jobs_json,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
             }
-            println!("{}", format_label_value_block(&header_rows, 0));
+
+            let mut header_rows = vec![(resolve_label(&labels, "Outcome"), outcome)];
+            if let Some(hidden) = hidden_label.as_ref() {
+                header_rows.push((resolve_label(&labels, "Hidden"), hidden.clone()));
+            }
+            let header_block = format_label_value_block(&header_rows, 0);
+            if !header_block.is_empty() {
+                println!("{header_block}");
+            }
+
+            if visible.is_empty() {
+                return Ok(());
+            }
+
             println!();
 
-            let visible_len = visible.len();
-            for (idx, record) in visible.into_iter().enumerate() {
-                let status = jobs::status_label(record.status).to_string();
-                let command = if record.command.is_empty() {
-                    "<command unavailable>".to_string()
-                } else {
-                    record.command.join(" ")
-                };
-                let failed_at = if record.status == JobStatus::Failed {
-                    record
-                        .finished_at
-                        .map(|value| value.to_rfc3339())
-                        .unwrap_or_else(|| "unknown".to_string())
-                } else {
-                    String::new()
-                };
-                let rows = vec![
-                    ("Job".to_string(), record.id),
-                    ("Status".to_string(), status),
-                    ("Created".to_string(), record.created_at.to_rfc3339()),
-                    ("Failed".to_string(), failed_at),
-                    ("Command".to_string(), command),
-                ];
-                println!("{}", format_label_value_block(&rows, 2));
-                if idx + 1 < visible_len {
-                    println!();
+            match list_config.format {
+                config::ListFormat::Table => {
+                    let mut rows = Vec::new();
+                    let header = fields
+                        .iter()
+                        .map(|field| resolve_label(&labels, field.label()))
+                        .collect::<Vec<_>>();
+                    if !header.is_empty() {
+                        rows.push(header);
+                    }
+
+                    for record in &visible {
+                        let mut row = Vec::new();
+                        for field in &fields {
+                            let value = match field {
+                                JobsListField::Job => Some(record.id.clone()),
+                                JobsListField::Status => {
+                                    Some(jobs::status_label(record.status).to_string())
+                                }
+                                JobsListField::Created => Some(record.created_at.to_rfc3339()),
+                                JobsListField::Failed => {
+                                    if record.status == JobStatus::Failed {
+                                        record
+                                            .finished_at
+                                            .map(|value| value.to_rfc3339())
+                                            .or_else(|| Some("unknown".to_string()))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                JobsListField::Command => {
+                                    if record.command.is_empty() {
+                                        Some("<command unavailable>".to_string())
+                                    } else {
+                                        Some(record.command.join(" "))
+                                    }
+                                }
+                            };
+                            row.push(value.unwrap_or_default());
+                        }
+                        rows.push(row);
+                    }
+                    let table = format_table(&rows, 0);
+                    if !table.is_empty() {
+                        println!("{table}");
+                    }
+                }
+                _ => {
+                    let mut blocks = Vec::new();
+                    for record in &visible {
+                        let mut rows = Vec::new();
+                        for field in &fields {
+                            let value = match field {
+                                JobsListField::Job => record.id.clone(),
+                                JobsListField::Status => {
+                                    jobs::status_label(record.status).to_string()
+                                }
+                                JobsListField::Created => record.created_at.to_rfc3339(),
+                                JobsListField::Failed => {
+                                    if record.status == JobStatus::Failed {
+                                        record
+                                            .finished_at
+                                            .map(|value| value.to_rfc3339())
+                                            .unwrap_or_else(|| "unknown".to_string())
+                                    } else {
+                                        String::new()
+                                    }
+                                }
+                                JobsListField::Command => {
+                                    if record.command.is_empty() {
+                                        "<command unavailable>".to_string()
+                                    } else {
+                                        record.command.join(" ")
+                                    }
+                                }
+                            };
+                            rows.push((resolve_label(&labels, field.label()), value));
+                        }
+                        let block = format_label_value_block(&rows, 2);
+                        if !block.is_empty() {
+                            blocks.push(block);
+                        }
+                    }
+                    if !blocks.is_empty() {
+                        println!("{}", blocks.join("\n\n"));
+                    }
                 }
             }
             Ok(())
         }
-        JobsAction::Show { job } => {
+        JobsAction::Show { job, format } => {
             let record = jobs::read_record(jobs_root, &job)?;
-            println!("Job {}", record.id);
-            println!("Status: {}", jobs::status_label(record.status));
-            if let Some(pid) = record.pid {
-                println!("PID: {pid}");
+            let mut show_config = config::get_config().display.lists.jobs_show.clone();
+            if let Some(fmt) = format {
+                show_config.format = fmt.into();
             }
-            if let Some(started) = record.started_at {
-                println!("Started: {}", started.to_rfc3339());
+            if emit_json {
+                show_config.format = config::ListFormat::Json;
             }
-            if let Some(finished) = record.finished_at {
-                println!("Finished: {}", finished.to_rfc3339());
-            }
-            if let Some(code) = record.exit_code {
-                println!("Exit code: {code}");
-            }
-            println!("Stdout: {}", record.stdout_path);
-            println!("Stderr: {}", record.stderr_path);
-            if let Some(session) = record.session_path {
-                println!("Session: {}", session);
-            }
-            if let Some(outcome) = record.outcome_path {
-                println!("Outcome: {}", outcome);
-            }
-            if let Some(metadata) = record.metadata.as_ref() {
-                if let Some(scope) = metadata.scope.as_ref() {
-                    println!("Scope: {scope}");
-                }
-                if let Some(plan) = metadata.plan.as_ref() {
-                    println!("Plan: {plan}");
-                }
-                if let Some(target) = metadata.target.as_ref() {
-                    println!("Target: {target}");
-                }
-                if let Some(branch) = metadata.branch.as_ref() {
-                    println!("Branch: {branch}");
-                }
-                if let Some(revision) = metadata.revision.as_ref() {
-                    println!("Revision: {revision}");
-                }
-                if let Some(queue_id) = metadata.queue_id.as_ref() {
-                    println!("Queue: {queue_id}");
-                    if let Some(entry_id) = metadata.queue_entry_id.as_ref() {
-                        println!("Queue entry: {entry_id}");
-                    }
-                    if let Some(position) = metadata.queue_position {
-                        println!("Queue position: {position}");
-                    }
-                    if let Some(status) = jobs::merge_queue_status_for(jobs_root, queue_id)? {
-                        let blocked = if status.blocked { "blocked" } else { "ready" };
-                        println!("Queue status: {blocked}");
-                        if let Some(reason) = status.blocked_reason {
-                            println!("Queue blocked reason: {reason}");
+
+            let fields = parse_fields(
+                "display.lists.jobs_show.fields",
+                &show_config.fields,
+                JobsShowField::parse,
+            );
+            let labels = normalize_labels(&show_config.labels);
+            let queue_status = record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.queue_id.as_ref())
+                .map(|queue_id| jobs::merge_queue_status_for(jobs_root, queue_id))
+                .transpose()?
+                .flatten();
+
+            match show_config.format {
+                config::ListFormat::Json => {
+                    let mut obj = Map::new();
+                    for field in &fields {
+                        let value = match field {
+                            JobsShowField::ConfigSnapshot => record.config_snapshot.clone(),
+                            _ => jobs_show_field_value(*field, &record, queue_status.as_ref())
+                                .map(Value::String),
+                        };
+                        if let Some(value) = value {
+                            obj.insert(field.json_key().to_string(), value);
                         }
                     }
+                    println!("{}", serde_json::to_string_pretty(&Value::Object(obj))?);
                 }
-                if let Some(worktree) = metadata.worktree_path.as_ref() {
-                    println!("Worktree: {worktree}");
-                }
-                if let Some(name) = metadata.worktree_name.as_ref() {
-                    println!("Worktree name: {name}");
-                }
-                if let Some(agent_backend) = metadata.agent_backend.as_ref() {
-                    println!("Agent backend: {agent_backend}");
-                }
-                if let Some(label) = metadata.agent_label.as_ref() {
-                    println!("Agent label: {label}");
-                }
-                if let Some(command) = metadata.agent_command.as_ref() {
-                    println!("Agent command: {}", command.join(" "));
-                }
-                if let Some(exit) = metadata.agent_exit_code {
-                    println!("Agent exit: {exit}");
-                }
-                if let Some(cleanup) = metadata.cancel_cleanup_status {
-                    println!("Cancel cleanup: {}", cleanup.label());
-                    if let Some(err) = metadata.cancel_cleanup_error.as_ref() {
-                        println!("Cancel cleanup error: {err}");
+                config::ListFormat::Table => {
+                    let mut rows = Vec::new();
+                    for field in &fields {
+                        if let Some(value) =
+                            jobs_show_field_value(*field, &record, queue_status.as_ref())
+                        {
+                            let label = resolve_label(&labels, field.label());
+                            rows.push(vec![label, value]);
+                        }
+                    }
+                    let table = format_table(&rows, 0);
+                    if !table.is_empty() {
+                        println!("{table}");
                     }
                 }
-            }
-            if let Some(config) = record.config_snapshot.as_ref() {
-                println!("Config snapshot: {}", config);
-            }
-            if !record.command.is_empty() {
-                println!("Command: {}", record.command.join(" "));
+                _ => {
+                    let mut lines = Vec::new();
+                    for field in &fields {
+                        if let Some(value) =
+                            jobs_show_field_value(*field, &record, queue_status.as_ref())
+                        {
+                            let label = resolve_label(&labels, field.label());
+                            if matches!(field, JobsShowField::Job) {
+                                lines.push(format!("{label} {value}"));
+                            } else {
+                                lines.push(format!("{label}: {value}"));
+                            }
+                        }
+                    }
+                    if !lines.is_empty() {
+                        println!("{}", lines.join("\n"));
+                    }
+                }
             }
             Ok(())
         }
@@ -2693,11 +3163,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         }
 
-        Commands::List(cmd) => run_list(resolve_list_options(&cmd)),
+        Commands::List(cmd) => run_list(resolve_list_options(&cmd, cli.global.json)?),
         Commands::Cd(cmd) => run_cd(resolve_cd_options(&cmd)?),
         Commands::Clean(cmd) => run_clean(resolve_clean_options(&cmd)?),
         Commands::Plan(_) => run_plan_summary(cli_agent_override.as_ref(), cli.global.json),
-        Commands::Jobs(cmd) => run_jobs_command(&project_root, &jobs_root, cmd, cli.global.follow),
+        Commands::Jobs(cmd) => run_jobs_command(
+            &project_root,
+            &jobs_root,
+            cmd,
+            cli.global.follow,
+            cli.global.json,
+        ),
 
         Commands::Approve(cmd) => {
             let opts = resolve_approve_options(&cmd, push_after)?;

@@ -886,7 +886,7 @@ async fn attempt_cicd_auto_fix(
     }
 
     let audit_result = Auditor::commit_audit().await?;
-    let session_path = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set_for_commit(&audit_result);
     let diff = vcs::get_diff(".", Some("HEAD"), None)?;
     if diff.trim().is_empty() {
@@ -913,7 +913,7 @@ async fn attempt_cicd_auto_fix(
         let mut builder = CommitMessageBuilder::new(summary);
         builder
             .set_header(CommitMessageType::CodeChange)
-            .with_session_log_path(session_path.clone())
+            .with_session_artifact(session_artifact.clone())
             .with_narrative_summary(narrative_summary.clone())
             .with_author_note(format!(
                 "CI/CD script: {} (exit={})",
@@ -1852,7 +1852,7 @@ async fn refresh_plan_branch(
     )
     .await?;
     let audit_result = Auditor::commit_audit().await?;
-    let session_path = audit_result.session_display();
+    let session_artifact = audit_result.session_artifact.clone();
     let (narrative_paths, narrative_summary) = narrative_change_set_for_commit(&audit_result);
     let mut allowed_paths = narrative_paths.clone();
     let plan_rel = spec.plan_rel_path();
@@ -1886,7 +1886,7 @@ async fn refresh_plan_branch(
     let mut builder = CommitMessageBuilder::new(summary);
     builder
         .set_header(CommitMessageType::NarrativeChange)
-        .with_session_log_path(session_path.clone())
+        .with_session_artifact(session_artifact.clone())
         .with_narrative_summary(narrative_summary.clone());
     let commit_message = builder.build();
 
@@ -1922,53 +1922,97 @@ fn build_implementation_commit_message(
     spec: &plan::PlanBranchSpec,
     plan_meta: &plan::PlanMetadata,
 ) -> String {
-    let mut sections = Vec::new();
-    sections.push(format!("Target branch: {}", spec.target_branch));
-    sections.push(format!("Plan branch: {}", spec.branch));
-    sections.push(format!("Summary: {}", plan::summarize_spec(plan_meta)));
+    let config = config::get_config();
+    let settings = &config.commits.implementation;
+    let subject = render_subject_template(&settings.subject, &spec.slug, "feat: apply plan {slug}");
 
-    format!("feat: apply plan {}\n\n{}", spec.slug, sections.join("\n"))
+    let mut sections = Vec::new();
+    for field in &settings.fields {
+        match field {
+            config::CommitImplementationField::TargetBranch => {
+                sections.push(format!("{}: {}", field.label(), spec.target_branch));
+            }
+            config::CommitImplementationField::PlanBranch => {
+                sections.push(format!("{}: {}", field.label(), spec.branch));
+            }
+            config::CommitImplementationField::Summary => {
+                sections.push(format!(
+                    "{}: {}",
+                    field.label(),
+                    plan::summarize_spec(plan_meta)
+                ));
+            }
+        }
+    }
+
+    if sections.is_empty() {
+        subject
+    } else {
+        format!("{subject}\n\n{}", sections.join("\n"))
+    }
 }
 
 fn build_merge_commit_message(
     spec: &plan::PlanBranchSpec,
-    _plan_meta: &plan::PlanMetadata,
+    plan_meta: &plan::PlanMetadata,
     plan_document: Option<&str>,
     note: Option<&str>,
 ) -> String {
-    // Merge commits now keep a concise subject line and embed the stored plan
-    // document directly so reviewers see the same content the backend implemented.
+    let config = config::get_config();
+    let settings = &config.commits.merge;
+    let subject = render_subject_template(&settings.subject, &spec.slug, "feat: merge plan {slug}");
     let mut sections: Vec<String> = Vec::new();
 
-    if let Some(note_text) = note.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    }) {
-        sections.push(format!("Operator Note: {}", note_text));
-    }
-
-    let plan_block = plan_document
-        .and_then(|document| {
-            let trimmed = document.trim();
+    if settings.include_operator_note
+        && let Some(note_text) = note.and_then(|value| {
+            let trimmed = value.trim();
             if trimmed.is_empty() {
                 None
             } else {
-                Some(trimmed.to_string())
+                Some(trimmed)
             }
         })
-        .unwrap_or_else(|| format!("Implementation plan document unavailable for {}", spec.slug));
+    {
+        sections.push(format!("{}: {}", settings.operator_note_label, note_text));
+    }
 
-    sections.push(format!("Implementation Plan:\n{}", plan_block));
+    match settings.plan_mode {
+        config::CommitMergePlanMode::None => {}
+        config::CommitMergePlanMode::Summary => {
+            let summary = plan::summarize_spec(plan_meta);
+            sections.push(format!("{}:\n{}", settings.plan_label, summary));
+        }
+        config::CommitMergePlanMode::Full => {
+            let plan_block = plan_document
+                .and_then(|document| {
+                    let trimmed = document.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .unwrap_or_else(|| {
+                    format!("Implementation plan document unavailable for {}", spec.slug)
+                });
 
-    format!(
-        "feat: merge plan {}\n\n{}",
-        spec.slug,
-        sections.join("\n\n")
-    )
+            sections.push(format!("{}:\n{}", settings.plan_label, plan_block));
+        }
+    }
+
+    if sections.is_empty() {
+        subject
+    } else {
+        format!("{subject}\n\n{}", sections.join("\n\n"))
+    }
+}
+
+fn render_subject_template(template: &str, slug: &str, fallback: &str) -> String {
+    let trimmed = template.trim();
+    if trimmed.is_empty() {
+        return fallback.replace("{slug}", slug);
+    }
+    trimmed.replace("{slug}", slug)
 }
 
 #[cfg(test)]

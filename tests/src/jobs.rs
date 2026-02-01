@@ -153,6 +153,60 @@ fn test_jobs_list_all_includes_succeeded() -> TestResult {
 }
 
 #[test]
+fn test_jobs_list_format_json() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-running",
+        "running",
+        "2026-01-30T02:00:00Z",
+        None,
+        &["vizier", "ask", "running"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "list", "--format", "json"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert!(
+        json.get("jobs")
+            .and_then(|value| value.as_array())
+            .is_some(),
+        "expected jobs array in JSON output: {json}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_show_format_json() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-show",
+        "running",
+        "2026-01-30T02:00:00Z",
+        None,
+        &["vizier", "ask", "running"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "show", "job-show", "--format", "json"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs show --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert!(
+        json.get("job").is_some(),
+        "expected job id in JSON output: {json}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_jobs_cancel_without_cleanup_preserves_worktree() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let job_id = "job-cancel-no-cleanup";

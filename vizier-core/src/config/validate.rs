@@ -359,6 +359,94 @@ retries = 5
     }
 
     #[test]
+    fn config_parses_commit_metadata_overrides() {
+        let toml = r#"
+[commits.meta]
+enabled = false
+style = "trailers"
+include = ["session_id"]
+session_log_path = "none"
+
+[commits.meta.labels]
+session_id = "Vizier-Session"
+
+[commits.fallback_subjects]
+code_change = "CUSTOM CODE"
+
+[commits.implementation]
+subject = "chore: apply {slug}"
+fields = ["Summary"]
+
+[commits.merge]
+subject = "chore: merge {slug}"
+include_operator_note = false
+operator_note_label = "Note"
+plan_mode = "summary"
+plan_label = "Plan Summary"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse commit config");
+        assert!(!cfg.commits.meta.enabled);
+        assert_eq!(cfg.commits.meta.style, CommitMetaStyle::Trailers);
+        assert_eq!(cfg.commits.meta.include, vec![CommitMetaField::SessionId]);
+        assert_eq!(cfg.commits.meta.session_log_path, CommitSessionLogPath::None);
+        assert_eq!(cfg.commits.meta.labels.session_id, "Vizier-Session");
+        assert_eq!(cfg.commits.fallback_subjects.code_change, "CUSTOM CODE");
+        assert_eq!(cfg.commits.implementation.subject, "chore: apply {slug}");
+        assert_eq!(cfg.commits.implementation.fields, vec![CommitImplementationField::Summary]);
+        assert_eq!(cfg.commits.merge.subject, "chore: merge {slug}");
+        assert!(!cfg.commits.merge.include_operator_note);
+        assert_eq!(cfg.commits.merge.operator_note_label, "Note");
+        assert_eq!(cfg.commits.merge.plan_mode, CommitMergePlanMode::Summary);
+        assert_eq!(cfg.commits.merge.plan_label, "Plan Summary");
+    }
+
+    #[test]
+    fn config_parses_display_list_settings() {
+        let toml = r#"
+[display.lists.list]
+format = "table"
+header_fields = ["Outcome"]
+entry_fields = ["Plan", "Summary"]
+job_fields = []
+command_fields = []
+summary_max_len = 42
+summary_single_line = false
+
+[display.lists.jobs]
+format = "json"
+show_succeeded = true
+fields = ["Job", "Status"]
+
+[display.lists.jobs_show]
+format = "table"
+fields = ["Job", "Status", "Command"]
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse display config");
+        assert_eq!(cfg.display.lists.list.format, ListFormat::Table);
+        assert_eq!(cfg.display.lists.list.header_fields, vec!["Outcome"]);
+        assert_eq!(
+            cfg.display.lists.list.entry_fields,
+            vec!["Plan", "Summary"]
+        );
+        assert_eq!(cfg.display.lists.list.job_fields.len(), 0);
+        assert_eq!(cfg.display.lists.list.command_fields.len(), 0);
+        assert_eq!(cfg.display.lists.list.summary_max_len, 42);
+        assert!(!cfg.display.lists.list.summary_single_line);
+        assert_eq!(cfg.display.lists.jobs.format, ListFormat::Json);
+        assert!(cfg.display.lists.jobs.show_succeeded);
+        assert_eq!(cfg.display.lists.jobs.fields, vec!["Job", "Status"]);
+        assert_eq!(cfg.display.lists.jobs_show.format, ListFormat::Table);
+        assert_eq!(
+            cfg.display.lists.jobs_show.fields,
+            vec!["Job", "Status", "Command"]
+        );
+    }
+
+    #[test]
     fn test_merge_conflict_auto_resolve_from_toml() {
         let toml = r#"
 [merge.conflicts]

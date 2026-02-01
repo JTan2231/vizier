@@ -58,6 +58,9 @@ pub struct DraftArgs {
 #[derive(Debug, Clone)]
 pub struct ListOptions {
     pub target: Option<String>,
+    pub format: Option<config::ListFormat>,
+    pub fields: Option<Vec<String>>,
+    pub emit_json: bool,
 }
 
 #[derive(Debug, Clone)]

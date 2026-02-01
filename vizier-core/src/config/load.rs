@@ -1,3 +1,5 @@
+use crate::display;
+
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
     let mut current = value;
 
@@ -438,6 +440,292 @@ impl ConfigLayer {
             }
         }
 
+        if let Some(commits_value) = value_at_path(&file_config, &["commits"])
+            && let Some(commits_table) = commits_value.as_object()
+        {
+            if let Some(meta_value) = commits_table.get("meta")
+                && let Some(meta_table) = meta_value.as_object()
+            {
+                if let Some(enabled) = parse_bool(
+                    meta_table
+                        .get("enabled")
+                        .or_else(|| meta_table.get("enable")),
+                ) {
+                    layer.commits.meta.enabled = Some(enabled);
+                }
+
+                if let Some(style_value) = meta_table.get("style").and_then(|v| v.as_str()) {
+                    if let Some(style) = CommitMetaStyle::parse(style_value) {
+                        layer.commits.meta.style = Some(style);
+                    } else {
+                        display::warn(format!(
+                            "unknown commits.meta.style `{}`; using default",
+                            style_value
+                        ));
+                    }
+                }
+
+                if let Some(include_values) =
+                    parse_string_array_allow_empty(meta_table.get("include"))
+                {
+                    let fields = parse_commit_meta_fields(&include_values);
+                    layer.commits.meta.include = Some(fields);
+                }
+
+                if let Some(path_value) = meta_table
+                    .get("session_log_path")
+                    .or_else(|| meta_table.get("session-log-path"))
+                    .and_then(|v| v.as_str())
+                {
+                    if let Some(mode) = CommitSessionLogPath::parse(path_value) {
+                        layer.commits.meta.session_log_path = Some(mode);
+                    } else {
+                        display::warn(format!(
+                            "unknown commits.meta.session_log_path `{}`; using default",
+                            path_value
+                        ));
+                    }
+                }
+
+                if let Some(labels_value) = meta_table.get("labels")
+                    && let Some(labels_table) = labels_value.as_object()
+                {
+                    for (raw_key, raw_value) in labels_table {
+                        let Some(label) = raw_value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+                            continue;
+                        };
+                        let normalized = raw_key
+                            .trim()
+                            .to_ascii_lowercase()
+                            .replace('-', "_");
+                        match normalized.as_str() {
+                            "session_id" => {
+                                layer.commits.meta.labels.session_id =
+                                    Some(label.to_string());
+                            }
+                            "session_log" => {
+                                layer.commits.meta.labels.session_log =
+                                    Some(label.to_string());
+                            }
+                            "author_note" => {
+                                layer.commits.meta.labels.author_note =
+                                    Some(label.to_string());
+                            }
+                            "narrative_summary" => {
+                                layer.commits.meta.labels.narrative_summary =
+                                    Some(label.to_string());
+                            }
+                            _ => {
+                                display::warn(format!(
+                                    "unknown commits.meta.labels key `{}`; ignoring",
+                                    raw_key
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(fallback_value) = commits_table.get("fallback_subjects")
+                && let Some(fallback_table) = fallback_value.as_object()
+            {
+                if let Some(text) = parse_nonempty_string(
+                    fallback_table
+                        .get("code_change")
+                        .or_else(|| fallback_table.get("code-change")),
+                ) {
+                    layer.commits.fallback_subjects.code_change = Some(text);
+                }
+                if let Some(text) = parse_nonempty_string(
+                    fallback_table
+                        .get("narrative_change")
+                        .or_else(|| fallback_table.get("narrative-change")),
+                ) {
+                    layer.commits.fallback_subjects.narrative_change = Some(text);
+                }
+                if let Some(text) = parse_nonempty_string(
+                    fallback_table
+                        .get("conversation")
+                        .or_else(|| fallback_table.get("conversation-change")),
+                ) {
+                    layer.commits.fallback_subjects.conversation = Some(text);
+                }
+            }
+
+            if let Some(implementation_value) = commits_table.get("implementation")
+                && let Some(implementation_table) = implementation_value.as_object()
+            {
+                if let Some(subject) = parse_nonempty_string(implementation_table.get("subject"))
+                {
+                    layer.commits.implementation.subject = Some(subject);
+                }
+                if let Some(fields_values) =
+                    parse_string_array_allow_empty(implementation_table.get("fields"))
+                {
+                    let fields = parse_commit_implementation_fields(&fields_values);
+                    layer.commits.implementation.fields = Some(fields);
+                }
+            }
+
+            if let Some(merge_value) = commits_table.get("merge")
+                && let Some(merge_table) = merge_value.as_object()
+            {
+                if let Some(subject) = parse_nonempty_string(merge_table.get("subject")) {
+                    layer.commits.merge.subject = Some(subject);
+                }
+                if let Some(include_note) = parse_bool(
+                    merge_table
+                        .get("include_operator_note")
+                        .or_else(|| merge_table.get("include-operator-note")),
+                ) {
+                    layer.commits.merge.include_operator_note = Some(include_note);
+                }
+                if let Some(label) = parse_nonempty_string(
+                    merge_table
+                        .get("operator_note_label")
+                        .or_else(|| merge_table.get("operator-note-label")),
+                ) {
+                    layer.commits.merge.operator_note_label = Some(label);
+                }
+                if let Some(mode_value) = merge_table
+                    .get("plan_mode")
+                    .or_else(|| merge_table.get("plan-mode"))
+                    .and_then(|v| v.as_str())
+                {
+                    if let Some(mode) = CommitMergePlanMode::parse(mode_value) {
+                        layer.commits.merge.plan_mode = Some(mode);
+                    } else {
+                        display::warn(format!(
+                            "unknown commits.merge.plan_mode `{}`; using default",
+                            mode_value
+                        ));
+                    }
+                }
+                if let Some(label) = parse_nonempty_string(
+                    merge_table
+                        .get("plan_label")
+                        .or_else(|| merge_table.get("plan-label")),
+                ) {
+                    layer.commits.merge.plan_label = Some(label);
+                }
+            }
+        }
+
+        if let Some(display_value) = value_at_path(&file_config, &["display"])
+            && let Some(display_table) = display_value.as_object()
+            && let Some(lists_value) = display_table.get("lists")
+            && let Some(lists_table) = lists_value.as_object()
+        {
+            if let Some(list_value) = lists_table.get("list")
+                && let Some(list_table) = list_value.as_object()
+            {
+                if let Some(format_value) = list_table.get("format").and_then(|v| v.as_str()) {
+                    if let Some(format) = ListFormat::parse(format_value) {
+                        layer.display.lists.list.format = Some(format);
+                    } else {
+                        display::warn(format!(
+                            "unknown display.lists.list.format `{}`; using default",
+                            format_value
+                        ));
+                    }
+                }
+                if let Some(fields) =
+                    parse_string_array_allow_empty(list_table.get("header_fields"))
+                        .or_else(|| parse_string_array_allow_empty(list_table.get("header-fields")))
+                {
+                    layer.display.lists.list.header_fields = Some(fields);
+                }
+                if let Some(fields) =
+                    parse_string_array_allow_empty(list_table.get("entry_fields"))
+                        .or_else(|| parse_string_array_allow_empty(list_table.get("entry-fields")))
+                {
+                    layer.display.lists.list.entry_fields = Some(fields);
+                }
+                if let Some(fields) =
+                    parse_string_array_allow_empty(list_table.get("job_fields"))
+                        .or_else(|| parse_string_array_allow_empty(list_table.get("job-fields")))
+                {
+                    layer.display.lists.list.job_fields = Some(fields);
+                }
+                if let Some(fields) =
+                    parse_string_array_allow_empty(list_table.get("command_fields"))
+                        .or_else(|| parse_string_array_allow_empty(list_table.get("command-fields")))
+                {
+                    layer.display.lists.list.command_fields = Some(fields);
+                }
+                if let Some(max_len) =
+                    parse_usize(list_table.get("summary_max_len"))
+                        .or_else(|| parse_usize(list_table.get("summary-max-len")))
+                {
+                    layer.display.lists.list.summary_max_len = Some(max_len);
+                }
+                if let Some(single_line) =
+                    parse_bool(list_table.get("summary_single_line"))
+                        .or_else(|| parse_bool(list_table.get("summary-single-line")))
+                {
+                    layer.display.lists.list.summary_single_line = Some(single_line);
+                }
+                if let Some(labels) = parse_string_map(list_table.get("labels")) {
+                    layer.display.lists.list.labels = Some(labels);
+                }
+            }
+
+            if let Some(jobs_value) = lists_table.get("jobs")
+                && let Some(jobs_table) = jobs_value.as_object()
+            {
+                if let Some(format_value) = jobs_table.get("format").and_then(|v| v.as_str()) {
+                    if let Some(format) = ListFormat::parse(format_value) {
+                        layer.display.lists.jobs.format = Some(format);
+                    } else {
+                        display::warn(format!(
+                            "unknown display.lists.jobs.format `{}`; using default",
+                            format_value
+                        ));
+                    }
+                }
+                if let Some(show) = parse_bool(
+                    jobs_table
+                        .get("show_succeeded")
+                        .or_else(|| jobs_table.get("show-succeeded")),
+                ) {
+                    layer.display.lists.jobs.show_succeeded = Some(show);
+                }
+                if let Some(fields) =
+                    parse_string_array_allow_empty(jobs_table.get("fields"))
+                {
+                    layer.display.lists.jobs.fields = Some(fields);
+                }
+                if let Some(labels) = parse_string_map(jobs_table.get("labels")) {
+                    layer.display.lists.jobs.labels = Some(labels);
+                }
+            }
+
+            if let Some(show_value) = lists_table
+                .get("jobs_show")
+                .or_else(|| lists_table.get("jobs-show"))
+                && let Some(show_table) = show_value.as_object()
+            {
+                if let Some(format_value) = show_table.get("format").and_then(|v| v.as_str()) {
+                    if let Some(format) = ListFormat::parse(format_value) {
+                        layer.display.lists.jobs_show.format = Some(format);
+                    } else {
+                        display::warn(format!(
+                            "unknown display.lists.jobs_show.format `{}`; using default",
+                            format_value
+                        ));
+                    }
+                }
+                if let Some(fields) =
+                    parse_string_array_allow_empty(show_table.get("fields"))
+                {
+                    layer.display.lists.jobs_show.fields = Some(fields);
+                }
+                if let Some(labels) = parse_string_map(show_table.get("labels")) {
+                    layer.display.lists.jobs_show.labels = Some(labels);
+                }
+            }
+        }
+
         if let Some(jobs_value) = value_at_path(&file_config, &["jobs"])
             && let Some(jobs_table) = jobs_value.as_object()
             && let Some(cancel_value) = jobs_table.get("cancel")
@@ -650,6 +938,87 @@ fn parse_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> 
     } else {
         Some(entries)
     }
+}
+
+fn parse_string_array_allow_empty(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let array = value?.as_array()?;
+    let mut entries = Vec::new();
+    for entry in array {
+        if let Some(text) = entry.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            entries.push(text.to_string());
+        }
+    }
+    Some(entries)
+}
+
+fn parse_nonempty_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value?
+        .as_str()
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+        .map(|text| text.to_string())
+}
+
+fn parse_string_map(value: Option<&serde_json::Value>) -> Option<HashMap<String, String>> {
+    let object = value?.as_object()?;
+    let mut values = HashMap::new();
+    for (key, raw_value) in object {
+        if let Some(text) = raw_value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            values.insert(key.clone(), text.to_string());
+        }
+    }
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+fn parse_usize(value: Option<&serde_json::Value>) -> Option<usize> {
+    let raw = value?;
+    if let Some(num) = raw.as_u64() {
+        return usize::try_from(num).ok();
+    }
+    if let Some(text) = raw.as_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Ok(parsed) = trimmed.parse::<usize>() {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn parse_commit_meta_fields(values: &[String]) -> Vec<CommitMetaField> {
+    let mut fields = Vec::new();
+    for value in values {
+        if let Some(field) = CommitMetaField::parse(value) {
+            fields.push(field);
+        } else {
+            display::warn(format!(
+                "unknown commits.meta.include field `{}`; ignoring",
+                value
+            ));
+        }
+    }
+    fields
+}
+
+fn parse_commit_implementation_fields(values: &[String]) -> Vec<CommitImplementationField> {
+    let mut fields = Vec::new();
+    for value in values {
+        if let Some(field) = CommitImplementationField::parse(value) {
+            fields.push(field);
+        } else {
+            display::warn(format!(
+                "unknown commits.implementation.fields entry `{}`; ignoring",
+                value
+            ));
+        }
+    }
+    fields
 }
 
 fn parse_bool(value: Option<&serde_json::Value>) -> Option<bool> {
