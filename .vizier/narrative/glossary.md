@@ -8,7 +8,7 @@
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
 - **Background-by-default**: Workflow posture where assistant-backed commands launch background jobs by default unless `--no-background` is set or stdin input forces a foreground run.
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
-- **Default-Action Posture (DAP)**: Unless explicitly opted out, user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
+- **Default-Action Posture (DAP)**: Unless explicitly opted out, every user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
 - **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; currently treated as a prerequisite for narrative updates until DAP precedence is codified.
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
@@ -21,6 +21,7 @@
 - **Repo boundary**: Operational constraint for narrative upkeep: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
 - **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads, updated directly in-repo with glossary updates whenever the snapshot changes.
+- **snapshotDelta**: Internal, diff-like narrative change output kept inside `.vizier`; it is not emitted in user-facing responses.
 - **Thread doc**: A focused narrative document under `.vizier/narrative/threads/` that expands one tension beyond what fits in the snapshot.
 - **Worktree**: A separate checkout under `.vizier/tmp-worktrees/` used to isolate agent-backed edits from the operator’s main checkout.
 - **Workspace**: A manifest-backed “sticky” worktree under `.vizier/tmp-worktrees/workspace-<slug>` that operators can `vizier cd` into for browsing/editing draft branches.

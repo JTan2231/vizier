@@ -107,7 +107,10 @@ fn parse_prompt_override_table(
 
     for (key, entry) in table {
         let Some(kind) = prompt_kind_from_key(key) else {
-            continue;
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown prompt kind `{key}`"),
+            )));
         };
 
         let mut prompt_override = PromptOverrides::default();
@@ -628,7 +631,6 @@ fn prompt_kind_from_key(key: &str) -> Option<PromptKind> {
         "documentation" => Some(PromptKind::Documentation),
         "commit" => Some(PromptKind::Commit),
         "implementation_plan" => Some(PromptKind::ImplementationPlan),
-        "plan_refine" => Some(PromptKind::PlanRefine),
         "review" => Some(PromptKind::Review),
         "merge_conflict" => Some(PromptKind::MergeConflict),
         _ => None,

@@ -15,7 +15,6 @@ mod jobs;
 mod list;
 mod merge;
 mod plan;
-mod refine;
 mod review;
 mod save;
 mod session;

@@ -16,7 +16,7 @@ agent = "codex"
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with agent overrides for that scope+prompt pairing. Available kinds: documentation, commit,
-# implementation_plan, plan_refine, review, merge_conflict. See `docs/prompt-config-matrix.md` for the full scope×prompt-kind
+# implementation_plan, review, merge_conflict. See `docs/prompt-config-matrix.md` for the full scope×prompt-kind
 # matrix, fallback order, and documentation toggles.
 [agents.default.prompts.documentation]
 path = "./prompts/documentation.md"
@@ -94,9 +94,6 @@ agent = "codex"
 
 # The remaining plan workflow commands stay on the codex stack and inherit the defaults
 [agents.draft]
-agent = "codex"
-
-[agents.refine]
 agent = "codex"
 
 [agents.approve]

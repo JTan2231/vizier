@@ -3,7 +3,6 @@ pub enum PromptKind {
     Documentation,
     Commit,
     ImplementationPlan,
-    PlanRefine,
     Review,
     MergeConflict,
 }
@@ -17,7 +16,6 @@ impl PromptKind {
             PromptKind::Documentation,
             PromptKind::Commit,
             PromptKind::ImplementationPlan,
-            PromptKind::PlanRefine,
             PromptKind::Review,
             PromptKind::MergeConflict,
         ];
@@ -29,7 +27,6 @@ impl PromptKind {
             PromptKind::Documentation => "documentation",
             PromptKind::Commit => "commit",
             PromptKind::ImplementationPlan => "implementation_plan",
-            PromptKind::PlanRefine => "plan_refine",
             PromptKind::Review => "review",
             PromptKind::MergeConflict => "merge_conflict",
         }
@@ -40,7 +37,6 @@ impl PromptKind {
             PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md"],
             PromptKind::Commit => &["COMMIT_PROMPT.md"],
             PromptKind::ImplementationPlan => &["IMPLEMENTATION_PLAN_PROMPT.md"],
-            PromptKind::PlanRefine => &["PLAN_REFINE_PROMPT.md"],
             PromptKind::Review => &["REVIEW_PROMPT.md"],
             PromptKind::MergeConflict => &["MERGE_CONFLICT_PROMPT.md"],
         }
@@ -51,7 +47,6 @@ impl PromptKind {
             PromptKind::Documentation => DOCUMENTATION_PROMPT,
             PromptKind::Commit => COMMIT_PROMPT,
             PromptKind::ImplementationPlan => IMPLEMENTATION_PLAN_PROMPT,
-            PromptKind::PlanRefine => PLAN_REFINE_PROMPT,
             PromptKind::Review => REVIEW_PROMPT,
             PromptKind::MergeConflict => MERGE_CONFLICT_PROMPT,
         }

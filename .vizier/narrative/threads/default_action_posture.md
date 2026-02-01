@@ -12,7 +12,7 @@ Problem/Tension
 - Output can accidentally become verbose (or leak internal deltas), undermining the “commit-style epilogue” contract and making runs harder to audit.
 
 Desired behavior (Product-level)
-- Default action: treat user directives as authorization to update `.vizier/narrative/snapshot.md` and (when needed) `.vizier/narrative/threads/*.md`.
+- Default action: treat every user input as authorization to update `.vizier/narrative/snapshot.md` and (when needed) `.vizier/narrative/threads/*.md`.
 - Explicit opt-out: when users signal “no update” for a turn (e.g., `no-op:` / `discuss-only:`), do not change narrative files.
 - Snapshot discipline: merge into existing threads, update minimally, de-duplicate, and ground claims in observable evidence (code, tests, or user reports).
 - Glossary lockstep: when snapshot edits introduce or clarify high-signal terms, update `.vizier/narrative/glossary.md` in the same change.
@@ -21,7 +21,7 @@ Desired behavior (Product-level)
 
 Acceptance criteria
 1) Default behavior
-   - Given a directive, the snapshot is updated to reflect the new plot point (or to evolve an existing thread) without spawning duplicates.
+   - Given a user input that does not explicitly opt out, the snapshot is updated to reflect the new plot point (or to evolve an existing thread) without spawning duplicates.
 2) Opt-out behavior
    - Given an explicit “no update” signal, narrative files remain unchanged and the response indicates a no-op.
 3) Noise control
@@ -48,4 +48,4 @@ Update (2026-01-27)
 Update (2026-01-30)
 - Clarified glossary lockstep expectations so snapshot edits and term definitions stay paired under the Default-Action Posture.
 Update (2026-02-01)
-- Stopgap enforcement: narrative edits proceed only when the user explicitly instructs updates, honoring the AGENTS guardrail while the DAP precedence rule remains unresolved.
+- Stopgap enforcement: narrative edits proceed only when the user explicitly instructs updates, honoring the AGENTS guardrail while the DAP precedence rule remains unresolved. Clarified that the default-action intent treats every user input as authorization unless an explicit opt-out is given.

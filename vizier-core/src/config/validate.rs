@@ -66,24 +66,43 @@ text = "profile documentation prompt"
     }
 
     #[test]
-    fn repo_prompt_fallback_includes_plan_refine() {
-        let _guard = CWD_LOCK.lock().unwrap();
-        let temp_dir = tempdir().expect("create temp dir");
-        let vizier_dir = temp_dir.path().join(".vizier");
-        fs::create_dir_all(&vizier_dir).expect("create .vizier");
-        fs::write(
-            vizier_dir.join("PLAN_REFINE_PROMPT.md"),
-            "repo refine prompt",
-        )
-        .expect("write repo prompt");
+    fn config_rejects_plan_refine_prompt_kind() {
+        let toml = r#"
+[agents.default.prompts.plan_refine]
+text = "nope"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
 
-        let config_path = temp_dir.path().join("config.toml");
-        fs::write(&config_path, "").expect("write empty config");
+        let err = match Config::from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("plan_refine prompt kind should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("unknown prompt kind `plan_refine`"),
+            "error message should mention unknown prompt kind: {err}"
+        );
+    }
 
-        let _cwd = CwdGuard::enter(temp_dir.path());
-        let cfg = Config::from_toml(config_path).expect("parse config");
-        let selection = cfg.prompt_for(CommandScope::Refine, PromptKind::PlanRefine);
-        assert_eq!(selection.text, "repo refine prompt");
+    #[test]
+    fn config_rejects_refine_scope() {
+        let toml = r#"
+[agents.refine]
+agent = "codex"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match Config::from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("refine scope should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("unknown [agents.refine] section"),
+            "error message should mention unknown scope: {err}"
+        );
     }
 
     #[test]

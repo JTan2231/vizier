@@ -3,7 +3,7 @@
 This refactor splits previously oversized Rust sources into focused modules. Behavior and public APIs remain unchanged; only file layout moved.
 
 ## CLI actions
-- `vizier-cli/src/actions/` holds per-command handlers (`ask`, `save`, `draft`, `refine`, `approve`, `review`, `merge`, `list`, `plan`, `snapshot_init`, `test_display`).
+- `vizier-cli/src/actions/` holds per-command handlers (`ask`, `save`, `draft`, `approve`, `review`, `merge`, `list`, `plan`, `snapshot_init`, `test_display`).
 - Shared helpers live in `vizier-cli/src/actions/shared.rs` and option/type definitions in `vizier-cli/src/actions/types.rs`.
 - Cross-command context + errors are in `vizier-cli/src/context.rs` and `vizier-cli/src/errors.rs`.
 

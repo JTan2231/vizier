@@ -56,13 +56,6 @@ pub struct DraftArgs {
 }
 
 #[derive(Debug, Clone)]
-pub struct RefineOptions {
-    pub slug: String,
-    pub branch: String,
-    pub body: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct ListOptions {
     pub target: Option<String>,
 }

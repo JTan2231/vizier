@@ -7,7 +7,7 @@ use lazy_static::lazy_static;
 
 use crate::{
     COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
-    PLAN_REFINE_PROMPT, REVIEW_PROMPT,
+    REVIEW_PROMPT,
     agent::{AgentRunner, ScriptRunner},
     tools, tree,
 };
@@ -58,7 +58,6 @@ pub enum CommandScope {
     Ask,
     Save,
     Draft,
-    Refine,
     Approve,
     Review,
     Merge,
@@ -70,7 +69,6 @@ impl CommandScope {
             CommandScope::Ask => "ask",
             CommandScope::Save => "save",
             CommandScope::Draft => "draft",
-            CommandScope::Refine => "refine",
             CommandScope::Approve => "approve",
             CommandScope::Review => "review",
             CommandScope::Merge => "merge",
@@ -82,7 +80,6 @@ impl CommandScope {
             CommandScope::Ask,
             CommandScope::Save,
             CommandScope::Draft,
-            CommandScope::Refine,
             CommandScope::Approve,
             CommandScope::Review,
             CommandScope::Merge,
@@ -98,7 +95,6 @@ impl std::str::FromStr for CommandScope {
             "ask" => Ok(CommandScope::Ask),
             "save" => Ok(CommandScope::Save),
             "draft" => Ok(CommandScope::Draft),
-            "refine" => Ok(CommandScope::Refine),
             "approve" => Ok(CommandScope::Approve),
             "review" => Ok(CommandScope::Review),
             "merge" => Ok(CommandScope::Merge),
