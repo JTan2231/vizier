@@ -198,6 +198,7 @@ impl ScriptRunner {
         !disabled
     }
 
+    // The wrapper path is unix-only; mock/non-unix builds keep a stub and silence unused warnings.
     #[cfg(any(feature = "mock_llm", not(unix)))]
     #[allow(dead_code)]
     fn should_use_stdbuf() -> bool {
@@ -253,6 +254,7 @@ impl ScriptRunner {
         }
     }
 
+    // Mock builds short-circuit the runner, so this helper is unused there.
     #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     fn command_label(command: &[String]) -> Option<String> {
         let program = command.first()?;
@@ -262,6 +264,7 @@ impl ScriptRunner {
         if stem.is_empty() { None } else { Some(stem) }
     }
 
+    // Mock builds short-circuit the runner, so this helper is unused there.
     #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     async fn read_progress_stream(
         reader: impl AsyncBufRead + Unpin,
@@ -324,6 +327,7 @@ impl ScriptRunner {
         Ok((lines, raw))
     }
 
+    // Mock builds short-circuit the runner, so this helper is unused there.
     #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     async fn read_stderr(
         reader: impl AsyncBufRead + Unpin,
@@ -334,6 +338,7 @@ impl ScriptRunner {
         Ok(lines)
     }
 
+    // Mock builds short-circuit the runner, so this helper is unused there.
     #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     async fn read_filter_stdout(
         reader: impl AsyncBufRead + Unpin,

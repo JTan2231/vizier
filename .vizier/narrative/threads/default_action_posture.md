@@ -47,3 +47,5 @@ Update (2026-01-27)
 - Narrative upkeep now expects direct file edits under `.vizier/narrative/` (no Vizier CLI tooling), stays within repo boundaries (no network access unless explicitly authorized), and preserves the explicit opt-out rule.
 Update (2026-01-30)
 - Clarified glossary lockstep expectations so snapshot edits and term definitions stay paired under the Default-Action Posture.
+Update (2026-02-01)
+- Stopgap enforcement: narrative edits proceed only when the user explicitly instructs updates, honoring the AGENTS guardrail while the DAP precedence rule remains unresolved.

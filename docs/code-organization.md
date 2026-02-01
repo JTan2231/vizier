@@ -29,3 +29,6 @@ This refactor splits previously oversized Rust sources into focused modules. Beh
 - `tests/src/fixtures.rs` hosts shared fixtures/utilities.
 - Per-workflow tests live in dedicated modules (`ask.rs`, `save.rs`, `draft.rs`, `approve.rs`, `review.rs`, `merge.rs`, `workspace.rs`, etc.).
 - `tests/src/lib.rs` is a thin module list that re-exports fixtures.
+
+## Conditional compilation
+- The agent runner has unix-only and mock-only execution paths; a few helpers are retained for those paths and intentionally use `allow(dead_code)` with comments to avoid unused warnings in mock/non-unix builds.

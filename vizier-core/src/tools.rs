@@ -300,66 +300,6 @@ fn collect_markdown_entries(root: &Path) -> Result<Vec<String>, std::io::Error> 
     Ok(entries)
 }
 
-#[allow(dead_code)]
-fn create_git_issue(title: String, body: String) -> String {
-    use reqwest::blocking::Client;
-    use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
-
-    let (owner, repo) = match vcs::origin_owner_repo(".") {
-        Ok((o, r)) => (o, r),
-        Err(e) => return llm_error(&format!("Failed to get owner and repo name: {}", e)),
-    };
-
-    let token = match std::env::var("GITHUB_PAT") {
-        Ok(t) => t,
-        Err(e) => return llm_error(&format!("Failed to get GitHub PAT: {}", e)),
-    };
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        ACCEPT,
-        HeaderValue::from_static("application/vnd.github+json"),
-    );
-
-    headers.insert(
-        "X-GitHub-Api-Version",
-        HeaderValue::from_static("2022-11-28"),
-    );
-
-    let auth_value = format!("Bearer {}", token);
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth_value).unwrap());
-
-    headers.insert(USER_AGENT, HeaderValue::from_static("vizier"));
-
-    let client = match Client::builder().default_headers(headers).build() {
-        Ok(c) => c,
-        Err(e) => return llm_error(&format!("Failed to build reqwest client: {}", e)),
-    };
-
-    let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
-    let payload = serde_json::json!({
-        "title": title,
-        "body": format!("This issue was written by the Vizier.\n\n{}", body),
-    });
-
-    let resp = match client.post(&url).json(&payload).send() {
-        Ok(r) => r,
-        Err(e) => return llm_error(&format!("Error sending GitHub API request: {}", e)),
-    };
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().unwrap_or_default();
-
-        return llm_error(&format!("GitHub API error {status}: {text}"));
-    }
-
-    match resp.text() {
-        Ok(r) => r,
-        Err(e) => llm_error(&format!("Error reading response text: {}", e)),
-    }
-}
-
 pub fn get_tools() -> Vec<Tool> {
     Vec::new()
 }

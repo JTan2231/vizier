@@ -52,12 +52,6 @@ pub struct JobPaths {
     pub stderr_path: PathBuf,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct LaunchResult {
-    pub record: JobRecord,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobMetadata {
     pub scope: Option<String>,
@@ -445,7 +439,7 @@ pub fn launch_background_job(
     recorded_args: &[String],
     metadata: Option<JobMetadata>,
     config_snapshot: Option<serde_json::Value>,
-) -> Result<LaunchResult, Box<dyn std::error::Error>> {
+) -> Result<JobRecord, Box<dyn std::error::Error>> {
     let paths = paths_for(jobs_root, job_id);
     fs::create_dir_all(&paths.job_dir)?;
 
@@ -486,7 +480,7 @@ pub fn launch_background_job(
     record.pid = Some(child.id());
     persist_record(&paths, &record)?;
 
-    Ok(LaunchResult { record })
+    Ok(record)
 }
 
 pub fn finalize_job(

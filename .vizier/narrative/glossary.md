@@ -10,7 +10,7 @@
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
 - **Default-Action Posture (DAP)**: Unless explicitly opted out, user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
-- **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed, in tension with DAP’s default-action posture until precedence is clarified.
+- **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; currently treated as a prerequisite for narrative updates until DAP precedence is codified.
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
 - **Integration test lock**: A global mutex held by the integration-test harness so `IntegrationRepo`-backed tests run serially instead of racing on temp repo and agent shim setup.
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.

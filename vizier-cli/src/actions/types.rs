@@ -166,11 +166,6 @@ impl ConflictAutoResolveSetting {
         self.enabled
     }
 
-    #[allow(dead_code)]
-    pub fn source(self) -> ConflictAutoResolveSource {
-        self.source
-    }
-
     pub(crate) fn source_description(self) -> &'static str {
         match self.source {
             ConflictAutoResolveSource::Default => "default",
@@ -205,15 +200,6 @@ impl CicdGateOptions {
             script: config.script.clone(),
             auto_resolve: config.auto_resolve,
             retries: config.retries,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn disabled() -> Self {
-        Self {
-            script: None,
-            auto_resolve: false,
-            retries: 1,
         }
     }
 }

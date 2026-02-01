@@ -1355,7 +1355,6 @@ fn pager_mode_from_args(args: &[String]) -> PagerMode {
     }
 }
 
-#[allow(dead_code)]
 fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     match command {
         Commands::Ask(_) => Some(config::CommandScope::Ask),
@@ -1369,7 +1368,6 @@ fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     }
 }
 
-#[allow(dead_code)]
 fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
     json!({
         "agent_selector": cfg.agent_selector,
@@ -1387,7 +1385,6 @@ fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
     })
 }
 
-#[allow(dead_code)]
 fn build_job_metadata(
     command: &Commands,
     cfg: &config::Config,
@@ -1476,7 +1473,6 @@ fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
     }
 }
 
-#[allow(dead_code)]
 fn background_supported(command: &Commands) -> bool {
     matches!(
         command,
@@ -1490,7 +1486,6 @@ fn background_supported(command: &Commands) -> bool {
     )
 }
 
-#[allow(dead_code)]
 fn ensure_background_safe(command: &Commands) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Commands::Approve(cmd) if !cmd.assume_yes => {
@@ -1646,7 +1641,6 @@ fn preflight_background_prompts(
     }
 }
 
-#[allow(dead_code)]
 fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     let mut skip_next = false;
@@ -1697,7 +1691,6 @@ fn strip_merge_queue_flag(raw_args: &[String]) -> Vec<String> {
     args
 }
 
-#[allow(dead_code)]
 fn user_friendly_args(raw_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(binary) = raw_args.first() {
@@ -2006,7 +1999,6 @@ fn handle_merge_queue_completion(
     Ok(())
 }
 
-#[allow(dead_code)]
 fn build_background_child_args(
     raw_args: &[String],
     job_id: &str,
@@ -2918,5 +2910,55 @@ mod tests {
         ];
 
         assert_eq!(subcommand_from_raw_args(&raw_args), Some("ask".to_string()));
+    }
+
+    #[test]
+    fn strip_background_flags_removes_background_controls() {
+        let raw_args = vec![
+            "vizier".to_string(),
+            "ask".to_string(),
+            "--background".to_string(),
+            "--background-job-id".to_string(),
+            "abc123".to_string(),
+            "--follow".to_string(),
+            "--no-background".to_string(),
+            "--background=1".to_string(),
+            "--follow=1".to_string(),
+            "--background-job-id=xyz".to_string(),
+            "--other".to_string(),
+            "value".to_string(),
+        ];
+
+        let stripped = strip_background_flags(&raw_args);
+        assert_eq!(
+            stripped,
+            vec![
+                "ask".to_string(),
+                "--other".to_string(),
+                "value".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn user_friendly_args_keeps_binary_and_strips_background_flags() {
+        let raw_args = vec![
+            "vizier".to_string(),
+            "ask".to_string(),
+            "--background".to_string(),
+            "--background-job-id".to_string(),
+            "abc123".to_string(),
+            "--flag".to_string(),
+        ];
+
+        let args = user_friendly_args(&raw_args);
+        assert_eq!(
+            args,
+            vec![
+                "vizier".to_string(),
+                "ask".to_string(),
+                "--flag".to_string()
+            ]
+        );
     }
 }
