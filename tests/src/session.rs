@@ -114,7 +114,7 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
 }
 #[test]
 fn test_script_runner_session_logs_io_across_commands() -> TestResult {
-    let repo = IntegrationRepo::with_binary(vizier_binary_no_mock().clone())?;
+    let repo = IntegrationRepo::new_without_mock()?;
 
     let capture_agent_log =
         |args: &[&str], label: &str| -> Result<Value, Box<dyn std::error::Error>> {

@@ -24,19 +24,10 @@ impl MergeConflictsConfig {
     }
 }
 
-impl MergeQueueConfig {
-    fn apply_layer(&mut self, layer: &MergeQueueLayer) {
-        if let Some(enabled) = layer.enabled {
-            self.enabled = enabled;
-        }
-    }
-}
-
 impl MergeConfig {
     fn apply_layer(&mut self, layer: &MergeLayer) {
         self.cicd_gate.apply_layer(&layer.cicd_gate);
         self.conflicts.apply_layer(&layer.conflicts);
-        self.queue.apply_layer(&layer.queue);
 
         if let Some(default_squash) = layer.squash_default {
             self.squash_default = default_squash;

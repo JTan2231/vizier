@@ -94,5 +94,14 @@ For the repo gate, run:
 ./cicd.sh
 ```
 
-The integration tests serialize their repo/agent harness internally, so you do not need to set
-`RUST_TEST_THREADS=1` when invoking `cargo test` during local debugging.
+The integration tests isolate their repos and artifacts per test, so default parallel
+`cargo test` runs are supported; only set `RUST_TEST_THREADS=1` if you are debugging
+ordering-specific failures locally.
+
+Expected runtime: plan on ~1-2 minutes on a typical laptop (Rust build + 100+ integration tests).
+
+Pitfalls we have hit keeping tests stable:
+- Background jobs must always finalize with a terminal status. If a job errors before finalization
+  (for example a missing agent binary), follow-mode tests can hang waiting for completion.
+- Scheduler runs create `.vizier/jobs/` entries; tests that assert a clean worktree should either
+  ignore or clean that directory to avoid false dirtiness.

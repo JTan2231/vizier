@@ -11,8 +11,11 @@ fn test_repo_config_overrides_env_config() -> TestResult {
 agent = "codex"
 "#,
     )?;
+    repo.git(&["add", ".vizier/config.toml"])?;
+    repo.git(&["commit", "-m", "add repo config"])?;
 
-    let env_config = repo.path().join("env-config.toml");
+    let env_dir = TempDir::new()?;
+    let env_config = env_dir.path().join("env-config.toml");
     fs::write(
         &env_config,
         r#"
@@ -53,15 +56,23 @@ agent = "gemini"
 fn test_env_config_used_when_repo_config_missing() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let repo_toml = repo.path().join(".vizier").join("config.toml");
+    let mut removed = false;
     if repo_toml.exists() {
         fs::remove_file(&repo_toml)?;
+        removed = true;
     }
     let repo_json = repo.path().join(".vizier").join("config.json");
     if repo_json.exists() {
         fs::remove_file(&repo_json)?;
+        removed = true;
+    }
+    if removed {
+        repo.git(&["add", "-A"])?;
+        repo.git(&["commit", "-m", "remove repo config"])?;
     }
 
-    let env_config = repo.path().join("env-config.toml");
+    let env_dir = TempDir::new()?;
+    let env_config = env_dir.path().join("env-config.toml");
     fs::write(
         &env_config,
         r#"

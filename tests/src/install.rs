@@ -73,7 +73,6 @@ fn assert_mode(path: &Path, expected: u32) -> TestResult {
 }
 #[test]
 fn test_install_sh_stages_and_uninstalls() -> TestResult {
-    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
@@ -216,7 +215,6 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
 }
 #[test]
 fn test_install_sh_dry_run_writes_nothing() -> TestResult {
-    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
@@ -267,7 +265,6 @@ fn test_install_sh_requires_writable_prefix() -> TestResult {
         return Ok(());
     }
 
-    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;

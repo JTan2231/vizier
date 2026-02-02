@@ -45,12 +45,6 @@ pub(crate) async fn run_review(
         opts.target.as_deref(),
     )?;
 
-    vcs::ensure_clean_worktree().map_err(|err| {
-        Box::<dyn std::error::Error>::from(format!(
-            "clean working tree required before review: {err}"
-        ))
-    })?;
-
     let repo = Repository::discover(".")?;
     let repo_root_path = repo.workdir().map(|path| path.to_path_buf());
     let review_file_path = if opts.review_file {
@@ -480,44 +474,34 @@ async fn perform_review_workflow(
 
     if exec.review_only || exec.review_file_path.is_some() {
         display::info("Review fixes skipped (--review-only or --review-file active).");
-    } else {
-        let mut apply_fixes = exec.assume_yes;
-        if !exec.assume_yes {
-            apply_fixes = super::shared::prompt_for_confirmation(&format!(
-                "Apply suggested fixes on {}? [y/N] ",
-                spec.branch
-            ))?;
-        }
-
-        if apply_fixes {
-            match apply_review_fixes(
-                spec,
-                plan_meta,
-                worktree_path,
-                &critique_text,
-                commit_mode,
-                agent,
-            )
-            .await?
-            {
-                Some(commit) => {
-                    fix_commit = Some(commit);
-                    branch_mutated = true;
-                }
-                None => {
-                    let post_fix_diff = vcs::get_diff(".", Some("HEAD"), None)?;
-                    let post_fix_changed = !post_fix_diff.trim().is_empty();
-                    branch_mutated = branch_mutated || post_fix_changed;
-                    if !post_fix_changed {
-                        display::info(
-                            "Backend reported no changes while addressing review feedback.",
-                        );
-                    }
+    } else if exec.assume_yes {
+        match apply_review_fixes(
+            spec,
+            plan_meta,
+            worktree_path,
+            &critique_text,
+            commit_mode,
+            agent,
+        )
+        .await?
+        {
+            Some(commit) => {
+                fix_commit = Some(commit);
+                branch_mutated = true;
+            }
+            None => {
+                let post_fix_diff = vcs::get_diff(".", Some("HEAD"), None)?;
+                let post_fix_changed = !post_fix_diff.trim().is_empty();
+                branch_mutated = branch_mutated || post_fix_changed;
+                if !post_fix_changed {
+                    display::info("Backend reported no changes while addressing review feedback.");
                 }
             }
-        } else {
-            display::info("Skipped automatic fixes; branch left untouched.");
         }
+    } else {
+        display::info(
+            "Skipped automatic fixes; re-run with --yes to apply review feedback automatically.",
+        );
     }
 
     Ok(ReviewOutcome {

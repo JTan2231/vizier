@@ -68,12 +68,6 @@ impl PlanBranchSpec {
         load_plan_from_branch(&self.slug, &self.branch)
     }
 
-    pub fn show_preview(&self, meta: &PlanMetadata) {
-        println!("Plan: {}", meta.slug);
-        println!("Branch: {}", self.branch);
-        println!("Spec summary: {}", summarize_spec(meta));
-    }
-
     pub fn diff_command(&self) -> String {
         format!("git diff {}...{}", self.target_branch, self.branch)
     }

@@ -14,7 +14,7 @@ use vizier_core::{
 };
 
 use super::shared::{
-    append_agent_rows, audit_disposition, current_verbosity, format_block,
+    WorkdirGuard, append_agent_rows, audit_disposition, current_verbosity, format_block,
     push_origin_if_requested, short_hash,
 };
 use super::types::CommitMode;
@@ -56,6 +56,30 @@ pub(crate) async fn run_save(
             Err(Box::<dyn std::error::Error>::from(e))
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_save_in_worktree(
+    commit_ref: &str,
+    exclude: &[&str],
+    commit_message: Option<String>,
+    use_editor: bool,
+    commit_mode: CommitMode,
+    push_after_commit: bool,
+    agent: &config::AgentSettings,
+    worktree_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = WorkdirGuard::enter(worktree_path)?;
+    run_save(
+        commit_ref,
+        exclude,
+        commit_message,
+        use_editor,
+        commit_mode,
+        push_after_commit,
+        agent,
+    )
+    .await
 }
 
 #[derive(Debug)]

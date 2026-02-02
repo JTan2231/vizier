@@ -398,16 +398,6 @@ impl ConfigLayer {
         if let Some(merge_table) = value_at_path(&file_config, &["merge"])
             && let Some(table) = merge_table.as_object()
         {
-            if let Some(queue_value) = table.get("queue") {
-                if let Some(queue_table) = queue_value.as_object() {
-                    if let Some(enabled) = parse_bool(queue_table.get("enabled")) {
-                        layer.merge.queue.enabled = Some(enabled);
-                    }
-                } else if let Some(enabled) = parse_bool(Some(queue_value)) {
-                    layer.merge.queue.enabled = Some(enabled);
-                }
-            }
-
             if let Some(squash) = parse_bool(
                 table
                     .get("squash")

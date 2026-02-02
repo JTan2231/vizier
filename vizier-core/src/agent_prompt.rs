@@ -486,13 +486,10 @@ fn load_bounds_prompt() -> Result<String, AgentError> {
 mod tests {
     use super::*;
     use crate::config::{self, CommandScope, DocumentationSettings, PromptKind, PromptOverrides};
-    use std::sync::Mutex;
-
-    static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn implementation_plan_prompt_respects_override() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = config::test_config_lock().lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
         cfg.agent_defaults.prompt_overrides.insert(
@@ -524,7 +521,7 @@ mod tests {
 
     #[test]
     fn review_prompt_respects_override() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = config::test_config_lock().lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
         cfg.agent_defaults.prompt_overrides.insert(
@@ -561,7 +558,7 @@ mod tests {
 
     #[test]
     fn review_prompt_includes_cicd_gate_context() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = config::test_config_lock().lock().unwrap();
         let original = config::get_config();
         let selection = config::get_config().prompt_for(CommandScope::Review, PromptKind::Review);
         let gate = crate::agent::ReviewGateContext {
@@ -600,7 +597,7 @@ mod tests {
 
     #[test]
     fn merge_conflict_prompt_respects_override() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = config::test_config_lock().lock().unwrap();
         let original = config::get_config();
         let mut cfg = original.clone();
         cfg.agent_defaults.prompt_overrides.insert(

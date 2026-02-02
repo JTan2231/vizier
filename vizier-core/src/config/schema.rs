@@ -414,16 +414,10 @@ pub struct MergeConflictsConfig {
     pub auto_resolve: bool,
 }
 
-#[derive(Clone, Default)]
-pub struct MergeQueueConfig {
-    pub enabled: bool,
-}
-
 #[derive(Clone)]
 pub struct MergeConfig {
     pub cicd_gate: MergeCicdGateConfig,
     pub conflicts: MergeConflictsConfig,
-    pub queue: MergeQueueConfig,
     pub squash_default: bool,
     pub squash_mainline: Option<u32>,
 }
@@ -693,15 +687,9 @@ pub struct MergeConflictsLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MergeQueueLayer {
-    pub enabled: Option<bool>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeLayer {
     pub cicd_gate: MergeCicdGateLayer,
     pub conflicts: MergeConflictsLayer,
-    pub queue: MergeQueueLayer,
     pub squash_default: Option<bool>,
     pub squash_mainline: Option<u32>,
 }

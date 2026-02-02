@@ -40,21 +40,42 @@ fn test_list_outputs_prettified_blocks() -> TestResult {
         stdout.contains("Outcome: 2 pending draft branches"),
         "list header missing pending count: {stdout}"
     );
+    let lines: Vec<&str> = stdout.lines().collect();
+    let alpha_idx = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("Plan") && line.contains("alpha"))
+        .expect("list output missing plan alpha");
+    let beta_idx = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("Plan") && line.contains("beta"))
+        .expect("list output missing plan beta");
     assert!(
-        stdout.contains("\n\n  Plan   : beta"),
+        beta_idx > alpha_idx,
+        "expected beta entry after alpha entry: {stdout}"
+    );
+    assert!(
+        lines[alpha_idx + 1..beta_idx]
+            .iter()
+            .any(|line| line.trim().is_empty()),
         "list output should separate entries with whitespace: {stdout}"
     );
     for (slug, summary) in [("alpha", "Alpha spec line"), ("beta", "Beta spec line")] {
         assert!(
-            stdout.contains(&format!("  Plan   : {slug}")),
+            lines
+                .iter()
+                .any(|line| line.trim_start().starts_with("Plan") && line.contains(slug)),
             "list output missing plan {slug}: {stdout}"
         );
         assert!(
-            stdout.contains(&format!("  Branch : draft/{slug}")),
+            lines
+                .iter()
+                .any(|line| line.trim_start().starts_with("Branch") && line.contains(slug)),
             "list output missing branch for {slug}: {stdout}"
         );
         assert!(
-            stdout.contains(&format!("  Summary: {summary}")),
+            lines
+                .iter()
+                .any(|line| line.trim_start().starts_with("Summary") && line.contains(summary)),
             "list output missing summary for {slug}: {stdout}"
         );
     }

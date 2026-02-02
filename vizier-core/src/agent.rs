@@ -1,4 +1,3 @@
-#[cfg(not(feature = "mock_llm"))]
 use std::time::Instant;
 use std::{
     collections::BTreeMap,
@@ -9,7 +8,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(not(feature = "mock_llm"))]
 use std::process::Stdio;
 
 use tokio::{
@@ -17,7 +15,6 @@ use tokio::{
     sync::mpsc,
 };
 
-#[cfg(not(feature = "mock_llm"))]
 use tokio::{
     io::{AsyncWriteExt, BufReader},
     process::Command,
@@ -174,6 +171,21 @@ impl From<std::io::Error> for AgentError {
 
 pub type AgentFuture = Pin<Box<dyn Future<Output = Result<AgentResponse, AgentError>> + Send>>;
 
+fn mock_agent_enabled() -> bool {
+    if !cfg!(feature = "integration_testing") {
+        return false;
+    }
+    std::env::var("VIZIER_MOCK_AGENT")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub trait AgentRunner: Send + Sync {
     fn backend_name(&self) -> &'static str;
 
@@ -183,7 +195,7 @@ pub trait AgentRunner: Send + Sync {
 pub struct ScriptRunner;
 
 impl ScriptRunner {
-    #[cfg(all(unix, not(feature = "mock_llm")))]
+    #[cfg(unix)]
     fn should_use_stdbuf() -> bool {
         let disabled = std::env::var("VIZIER_DISABLE_STDBUF")
             .ok()
@@ -198,14 +210,7 @@ impl ScriptRunner {
         !disabled
     }
 
-    // The wrapper path is unix-only; mock/non-unix builds keep a stub and silence unused warnings.
-    #[cfg(any(feature = "mock_llm", not(unix)))]
-    #[allow(dead_code)]
-    fn should_use_stdbuf() -> bool {
-        false
-    }
-
-    #[cfg(all(unix, not(feature = "mock_llm")))]
+    #[cfg(unix)]
     fn buffering_wrappers(allow_script: bool) -> Vec<Vec<String>> {
         let mut wrappers = vec![
             vec!["stdbuf".to_string(), "-oL".to_string(), "-eL".to_string()],
@@ -221,7 +226,7 @@ impl ScriptRunner {
         wrappers
     }
 
-    #[cfg(all(unix, not(feature = "mock_llm")))]
+    #[cfg(unix)]
     fn wrapper_label(wrapper: &[String]) -> &'static str {
         match wrapper.first().map(String::as_str) {
             Some("stdbuf") => "stdbuf",
@@ -231,7 +236,6 @@ impl ScriptRunner {
         }
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     fn configure_stdio(cmd: &mut Command) {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -254,8 +258,6 @@ impl ScriptRunner {
         }
     }
 
-    // Mock builds short-circuit the runner, so this helper is unused there.
-    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     fn command_label(command: &[String]) -> Option<String> {
         let program = command.first()?;
         let stem = Path::new(program)
@@ -264,8 +266,6 @@ impl ScriptRunner {
         if stem.is_empty() { None } else { Some(stem) }
     }
 
-    // Mock builds short-circuit the runner, so this helper is unused there.
-    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     async fn read_progress_stream(
         reader: impl AsyncBufRead + Unpin,
         source: String,
@@ -327,8 +327,6 @@ impl ScriptRunner {
         Ok((lines, raw))
     }
 
-    // Mock builds short-circuit the runner, so this helper is unused there.
-    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     async fn read_stderr(
         reader: impl AsyncBufRead + Unpin,
         source: String,
@@ -338,8 +336,6 @@ impl ScriptRunner {
         Ok(lines)
     }
 
-    // Mock builds short-circuit the runner, so this helper is unused there.
-    #[cfg_attr(feature = "mock_llm", allow(dead_code))]
     async fn read_filter_stdout(
         reader: impl AsyncBufRead + Unpin,
         source: String,
@@ -356,8 +352,7 @@ impl AgentRunner for ScriptRunner {
 
     fn execute(&self, request: AgentRequest, progress_hook: Option<ProgressHook>) -> AgentFuture {
         Box::pin(async move {
-            #[cfg(feature = "mock_llm")]
-            {
+            if mock_agent_enabled() {
                 if std::env::var("VIZIER_FORCE_AGENT_ERROR")
                     .ok()
                     .map(|value| {
@@ -399,45 +394,153 @@ impl AgentRunner for ScriptRunner {
                 });
             }
 
-            #[cfg(not(feature = "mock_llm"))]
-            {
-                let mut spawn_warnings = Vec::new();
-                let (program, base_args) = request
-                    .command
-                    .split_first()
-                    .ok_or(AgentError::MissingCommand)?;
+            let mut spawn_warnings = Vec::new();
+            let (program, base_args) = request
+                .command
+                .split_first()
+                .ok_or(AgentError::MissingCommand)?;
 
-                let mut command = Command::new(program);
-                command.args(base_args);
-                command.current_dir(&request.repo_root);
-                Self::configure_stdio(&mut command);
+            let mut command = Command::new(program);
+            command.args(base_args);
+            command.current_dir(&request.repo_root);
+            Self::configure_stdio(&mut command);
 
-                #[cfg(all(unix, not(feature = "mock_llm")))]
-                let allow_script_wrapper = {
-                    let needs_progress_streaming = progress_hook.is_some()
-                        || matches!(request.output, config::AgentOutputHandling::Wrapped);
-                    if request.allow_script_wrapper && needs_progress_streaming {
-                        spawn_warnings.push(
-                            "skipping script wrapper to preserve stderr for progress output"
-                                .to_string(),
-                        );
-                        false
-                    } else {
-                        request.allow_script_wrapper
+            #[cfg(unix)]
+            let allow_script_wrapper = {
+                let needs_progress_streaming = progress_hook.is_some()
+                    || matches!(request.output, config::AgentOutputHandling::Wrapped);
+                if request.allow_script_wrapper && needs_progress_streaming {
+                    spawn_warnings.push(
+                        "skipping script wrapper to preserve stderr for progress output"
+                            .to_string(),
+                    );
+                    false
+                } else {
+                    request.allow_script_wrapper
+                }
+            };
+
+            #[cfg(not(unix))]
+            let allow_script_wrapper = request.allow_script_wrapper;
+
+            #[cfg(unix)]
+            let mut child = {
+                let mut spawned: Option<tokio::process::Child> = None;
+                if Self::should_use_stdbuf() {
+                    for wrapper in Self::buffering_wrappers(allow_script_wrapper) {
+                        let mut wrapped = Command::new(&wrapper[0]);
+                        wrapped.args(&wrapper[1..]);
+                        wrapped.args(&request.command);
+                        wrapped.current_dir(&request.repo_root);
+                        Self::configure_stdio(&mut wrapped);
+                        match wrapped.spawn() {
+                            Ok(child) => {
+                                spawned = Some(child);
+                                break;
+                            }
+                            Err(err) => {
+                                if err.kind() == std::io::ErrorKind::NotFound {
+                                    spawn_warnings.push(format!(
+                                        "{} not found; attempting next buffering wrapper",
+                                        Self::wrapper_label(&wrapper)
+                                    ));
+                                    continue;
+                                }
+                                return Err(AgentError::Spawn(err));
+                            }
+                        }
                     }
-                };
+                }
 
-                #[cfg(any(feature = "mock_llm", not(unix)))]
-                let allow_script_wrapper = request.allow_script_wrapper;
+                match spawned {
+                    Some(child) => child,
+                    None => match command.spawn() {
+                        Ok(child) => child,
+                        Err(err) => {
+                            if err.kind() == std::io::ErrorKind::NotFound {
+                                let missing = request
+                                    .command
+                                    .first()
+                                    .map(PathBuf::from)
+                                    .unwrap_or_else(|| PathBuf::from("agent"));
+                                return Err(AgentError::BinaryNotFound(missing));
+                            }
+                            return Err(AgentError::Spawn(err));
+                        }
+                    },
+                }
+            };
 
-                #[cfg(all(unix, not(feature = "mock_llm")))]
-                let mut child = {
+            #[cfg(not(unix))]
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    if err.kind() == std::io::ErrorKind::NotFound {
+                        let missing = request
+                            .command
+                            .first()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("agent"));
+                        return Err(AgentError::BinaryNotFound(missing));
+                    }
+                    return Err(AgentError::Spawn(err));
+                }
+            };
+
+            let start = Instant::now();
+            let source = request
+                .metadata
+                .get("agent_label")
+                .cloned()
+                .or_else(|| Self::command_label(&request.command))
+                .map(|label| {
+                    Self::render_source(request.scope, &{
+                        let mut meta = request.metadata.clone();
+                        meta.insert("agent_label".to_string(), label.clone());
+                        meta
+                    })
+                })
+                .unwrap_or_else(|| Self::render_source(request.scope, &request.metadata));
+
+            let source_for_stderr = source.clone();
+            let stderr_handle = if let Some(stderr) = child.stderr.take() {
+                let hook = progress_hook.clone();
+                Some(tokio::spawn(async move {
+                    Self::read_stderr(BufReader::new(stderr), source_for_stderr, hook).await
+                }))
+            } else {
+                None
+            };
+
+            // Optional progress filter pipeline; Rust treats filter stdout as final text when present.
+            let mut filter_child = None;
+            let mut filter_stdin: Option<tokio::process::ChildStdin> = None;
+            let mut filter_stdout_handle = None;
+            let mut filter_stderr_handle = None;
+
+            if let Some(filter_cmd) = request.progress_filter.clone() {
+                if filter_cmd.is_empty() {
+                    return Err(AgentError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "progress filter command cannot be empty",
+                    )));
+                }
+
+                let (filter_program, filter_args) =
+                    filter_cmd.split_first().ok_or(AgentError::MissingCommand)?;
+                let mut filter = Command::new(filter_program);
+                filter.args(filter_args);
+                filter.current_dir(&request.repo_root);
+                Self::configure_stdio(&mut filter);
+
+                #[cfg(unix)]
+                let mut spawned_filter = {
                     let mut spawned: Option<tokio::process::Child> = None;
                     if Self::should_use_stdbuf() {
                         for wrapper in Self::buffering_wrappers(allow_script_wrapper) {
                             let mut wrapped = Command::new(&wrapper[0]);
                             wrapped.args(&wrapper[1..]);
-                            wrapped.args(&request.command);
+                            wrapped.args(filter_cmd.clone());
                             wrapped.current_dir(&request.repo_root);
                             Self::configure_stdio(&mut wrapped);
                             match wrapped.spawn() {
@@ -448,12 +551,15 @@ impl AgentRunner for ScriptRunner {
                                 Err(err) => {
                                     if err.kind() == std::io::ErrorKind::NotFound {
                                         spawn_warnings.push(format!(
-                                            "{} not found; attempting next buffering wrapper",
+                                            "{} not found; attempting next buffering wrapper for progress filter",
                                             Self::wrapper_label(&wrapper)
                                         ));
                                         continue;
                                     }
-                                    return Err(AgentError::Spawn(err));
+                                    return Err(AgentError::Io(io::Error::other(format!(
+                                        "failed to spawn progress filter `{}`: {}",
+                                        filter_program, err
+                                    ))));
                                 }
                             }
                         }
@@ -461,281 +567,166 @@ impl AgentRunner for ScriptRunner {
 
                     match spawned {
                         Some(child) => child,
-                        None => match command.spawn() {
+                        None => match filter.spawn() {
                             Ok(child) => child,
                             Err(err) => {
-                                if err.kind() == std::io::ErrorKind::NotFound {
-                                    let missing = request
-                                        .command
-                                        .first()
-                                        .map(PathBuf::from)
-                                        .unwrap_or_else(|| PathBuf::from("agent"));
-                                    return Err(AgentError::BinaryNotFound(missing));
-                                }
-                                return Err(AgentError::Spawn(err));
+                                return Err(AgentError::Io(io::Error::other(format!(
+                                    "failed to spawn progress filter `{}`: {}",
+                                    filter_program, err
+                                ))));
                             }
                         },
                     }
                 };
 
-                #[cfg(any(feature = "mock_llm", not(unix)))]
-                let mut child = match command.spawn() {
+                #[cfg(not(unix))]
+                let mut spawned_filter = match filter.spawn() {
                     Ok(child) => child,
                     Err(err) => {
-                        if err.kind() == std::io::ErrorKind::NotFound {
-                            let missing = request
-                                .command
-                                .first()
-                                .map(PathBuf::from)
-                                .unwrap_or_else(|| PathBuf::from("agent"));
-                            return Err(AgentError::BinaryNotFound(missing));
-                        }
-                        return Err(AgentError::Spawn(err));
+                        return Err(AgentError::Io(io::Error::other(format!(
+                            "failed to spawn progress filter `{}`: {}",
+                            filter_program, err
+                        ))));
                     }
                 };
 
-                let start = Instant::now();
-                let source = request
-                    .metadata
-                    .get("agent_label")
-                    .cloned()
-                    .or_else(|| Self::command_label(&request.command))
-                    .map(|label| {
-                        Self::render_source(request.scope, &{
-                            let mut meta = request.metadata.clone();
-                            meta.insert("agent_label".to_string(), label.clone());
-                            meta
-                        })
-                    })
-                    .unwrap_or_else(|| Self::render_source(request.scope, &request.metadata));
-
-                let source_for_stderr = source.clone();
-                let stderr_handle = if let Some(stderr) = child.stderr.take() {
+                let filter_source = source.clone();
+                if let Some(stdout) = spawned_filter.stdout.take() {
                     let hook = progress_hook.clone();
-                    Some(tokio::spawn(async move {
-                        Self::read_stderr(BufReader::new(stderr), source_for_stderr, hook).await
-                    }))
-                } else {
-                    None
-                };
+                    filter_stdout_handle = Some(tokio::spawn(async move {
+                        Self::read_filter_stdout(BufReader::new(stdout), filter_source, hook).await
+                    }));
+                }
 
-                // Optional progress filter pipeline; Rust treats filter stdout as final text when present.
-                let mut filter_child = None;
-                let mut filter_stdin: Option<tokio::process::ChildStdin> = None;
-                let mut filter_stdout_handle = None;
-                let mut filter_stderr_handle = None;
+                if let Some(stderr) = spawned_filter.stderr.take() {
+                    let hook = progress_hook.clone();
+                    let filter_source_err = source.clone();
+                    filter_stderr_handle = Some(tokio::spawn(async move {
+                        Self::read_stderr(BufReader::new(stderr), filter_source_err, hook).await
+                    }));
+                }
 
-                if let Some(filter_cmd) = request.progress_filter.clone() {
-                    if filter_cmd.is_empty() {
-                        return Err(AgentError::Io(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "progress filter command cannot be empty",
-                        )));
+                filter_stdin = spawned_filter.stdin.take();
+                filter_child = Some(spawned_filter);
+            }
+
+            let stdout_handle = if let Some(stdout) = child.stdout.take() {
+                let mut writer = filter_stdin.take();
+                Some(tokio::spawn(async move {
+                    let mut lines = BufReader::new(stdout).lines();
+                    let mut buffer = String::new();
+
+                    while let Some(line) = lines.next_line().await? {
+                        if let Some(ref mut pipe) = writer {
+                            pipe.write_all(line.as_bytes()).await?;
+                            pipe.write_all(b"\n").await?;
+                            let _ = pipe.flush().await;
+                        }
+                        buffer.push_str(&line);
+                        buffer.push('\n');
                     }
 
-                    let (filter_program, filter_args) =
-                        filter_cmd.split_first().ok_or(AgentError::MissingCommand)?;
-                    let mut filter = Command::new(filter_program);
-                    filter.args(filter_args);
-                    filter.current_dir(&request.repo_root);
-                    Self::configure_stdio(&mut filter);
-
-                    #[cfg(all(unix, not(feature = "mock_llm")))]
-                    let mut spawned_filter = {
-                        let mut spawned: Option<tokio::process::Child> = None;
-                        if Self::should_use_stdbuf() {
-                            for wrapper in Self::buffering_wrappers(allow_script_wrapper) {
-                                let mut wrapped = Command::new(&wrapper[0]);
-                                wrapped.args(&wrapper[1..]);
-                                wrapped.args(filter_cmd.clone());
-                                wrapped.current_dir(&request.repo_root);
-                                Self::configure_stdio(&mut wrapped);
-                                match wrapped.spawn() {
-                                    Ok(child) => {
-                                        spawned = Some(child);
-                                        break;
-                                    }
-                                    Err(err) => {
-                                        if err.kind() == std::io::ErrorKind::NotFound {
-                                            spawn_warnings.push(format!(
-                                                "{} not found; attempting next buffering wrapper for progress filter",
-                                                Self::wrapper_label(&wrapper)
-                                            ));
-                                            continue;
-                                        }
-                                        return Err(AgentError::Io(io::Error::other(format!(
-                                            "failed to spawn progress filter `{}`: {}",
-                                            filter_program, err
-                                        ))));
-                                    }
-                                }
-                            }
-                        }
-
-                        match spawned {
-                            Some(child) => child,
-                            None => match filter.spawn() {
-                                Ok(child) => child,
-                                Err(err) => {
-                                    return Err(AgentError::Io(io::Error::other(format!(
-                                        "failed to spawn progress filter `{}`: {}",
-                                        filter_program, err
-                                    ))));
-                                }
-                            },
-                        }
-                    };
-
-                    #[cfg(any(feature = "mock_llm", not(unix)))]
-                    let mut spawned_filter = match filter.spawn() {
-                        Ok(child) => child,
-                        Err(err) => {
-                            return Err(AgentError::Io(io::Error::other(format!(
-                                "failed to spawn progress filter `{}`: {}",
-                                filter_program, err
-                            ))));
-                        }
-                    };
-
-                    let filter_source = source.clone();
-                    if let Some(stdout) = spawned_filter.stdout.take() {
-                        let hook = progress_hook.clone();
-                        filter_stdout_handle = Some(tokio::spawn(async move {
-                            Self::read_filter_stdout(BufReader::new(stdout), filter_source, hook)
-                                .await
-                        }));
+                    if let Some(mut pipe) = writer {
+                        let _ = pipe.shutdown().await;
                     }
 
-                    if let Some(stderr) = spawned_filter.stderr.take() {
-                        let hook = progress_hook.clone();
-                        let filter_source_err = source.clone();
-                        filter_stderr_handle = Some(tokio::spawn(async move {
-                            Self::read_stderr(BufReader::new(stderr), filter_source_err, hook).await
-                        }));
-                    }
+                    Ok::<String, io::Error>(buffer)
+                }))
+            } else {
+                None
+            };
 
-                    filter_stdin = spawned_filter.stdin.take();
-                    filter_child = Some(spawned_filter);
-                }
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(request.prompt.as_bytes()).await?;
+                stdin.shutdown().await?;
+            }
 
-                let stdout_handle = if let Some(stdout) = child.stdout.take() {
-                    let mut writer = filter_stdin.take();
-                    Some(tokio::spawn(async move {
-                        let mut lines = BufReader::new(stdout).lines();
-                        let mut buffer = String::new();
-
-                        while let Some(line) = lines.next_line().await? {
-                            if let Some(ref mut pipe) = writer {
-                                pipe.write_all(line.as_bytes()).await?;
-                                pipe.write_all(b"\n").await?;
-                                let _ = pipe.flush().await;
-                            }
-                            buffer.push_str(&line);
-                            buffer.push('\n');
+            let wait_future = child.wait();
+            let status = if let Some(timeout) = request.timeout {
+                match time::timeout(timeout, wait_future).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        let _ = child.kill().await;
+                        if let Some(mut filter) = filter_child.take() {
+                            let _ = filter.kill().await;
                         }
-
-                        if let Some(mut pipe) = writer {
-                            let _ = pipe.shutdown().await;
-                        }
-
-                        Ok::<String, io::Error>(buffer)
-                    }))
-                } else {
-                    None
-                };
-
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin.write_all(request.prompt.as_bytes()).await?;
-                    stdin.shutdown().await?;
-                }
-
-                let wait_future = child.wait();
-                let status = if let Some(timeout) = request.timeout {
-                    match time::timeout(timeout, wait_future).await {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            let _ = child.kill().await;
-                            if let Some(mut filter) = filter_child.take() {
-                                let _ = filter.kill().await;
-                            }
-                            let secs = timeout.as_secs();
-                            return Err(AgentError::Timeout(secs));
-                        }
-                    }
-                } else {
-                    wait_future.await?
-                };
-
-                let duration_ms = start.elapsed().as_millis();
-
-                let mut stderr_lines = Vec::new();
-                if let Some(handle) = stderr_handle {
-                    stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
-                }
-
-                let mut agent_stdout = String::new();
-                if let Some(handle) = stdout_handle {
-                    agent_stdout = handle.await.unwrap_or_else(|_| Ok(String::new()))?;
-                }
-
-                let mut filter_stdout_lines: Vec<String> = Vec::new();
-                let mut filter_stdout_raw = String::new();
-                if let Some(handle) = filter_stdout_handle {
-                    (filter_stdout_lines, filter_stdout_raw) = handle
-                        .await
-                        .unwrap_or_else(|_| Ok((Vec::new(), String::new())))?;
-                }
-
-                if let Some(handle) = filter_stderr_handle {
-                    stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
-                }
-
-                if let Some(mut filter) = filter_child {
-                    let filter_status = filter.wait().await?;
-                    if !filter_status.success() {
-                        if !filter_stdout_lines.is_empty() {
-                            stderr_lines.extend(filter_stdout_lines.clone());
-                        } else if !filter_stdout_raw.is_empty() {
-                            stderr_lines.extend(
-                                filter_stdout_raw
-                                    .lines()
-                                    .map(|line| line.to_string())
-                                    .collect::<Vec<_>>(),
-                            );
-                        }
-                        return Err(AgentError::NonZeroExit(
-                            filter_status.code().unwrap_or(-1),
-                            stderr_lines,
-                        ));
+                        let secs = timeout.as_secs();
+                        return Err(AgentError::Timeout(secs));
                     }
                 }
+            } else {
+                wait_future.await?
+            };
 
-                if !spawn_warnings.is_empty() {
-                    stderr_lines.extend(spawn_warnings.clone());
-                }
+            let duration_ms = start.elapsed().as_millis();
 
-                if !status.success() {
+            let mut stderr_lines = Vec::new();
+            if let Some(handle) = stderr_handle {
+                stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
+            }
+
+            let mut agent_stdout = String::new();
+            if let Some(handle) = stdout_handle {
+                agent_stdout = handle.await.unwrap_or_else(|_| Ok(String::new()))?;
+            }
+
+            let mut filter_stdout_lines: Vec<String> = Vec::new();
+            let mut filter_stdout_raw = String::new();
+            if let Some(handle) = filter_stdout_handle {
+                (filter_stdout_lines, filter_stdout_raw) = handle
+                    .await
+                    .unwrap_or_else(|_| Ok((Vec::new(), String::new())))?;
+            }
+
+            if let Some(handle) = filter_stderr_handle {
+                stderr_lines.extend(handle.await.unwrap_or_else(|_| Ok(Vec::new()))?);
+            }
+
+            if let Some(mut filter) = filter_child {
+                let filter_status = filter.wait().await?;
+                if !filter_status.success() {
+                    if !filter_stdout_lines.is_empty() {
+                        stderr_lines.extend(filter_stdout_lines.clone());
+                    } else if !filter_stdout_raw.is_empty() {
+                        stderr_lines.extend(
+                            filter_stdout_raw
+                                .lines()
+                                .map(|line| line.to_string())
+                                .collect::<Vec<_>>(),
+                        );
+                    }
                     return Err(AgentError::NonZeroExit(
-                        status.code().unwrap_or(-1),
+                        filter_status.code().unwrap_or(-1),
                         stderr_lines,
                     ));
                 }
-
-                let assistant_text = if !filter_stdout_raw.is_empty() {
-                    filter_stdout_raw
-                } else if !filter_stdout_lines.is_empty() {
-                    filter_stdout_lines.join("\n")
-                } else {
-                    agent_stdout
-                };
-
-                Ok(AgentResponse {
-                    assistant_text,
-                    stderr: stderr_lines,
-                    exit_code: status.code().unwrap_or(0),
-                    duration_ms,
-                })
             }
+
+            if !spawn_warnings.is_empty() {
+                stderr_lines.extend(spawn_warnings.clone());
+            }
+
+            if !status.success() {
+                return Err(AgentError::NonZeroExit(
+                    status.code().unwrap_or(-1),
+                    stderr_lines,
+                ));
+            }
+
+            let assistant_text = if !filter_stdout_raw.is_empty() {
+                filter_stdout_raw
+            } else if !filter_stdout_lines.is_empty() {
+                filter_stdout_lines.join("\n")
+            } else {
+                agent_stdout
+            };
+
+            Ok(AgentResponse {
+                assistant_text,
+                stderr: stderr_lines,
+                exit_code: status.code().unwrap_or(0),
+                duration_ms,
+            })
         })
     }
 }
@@ -746,7 +737,6 @@ mod tests {
     use crate::config::CommandScope;
     use tokio::sync::mpsc;
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn renders_progress_events_for_stderr() {
         let runner = ScriptRunner;
@@ -790,7 +780,6 @@ mod tests {
         assert!(rx.recv().await.is_some(), "expected progress event");
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn streams_wrapped_json_with_progress_filter() {
         let runner = ScriptRunner;
@@ -870,7 +859,6 @@ printf '%s\n' "$last"
         );
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn preserves_blank_lines_from_filtered_output() {
         let runner = ScriptRunner;
@@ -951,7 +939,7 @@ printf '%s\n' "$content"
         );
     }
 
-    #[cfg(all(not(feature = "mock_llm"), unix))]
+    #[cfg(unix)]
     #[tokio::test]
     async fn stdbuf_wrapper_flushes_buffered_output() {
         if std::process::Command::new("stdbuf")
@@ -1060,7 +1048,6 @@ printf '%s\n' "$last"
         );
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn errors_on_missing_command() {
         let runner = ScriptRunner;
@@ -1081,7 +1068,6 @@ printf '%s\n' "$last"
         assert!(matches!(result, Err(AgentError::MissingCommand)));
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn fails_on_non_executable_script() {
         let runner = ScriptRunner;
@@ -1127,7 +1113,6 @@ printf '%s\n' "$last"
         }
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn surfaces_non_zero_exit_and_stderr() {
         let runner = ScriptRunner;
@@ -1167,7 +1152,6 @@ printf '%s\n' "$last"
         }
     }
 
-    #[cfg(not(feature = "mock_llm"))]
     #[tokio::test]
     async fn times_out_when_script_runs_too_long() {
         let runner = ScriptRunner;

@@ -10,7 +10,9 @@ use super::save::{
     clear_narrative_tracker_for_commit, narrative_change_set_for_commit,
     stage_narrative_paths_for_commit, trim_staged_vizier_paths_for_commit,
 };
-use super::shared::{audit_disposition, print_agent_summary, push_origin_if_requested};
+use super::shared::{
+    WorkdirGuard, audit_disposition, print_agent_summary, push_origin_if_requested,
+};
 use super::types::CommitMode;
 
 /// NOTE: Filters out hidden entries; every visible file in `.vizier/` is treated as part of the narrative surface.
@@ -139,4 +141,15 @@ pub(crate) async fn inline_command(
     print_agent_summary();
 
     Ok(())
+}
+
+pub(crate) async fn run_ask_in_worktree(
+    user_message: String,
+    push_after_commit: bool,
+    agent: &config::AgentSettings,
+    commit_mode: CommitMode,
+    worktree_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = WorkdirGuard::enter(worktree_path)?;
+    inline_command(user_message, push_after_commit, agent, commit_mode).await
 }

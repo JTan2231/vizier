@@ -1,40 +1,25 @@
 use crate::fixtures::*;
 
 #[test]
-fn test_approve_cancel_exits_nonzero() -> TestResult {
+fn test_approve_requires_yes() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    let slug = "cancel-approve";
-    let draft = repo
-        .vizier_cmd()
-        .args(["draft", "--name", slug, "approve cancel prompt"])
+    let output = repo
+        .vizier_cmd_background()
+        .args(["approve", "missing-plan"])
         .output()?;
     assert!(
-        draft.status.success(),
-        "vizier draft failed: {}",
-        String::from_utf8_lossy(&draft.stderr)
-    );
-
-    let mut approve_cmd = repo.vizier_cmd();
-    approve_cmd.args(["approve", slug]);
-    approve_cmd.stdin(Stdio::piped());
-    approve_cmd.stdout(Stdio::piped());
-    approve_cmd.stderr(Stdio::piped());
-    let mut child = approve_cmd.spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(b"n\n")?;
-    }
-    let output = child.wait_with_output()?;
-    assert!(
         !output.status.success(),
-        "expected approve cancellation to exit non-zero"
+        "expected approve without --yes to fail"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("Approval cancelled"),
-        "expected approval cancellation message:\n{stdout}"
+        stderr.contains("requires --yes"),
+        "expected scheduler guard to mention --yes requirement:
+{stderr}"
     );
     Ok(())
 }
+
 #[test]
 fn test_approve_merges_plan() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -58,12 +43,12 @@ fn test_approve_merges_plan() -> TestResult {
     );
     let stdout_before = String::from_utf8_lossy(&list_before.stdout);
     assert!(
-        stdout_before.contains("Plan   : approve-smoke"),
+        stdout_before.contains("approve-smoke"),
         "pending plans missing approve-smoke: {}",
         stdout_before
     );
     assert!(
-        stdout_before.contains("Branch : draft/approve-smoke"),
+        stdout_before.contains("draft/approve-smoke"),
         "pending plans missing branch detail: {}",
         stdout_before
     );

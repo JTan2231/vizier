@@ -9,7 +9,6 @@ use vizier_core::{
     config, display, vcs,
 };
 
-use crate::errors::CancelledError;
 use crate::plan;
 
 use super::gates::{
@@ -22,8 +21,7 @@ use super::save::{
 };
 use super::shared::{
     WorkdirGuard, append_agent_rows, audit_disposition, current_verbosity, format_block,
-    prompt_for_confirmation, push_origin_if_requested, require_agent_backend, short_hash,
-    spawn_plain_progress_logger,
+    push_origin_if_requested, require_agent_backend, short_hash, spawn_plain_progress_logger,
 };
 use super::types::{ApproveOptions, CommitMode};
 
@@ -47,12 +45,6 @@ pub(crate) async fn run_approve(
         opts.branch_override.as_deref(),
         opts.target.as_deref(),
     )?;
-
-    vcs::ensure_clean_worktree().map_err(|err| {
-        Box::<dyn std::error::Error>::from(format!(
-            "clean working tree required before approval: {err}"
-        ))
-    })?;
 
     let repo = Repository::discover(".")?;
     let source_ref = repo
@@ -97,11 +89,7 @@ pub(crate) async fn run_approve(
     }
 
     if !opts.assume_yes {
-        spec.show_preview(&plan_meta);
-        if !prompt_for_confirmation("Implement plan now? [y/N] ")? {
-            println!("Approval cancelled; no changes were made.");
-            return Err(Box::new(CancelledError::new("approval cancelled")));
-        }
+        return Err("vizier approve requires --yes in scheduler mode".into());
     }
 
     let worktree = plan::PlanWorktree::create(&spec.slug, &spec.branch, "approve")?;

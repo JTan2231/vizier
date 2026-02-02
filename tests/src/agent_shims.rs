@@ -40,7 +40,7 @@ fn test_agent_wrapper_unbuffers_progress_integration() -> TestResult {
         return Ok(());
     }
 
-    let repo = IntegrationRepo::with_binary(vizier_binary_no_mock().clone())?;
+    let repo = IntegrationRepo::new_without_mock()?;
     let bin_dir = repo.path().join(".vizier/tmp/bin");
     fs::create_dir_all(&bin_dir)?;
 
@@ -154,7 +154,7 @@ fn test_agent_wrapper_fallbacks_emit_warnings() -> TestResult {
         return Ok(());
     }
 
-    let repo = IntegrationRepo::with_binary(vizier_binary_no_mock().clone())?;
+    let repo = IntegrationRepo::new_without_mock()?;
     let bin_dir = repo.path().join(".vizier/tmp/bin");
     fs::create_dir_all(&bin_dir)?;
 
@@ -222,7 +222,6 @@ progress_filter = ["{}"]
 }
 #[test]
 fn codex_shim_forwards_prompt_and_args() -> TestResult {
-    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let bin_dir = tmp.path().join("bin");
     let input_log = tmp.path().join("codex-input.log");
@@ -282,7 +281,6 @@ fn codex_shim_forwards_prompt_and_args() -> TestResult {
 }
 #[test]
 fn gemini_shim_forwards_prompt_and_args() -> TestResult {
-    let _guard = integration_test_lock().lock();
     let tmp = TempDir::new()?;
     let bin_dir = tmp.path().join("bin");
     let input_log = tmp.path().join("gemini-input.log");

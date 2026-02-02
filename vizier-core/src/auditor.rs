@@ -1244,6 +1244,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn with_config<F: FnOnce()>(cfg: config::Config, f: F) {
+        let _guard = config::test_config_lock().lock().unwrap();
         let original = config::get_config();
         config::set_config(cfg);
         f();

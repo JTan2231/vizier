@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,7 +23,6 @@ use vizier_core::{
     },
 };
 
-use crate::errors::CancelledError;
 use crate::plan;
 
 use super::gates::{CicdScriptResult, clip_log, log_cicd_result, run_cicd_script};
@@ -33,8 +33,8 @@ use super::save::{
 };
 use super::shared::{
     WorkdirGuard, append_agent_rows, build_agent_request, current_verbosity, format_block,
-    prompt_for_confirmation, prompt_selection, push_origin_if_requested, require_agent_backend,
-    short_hash, spawn_plain_progress_logger,
+    prompt_selection, push_origin_if_requested, require_agent_backend, short_hash,
+    spawn_plain_progress_logger,
 };
 use super::types::{CommitMode, ConflictAutoResolveSetting, MergeConflictStrategy, MergeOptions};
 
@@ -43,6 +43,21 @@ struct CicdGateOutcome {
     script: PathBuf,
     attempts: u32,
     fixes: Vec<CicdFixRecord>,
+}
+
+fn mock_agent_enabled() -> bool {
+    if !cfg!(feature = "integration_testing") {
+        return false;
+    }
+    env::var("VIZIER_MOCK_AGENT")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -297,20 +312,10 @@ pub(crate) async fn run_merge(
         }
     }
 
-    vcs::ensure_clean_worktree().map_err(|err| {
-        Box::<dyn std::error::Error>::from(format!(
-            "clean working tree required before merge: {err}"
-        ))
-    })?;
-
     let plan_meta = spec.load_metadata()?;
 
     if !opts.assume_yes {
-        spec.show_preview(&plan_meta);
-        if !prompt_for_confirmation("Merge this plan? [y/N] ")? {
-            println!("Merge cancelled; no changes were made.");
-            return Err(Box::new(CancelledError::new("merge cancelled")));
-        }
+        return Err("vizier merge requires --yes in scheduler mode".into());
     }
 
     let worktree = plan::PlanWorktree::create(&spec.slug, &spec.branch, "merge")?;
@@ -880,8 +885,7 @@ async fn attempt_cicd_auto_fix(
         let _ = handle.await;
     }
 
-    #[cfg(feature = "mock_llm")]
-    {
+    if mock_agent_enabled() {
         mock_cicd_remediation(&repo_root)?;
     }
 
@@ -1581,8 +1585,7 @@ async fn try_auto_resolve_conflicts(
     }
     result.map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
-    #[cfg(feature = "mock_llm")]
-    {
+    if mock_agent_enabled() {
         mock_conflict_resolution(files)?;
     }
 
@@ -1711,7 +1714,6 @@ async fn try_auto_resolve_conflicts(
     }
 }
 
-#[cfg(feature = "mock_llm")]
 fn mock_conflict_resolution(files: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     for rel in files {
         let path = Path::new(rel);
@@ -1728,7 +1730,6 @@ fn mock_conflict_resolution(files: &[String]) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-#[cfg(feature = "mock_llm")]
 fn strip_conflict_markers(input: &str) -> Option<String> {
     if !input.contains("<<<<<<<") {
         return None;
@@ -1758,7 +1759,6 @@ fn strip_conflict_markers(input: &str) -> Option<String> {
     Some(output)
 }
 
-#[cfg(feature = "mock_llm")]
 fn mock_cicd_remediation(repo_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let instructions = repo_root.join(".vizier/tmp/mock_cicd_fix_path");
     if !instructions.exists() {

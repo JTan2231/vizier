@@ -49,3 +49,5 @@ Update (2026-01-30)
 - Clarified glossary lockstep expectations so snapshot edits and term definitions stay paired under the Default-Action Posture.
 Update (2026-02-01)
 - Stopgap enforcement: narrative edits proceed only when the user explicitly instructs updates, honoring the AGENTS guardrail while the DAP precedence rule remains unresolved. Clarified that the default-action intent treats every user input as authorization unless an explicit opt-out is given.
+Update (2026-02-02)
+- Clarified that explicit update instructions authorize edits to supporting narrative thread docs (not just snapshot/glossary) while keeping updates minimal and commit-style.

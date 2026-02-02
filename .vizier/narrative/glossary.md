@@ -7,17 +7,22 @@
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
 - **Config reference**: `docs/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings.
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
-- **Background-by-default**: Workflow posture where assistant-backed commands launch background jobs by default unless `--no-background` is set or stdin input forces a foreground run.
+- **Background-by-default**: Workflow posture where assistant-backed commands always enqueue scheduler jobs; `--no-background` now errors and `--follow` attaches to job logs.
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
+- **DAG scheduler**: The job scheduler that enqueues every command as a node with dependencies, artifacts, locks, and wait states to control background execution.
 - **Default-Action Posture (DAP)**: Unless explicitly opted out, every user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
-- **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; currently treated as a prerequisite for narrative updates until DAP precedence is codified.
+- **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; that authorization covers snapshot/glossary plus supporting thread-doc updates, and remains the prerequisite until DAP precedence is codified.
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
 - **Integration test lock**: A global mutex held by the integration-test harness so `IntegrationRepo`-backed tests—and any non-`IntegrationRepo` tests that spawn external processes—run serially instead of racing on temp repos and agent shim setup.
+- **Job artifact**: A named output that jobs produce/consume (plan docs/branches, plan commits, target branches, ask/save patches) for dependency tracking.
+- **Job dependency**: An artifact-based prerequisite that keeps a job waiting or blocked until the required artifact exists.
+- **Job lock**: A named shared/exclusive mutex (for example `repo_serial`, `branch:<name>`, `temp_worktree:<id>`, `merge_sentinel:<slug>`) that gates concurrent job execution.
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.
-- **Merge queue**: The serialized merge job backlog tracked under `.vizier/jobs/merge-queue.json`, used to order background merge operations; jobs linked to the queue record queue IDs/positions in job metadata so `vizier jobs` can surface queue status.
+- **Merge queue**: Deprecated; the former serialized merge backlog under `.vizier/jobs/merge-queue.json`, replaced by the DAG scheduler and lock-based serialization.
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
+- **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
 - **Prompt-config matrix**: `docs/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
 - **Repo boundary**: Operational constraint for narrative upkeep: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
@@ -25,5 +30,6 @@
 - **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads, updated directly in-repo with glossary updates whenever the snapshot changes.
 - **snapshotDelta**: Internal, diff-like narrative change output kept inside `.vizier`; it is not emitted in user-facing responses.
 - **Thread doc**: A focused narrative document under `.vizier/narrative/threads/` that expands one tension beyond what fits in the snapshot.
+- **Wait reason**: The recorded explanation for why a job is waiting (dependencies, locks, pinned head) surfaced in job metadata and `vizier jobs` output.
 - **Worktree**: A separate checkout under `.vizier/tmp-worktrees/` used to isolate agent-backed edits from the operator’s main checkout.
-- **Workspace**: A manifest-backed “sticky” worktree under `.vizier/tmp-worktrees/workspace-<slug>` that operators can `vizier cd` into for browsing/editing draft branches.
+- **Workspace**: Deprecated; the former manifest-backed “sticky” worktree under `.vizier/tmp-worktrees/workspace-<slug>`, now superseded by scheduler-managed temp worktrees.

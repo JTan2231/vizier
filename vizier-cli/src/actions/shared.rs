@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,6 +15,7 @@ use vizier_core::{
 };
 
 use super::types::CommitMode;
+use crate::jobs;
 
 pub(crate) fn clip_message(msg: &str) -> String {
     const LIMIT: usize = 90;
@@ -348,15 +349,6 @@ pub(crate) fn short_hash(hash: &str) -> String {
     }
 }
 
-pub(crate) fn prompt_for_confirmation(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    print!("{prompt}");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let normalized = input.trim().to_ascii_lowercase();
-    Ok(matches!(normalized.as_str(), "y" | "yes"))
-}
-
 pub(crate) struct WorkdirGuard {
     previous: PathBuf,
 }
@@ -374,6 +366,52 @@ impl Drop for WorkdirGuard {
         if let Err(err) = std::env::set_current_dir(&self.previous) {
             display::debug(format!("failed to restore working directory: {err}"));
         }
+    }
+}
+
+pub(crate) struct TempWorktree {
+    name: String,
+    path: PathBuf,
+}
+
+impl TempWorktree {
+    pub(crate) fn create(
+        job_id: &str,
+        branch: &str,
+        purpose: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let repo_root = vcs::repo_root()
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
+            .to_path_buf();
+        let tmp_root = repo_root.join(".vizier/tmp-worktrees");
+        fs::create_dir_all(&tmp_root)?;
+        let dir_name = format!("{purpose}-{job_id}");
+        let worktree_path = tmp_root.join(&dir_name);
+        let worktree_name = format!("vizier-{purpose}-{job_id}");
+
+        vcs::add_worktree_for_branch(&worktree_name, &worktree_path, branch)?;
+        jobs::record_current_job_worktree(&repo_root, Some(&worktree_name), &worktree_path);
+
+        Ok(Self {
+            name: worktree_name,
+            path: worktree_path,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn cleanup(self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Err(err) = vcs::remove_worktree(&self.name, true) {
+            display::warn(format!(
+                "temporary worktree cleanup failed ({err}); remove manually with `git worktree prune`"
+            ));
+        }
+        if self.path.exists() {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+        Ok(())
     }
 }
 

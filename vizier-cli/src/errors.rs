@@ -3,12 +3,6 @@ pub struct CancelledError {
     message: &'static str,
 }
 
-impl CancelledError {
-    pub fn new(message: &'static str) -> Self {
-        Self { message }
-    }
-}
-
 impl std::fmt::Display for CancelledError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)

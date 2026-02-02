@@ -11,87 +11,27 @@ pub(crate) use std::io::{self, BufRead, Read, Write};
 pub(crate) use std::os::unix::fs::PermissionsExt;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::{Command, Output, Stdio};
-pub(crate) use std::sync::{Condvar, Mutex, OnceLock};
-pub(crate) use std::thread::ThreadId;
+pub(crate) use std::sync::{Mutex, OnceLock};
 pub(crate) use std::time::{Duration, Instant};
 pub(crate) use tempfile::TempDir;
 
 pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-// Integration tests spawn external processes, temporary repos, and background jobs. Serialize
-// them to avoid cross-test races, but allow re-entrant locking within a single test.
-pub(crate) struct IntegrationTestLock {
-    state: Mutex<IntegrationTestState>,
-    cvar: Condvar,
+static BUILD_ROOT: OnceLock<PathBuf> = OnceLock::new();
+static BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn build_root() -> &'static PathBuf {
+    BUILD_ROOT.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("vizier-tests-build-")
+            .tempdir()
+            .expect("create temp dir for vizier test builds")
+            .keep()
+    })
 }
 
-#[derive(Default)]
-pub(crate) struct IntegrationTestState {
-    owner: Option<ThreadId>,
-    depth: usize,
-}
-
-impl IntegrationTestLock {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(IntegrationTestState::default()),
-            cvar: Condvar::new(),
-        }
-    }
-
-    pub(crate) fn lock(&'static self) -> IntegrationTestGuard {
-        let current = std::thread::current().id();
-        let mut state = self.state.lock().expect("lock integration test mutex");
-        loop {
-            match state.owner {
-                None => {
-                    state.owner = Some(current);
-                    state.depth = 1;
-                    return IntegrationTestGuard {
-                        lock: self,
-                        owner: current,
-                    };
-                }
-                Some(owner) if owner == current => {
-                    state.depth += 1;
-                    return IntegrationTestGuard {
-                        lock: self,
-                        owner: current,
-                    };
-                }
-                _ => {
-                    state = self
-                        .cvar
-                        .wait(state)
-                        .expect("wait on integration test mutex");
-                }
-            }
-        }
-    }
-}
-
-pub(crate) struct IntegrationTestGuard {
-    lock: &'static IntegrationTestLock,
-    owner: ThreadId,
-}
-
-impl Drop for IntegrationTestGuard {
-    fn drop(&mut self) {
-        let mut state = self.lock.state.lock().expect("lock integration test mutex");
-        if state.owner == Some(self.owner) {
-            state.depth = state.depth.saturating_sub(1);
-            if state.depth == 0 {
-                state.owner = None;
-                self.lock.cvar.notify_all();
-            }
-        }
-    }
-}
-
-static INTEGRATION_TEST_LOCK: OnceLock<IntegrationTestLock> = OnceLock::new();
-
-pub(crate) fn integration_test_lock() -> &'static IntegrationTestLock {
-    INTEGRATION_TEST_LOCK.get_or_init(IntegrationTestLock::new)
+fn build_lock() -> &'static Mutex<()> {
+    BUILD_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 pub(crate) fn repo_root() -> PathBuf {
@@ -103,22 +43,20 @@ pub(crate) fn repo_root() -> PathBuf {
 
 pub(crate) fn vizier_binary() -> &'static PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| build_vizier_binary(&["mock_llm", "integration_testing"]))
-}
-
-pub(crate) fn vizier_binary_no_mock() -> &'static PathBuf {
-    static BIN_NO_MOCK: OnceLock<PathBuf> = OnceLock::new();
-    BIN_NO_MOCK.get_or_init(|| build_vizier_binary(&["integration_testing"]))
+    BIN.get_or_init(|| build_vizier_binary(&["integration_testing"]))
 }
 
 pub(crate) fn build_vizier_binary(features: &[&str]) -> PathBuf {
+    let _guard = build_lock()
+        .lock()
+        .expect("lock vizier integration test build");
     let root = repo_root();
     let label = if features.is_empty() {
         "base".to_string()
     } else {
         features.join("_")
     };
-    let target_dir = root.join("target").join(format!("tests-{label}"));
+    let target_dir = build_root().join(format!("target-{label}"));
     let mut args = vec!["build".to_string(), "--release".to_string()];
     if !features.is_empty() {
         args.push("--features".to_string());
@@ -159,16 +97,22 @@ pub(crate) struct IntegrationRepo {
     dir: TempDir,
     agent_bin_dir: PathBuf,
     vizier_bin: PathBuf,
-    _guard: IntegrationTestGuard,
+    mock_agent: bool,
 }
 
 impl IntegrationRepo {
     pub(crate) fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_binary(vizier_binary().clone())
+        Self::with_binary_and_mock(vizier_binary().clone(), true)
     }
 
-    pub(crate) fn with_binary(bin: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        let guard = integration_test_lock().lock();
+    pub(crate) fn new_without_mock() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_binary_and_mock(vizier_binary().clone(), false)
+    }
+
+    fn with_binary_and_mock(
+        bin: PathBuf,
+        mock_agent: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let dir = TempDir::new()?;
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
@@ -181,7 +125,7 @@ impl IntegrationRepo {
             dir,
             agent_bin_dir,
             vizier_bin: bin,
-            _guard: guard,
+            mock_agent,
         })
     }
 
@@ -202,6 +146,7 @@ impl IntegrationRepo {
         let _ = fs::create_dir_all(&config_root);
         cmd.env("VIZIER_CONFIG_DIR", &config_root);
         cmd.env("VIZIER_AGENT_SHIMS_DIR", &self.agent_bin_dir);
+        cmd.env("VIZIER_MOCK_AGENT", if self.mock_agent { "1" } else { "0" });
         let mut paths = vec![self.agent_bin_dir.clone()];
         if let Some(existing) = env::var_os("PATH") {
             paths.extend(env::split_paths(&existing));
@@ -214,7 +159,7 @@ impl IntegrationRepo {
 
     pub(crate) fn vizier_cmd(&self) -> Command {
         let mut cmd = self.vizier_cmd_base();
-        cmd.arg("--no-background");
+        cmd.arg("--follow");
         cmd
     }
 
@@ -224,6 +169,14 @@ impl IntegrationRepo {
 
     pub(crate) fn vizier_cmd_with_config(&self, config: &Path) -> Command {
         let mut cmd = self.vizier_cmd();
+        cmd.env("VIZIER_CONFIG_FILE", config);
+        cmd.arg("--config-file");
+        cmd.arg(config);
+        cmd
+    }
+
+    pub(crate) fn vizier_cmd_background_with_config(&self, config: &Path) -> Command {
+        let mut cmd = self.vizier_cmd_base();
         cmd.env("VIZIER_CONFIG_FILE", config);
         cmd.arg("--config-file");
         cmd.arg(config);
@@ -474,7 +427,47 @@ pub(crate) fn wait_for_job_completion(
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        if status != "pending" && status != "running" {
+        if !matches!(
+            status,
+            "queued" | "waiting_on_deps" | "waiting_on_locks" | "running"
+        ) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+pub(crate) fn wait_for_job_status(
+    repo: &IntegrationRepo,
+    job_id: &str,
+    expected: &str,
+    timeout: Duration,
+) -> TestResult {
+    let job_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(job_id)
+        .join("job.json");
+    let start = Instant::now();
+    let mut last_status = "missing".to_string();
+    loop {
+        if start.elapsed() > timeout {
+            return Err(format!(
+                "timed out waiting for job {job_id} to reach {expected} (last {last_status})"
+            )
+            .into());
+        }
+        let Ok(contents) = fs::read_to_string(&job_path) else {
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        };
+        let record: Value = serde_json::from_str(&contents)?;
+        let status = record
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        last_status = status.to_string();
+        if status == expected {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -505,6 +498,22 @@ pub(crate) fn write_job_record(
     fs::write(path, serde_json::to_string_pretty(&record)?)
 }
 
+pub(crate) fn update_job_record<F>(repo: &IntegrationRepo, job_id: &str, updater: F) -> TestResult
+where
+    F: FnOnce(&mut Value),
+{
+    let job_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(job_id)
+        .join("job.json");
+    let contents = fs::read_to_string(&job_path)?;
+    let mut record: Value = serde_json::from_str(&contents)?;
+    updater(&mut record);
+    fs::write(job_path, serde_json::to_string_pretty(&record)?)?;
+    Ok(())
+}
+
 pub(crate) fn write_job_record_simple(
     repo: &IntegrationRepo,
     job_id: &str,
@@ -531,80 +540,6 @@ pub(crate) fn write_job_record_simple(
     });
     write_job_record(repo, job_id, record)?;
     Ok(())
-}
-
-pub(crate) fn wait_for_job_active(
-    repo: &IntegrationRepo,
-    job_id: &str,
-    timeout: Duration,
-) -> TestResult {
-    let job_path = repo
-        .path()
-        .join(".vizier/jobs")
-        .join(job_id)
-        .join("job.json");
-    let start = Instant::now();
-    loop {
-        if start.elapsed() > timeout {
-            return Err(format!("timed out waiting for job {job_id} to start").into());
-        }
-        let Ok(contents) = fs::read_to_string(&job_path) else {
-            std::thread::sleep(Duration::from_millis(100));
-            continue;
-        };
-        let record: Value = serde_json::from_str(&contents)?;
-        let status = record
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        match status {
-            "pending" | "running" => return Ok(()),
-            "succeeded" | "failed" | "cancelled" => {
-                return Err(format!("job {job_id} finished before queueing").into());
-            }
-            _ => {}
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-pub(crate) fn list_merge_job_ids(
-    repo: &IntegrationRepo,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let jobs_root = repo.path().join(".vizier/jobs");
-    if !jobs_root.exists() {
-        return Ok(Vec::new());
-    }
-    let mut ids = Vec::new();
-    for entry in fs::read_dir(&jobs_root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let job_id = entry.file_name().to_string_lossy().to_string();
-        let job_path = jobs_root.join(&job_id).join("job.json");
-        if !job_path.exists() {
-            continue;
-        }
-        let contents = fs::read_to_string(&job_path)?;
-        let record: Value = serde_json::from_str(&contents)?;
-        let scope = record
-            .get("metadata")
-            .and_then(|meta| meta.get("scope"))
-            .and_then(Value::as_str);
-        if scope == Some("merge") {
-            ids.push(job_id);
-        }
-    }
-    Ok(ids)
-}
-
-pub(crate) fn read_merge_queue_state(
-    repo: &IntegrationRepo,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let path = repo.path().join(".vizier/jobs/merge-queue.json");
-    let contents = fs::read_to_string(&path)?;
-    Ok(serde_json::from_str(&contents)?)
 }
 
 pub(crate) fn spawn_detached_sleep(seconds: u64) -> TestResult<u32> {
@@ -645,14 +580,6 @@ pub(crate) fn terminate_pid(pid: u32) {
         });
 }
 
-pub(crate) fn list_worktree_names(repo: &Repository) -> Result<Vec<String>, git2::Error> {
-    Ok(repo
-        .worktrees()?
-        .iter()
-        .filter_map(|name| name.map(|value| value.to_string()))
-        .collect())
-}
-
 pub(crate) fn write_cicd_script(
     repo: &IntegrationRepo,
     name: &str,
@@ -663,6 +590,49 @@ pub(crate) fn write_cicd_script(
     let path = scripts_dir.join(name);
     fs::write(&path, contents)?;
     Ok(path)
+}
+
+pub(crate) fn write_sleeping_agent(
+    repo: &IntegrationRepo,
+    name: &str,
+    sleep_secs: u64,
+) -> io::Result<PathBuf> {
+    let bin_dir = repo.path().join(".vizier/tmp/bin");
+    fs::create_dir_all(&bin_dir)?;
+    let path = bin_dir.join(format!("{name}.sh"));
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nset -eu\ncat >/dev/null\nsleep {sleep_secs}\nprintf '%s\\n' 'mock agent response'\n"
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(path)
+}
+
+pub(crate) fn write_agent_config(
+    repo: &IntegrationRepo,
+    filename: &str,
+    scope: &str,
+    agent_path: &Path,
+) -> io::Result<PathBuf> {
+    let config_path = repo.path().join(".vizier/tmp").join(filename);
+    fs::create_dir_all(config_path.parent().unwrap())?;
+    let agent = agent_path.to_string_lossy().replace('\\', "\\\\");
+    let label = agent_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("custom-agent");
+    fs::write(
+        &config_path,
+        format!("[agents.{scope}.agent]\nlabel = \"{label}\"\ncommand = [\"{agent}\"]\n"),
+    )?;
+    Ok(config_path)
 }
 
 pub(crate) fn create_agent_shims(root: &Path) -> io::Result<PathBuf> {
@@ -756,6 +726,7 @@ pub(crate) fn ensure_gitignore(path: &Path) -> io::Result<()> {
     writeln!(file, "\n# Vizier test state")?;
     writeln!(file, ".vizier/tmp/")?;
     writeln!(file, ".vizier/tmp-worktrees/")?;
+    writeln!(file, ".vizier/jobs/")?;
     writeln!(file, ".vizier/sessions/")?;
     Ok(())
 }

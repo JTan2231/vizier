@@ -463,18 +463,6 @@ auto_resolve = true
     }
 
     #[test]
-    fn test_merge_queue_config_from_toml() {
-        let toml = r#"
-[merge.queue]
-enabled = true
-"#;
-        let mut file = NamedTempFile::new().expect("temp toml");
-        file.write_all(toml.as_bytes()).unwrap();
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse merge queue config");
-        assert!(cfg.merge.queue.enabled);
-    }
-
-    #[test]
     fn layered_config_merges_global_and_repo_overrides() {
         let temp_dir = tempdir().expect("create temp dir");
         let global_path = temp_dir.path().join("global.toml");

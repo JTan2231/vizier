@@ -71,13 +71,13 @@ Options:
           Leave changes staged/dirty instead of committing automatically (`[workflow] no_commit_default` sets the default posture)
 
       --background
-          Run supported assistant-backed commands in the background and return immediately with a job handle (requires MESSAGE/--file when stdin would otherwise be read)
+          Deprecated: assistant-backed commands always enqueue jobs; use --follow to stream logs
 
       --follow
-          Run supported assistant-backed commands in the background and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
+          Attach to a scheduled job and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
 
       --no-background
-          Force assistant-backed commands to run in the foreground (required for --json output)
+          Deprecated: foreground execution is no longer supported for assistant-backed commands
 
   -h, --help
           Print help
