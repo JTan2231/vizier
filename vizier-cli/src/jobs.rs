@@ -707,6 +707,7 @@ impl LockState {
     }
 }
 
+#[derive(Debug)]
 enum DependencyState {
     Ready,
     Waiting { detail: String },
@@ -780,12 +781,10 @@ pub fn scheduler_tick(
     for record in &records {
         if let Some(schedule) = record.schedule.as_ref() {
             for artifact in &schedule.artifacts {
-                if job_is_active(record.status) || record.status == JobStatus::Succeeded {
-                    producers
-                        .entry(artifact.clone())
-                        .or_default()
-                        .push(record.status);
-                }
+                producers
+                    .entry(artifact.clone())
+                    .or_default()
+                    .push(record.status);
             }
         }
     }
@@ -1374,11 +1373,178 @@ pub fn gc_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::{BranchType, Signature};
+    use std::collections::HashMap;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn init_repo(temp: &TempDir) -> Result<Repository, git2::Error> {
         let repo = Repository::init(temp.path())?;
         Ok(repo)
+    }
+
+    fn seed_repo(repo: &Repository) -> Result<Oid, Box<dyn std::error::Error>> {
+        let workdir = repo.workdir().ok_or("missing workdir")?;
+        let readme = workdir.join("README.md");
+        fs::write(&readme, "seed")?;
+        let mut index = repo.index()?;
+        index.add_path(Path::new("README.md"))?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = Signature::now("vizier", "vizier@example.com")?;
+        let oid = repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])?;
+        Ok(oid)
+    }
+
+    fn ensure_branch(repo: &Repository, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if repo.find_branch(name, BranchType::Local).is_ok() {
+            return Ok(());
+        }
+        let head = repo.head()?.peel_to_commit()?;
+        repo.branch(name, &head, false)?;
+        Ok(())
+    }
+
+    fn commit_plan_doc(
+        repo: &Repository,
+        slug: &str,
+        branch: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let workdir = repo.workdir().ok_or("missing workdir")?;
+        let plan_path = crate::plan::plan_rel_path(slug);
+        let full_path = workdir.join(&plan_path);
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&full_path, format!("# plan {}\n", slug))?;
+
+        let mut index = repo.index()?;
+        index.add_path(&plan_path)?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = Signature::now("vizier", "vizier@example.com")?;
+        let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let parents = parent.iter().collect::<Vec<_>>();
+        let refname = format!("refs/heads/{branch}");
+        repo.commit(
+            Some(refname.as_str()),
+            &sig,
+            &sig,
+            "plan doc",
+            &tree,
+            &parents,
+        )?;
+        Ok(())
+    }
+
+    fn ensure_artifact_exists(
+        repo: &Repository,
+        jobs_root: &Path,
+        artifact: &JobArtifact,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match artifact {
+            JobArtifact::PlanBranch { branch, .. } | JobArtifact::PlanCommits { branch, .. } => {
+                ensure_branch(repo, branch)?;
+            }
+            JobArtifact::PlanDoc { slug, branch } => {
+                commit_plan_doc(repo, slug, branch)?;
+            }
+            JobArtifact::TargetBranch { name } => {
+                ensure_branch(repo, name)?;
+            }
+            JobArtifact::MergeSentinel { slug } => {
+                let path = repo
+                    .path()
+                    .join(".vizier/tmp/merge-conflicts")
+                    .join(format!("{slug}.json"));
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, "{}")?;
+            }
+            JobArtifact::AskSavePatch { job_id } => {
+                let path = ask_save_patch_path(jobs_root, job_id);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, "patch")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_job_with_status(
+        project_root: &Path,
+        jobs_root: &Path,
+        job_id: &str,
+        status: JobStatus,
+        schedule: JobSchedule,
+        child_args: &[String],
+    ) -> Result<JobRecord, Box<dyn std::error::Error>> {
+        enqueue_job(
+            project_root,
+            jobs_root,
+            job_id,
+            child_args,
+            &["vizier".to_string()],
+            None,
+            None,
+            Some(schedule.clone()),
+        )?;
+        let paths = paths_for(jobs_root, job_id);
+        let mut record = load_record(&paths)?;
+        record.status = status;
+        record.schedule = Some(schedule);
+        persist_record(&paths, &record)?;
+        Ok(record)
+    }
+
+    fn update_job_record<F: FnOnce(&mut JobRecord)>(
+        jobs_root: &Path,
+        job_id: &str,
+        updater: F,
+    ) -> Result<JobRecord, Box<dyn std::error::Error>> {
+        let paths = paths_for(jobs_root, job_id);
+        let mut record = load_record(&paths)?;
+        updater(&mut record);
+        persist_record(&paths, &record)?;
+        Ok(record)
+    }
+
+    #[derive(Clone, Copy)]
+    enum ArtifactKind {
+        PlanBranch,
+        PlanDoc,
+        PlanCommits,
+        TargetBranch,
+        MergeSentinel,
+        AskSavePatch,
+    }
+
+    fn artifact_for(kind: ArtifactKind, suffix: &str) -> JobArtifact {
+        match kind {
+            ArtifactKind::PlanBranch => JobArtifact::PlanBranch {
+                slug: format!("plan-{suffix}"),
+                branch: format!("draft/plan-{suffix}"),
+            },
+            ArtifactKind::PlanDoc => JobArtifact::PlanDoc {
+                slug: format!("doc-{suffix}"),
+                branch: format!("draft/doc-{suffix}"),
+            },
+            ArtifactKind::PlanCommits => JobArtifact::PlanCommits {
+                slug: format!("commits-{suffix}"),
+                branch: format!("draft/commits-{suffix}"),
+            },
+            ArtifactKind::TargetBranch => JobArtifact::TargetBranch {
+                name: format!("target-{suffix}"),
+            },
+            ArtifactKind::MergeSentinel => JobArtifact::MergeSentinel {
+                slug: format!("merge-{suffix}"),
+            },
+            ArtifactKind::AskSavePatch => JobArtifact::AskSavePatch {
+                job_id: format!("job-{suffix}"),
+            },
+        }
     }
 
     #[test]
@@ -1512,5 +1678,803 @@ mod tests {
 
         fs::set_permissions(&paths.job_dir, original).expect("restore perms");
         assert!(result.is_err(), "expected scheduler tick to fail");
+    }
+
+    #[test]
+    fn dependency_state_matrix_covers_artifacts() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("create jobs root");
+
+        let kinds = [
+            ArtifactKind::PlanBranch,
+            ArtifactKind::PlanDoc,
+            ArtifactKind::PlanCommits,
+            ArtifactKind::TargetBranch,
+            ArtifactKind::MergeSentinel,
+            ArtifactKind::AskSavePatch,
+        ];
+
+        for (idx, kind) in kinds.iter().enumerate() {
+            let missing = artifact_for(*kind, &format!("missing-{idx}"));
+            let exists = artifact_for(*kind, &format!("exists-{idx}"));
+            ensure_artifact_exists(&repo, &jobs_root, &exists).expect("create artifact");
+
+            let deps = vec![JobDependency {
+                artifact: missing.clone(),
+            }];
+
+            let mut producers = HashMap::new();
+            producers.insert(missing.clone(), vec![JobStatus::Running]);
+            match dependency_state(&repo, &deps, &producers) {
+                DependencyState::Waiting { detail } => {
+                    assert_eq!(detail, format!("waiting on {}", format_artifact(&missing)))
+                }
+                other => panic!("expected waiting, got {other:?}"),
+            }
+
+            let mut producers = HashMap::new();
+            producers.insert(missing.clone(), vec![JobStatus::Succeeded]);
+            match dependency_state(&repo, &deps, &producers) {
+                DependencyState::Blocked { detail } => {
+                    assert_eq!(detail, format!("missing {}", format_artifact(&missing)))
+                }
+                other => panic!("expected blocked missing, got {other:?}"),
+            }
+
+            let mut producers = HashMap::new();
+            producers.insert(missing.clone(), vec![JobStatus::Failed]);
+            match dependency_state(&repo, &deps, &producers) {
+                DependencyState::Blocked { detail } => assert_eq!(
+                    detail,
+                    format!("dependency failed for {}", format_artifact(&missing))
+                ),
+                other => panic!("expected blocked failure, got {other:?}"),
+            }
+
+            let producers: HashMap<JobArtifact, Vec<JobStatus>> = HashMap::new();
+            match dependency_state(&repo, &deps, &producers) {
+                DependencyState::Blocked { detail } => {
+                    assert_eq!(detail, format!("missing {}", format_artifact(&missing)))
+                }
+                other => panic!("expected blocked missing, got {other:?}"),
+            }
+
+            let deps = vec![JobDependency {
+                artifact: exists.clone(),
+            }];
+            let mut producers = HashMap::new();
+            producers.insert(exists.clone(), vec![JobStatus::Failed]);
+            match dependency_state(&repo, &deps, &producers) {
+                DependencyState::Ready => {}
+                other => panic!("expected ready when artifact exists, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn scheduler_tick_handles_graph_shapes() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let artifact_a = JobArtifact::AskSavePatch {
+            job_id: "a-artifact".to_string(),
+        };
+        let artifact_b = JobArtifact::AskSavePatch {
+            job_id: "b-artifact".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-a",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![artifact_a.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("job a");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-b",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact_a.clone(),
+                }],
+                artifacts: vec![artifact_b.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("job b");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-c",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact_b.clone(),
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("job c");
+
+        let fan_artifact = JobArtifact::AskSavePatch {
+            job_id: "fan-root".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-fan-root",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![fan_artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("fan root");
+        for job_id in ["job-fan-left", "job-fan-right"] {
+            write_job_with_status(
+                project_root,
+                &jobs_root,
+                job_id,
+                JobStatus::Queued,
+                JobSchedule {
+                    dependencies: vec![JobDependency {
+                        artifact: fan_artifact.clone(),
+                    }],
+                    ..JobSchedule::default()
+                },
+                &["--help".to_string()],
+            )
+            .expect("fan job");
+        }
+
+        let fan_in_left = JobArtifact::AskSavePatch {
+            job_id: "fanin-left".to_string(),
+        };
+        let fan_in_right = JobArtifact::AskSavePatch {
+            job_id: "fanin-right".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-fanin-left",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![fan_in_left.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("fanin left");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-fanin-right",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![fan_in_right.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("fanin right");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-fanin",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![
+                    JobDependency {
+                        artifact: fan_in_left.clone(),
+                    },
+                    JobDependency {
+                        artifact: fan_in_right.clone(),
+                    },
+                ],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("fanin");
+
+        let diamond_root = JobArtifact::AskSavePatch {
+            job_id: "diamond-root".to_string(),
+        };
+        let diamond_left = JobArtifact::AskSavePatch {
+            job_id: "diamond-left".to_string(),
+        };
+        let diamond_right = JobArtifact::AskSavePatch {
+            job_id: "diamond-right".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-diamond-root",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![diamond_root.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("diamond root");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-diamond-left",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: diamond_root.clone(),
+                }],
+                artifacts: vec![diamond_left.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("diamond left");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-diamond-right",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: diamond_root.clone(),
+                }],
+                artifacts: vec![diamond_right.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("diamond right");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-diamond-leaf",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![
+                    JobDependency {
+                        artifact: diamond_left.clone(),
+                    },
+                    JobDependency {
+                        artifact: diamond_right.clone(),
+                    },
+                ],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("diamond leaf");
+
+        let disjoint_artifact = JobArtifact::AskSavePatch {
+            job_id: "disjoint-root".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-disjoint-root",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![disjoint_artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("disjoint root");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-disjoint-leaf",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: disjoint_artifact.clone(),
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("disjoint leaf");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("scheduler tick");
+
+        let record_b = read_record(&jobs_root, "job-b").expect("read job b");
+        assert_eq!(record_b.status, JobStatus::WaitingOnDeps);
+        let detail_b = record_b
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail_b.contains("waiting on ask_save_patch:a-artifact"),
+            "unexpected wait detail for job-b: {detail_b}"
+        );
+
+        let record_c = read_record(&jobs_root, "job-c").expect("read job c");
+        let detail_c = record_c
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail_c.contains("waiting on ask_save_patch:b-artifact"),
+            "unexpected wait detail for job-c: {detail_c}"
+        );
+
+        for job_id in ["job-fan-left", "job-fan-right"] {
+            let record = read_record(&jobs_root, job_id).expect("read fan job");
+            assert_eq!(record.status, JobStatus::WaitingOnDeps);
+        }
+
+        let record_fanin = read_record(&jobs_root, "job-fanin").expect("read fanin job");
+        let detail_fanin = record_fanin
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail_fanin.contains("waiting on ask_save_patch:fanin-left"),
+            "unexpected fan-in detail: {detail_fanin}"
+        );
+
+        let record_diamond = read_record(&jobs_root, "job-diamond-leaf").expect("read diamond");
+        let detail_diamond = record_diamond
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail_diamond.contains("waiting on ask_save_patch:diamond-left"),
+            "unexpected diamond detail: {detail_diamond}"
+        );
+
+        let record_disjoint = read_record(&jobs_root, "job-disjoint-leaf").expect("read disjoint");
+        assert_eq!(record_disjoint.status, JobStatus::WaitingOnDeps);
+    }
+
+    #[test]
+    fn scheduler_tick_multi_producer_precedence_waits_on_active() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let artifact = JobArtifact::AskSavePatch {
+            job_id: "multi-producer".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "producer-running",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("producer running");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "producer-succeeded",
+            JobStatus::Succeeded,
+            JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("producer succeeded");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "consumer",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact.clone(),
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("consumer");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("scheduler tick");
+
+        let record = read_record(&jobs_root, "consumer").expect("read consumer");
+        assert_eq!(record.status, JobStatus::WaitingOnDeps);
+        let detail = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail.contains("waiting on ask_save_patch:multi-producer"),
+            "unexpected detail: {detail}"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_waited_on_accumulates_and_stabilizes() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let artifact = JobArtifact::AskSavePatch {
+            job_id: "dep-ready".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "dep-producer",
+            JobStatus::Running,
+            JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("dep producer");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "lock-holder",
+            JobStatus::Running,
+            JobSchedule {
+                locks: vec![JobLock {
+                    key: "lock-a".to_string(),
+                    mode: LockMode::Exclusive,
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("lock holder");
+
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "waiting-job",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact.clone(),
+                }],
+                locks: vec![JobLock {
+                    key: "lock-a".to_string(),
+                    mode: LockMode::Exclusive,
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("waiting job");
+
+        let binary = std::env::current_exe().expect("current exe");
+        let outcome = scheduler_tick(project_root, &jobs_root, &binary).expect("tick 1");
+        assert!(outcome.updated.contains(&"waiting-job".to_string()));
+
+        let record = read_record(&jobs_root, "waiting-job").expect("read waiting job");
+        assert_eq!(record.status, JobStatus::WaitingOnDeps);
+        let waited_on = record
+            .schedule
+            .as_ref()
+            .map(|sched| sched.waited_on.clone())
+            .unwrap_or_default();
+        assert_eq!(waited_on, vec![JobWaitKind::Dependencies]);
+
+        ensure_artifact_exists(
+            &Repository::discover(project_root).expect("repo"),
+            &jobs_root,
+            &artifact,
+        )
+        .expect("create artifact");
+        let outcome = scheduler_tick(project_root, &jobs_root, &binary).expect("tick 2");
+        assert!(outcome.updated.contains(&"waiting-job".to_string()));
+
+        let record = read_record(&jobs_root, "waiting-job").expect("read waiting job");
+        assert_eq!(record.status, JobStatus::WaitingOnLocks);
+        let waited_on = record
+            .schedule
+            .as_ref()
+            .map(|sched| sched.waited_on.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            waited_on,
+            vec![JobWaitKind::Dependencies, JobWaitKind::Locks]
+        );
+
+        let outcome = scheduler_tick(project_root, &jobs_root, &binary).expect("tick 3");
+        assert!(
+            !outcome.updated.contains(&"waiting-job".to_string()),
+            "expected no-op tick to avoid updates"
+        );
+
+        update_job_record(&jobs_root, "lock-holder", |record| {
+            record.status = JobStatus::Succeeded;
+        })
+        .expect("release lock");
+
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick 4");
+        let record = read_record(&jobs_root, "waiting-job").expect("read waiting job");
+        assert_eq!(record.status, JobStatus::Running);
+        let wait_reason = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref());
+        assert!(wait_reason.is_none(), "wait reason should clear on start");
+    }
+
+    #[test]
+    fn scheduler_tick_pinned_head_checked_after_dependencies() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let head = repo.head().expect("head");
+        let branch = head.shorthand().expect("branch").to_string();
+        let pinned = PinnedHead {
+            branch: branch.clone(),
+            oid: "deadbeef".to_string(),
+        };
+        let dep_artifact = JobArtifact::AskSavePatch {
+            job_id: "pinned-dep".to_string(),
+        };
+
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "pinned-with-deps",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: dep_artifact.clone(),
+                }],
+                pinned_head: Some(pinned),
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("pinned with deps");
+
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "pinned-only",
+            JobStatus::Queued,
+            JobSchedule {
+                pinned_head: Some(PinnedHead {
+                    branch: branch.clone(),
+                    oid: "deadbeef".to_string(),
+                }),
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("pinned only");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "pinned-with-deps").expect("read pinned");
+        let wait_reason = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .expect("wait reason");
+        assert_eq!(wait_reason.kind, JobWaitKind::Dependencies);
+
+        let record = read_record(&jobs_root, "pinned-only").expect("read pinned");
+        let wait_reason = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .expect("wait reason");
+        assert_eq!(wait_reason.kind, JobWaitKind::PinnedHead);
+        let detail = wait_reason.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains(&branch),
+            "expected pinned head detail to include branch: {detail}"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_lock_contention_honors_created_at() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-early",
+            JobStatus::Queued,
+            JobSchedule {
+                locks: vec![JobLock {
+                    key: "lock-serial".to_string(),
+                    mode: LockMode::Exclusive,
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("job early");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "job-late",
+            JobStatus::Queued,
+            JobSchedule {
+                locks: vec![JobLock {
+                    key: "lock-serial".to_string(),
+                    mode: LockMode::Exclusive,
+                }],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("job late");
+
+        update_job_record(&jobs_root, "job-early", |record| {
+            record.created_at = Utc::now() - Duration::seconds(10);
+        })
+        .expect("update early");
+        update_job_record(&jobs_root, "job-late", |record| {
+            record.created_at = Utc::now() - Duration::seconds(5);
+        })
+        .expect("update late");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("scheduler tick");
+
+        let early = read_record(&jobs_root, "job-early").expect("read early");
+        let late = read_record(&jobs_root, "job-late").expect("read late");
+        assert_eq!(early.status, JobStatus::Running);
+        assert_eq!(late.status, JobStatus::WaitingOnLocks);
+        let wait_reason = late
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .expect("wait reason");
+        assert_eq!(wait_reason.kind, JobWaitKind::Locks);
+    }
+
+    #[test]
+    fn scheduler_tick_missing_child_args_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "missing-child-args",
+            &[],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "missing-child-args").expect("record");
+        assert_eq!(record.status, JobStatus::Failed);
+        let wait_reason = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .expect("wait reason");
+        assert_eq!(wait_reason.kind, JobWaitKind::Dependencies);
+        assert_eq!(wait_reason.detail.as_deref(), Some("missing child args"));
+    }
+
+    #[test]
+    fn scheduler_tick_starts_with_empty_schedule() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "empty-schedule",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "empty-schedule").expect("record");
+        assert_eq!(record.status, JobStatus::Running);
+        let wait_reason = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref());
+        assert!(wait_reason.is_none(), "wait reason should be cleared");
+    }
+
+    #[test]
+    fn scheduler_tick_self_dependency_waits_forever() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let artifact = JobArtifact::AskSavePatch {
+            job_id: "self-cycle".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "self-cycle",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact.clone(),
+                }],
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("self cycle");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "self-cycle").expect("record");
+        assert_eq!(record.status, JobStatus::WaitingOnDeps);
+        let detail = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail.contains("waiting on ask_save_patch:self-cycle"),
+            "unexpected wait detail: {detail}"
+        );
     }
 }

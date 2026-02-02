@@ -448,6 +448,102 @@ fn test_scheduler_pinned_head_mismatch_waits() -> TestResult {
 }
 
 #[test]
+fn test_scheduler_pinned_head_mismatch_resolves_after_reset() -> TestResult {
+    let repo = IntegrationRepo::new_without_mock()?;
+    let ask_agent_path = write_sleeping_agent(&repo, "sleepy-ask", 2)?;
+    let draft_agent_path = write_sleeping_agent(&repo, "fast-draft", 0)?;
+
+    let config_path = repo.path().join(".vizier/tmp/pinned-head-resolve.toml");
+    fs::create_dir_all(config_path.parent().unwrap())?;
+    let ask_agent = ask_agent_path.to_string_lossy().replace('\\', "\\\\");
+    let draft_agent = draft_agent_path.to_string_lossy().replace('\\', "\\\\");
+    fs::write(
+        &config_path,
+        format!(
+            "[agents.ask.agent]\nlabel = \"sleepy-ask\"\ncommand = [\"{ask_agent}\"]\n\n[agents.draft.agent]\nlabel = \"fast-draft\"\ncommand = [\"{draft_agent}\"]\n"
+        ),
+    )?;
+
+    let first = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["ask", "pinned head resolve first"])
+        .output()?;
+    assert!(
+        first.status.success(),
+        "scheduled first ask failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_stdout = String::from_utf8_lossy(&first.stdout);
+    let first_job_id = extract_job_id(&first_stdout).ok_or("expected first ask job id")?;
+    wait_for_job_status(&repo, &first_job_id, "running", Duration::from_secs(5))?;
+
+    let second = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["ask", "pinned head resolve second"])
+        .output()?;
+    assert!(
+        second.status.success(),
+        "scheduled second ask failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    let second_job_id = extract_job_id(&second_stdout).ok_or("expected second ask job id")?;
+    wait_for_job_status(
+        &repo,
+        &second_job_id,
+        "waiting_on_locks",
+        Duration::from_secs(5),
+    )?;
+
+    wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(30))?;
+    wait_for_job_status(
+        &repo,
+        &second_job_id,
+        "waiting_on_deps",
+        Duration::from_secs(10),
+    )?;
+
+    let second_record = read_job_record(&repo, &second_job_id)?;
+    let pinned = second_record
+        .get("schedule")
+        .and_then(|s| s.get("pinned_head"))
+        .ok_or("missing pinned_head")?;
+    let branch = pinned
+        .get("branch")
+        .and_then(Value::as_str)
+        .ok_or("missing pinned branch")?;
+    let oid = pinned
+        .get("oid")
+        .and_then(Value::as_str)
+        .ok_or("missing pinned oid")?;
+
+    repo.git(&["checkout", branch])?;
+    repo.git(&["reset", "--hard", oid])?;
+
+    let draft = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args([
+            "draft",
+            "--name",
+            "pinned-resolve",
+            "pinned head resolve plan",
+        ])
+        .output()?;
+    assert!(
+        draft.status.success(),
+        "scheduled draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+    let draft_stdout = String::from_utf8_lossy(&draft.stdout);
+    let draft_job_id = extract_job_id(&draft_stdout).ok_or("expected draft job id")?;
+
+    wait_for_job_status(&repo, &second_job_id, "running", Duration::from_secs(10))?;
+    wait_for_job_completion(&repo, &second_job_id, Duration::from_secs(30))?;
+    wait_for_job_completion(&repo, &draft_job_id, Duration::from_secs(30))?;
+    Ok(())
+}
+
+#[test]
 fn test_scheduler_background_ask_applies_single_commit() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let before = count_commits_from_head(&repo.repo())?;

@@ -42,6 +42,15 @@ fn format_wait_reason(reason: &jobs::JobWaitReason) -> String {
     format!("{:?}: {detail}", reason.kind).to_lowercase()
 }
 
+fn format_waited_on(waited_on: &[jobs::JobWaitKind]) -> String {
+    join_or_none(
+        waited_on
+            .iter()
+            .map(|kind| format!("{:?}", kind).to_lowercase())
+            .collect(),
+    )
+}
+
 fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Option<String> {
     let schedule = record.schedule.as_ref();
     match field {
@@ -69,12 +78,15 @@ fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Opti
         JobsListField::Wait => {
             schedule.and_then(|sched| sched.wait_reason.as_ref().map(format_wait_reason))
         }
+        JobsListField::WaitedOn => schedule.map(|sched| format_waited_on(&sched.waited_on)),
         JobsListField::PinnedHead => schedule.and_then(|sched| {
             sched
                 .pinned_head
                 .as_ref()
                 .map(|pinned| format!("{}@{}", pinned.branch, pinned.oid))
         }),
+        JobsListField::Artifacts => schedule
+            .map(|sched| join_or_none(sched.artifacts.iter().map(format_job_artifact).collect())),
         JobsListField::Failed => {
             if record.status == JobStatus::Failed {
                 record
@@ -135,6 +147,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::Wait => {
             schedule.and_then(|sched| sched.wait_reason.as_ref().map(format_wait_reason))
         }
+        JobsShowField::WaitedOn => schedule.map(|sched| format_waited_on(&sched.waited_on)),
         JobsShowField::PinnedHead => schedule.and_then(|sched| {
             sched
                 .pinned_head

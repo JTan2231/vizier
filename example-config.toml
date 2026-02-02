@@ -96,7 +96,19 @@ summary_single_line = true
 [display.lists.jobs]
 format = "block" # block|table|json
 show_succeeded = false
-fields = ["Job", "Status", "Created", "Failed", "Command"]
+fields = [
+  "Job",
+  "Status",
+  "Created",
+  "Wait",
+  "Waited on",
+  "Dependencies",
+  "Locks",
+  "Pinned head",
+  "Artifacts",
+  "Failed",
+  "Command",
+]
 
 [display.lists.jobs_show]
 format = "block" # block|table|json
@@ -116,6 +128,12 @@ fields = [
   "Target",
   "Branch",
   "Revision",
+  "Dependencies",
+  "Locks",
+  "Wait",
+  "Waited on",
+  "Pinned head",
+  "Artifacts",
   "Queue",
   "Queue entry",
   "Queue position",

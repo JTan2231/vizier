@@ -25,7 +25,7 @@
 - **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
 - **Prompt-config matrix**: `docs/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
-- **Repo boundary**: Operational constraint for narrative upkeep: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
+- **Repo boundary**: Operational constraint for all agent work: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
 - **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads, updated directly in-repo with glossary updates whenever the snapshot changes.
 - **snapshotDelta**: Internal, diff-like narrative change output kept inside `.vizier`; it is not emitted in user-facing responses.

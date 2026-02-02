@@ -748,9 +748,19 @@ fn test_jobs_list_format_json() -> TestResult {
         "wait reason mismatch: {job}"
     );
     assert_eq!(
+        job.get("waited_on").and_then(Value::as_str),
+        Some("dependencies"),
+        "waited_on mismatch: {job}"
+    );
+    assert_eq!(
         job.get("pinned_head").and_then(Value::as_str),
         Some("main@deadbeef"),
         "pinned head mismatch: {job}"
+    );
+    assert_eq!(
+        job.get("artifacts").and_then(Value::as_str),
+        Some("plan_commits:alpha (draft/alpha)"),
+        "artifacts mismatch: {job}"
     );
     let failed = job.get("failed").and_then(Value::as_str).unwrap_or("");
     assert!(
@@ -873,6 +883,11 @@ fn test_jobs_show_format_json() -> TestResult {
         "wait mismatch: {json}"
     );
     assert_eq!(
+        json.get("waited_on").and_then(Value::as_str),
+        Some("locks"),
+        "waited_on mismatch: {json}"
+    );
+    assert_eq!(
         json.get("pinned_head").and_then(Value::as_str),
         Some("main@feedface"),
         "pinned head mismatch: {json}"
@@ -917,6 +932,74 @@ fn test_jobs_show_format_json() -> TestResult {
         json.get("command").and_then(Value::as_str),
         Some("vizier ask show-json"),
         "command mismatch: {json}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_list_status_labels_for_waiting_and_blocked() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-wait-deps",
+        "waiting_on_deps",
+        "2026-01-31T03:00:00Z",
+        None,
+        &["vizier", "ask", "wait-deps"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-wait-locks",
+        "waiting_on_locks",
+        "2026-01-31T03:01:00Z",
+        None,
+        &["vizier", "ask", "wait-locks"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-blocked",
+        "blocked_by_dependency",
+        "2026-01-31T03:02:00Z",
+        None,
+        &["vizier", "ask", "blocked"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "list", "--format", "json"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    let jobs = json
+        .get("jobs")
+        .and_then(|value| value.as_array())
+        .ok_or("expected jobs array in JSON output")?;
+
+    let mut statuses = std::collections::HashMap::new();
+    for job in jobs {
+        if let (Some(id), Some(status)) = (
+            job.get("job").and_then(Value::as_str),
+            job.get("status").and_then(Value::as_str),
+        ) {
+            statuses.insert(id.to_string(), status.to_string());
+        }
+    }
+
+    assert_eq!(
+        statuses.get("job-wait-deps").map(String::as_str),
+        Some("waiting_on_deps"),
+        "waiting_on_deps label mismatch: {statuses:?}"
+    );
+    assert_eq!(
+        statuses.get("job-wait-locks").map(String::as_str),
+        Some("waiting_on_locks"),
+        "waiting_on_locks label mismatch: {statuses:?}"
+    );
+    assert_eq!(
+        statuses.get("job-blocked").map(String::as_str),
+        Some("blocked_by_dependency"),
+        "blocked_by_dependency label mismatch: {statuses:?}"
     );
     Ok(())
 }
