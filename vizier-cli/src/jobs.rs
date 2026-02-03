@@ -903,6 +903,15 @@ pub fn scheduler_tick(
             });
             record.schedule = Some(schedule);
             persist_record(&paths_for(jobs_root, &record.id), &record)?;
+            finalize_job(
+                project_root,
+                jobs_root,
+                &record.id,
+                JobStatus::Failed,
+                1,
+                None,
+                None,
+            )?;
             outcome.updated.push(record.id.clone());
             continue;
         }
@@ -2395,6 +2404,16 @@ mod tests {
 
         let record = read_record(&jobs_root, "missing-child-args").expect("record");
         assert_eq!(record.status, JobStatus::Failed);
+        assert_eq!(record.exit_code, Some(1));
+        assert!(
+            record.finished_at.is_some(),
+            "expected finished_at to be set"
+        );
+        let outcome_path = record.outcome_path.as_deref().expect("outcome path");
+        assert!(
+            project_root.join(outcome_path).exists(),
+            "expected outcome file to exist"
+        );
         let wait_reason = record
             .schedule
             .as_ref()
