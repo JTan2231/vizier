@@ -1,6 +1,26 @@
 use crate::fixtures::*;
 use std::thread;
 
+fn schedule_record(job_id: &str, status: &str, created_at: &str, schedule: Value) -> Value {
+    json!({
+        "id": job_id,
+        "status": status,
+        "command": ["vizier", "ask", "schedule"],
+        "created_at": created_at,
+        "started_at": created_at,
+        "finished_at": null,
+        "pid": null,
+        "exit_code": null,
+        "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+        "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+        "session_path": null,
+        "outcome_path": null,
+        "metadata": null,
+        "config_snapshot": null,
+        "schedule": schedule
+    })
+}
+
 #[test]
 fn test_jobs_tail_follow_uses_global_flag() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -564,6 +584,358 @@ fn test_jobs_list_all_overrides_dismiss_failures() -> TestResult {
         stdout.matches("Created:").count(),
         3,
         "created timestamp should appear for each listed job:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_empty_state() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "schedule"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Outcome: No scheduled jobs"),
+        "expected empty schedule outcome:\n{stdout}"
+    );
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "schedule", "--format", "json"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        payload
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(|nodes| nodes.len()),
+        Some(0),
+        "expected empty nodes array: {payload}"
+    );
+    assert_eq!(
+        payload
+            .get("edges")
+            .and_then(Value::as_array)
+            .map(|edges| edges.len()),
+        Some(0),
+        "expected empty edges array: {payload}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_dag_and_json_output() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.git(&["branch", "present-branch"])?;
+
+    let artifact = json!({ "ask_save_patch": { "job_id": "producer-artifact" } });
+    let producer_schedule = json!({
+        "artifacts": [artifact.clone()]
+    });
+    let consumer_schedule = json!({
+        "dependencies": [
+            { "artifact": artifact.clone() },
+            { "artifact": { "target_branch": { "name": "present-branch" } } },
+            { "artifact": { "target_branch": { "name": "missing-branch" } } }
+        ]
+    });
+
+    write_job_record(
+        &repo,
+        "job-producer",
+        schedule_record(
+            "job-producer",
+            "succeeded",
+            "2026-02-01T00:00:00Z",
+            producer_schedule,
+        ),
+    )?;
+    write_job_record(
+        &repo,
+        "job-consumer",
+        schedule_record(
+            "job-consumer",
+            "queued",
+            "2026-02-01T01:00:00Z",
+            consumer_schedule,
+        ),
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "schedule"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Schedule (DAG)"),
+        "expected schedule header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("job-consumer queued"),
+        "expected consumer root line:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ask_save_patch:producer-artifact -> job-producer succeeded"),
+        "expected producer edge:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("target_branch:present-branch -> [present]"),
+        "expected present artifact state:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("target_branch:missing-branch -> [missing]"),
+        "expected missing artifact state:\n{stdout}"
+    );
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "schedule", "--format", "json"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout)?;
+    let nodes = payload
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or("expected nodes array")?;
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.get("id") == Some(&Value::String("job-consumer".to_string()))),
+        "expected job-consumer node: {payload}"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.get("id") == Some(&Value::String("job-producer".to_string()))),
+        "expected job-producer node: {payload}"
+    );
+    let edges = payload
+        .get("edges")
+        .and_then(Value::as_array)
+        .ok_or("expected edges array")?;
+    assert!(
+        edges.iter().any(|edge| {
+            edge.get("from") == Some(&Value::String("job-consumer".to_string()))
+                && edge.get("to") == Some(&Value::String("job-producer".to_string()))
+                && edge.get("artifact")
+                    == Some(&Value::String(
+                        "ask_save_patch:producer-artifact".to_string(),
+                    ))
+        }),
+        "expected producer edge in JSON: {payload}"
+    );
+    assert!(
+        edges.iter().any(|edge| {
+            edge.get("to")
+                == Some(&Value::String(
+                    "artifact:target_branch:present-branch".to_string(),
+                ))
+                && edge.get("state") == Some(&Value::String("present".to_string()))
+        }),
+        "expected present artifact edge in JSON: {payload}"
+    );
+    assert!(
+        edges.iter().any(|edge| {
+            edge.get("to")
+                == Some(&Value::String(
+                    "artifact:target_branch:missing-branch".to_string(),
+                ))
+                && edge.get("state") == Some(&Value::String("missing".to_string()))
+        }),
+        "expected missing artifact edge in JSON: {payload}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_filters_terminal_without_all() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-active",
+        "queued",
+        "2026-02-02T00:00:00Z",
+        None,
+        &["vizier", "ask", "active"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-succeeded",
+        "succeeded",
+        "2026-02-02T00:10:00Z",
+        Some("2026-02-02T00:11:00Z"),
+        &["vizier", "ask", "done"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "schedule"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-active queued"),
+        "expected active job in schedule:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("job-succeeded"),
+        "did not expect succeeded job without --all:\n{stdout}"
+    );
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--all"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --all failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-succeeded succeeded"),
+        "expected succeeded job with --all:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_job_focus_includes_neighbors() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let artifact = json!({ "ask_save_patch": { "job_id": "root-artifact" } });
+    let root_schedule = json!({ "artifacts": [artifact.clone()] });
+    let consumer_schedule = json!({
+        "dependencies": [
+            { "artifact": artifact.clone() }
+        ]
+    });
+
+    write_job_record(
+        &repo,
+        "job-root",
+        schedule_record("job-root", "queued", "2026-02-03T00:00:00Z", root_schedule),
+    )?;
+    write_job_record(
+        &repo,
+        "job-consumer",
+        schedule_record(
+            "job-consumer",
+            "queued",
+            "2026-02-03T01:00:00Z",
+            consumer_schedule,
+        ),
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-unrelated",
+        "queued",
+        "2026-02-03T02:00:00Z",
+        None,
+        &["vizier", "ask", "unrelated"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--job", "job-root"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --job failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-root queued"),
+        "expected focus job in schedule:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("job-consumer queued"),
+        "expected consumer in focused schedule:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("job-unrelated"),
+        "did not expect unrelated job in focused schedule:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_max_depth_limits_expansion() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let artifact_b = json!({ "ask_save_patch": { "job_id": "artifact-b" } });
+    let artifact_c = json!({ "ask_save_patch": { "job_id": "artifact-c" } });
+
+    let job_c_schedule = json!({ "artifacts": [artifact_c.clone()] });
+    let job_b_schedule = json!({
+        "dependencies": [ { "artifact": artifact_c.clone() } ],
+        "artifacts": [artifact_b.clone()]
+    });
+    let job_a_schedule = json!({
+        "dependencies": [ { "artifact": artifact_b.clone() } ]
+    });
+
+    write_job_record(
+        &repo,
+        "job-c",
+        schedule_record("job-c", "succeeded", "2026-02-04T00:00:00Z", job_c_schedule),
+    )?;
+    write_job_record(
+        &repo,
+        "job-b",
+        schedule_record("job-b", "succeeded", "2026-02-04T01:00:00Z", job_b_schedule),
+    )?;
+    write_job_record(
+        &repo,
+        "job-a",
+        schedule_record("job-a", "queued", "2026-02-04T02:00:00Z", job_a_schedule),
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--max-depth", "1"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --max-depth 1 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-a queued"),
+        "expected root job in schedule:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("job-b succeeded"),
+        "expected depth-1 producer edge:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("job-c"),
+        "did not expect depth-2 job with max-depth 1:\n{stdout}"
+    );
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--max-depth", "2"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --max-depth 2 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("job-c"),
+        "expected depth-2 job with max-depth 2:\n{stdout}"
     );
     Ok(())
 }

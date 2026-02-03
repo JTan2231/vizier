@@ -51,3 +51,5 @@ Update (2026-02-01)
 - Stopgap enforcement: narrative edits proceed only when the user explicitly instructs updates, honoring the AGENTS guardrail while the DAP precedence rule remains unresolved. Clarified that the default-action intent treats every user input as authorization unless an explicit opt-out is given.
 Update (2026-02-02)
 - Clarified that explicit update instructions authorize edits to supporting narrative thread docs (not just snapshot/glossary) while keeping updates minimal and commit-style.
+Update (2026-02-03)
+- Documented that tasks now explicitly include "Update the snapshot, glossary, and supporting narrative docs as needed" as the guardrail-satisfying authorization while DAP precedence remains unresolved.

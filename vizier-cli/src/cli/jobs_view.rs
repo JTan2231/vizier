@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::path::Path;
 
+use git2::Repository;
 use serde_json::{Map, Value, json};
 use vizier_core::{
     config,
@@ -8,23 +10,10 @@ use vizier_core::{
 
 use crate::actions::shared::format_table;
 use crate::cli::args::{
-    JobsAction, JobsCmd, JobsListField, JobsShowField, normalize_labels, parse_fields,
-    resolve_label,
+    JobsAction, JobsCmd, JobsListField, JobsScheduleFormatArg, JobsShowField, normalize_labels,
+    parse_fields, resolve_label,
 };
 use crate::jobs::{self, JobStatus};
-
-fn format_job_artifact(artifact: &jobs::JobArtifact) -> String {
-    match artifact {
-        jobs::JobArtifact::PlanBranch { slug, branch } => format!("plan_branch:{slug} ({branch})"),
-        jobs::JobArtifact::PlanDoc { slug, branch } => format!("plan_doc:{slug} ({branch})"),
-        jobs::JobArtifact::PlanCommits { slug, branch } => {
-            format!("plan_commits:{slug} ({branch})")
-        }
-        jobs::JobArtifact::TargetBranch { name } => format!("target_branch:{name}"),
-        jobs::JobArtifact::MergeSentinel { slug } => format!("merge_sentinel:{slug}"),
-        jobs::JobArtifact::AskSavePatch { job_id } => format!("ask_save_patch:{job_id}"),
-    }
-}
 
 fn join_or_none(items: Vec<String>) -> String {
     if items.is_empty() {
@@ -51,6 +40,217 @@ fn format_waited_on(waited_on: &[jobs::JobWaitKind]) -> String {
     )
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ScheduleFormat {
+    Dag,
+    Json,
+}
+
+fn schedule_status_visible(status: JobStatus) -> bool {
+    matches!(
+        status,
+        JobStatus::Queued
+            | JobStatus::WaitingOnDeps
+            | JobStatus::WaitingOnLocks
+            | JobStatus::Running
+            | JobStatus::BlockedByDependency
+    )
+}
+
+fn schedule_roots(
+    graph: &jobs::ScheduleGraph,
+    include_all: bool,
+    focus: Option<&str>,
+    max_depth: usize,
+) -> Vec<String> {
+    let mut roots = Vec::new();
+    let job_order = graph.job_ids_sorted();
+
+    if let Some(focus_id) = focus {
+        let focus_set = graph.collect_focus_jobs(focus_id, max_depth);
+        if focus_set.is_empty() {
+            return roots;
+        }
+        for job_id in job_order {
+            if !focus_set.contains(&job_id) {
+                continue;
+            }
+            let record = graph.record(&job_id);
+            let visible = include_all
+                || record
+                    .map(|record| schedule_status_visible(record.status))
+                    .unwrap_or(false);
+            if visible || job_id == focus_id {
+                roots.push(job_id);
+            }
+        }
+        if let Some(index) = roots.iter().position(|job_id| job_id == focus_id) {
+            let focus = roots.remove(index);
+            roots.insert(0, focus);
+        }
+        return roots;
+    }
+
+    for job_id in job_order {
+        let record = graph.record(&job_id);
+        if include_all
+            || record
+                .map(|record| schedule_status_visible(record.status))
+                .unwrap_or(false)
+        {
+            roots.push(job_id);
+        }
+    }
+
+    roots
+}
+
+fn format_schedule_job_line(record: &jobs::JobRecord) -> String {
+    let mut parts = vec![format!(
+        "{} {}",
+        record.id,
+        jobs::status_label(record.status)
+    )];
+
+    let mut metadata_parts = Vec::new();
+    if let Some(metadata) = record.metadata.as_ref() {
+        if let Some(scope) = metadata.scope.as_ref() {
+            metadata_parts.push(scope.clone());
+        }
+        if let Some(plan) = metadata.plan.as_ref() {
+            metadata_parts.push(plan.clone());
+        }
+        if let Some(target) = metadata.target.as_ref() {
+            metadata_parts.push(target.clone());
+        }
+    }
+    if !metadata_parts.is_empty() {
+        parts.push(format!("[{}]", metadata_parts.join("/")));
+    }
+
+    if let Some(wait_reason) = record
+        .schedule
+        .as_ref()
+        .and_then(|sched| sched.wait_reason.as_ref())
+    {
+        let detail = wait_reason
+            .detail
+            .clone()
+            .unwrap_or_else(|| "waiting".to_string());
+        parts.push(format!("[wait: {detail}]"));
+    }
+
+    if let Some(locks) = record.schedule.as_ref().map(|sched| &sched.locks)
+        && !locks.is_empty()
+    {
+        let formatted = join_or_none(
+            locks
+                .iter()
+                .map(|lock| format!("{}:{:?}", lock.key, lock.mode).to_lowercase())
+                .collect(),
+        );
+        parts.push(format!("[locks: {formatted}]"));
+    }
+
+    if let Some(pinned) = record
+        .schedule
+        .as_ref()
+        .and_then(|sched| sched.pinned_head.as_ref())
+    {
+        parts.push(format!("[pinned: {}@{}]", pinned.branch, pinned.oid));
+    }
+
+    parts.join(" ")
+}
+
+struct ScheduleEntry {
+    label: String,
+    producer: Option<String>,
+}
+
+fn render_schedule_dependencies(
+    graph: &jobs::ScheduleGraph,
+    repo: &Repository,
+    job_id: &str,
+    depth_remaining: usize,
+    prefix: &str,
+    path: &mut HashSet<String>,
+) {
+    if depth_remaining == 0 {
+        return;
+    }
+
+    let mut entries = Vec::new();
+    for dependency in graph.dependencies_for(job_id) {
+        let artifact_label = jobs::format_artifact(&dependency);
+        let producers = graph.producers_for(&dependency);
+        if producers.is_empty() {
+            let state = graph.artifact_state(repo, &dependency);
+            entries.push(ScheduleEntry {
+                label: format!("{artifact_label} -> [{}]", state.label()),
+                producer: None,
+            });
+        } else {
+            for producer_id in producers {
+                let status = graph
+                    .record(&producer_id)
+                    .map(|record| jobs::status_label(record.status))
+                    .unwrap_or("unknown");
+                entries.push(ScheduleEntry {
+                    label: format!("{artifact_label} -> {producer_id} {status}"),
+                    producer: Some(producer_id),
+                });
+            }
+        }
+    }
+
+    for (index, entry) in entries.iter().enumerate() {
+        let last = index + 1 == entries.len();
+        let branch = if last { "`-- " } else { "|-- " };
+        println!("{prefix}{branch}{}", entry.label);
+        if let Some(producer_id) = entry.producer.as_ref()
+            && depth_remaining > 1
+            && !path.contains(producer_id)
+        {
+            path.insert(producer_id.clone());
+            let child_prefix = if last {
+                format!("{prefix}    ")
+            } else {
+                format!("{prefix}|   ")
+            };
+            render_schedule_dependencies(
+                graph,
+                repo,
+                producer_id,
+                depth_remaining - 1,
+                &child_prefix,
+                path,
+            );
+            path.remove(producer_id);
+        }
+    }
+}
+
+fn render_schedule_dag(
+    graph: &jobs::ScheduleGraph,
+    repo: &Repository,
+    roots: &[String],
+    max_depth: usize,
+) {
+    println!("Schedule (DAG)");
+    for (index, job_id) in roots.iter().enumerate() {
+        if let Some(record) = graph.record(job_id) {
+            if index > 0 {
+                println!();
+            }
+            println!("{}", format_schedule_job_line(record));
+            let mut path = HashSet::new();
+            path.insert(job_id.clone());
+            render_schedule_dependencies(graph, repo, job_id, max_depth, "", &mut path);
+        }
+    }
+}
+
 fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Option<String> {
     let schedule = record.schedule.as_ref();
     match field {
@@ -62,7 +262,7 @@ fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Opti
                 sched
                     .dependencies
                     .iter()
-                    .map(|dep| format_job_artifact(&dep.artifact))
+                    .map(|dep| jobs::format_artifact(&dep.artifact))
                     .collect(),
             )
         }),
@@ -86,7 +286,7 @@ fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Opti
                 .map(|pinned| format!("{}@{}", pinned.branch, pinned.oid))
         }),
         JobsListField::Artifacts => schedule
-            .map(|sched| join_or_none(sched.artifacts.iter().map(format_job_artifact).collect())),
+            .map(|sched| join_or_none(sched.artifacts.iter().map(jobs::format_artifact).collect())),
         JobsListField::Failed => {
             if record.status == JobStatus::Failed {
                 record
@@ -131,7 +331,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
                 sched
                     .dependencies
                     .iter()
-                    .map(|dep| format_job_artifact(&dep.artifact))
+                    .map(|dep| jobs::format_artifact(&dep.artifact))
                     .collect(),
             )
         }),
@@ -155,7 +355,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
                 .map(|pinned| format!("{}@{}", pinned.branch, pinned.oid))
         }),
         JobsShowField::Artifacts => schedule
-            .map(|sched| join_or_none(sched.artifacts.iter().map(format_job_artifact).collect())),
+            .map(|sched| join_or_none(sched.artifacts.iter().map(jobs::format_artifact).collect())),
         JobsShowField::Worktree => metadata.and_then(|meta| meta.worktree_path.clone()),
         JobsShowField::WorktreeName => metadata.and_then(|meta| meta.worktree_name.clone()),
         JobsShowField::AgentBackend => metadata.and_then(|meta| meta.agent_backend.clone()),
@@ -361,6 +561,47 @@ pub(crate) fn run_jobs_command(
                     if !blocks.is_empty() {
                         println!("{}", blocks.join("\n\n"));
                     }
+                }
+            }
+            Ok(())
+        }
+        JobsAction::Schedule {
+            all,
+            job,
+            format,
+            max_depth,
+        } => {
+            let schedule_format = if emit_json {
+                ScheduleFormat::Json
+            } else {
+                match format {
+                    Some(JobsScheduleFormatArg::Json) => ScheduleFormat::Json,
+                    _ => ScheduleFormat::Dag,
+                }
+            };
+
+            let records = jobs::list_records(jobs_root)?;
+            let graph = jobs::ScheduleGraph::new(records);
+            let roots = schedule_roots(&graph, all, job.as_deref(), max_depth);
+            if roots.is_empty() {
+                if matches!(schedule_format, ScheduleFormat::Json) {
+                    let snapshot = jobs::ScheduleSnapshot {
+                        nodes: Vec::new(),
+                        edges: Vec::new(),
+                    };
+                    println!("{}", serde_json::to_string_pretty(&snapshot)?);
+                } else {
+                    println!("Outcome: No scheduled jobs");
+                }
+                return Ok(());
+            }
+
+            let repo = Repository::discover(project_root)?;
+            match schedule_format {
+                ScheduleFormat::Dag => render_schedule_dag(&graph, &repo, &roots, max_depth),
+                ScheduleFormat::Json => {
+                    let snapshot = graph.snapshot(&repo, &roots, max_depth);
+                    println!("{}", serde_json::to_string_pretty(&snapshot)?);
                 }
             }
             Ok(())

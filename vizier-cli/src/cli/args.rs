@@ -164,6 +164,12 @@ impl From<ListFormatArg> for config::ListFormat {
     }
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum JobsScheduleFormatArg {
+    Dag,
+    Json,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum JobsListField {
     Job,
@@ -553,6 +559,25 @@ pub(crate) enum JobsAction {
         /// Output format (block, table, json); overrides display.lists.jobs.format
         #[arg(long = "format", value_enum)]
         format: Option<ListFormatArg>,
+    },
+
+    /// Show the dependency DAG for scheduled jobs
+    Schedule {
+        /// Include succeeded/failed/cancelled jobs (default shows active + blocked_by_dependency)
+        #[arg(long = "all", short = 'a')]
+        all: bool,
+
+        /// Focus on a single job id and its ancestors/descendants
+        #[arg(long = "job", value_name = "JOB")]
+        job: Option<String>,
+
+        /// Output format (dag, json)
+        #[arg(long = "format", value_enum)]
+        format: Option<JobsScheduleFormatArg>,
+
+        /// Limit dependency expansion depth
+        #[arg(long = "max-depth", value_name = "N", default_value_t = 3)]
+        max_depth: usize,
     },
 
     /// Show details for a background job id

@@ -94,3 +94,37 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).
+
+## Scheduler DAG view (`vizier jobs schedule`)
+`vizier jobs schedule` renders a read-only dependency graph so operators can see
+what is waiting on what without drilling into individual job records.
+
+Usage:
+`vizier jobs schedule [--all] [--job <id>] [--format dag|json] [--max-depth N]`
+
+Behavior:
+- Default output is an ASCII DAG (no Unicode, no ANSI) with node lines:
+  `<job-id> <status> [scope/plan/target] [wait: ...] [locks: ...] [pinned: ...]`.
+- Dependencies render as `artifact -> job` edges; artifact leaves show `[present]`
+  or `[missing]` when no producer exists.
+- `--all` includes succeeded/failed/cancelled jobs (default shows active +
+  blocked_by_dependency).
+- `--job` focuses on a single job and the producers/consumers around it.
+- `--max-depth` limits dependency expansion (default 3).
+
+JSON output (`--format json` or global `--json`) returns an adjacency list:
+```
+{
+  "nodes": [
+    { "id": "job-24", "status": "queued", "command": "vizier ask foo", "wait": "missing plan_doc:foo" }
+  ],
+  "edges": [
+    { "from": "job-24", "to": "job-17", "artifact": "plan_doc:foo (draft/foo)" },
+    { "from": "job-24", "to": "artifact:plan_branch:foo (draft/foo)", "artifact": "plan_branch:foo (draft/foo)", "state": "present" }
+  ]
+}
+```
+
+Empty state:
+- If no matching jobs: stdout prints `Outcome: No scheduled jobs`.
+- JSON format returns `{ "nodes": [], "edges": [] }`.

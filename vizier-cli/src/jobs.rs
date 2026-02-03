@@ -2,7 +2,8 @@ use chrono::{DateTime, Duration, Utc};
 use git2::{Oid, Repository, WorktreePruneOptions};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    cmp::Ordering,
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -619,7 +620,7 @@ fn job_is_active(status: JobStatus) -> bool {
     )
 }
 
-fn format_artifact(artifact: &JobArtifact) -> String {
+pub(crate) fn format_artifact(artifact: &JobArtifact) -> String {
     match artifact {
         JobArtifact::PlanBranch { slug, branch } => format!("plan_branch:{slug} ({branch})"),
         JobArtifact::PlanDoc { slug, branch } => format!("plan_doc:{slug} ({branch})"),
@@ -664,6 +665,341 @@ fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
             ask_save_patch_path(&jobs_root, job_id).exists()
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleArtifactState {
+    Present,
+    Missing,
+}
+
+impl ScheduleArtifactState {
+    pub fn label(self) -> &'static str {
+        match self {
+            ScheduleArtifactState::Present => "present",
+            ScheduleArtifactState::Missing => "missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleNode {
+    pub id: String,
+    pub status: JobStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleEdge {
+    pub from: String,
+    pub to: String,
+    pub artifact: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ScheduleArtifactState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleSnapshot {
+    pub nodes: Vec<ScheduleNode>,
+    pub edges: Vec<ScheduleEdge>,
+}
+
+pub(crate) struct ScheduleGraph {
+    records: HashMap<String, JobRecord>,
+    dependencies: HashMap<String, Vec<JobArtifact>>,
+    artifacts: HashMap<String, Vec<JobArtifact>>,
+    producers: HashMap<JobArtifact, Vec<String>>,
+    consumers: HashMap<JobArtifact, Vec<String>>,
+    job_order: Vec<String>,
+}
+
+impl ScheduleGraph {
+    pub(crate) fn new(records: Vec<JobRecord>) -> Self {
+        let mut records_map = HashMap::new();
+        for record in records {
+            records_map.insert(record.id.clone(), record);
+        }
+
+        let mut dependencies = HashMap::new();
+        let mut artifacts = HashMap::new();
+        let mut producers: HashMap<JobArtifact, Vec<String>> = HashMap::new();
+        let mut consumers: HashMap<JobArtifact, Vec<String>> = HashMap::new();
+
+        for record in records_map.values() {
+            let schedule = record.schedule.as_ref();
+            let mut deps = schedule
+                .map(|sched| {
+                    sched
+                        .dependencies
+                        .iter()
+                        .map(|dep| dep.artifact.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            sort_artifacts(&mut deps);
+            dependencies.insert(record.id.clone(), deps);
+
+            let mut produced = schedule
+                .map(|sched| sched.artifacts.clone())
+                .unwrap_or_default();
+            sort_artifacts(&mut produced);
+            artifacts.insert(record.id.clone(), produced.clone());
+
+            for artifact in &produced {
+                producers
+                    .entry(artifact.clone())
+                    .or_default()
+                    .push(record.id.clone());
+            }
+
+            if let Some(schedule) = schedule {
+                for dep in &schedule.dependencies {
+                    consumers
+                        .entry(dep.artifact.clone())
+                        .or_default()
+                        .push(record.id.clone());
+                }
+            }
+        }
+
+        for list in producers.values_mut() {
+            sort_job_ids(list, &records_map);
+        }
+        for list in consumers.values_mut() {
+            sort_job_ids(list, &records_map);
+        }
+
+        let mut job_order = records_map.keys().cloned().collect::<Vec<_>>();
+        sort_job_ids(&mut job_order, &records_map);
+
+        Self {
+            records: records_map,
+            dependencies,
+            artifacts,
+            producers,
+            consumers,
+            job_order,
+        }
+    }
+
+    pub(crate) fn record(&self, job_id: &str) -> Option<&JobRecord> {
+        self.records.get(job_id)
+    }
+
+    pub(crate) fn job_ids_sorted(&self) -> Vec<String> {
+        self.job_order.clone()
+    }
+
+    pub(crate) fn dependencies_for(&self, job_id: &str) -> Vec<JobArtifact> {
+        self.dependencies.get(job_id).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn artifacts_for(&self, job_id: &str) -> Vec<JobArtifact> {
+        self.artifacts.get(job_id).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn producers_for(&self, artifact: &JobArtifact) -> Vec<String> {
+        self.producers.get(artifact).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn consumers_for(&self, artifact: &JobArtifact) -> Vec<String> {
+        self.consumers.get(artifact).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn artifact_state(
+        &self,
+        repo: &Repository,
+        artifact: &JobArtifact,
+    ) -> ScheduleArtifactState {
+        if artifact_exists(repo, artifact) {
+            ScheduleArtifactState::Present
+        } else {
+            ScheduleArtifactState::Missing
+        }
+    }
+
+    pub(crate) fn collect_focus_jobs(&self, focus: &str, max_depth: usize) -> HashSet<String> {
+        if !self.records.contains_key(focus) {
+            return HashSet::new();
+        }
+
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::new();
+        seen.insert(focus.to_string());
+        queue.push_back((focus.to_string(), 0usize));
+
+        while let Some((job_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let mut neighbors = Vec::new();
+            for dep in self.dependencies_for(&job_id) {
+                neighbors.extend(self.producers_for(&dep));
+            }
+            for artifact in self.artifacts_for(&job_id) {
+                neighbors.extend(self.consumers_for(&artifact));
+            }
+            neighbors.sort_by(|a, b| self.job_compare(a, b));
+            neighbors.dedup();
+            for neighbor in neighbors {
+                if seen.insert(neighbor.clone()) {
+                    queue.push_back((neighbor, depth + 1));
+                }
+            }
+        }
+
+        seen
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        repo: &Repository,
+        roots: &[String],
+        max_depth: usize,
+    ) -> ScheduleSnapshot {
+        let mut edges = Vec::new();
+        let mut node_ids = HashSet::new();
+
+        for root in roots {
+            if !self.records.contains_key(root) {
+                continue;
+            }
+            node_ids.insert(root.clone());
+            let mut path = HashSet::new();
+            path.insert(root.clone());
+            self.collect_edges(repo, root, max_depth, &mut path, &mut edges, &mut node_ids);
+        }
+
+        let mut nodes = Vec::new();
+        for job_id in &self.job_order {
+            if !node_ids.contains(job_id) {
+                continue;
+            }
+            if let Some(record) = self.records.get(job_id) {
+                nodes.push(ScheduleNode {
+                    id: record.id.clone(),
+                    status: record.status,
+                    command: if record.command.is_empty() {
+                        None
+                    } else {
+                        Some(record.command.join(" "))
+                    },
+                    wait: record
+                        .schedule
+                        .as_ref()
+                        .and_then(|sched| sched.wait_reason.as_ref())
+                        .map(|reason| {
+                            reason
+                                .detail
+                                .clone()
+                                .unwrap_or_else(|| "waiting".to_string())
+                        }),
+                });
+            }
+        }
+
+        ScheduleSnapshot { nodes, edges }
+    }
+
+    fn collect_edges(
+        &self,
+        repo: &Repository,
+        job_id: &str,
+        depth_remaining: usize,
+        path: &mut HashSet<String>,
+        edges: &mut Vec<ScheduleEdge>,
+        node_ids: &mut HashSet<String>,
+    ) {
+        if depth_remaining == 0 {
+            return;
+        }
+
+        for dependency in self.dependencies_for(job_id) {
+            let artifact_label = format_artifact(&dependency);
+            let producers = self.producers_for(&dependency);
+            if producers.is_empty() {
+                let state = self.artifact_state(repo, &dependency);
+                edges.push(ScheduleEdge {
+                    from: job_id.to_string(),
+                    to: format!("artifact:{artifact_label}"),
+                    artifact: artifact_label,
+                    state: Some(state),
+                });
+                continue;
+            }
+
+            for producer_id in producers {
+                edges.push(ScheduleEdge {
+                    from: job_id.to_string(),
+                    to: producer_id.clone(),
+                    artifact: artifact_label.clone(),
+                    state: None,
+                });
+                node_ids.insert(producer_id.clone());
+                if depth_remaining > 1 && !path.contains(&producer_id) {
+                    path.insert(producer_id.clone());
+                    self.collect_edges(
+                        repo,
+                        &producer_id,
+                        depth_remaining - 1,
+                        path,
+                        edges,
+                        node_ids,
+                    );
+                    path.remove(&producer_id);
+                }
+            }
+        }
+    }
+
+    fn job_compare(&self, a: &str, b: &str) -> Ordering {
+        match (self.records.get(a), self.records.get(b)) {
+            (Some(left), Some(right)) => {
+                let order = left.created_at.cmp(&right.created_at);
+                if order == Ordering::Equal {
+                    left.id.cmp(&right.id)
+                } else {
+                    order
+                }
+            }
+            _ => a.cmp(b),
+        }
+    }
+}
+
+fn artifact_sort_key(artifact: &JobArtifact) -> (u8, &str, &str) {
+    match artifact {
+        JobArtifact::PlanBranch { slug, branch } => (0, slug, branch),
+        JobArtifact::PlanDoc { slug, branch } => (1, slug, branch),
+        JobArtifact::PlanCommits { slug, branch } => (2, slug, branch),
+        JobArtifact::TargetBranch { name } => (3, name, ""),
+        JobArtifact::MergeSentinel { slug } => (4, slug, ""),
+        JobArtifact::AskSavePatch { job_id } => (5, job_id, ""),
+    }
+}
+
+fn sort_artifacts(artifacts: &mut [JobArtifact]) {
+    artifacts.sort_by(|left, right| artifact_sort_key(left).cmp(&artifact_sort_key(right)));
+}
+
+fn sort_job_ids(job_ids: &mut [String], records: &HashMap<String, JobRecord>) {
+    job_ids.sort_by(
+        |left, right| match (records.get(left), records.get(right)) {
+            (Some(left_record), Some(right_record)) => {
+                let order = left_record.created_at.cmp(&right_record.created_at);
+                if order == Ordering::Equal {
+                    left_record.id.cmp(&right_record.id)
+                } else {
+                    order
+                }
+            }
+            _ => left.cmp(right),
+        },
+    );
 }
 
 fn pinned_head_matches(repo: &Repository, pinned: &PinnedHead) -> Result<bool, git2::Error> {
@@ -1382,6 +1718,7 @@ pub fn gc_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use git2::{BranchType, Signature};
     use std::collections::HashMap;
     use std::path::Path;
@@ -1553,6 +1890,32 @@ mod tests {
             ArtifactKind::AskSavePatch => JobArtifact::AskSavePatch {
                 job_id: format!("job-{suffix}"),
             },
+        }
+    }
+
+    fn make_record(
+        job_id: &str,
+        status: JobStatus,
+        created_at: DateTime<Utc>,
+        schedule: Option<JobSchedule>,
+    ) -> JobRecord {
+        JobRecord {
+            id: job_id.to_string(),
+            status,
+            command: Vec::new(),
+            child_args: Vec::new(),
+            created_at,
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: String::new(),
+            stderr_path: String::new(),
+            session_path: None,
+            outcome_path: None,
+            metadata: None,
+            config_snapshot: None,
+            schedule,
         }
     }
 
@@ -2494,6 +2857,178 @@ mod tests {
         assert!(
             detail.contains("waiting on ask_save_patch:self-cycle"),
             "unexpected wait detail: {detail}"
+        );
+    }
+
+    #[test]
+    fn schedule_graph_orders_dependencies_by_artifact_key() {
+        let deps = vec![
+            JobDependency {
+                artifact: JobArtifact::TargetBranch {
+                    name: "main".to_string(),
+                },
+            },
+            JobDependency {
+                artifact: JobArtifact::AskSavePatch {
+                    job_id: "job-z".to_string(),
+                },
+            },
+            JobDependency {
+                artifact: JobArtifact::PlanDoc {
+                    slug: "alpha".to_string(),
+                    branch: "draft/alpha".to_string(),
+                },
+            },
+        ];
+
+        let record = make_record(
+            "job-1",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                dependencies: deps,
+                ..JobSchedule::default()
+            }),
+        );
+
+        let graph = ScheduleGraph::new(vec![record]);
+        let ordered = graph.dependencies_for("job-1");
+        let expected = vec![
+            JobArtifact::PlanDoc {
+                slug: "alpha".to_string(),
+                branch: "draft/alpha".to_string(),
+            },
+            JobArtifact::TargetBranch {
+                name: "main".to_string(),
+            },
+            JobArtifact::AskSavePatch {
+                job_id: "job-z".to_string(),
+            },
+        ];
+        assert_eq!(ordered, expected);
+    }
+
+    #[test]
+    fn schedule_graph_orders_producers_by_created_at_then_id() {
+        let artifact = JobArtifact::AskSavePatch {
+            job_id: "shared".to_string(),
+        };
+        let record_a = make_record(
+            "job-a",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            }),
+        );
+        let record_b = make_record(
+            "job-b",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            }),
+        );
+
+        let graph = ScheduleGraph::new(vec![record_b, record_a]);
+        let producers = graph.producers_for(&artifact);
+        assert_eq!(producers, vec!["job-a".to_string(), "job-b".to_string()]);
+    }
+
+    #[test]
+    fn schedule_graph_reports_artifact_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        ensure_branch(&repo, "present").expect("ensure branch");
+
+        let graph = ScheduleGraph::new(Vec::new());
+        let present = JobArtifact::TargetBranch {
+            name: "present".to_string(),
+        };
+        let missing = JobArtifact::TargetBranch {
+            name: "missing".to_string(),
+        };
+        assert_eq!(
+            graph.artifact_state(&repo, &present),
+            ScheduleArtifactState::Present
+        );
+        assert_eq!(
+            graph.artifact_state(&repo, &missing),
+            ScheduleArtifactState::Missing
+        );
+    }
+
+    #[test]
+    fn schedule_snapshot_respects_depth_limit() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+
+        let artifact_b = JobArtifact::AskSavePatch {
+            job_id: "b".to_string(),
+        };
+        let artifact_c = JobArtifact::AskSavePatch {
+            job_id: "c".to_string(),
+        };
+
+        let job_c = make_record(
+            "job-c",
+            JobStatus::Succeeded,
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                artifacts: vec![artifact_c.clone()],
+                ..JobSchedule::default()
+            }),
+        );
+        let job_b = make_record(
+            "job-b",
+            JobStatus::Succeeded,
+            Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact_c.clone(),
+                }],
+                artifacts: vec![artifact_b.clone()],
+                ..JobSchedule::default()
+            }),
+        );
+        let job_a = make_record(
+            "job-a",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 3, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact_b.clone(),
+                }],
+                ..JobSchedule::default()
+            }),
+        );
+
+        let graph = ScheduleGraph::new(vec![job_a, job_b, job_c]);
+        let roots = vec!["job-a".to_string()];
+
+        let snapshot = graph.snapshot(&repo, &roots, 1);
+        assert!(
+            snapshot
+                .edges
+                .iter()
+                .any(|edge| edge.from == "job-a" && edge.to == "job-b"),
+            "expected job-a -> job-b edge"
+        );
+        assert!(
+            snapshot.edges.iter().all(|edge| edge.from != "job-b"),
+            "expected depth=1 to skip job-b dependencies"
+        );
+
+        let deeper = graph.snapshot(&repo, &roots, 2);
+        assert!(
+            deeper
+                .edges
+                .iter()
+                .any(|edge| edge.from == "job-b" && edge.to == "job-c"),
+            "expected depth=2 to include job-b -> job-c edge"
         );
     }
 }
