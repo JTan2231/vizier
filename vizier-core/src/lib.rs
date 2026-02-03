@@ -6,6 +6,7 @@ pub mod config;
 pub mod display;
 pub mod file_tracking;
 pub mod observer;
+pub mod scheduler;
 pub mod tools;
 pub mod tree;
 pub mod vcs;

@@ -13,67 +13,15 @@ use std::{
     time::Duration as StdDuration,
 };
 use vizier_core::display;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStatus {
-    Queued,
-    WaitingOnDeps,
-    WaitingOnLocks,
-    Running,
-    Succeeded,
-    Failed,
-    Cancelled,
-    BlockedByDependency,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum JobArtifact {
-    PlanBranch { slug: String, branch: String },
-    PlanDoc { slug: String, branch: String },
-    PlanCommits { slug: String, branch: String },
-    TargetBranch { name: String },
-    MergeSentinel { slug: String },
-    AskSavePatch { job_id: String },
-}
+use vizier_core::scheduler::spec::{self, PinnedHeadFact, SchedulerAction, SchedulerFacts};
+pub use vizier_core::scheduler::{
+    JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead,
+    format_artifact,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobDependency {
     pub artifact: JobArtifact,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LockMode {
-    Shared,
-    Exclusive,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct JobLock {
-    pub key: String,
-    pub mode: LockMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PinnedHead {
-    pub branch: String,
-    pub oid: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum JobWaitKind {
-    Dependencies,
-    Locks,
-    PinnedHead,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct JobWaitReason {
-    pub kind: JobWaitKind,
-    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -620,17 +568,6 @@ fn job_is_active(status: JobStatus) -> bool {
     )
 }
 
-pub(crate) fn format_artifact(artifact: &JobArtifact) -> String {
-    match artifact {
-        JobArtifact::PlanBranch { slug, branch } => format!("plan_branch:{slug} ({branch})"),
-        JobArtifact::PlanDoc { slug, branch } => format!("plan_doc:{slug} ({branch})"),
-        JobArtifact::PlanCommits { slug, branch } => format!("plan_commits:{slug} ({branch})"),
-        JobArtifact::TargetBranch { name } => format!("target_branch:{name}"),
-        JobArtifact::MergeSentinel { slug } => format!("merge_sentinel:{slug}"),
-        JobArtifact::AskSavePatch { job_id } => format!("ask_save_patch:{job_id}"),
-    }
-}
-
 fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
     match artifact {
         JobArtifact::PlanBranch { branch, .. } | JobArtifact::PlanCommits { branch, .. } => {
@@ -1009,93 +946,75 @@ fn pinned_head_matches(repo: &Repository, pinned: &PinnedHead) -> Result<bool, g
     Ok(Some(commit.id()) == expected)
 }
 
-#[derive(Default)]
-struct LockState {
-    exclusive: HashMap<String, usize>,
-    shared: HashMap<String, usize>,
-}
-
-impl LockState {
-    fn can_acquire(&self, lock: &JobLock) -> bool {
-        match lock.mode {
-            LockMode::Exclusive => {
-                !self.exclusive.contains_key(&lock.key) && !self.shared.contains_key(&lock.key)
-            }
-            LockMode::Shared => !self.exclusive.contains_key(&lock.key),
-        }
-    }
-
-    fn can_acquire_all(&self, locks: &[JobLock]) -> bool {
-        locks.iter().all(|lock| self.can_acquire(lock))
-    }
-
-    fn acquire(&mut self, locks: &[JobLock]) {
-        for lock in locks {
-            match lock.mode {
-                LockMode::Exclusive => {
-                    *self.exclusive.entry(lock.key.clone()).or_insert(0) += 1;
-                }
-                LockMode::Shared => {
-                    *self.shared.entry(lock.key.clone()).or_insert(0) += 1;
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum DependencyState {
-    Ready,
-    Waiting { detail: String },
-    Blocked { detail: String },
-}
-
-fn dependency_state(
+fn build_scheduler_facts(
     repo: &Repository,
-    deps: &[JobDependency],
-    producers: &HashMap<JobArtifact, Vec<JobStatus>>,
-) -> DependencyState {
-    for dep in deps {
-        let artifact = &dep.artifact;
-        if artifact_exists(repo, artifact) {
-            continue;
+    records: &[JobRecord],
+) -> Result<SchedulerFacts, Box<dyn std::error::Error>> {
+    let mut facts = SchedulerFacts::default();
+    let mut dependency_artifacts = HashSet::new();
+
+    for record in records {
+        facts.job_order.push(record.id.clone());
+        facts.job_statuses.insert(record.id.clone(), record.status);
+        if !record.child_args.is_empty() {
+            facts.has_child_args.insert(record.id.clone());
         }
-        match producers.get(artifact) {
-            Some(statuses) if statuses.iter().any(|status| job_is_active(*status)) => {
-                return DependencyState::Waiting {
-                    detail: format!("waiting on {}", format_artifact(artifact)),
-                };
+
+        if let Some(schedule) = record.schedule.as_ref() {
+            let deps = schedule
+                .dependencies
+                .iter()
+                .map(|dep| dep.artifact.clone())
+                .collect::<Vec<_>>();
+            if !deps.is_empty() {
+                dependency_artifacts.extend(deps.iter().cloned());
+                facts.job_dependencies.insert(record.id.clone(), deps);
             }
-            Some(statuses)
-                if statuses
-                    .iter()
-                    .any(|status| matches!(status, JobStatus::Succeeded)) =>
-            {
-                // Artifact still missing even after producer success.
-                return DependencyState::Blocked {
-                    detail: format!("missing {}", format_artifact(artifact)),
-                };
+
+            if !schedule.locks.is_empty() {
+                facts
+                    .job_locks
+                    .insert(record.id.clone(), schedule.locks.clone());
             }
-            Some(_) => {
-                return DependencyState::Blocked {
-                    detail: format!("dependency failed for {}", format_artifact(artifact)),
-                };
+
+            if let Some(pinned) = schedule.pinned_head.as_ref() {
+                let matches = pinned_head_matches(repo, pinned)?;
+                facts.pinned_heads.insert(
+                    record.id.clone(),
+                    PinnedHeadFact {
+                        branch: pinned.branch.clone(),
+                        matches,
+                    },
+                );
             }
-            None => {
-                return DependencyState::Blocked {
-                    detail: format!("missing {}", format_artifact(artifact)),
-                };
+
+            if !schedule.waited_on.is_empty() {
+                facts
+                    .waited_on
+                    .insert(record.id.clone(), schedule.waited_on.clone());
+            }
+
+            for artifact in &schedule.artifacts {
+                facts
+                    .producer_statuses
+                    .entry(artifact.clone())
+                    .or_default()
+                    .push(record.status);
+            }
+
+            if record.status == JobStatus::Running && !schedule.locks.is_empty() {
+                facts.lock_state.acquire(&schedule.locks);
             }
         }
     }
 
-    DependencyState::Ready
-}
-
-fn note_waited(schedule: &mut JobSchedule, kind: JobWaitKind) {
-    if !schedule.waited_on.contains(&kind) {
-        schedule.waited_on.push(kind);
+    for artifact in dependency_artifacts {
+        if artifact_exists(repo, &artifact) {
+            facts.artifact_exists.insert(artifact);
+        }
     }
+
+    Ok(facts)
 }
 
 pub fn scheduler_tick(
@@ -1113,157 +1032,62 @@ pub fn scheduler_tick(
 
     let repo = Repository::discover(project_root)?;
 
-    let mut producers: HashMap<JobArtifact, Vec<JobStatus>> = HashMap::new();
-    for record in &records {
-        if let Some(schedule) = record.schedule.as_ref() {
-            for artifact in &schedule.artifacts {
-                producers
-                    .entry(artifact.clone())
-                    .or_default()
-                    .push(record.status);
-            }
-        }
-    }
-
-    let mut lock_state = LockState::default();
-    for record in &records {
-        if record.status == JobStatus::Running
-            && let Some(schedule) = record.schedule.as_ref()
-        {
-            lock_state.acquire(&schedule.locks);
-        }
-    }
-
     records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    let facts = build_scheduler_facts(&repo, &records)?;
+    let decisions = spec::evaluate_all(&facts);
 
     for mut record in records {
         if job_is_terminal(record.status) || record.status == JobStatus::Running {
             continue;
         }
 
+        let decision = match decisions.get(&record.id) {
+            Some(decision) => decision,
+            None => continue,
+        };
+
         let mut schedule = record.schedule.clone().unwrap_or_default();
-        let dep_state = dependency_state(&repo, &schedule.dependencies, &producers);
-        match dep_state {
-            DependencyState::Blocked { detail } => {
-                schedule.wait_reason = Some(JobWaitReason {
-                    kind: JobWaitKind::Dependencies,
-                    detail: Some(detail),
-                });
-                note_waited(&mut schedule, JobWaitKind::Dependencies);
-                if record.status != JobStatus::BlockedByDependency
+        schedule.wait_reason = decision.wait_reason.clone();
+        schedule.waited_on = decision.waited_on.clone();
+
+        match decision.action {
+            SchedulerAction::UpdateStatus => {
+                if record.status != decision.next_status
                     || record
                         .schedule
                         .as_ref()
                         .and_then(|s| s.wait_reason.as_ref())
                         != schedule.wait_reason.as_ref()
                 {
-                    record.status = JobStatus::BlockedByDependency;
+                    record.status = decision.next_status;
                     record.schedule = Some(schedule);
                     persist_record(&paths_for(jobs_root, &record.id), &record)?;
                     outcome.updated.push(record.id.clone());
                 }
-                continue;
             }
-            DependencyState::Waiting { detail } => {
-                schedule.wait_reason = Some(JobWaitReason {
-                    kind: JobWaitKind::Dependencies,
-                    detail: Some(detail),
-                });
-                note_waited(&mut schedule, JobWaitKind::Dependencies);
-                if record.status != JobStatus::WaitingOnDeps
-                    || record
-                        .schedule
-                        .as_ref()
-                        .and_then(|s| s.wait_reason.as_ref())
-                        != schedule.wait_reason.as_ref()
-                {
-                    record.status = JobStatus::WaitingOnDeps;
-                    record.schedule = Some(schedule);
-                    persist_record(&paths_for(jobs_root, &record.id), &record)?;
-                    outcome.updated.push(record.id.clone());
-                }
-                continue;
-            }
-            DependencyState::Ready => {}
-        }
-
-        if let Some(pinned) = schedule.pinned_head.as_ref()
-            && !pinned_head_matches(&repo, pinned)?
-        {
-            schedule.wait_reason = Some(JobWaitReason {
-                kind: JobWaitKind::PinnedHead,
-                detail: Some(format!("pinned head mismatch on {}", pinned.branch)),
-            });
-            note_waited(&mut schedule, JobWaitKind::PinnedHead);
-            if record.status != JobStatus::WaitingOnDeps
-                || record
-                    .schedule
-                    .as_ref()
-                    .and_then(|s| s.wait_reason.as_ref())
-                    != schedule.wait_reason.as_ref()
-            {
-                record.status = JobStatus::WaitingOnDeps;
+            SchedulerAction::FailMissingChildArgs => {
+                record.status = JobStatus::Failed;
                 record.schedule = Some(schedule);
                 persist_record(&paths_for(jobs_root, &record.id), &record)?;
+                finalize_job(
+                    project_root,
+                    jobs_root,
+                    &record.id,
+                    JobStatus::Failed,
+                    1,
+                    None,
+                    None,
+                )?;
                 outcome.updated.push(record.id.clone());
             }
-            continue;
-        }
-
-        if !lock_state.can_acquire_all(&schedule.locks) {
-            schedule.wait_reason = Some(JobWaitReason {
-                kind: JobWaitKind::Locks,
-                detail: Some("waiting on locks".to_string()),
-            });
-            note_waited(&mut schedule, JobWaitKind::Locks);
-            if record.status != JobStatus::WaitingOnLocks
-                || record
-                    .schedule
-                    .as_ref()
-                    .and_then(|s| s.wait_reason.as_ref())
-                    != schedule.wait_reason.as_ref()
-            {
-                record.status = JobStatus::WaitingOnLocks;
+            SchedulerAction::Start => {
+                schedule.wait_reason = None;
                 record.schedule = Some(schedule);
                 persist_record(&paths_for(jobs_root, &record.id), &record)?;
-                outcome.updated.push(record.id.clone());
+                start_job(project_root, jobs_root, binary, &record.id)?;
+                outcome.started.push(record.id.clone());
             }
-            continue;
         }
-
-        if record.child_args.is_empty() {
-            record.status = JobStatus::Failed;
-            schedule.wait_reason = Some(JobWaitReason {
-                kind: JobWaitKind::Dependencies,
-                detail: Some("missing child args".to_string()),
-            });
-            record.schedule = Some(schedule);
-            persist_record(&paths_for(jobs_root, &record.id), &record)?;
-            finalize_job(
-                project_root,
-                jobs_root,
-                &record.id,
-                JobStatus::Failed,
-                1,
-                None,
-                None,
-            )?;
-            outcome.updated.push(record.id.clone());
-            continue;
-        }
-
-        schedule.wait_reason = None;
-        record.schedule = Some(schedule);
-        persist_record(&paths_for(jobs_root, &record.id), &record)?;
-        start_job(project_root, jobs_root, binary, &record.id)?;
-        lock_state.acquire(
-            record
-                .schedule
-                .as_ref()
-                .map(|s| s.locks.as_slice())
-                .unwrap_or_default(),
-        );
-        outcome.started.push(record.id.clone());
     }
 
     Ok(outcome)
@@ -1720,7 +1544,6 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use git2::{BranchType, Signature};
-    use std::collections::HashMap;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -2053,80 +1876,6 @@ mod tests {
     }
 
     #[test]
-    fn dependency_state_matrix_covers_artifacts() {
-        let temp = TempDir::new().expect("temp dir");
-        let repo = init_repo(&temp).expect("init repo");
-        seed_repo(&repo).expect("seed repo");
-        let jobs_root = temp.path().join(".vizier/jobs");
-        fs::create_dir_all(&jobs_root).expect("create jobs root");
-
-        let kinds = [
-            ArtifactKind::PlanBranch,
-            ArtifactKind::PlanDoc,
-            ArtifactKind::PlanCommits,
-            ArtifactKind::TargetBranch,
-            ArtifactKind::MergeSentinel,
-            ArtifactKind::AskSavePatch,
-        ];
-
-        for (idx, kind) in kinds.iter().enumerate() {
-            let missing = artifact_for(*kind, &format!("missing-{idx}"));
-            let exists = artifact_for(*kind, &format!("exists-{idx}"));
-            ensure_artifact_exists(&repo, &jobs_root, &exists).expect("create artifact");
-
-            let deps = vec![JobDependency {
-                artifact: missing.clone(),
-            }];
-
-            let mut producers = HashMap::new();
-            producers.insert(missing.clone(), vec![JobStatus::Running]);
-            match dependency_state(&repo, &deps, &producers) {
-                DependencyState::Waiting { detail } => {
-                    assert_eq!(detail, format!("waiting on {}", format_artifact(&missing)))
-                }
-                other => panic!("expected waiting, got {other:?}"),
-            }
-
-            let mut producers = HashMap::new();
-            producers.insert(missing.clone(), vec![JobStatus::Succeeded]);
-            match dependency_state(&repo, &deps, &producers) {
-                DependencyState::Blocked { detail } => {
-                    assert_eq!(detail, format!("missing {}", format_artifact(&missing)))
-                }
-                other => panic!("expected blocked missing, got {other:?}"),
-            }
-
-            let mut producers = HashMap::new();
-            producers.insert(missing.clone(), vec![JobStatus::Failed]);
-            match dependency_state(&repo, &deps, &producers) {
-                DependencyState::Blocked { detail } => assert_eq!(
-                    detail,
-                    format!("dependency failed for {}", format_artifact(&missing))
-                ),
-                other => panic!("expected blocked failure, got {other:?}"),
-            }
-
-            let producers: HashMap<JobArtifact, Vec<JobStatus>> = HashMap::new();
-            match dependency_state(&repo, &deps, &producers) {
-                DependencyState::Blocked { detail } => {
-                    assert_eq!(detail, format!("missing {}", format_artifact(&missing)))
-                }
-                other => panic!("expected blocked missing, got {other:?}"),
-            }
-
-            let deps = vec![JobDependency {
-                artifact: exists.clone(),
-            }];
-            let mut producers = HashMap::new();
-            producers.insert(exists.clone(), vec![JobStatus::Failed]);
-            match dependency_state(&repo, &deps, &producers) {
-                DependencyState::Ready => {}
-                other => panic!("expected ready when artifact exists, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
     fn scheduler_tick_handles_graph_shapes() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
@@ -2427,73 +2176,6 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_tick_multi_producer_precedence_waits_on_active() {
-        let temp = TempDir::new().expect("temp dir");
-        init_repo(&temp).expect("init repo");
-        let project_root = temp.path();
-        let jobs_root = project_root.join(".vizier/jobs");
-        fs::create_dir_all(&jobs_root).expect("jobs root");
-
-        let artifact = JobArtifact::AskSavePatch {
-            job_id: "multi-producer".to_string(),
-        };
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "producer-running",
-            JobStatus::Running,
-            JobSchedule {
-                artifacts: vec![artifact.clone()],
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("producer running");
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "producer-succeeded",
-            JobStatus::Succeeded,
-            JobSchedule {
-                artifacts: vec![artifact.clone()],
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("producer succeeded");
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "consumer",
-            JobStatus::Queued,
-            JobSchedule {
-                dependencies: vec![JobDependency {
-                    artifact: artifact.clone(),
-                }],
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("consumer");
-
-        let binary = std::env::current_exe().expect("current exe");
-        scheduler_tick(project_root, &jobs_root, &binary).expect("scheduler tick");
-
-        let record = read_record(&jobs_root, "consumer").expect("read consumer");
-        assert_eq!(record.status, JobStatus::WaitingOnDeps);
-        let detail = record
-            .schedule
-            .as_ref()
-            .and_then(|sched| sched.wait_reason.as_ref())
-            .and_then(|reason| reason.detail.clone())
-            .unwrap_or_default();
-        assert!(
-            detail.contains("waiting on ask_save_patch:multi-producer"),
-            "unexpected detail: {detail}"
-        );
-    }
-
-    #[test]
     fn scheduler_tick_waited_on_accumulates_and_stabilizes() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
@@ -2607,143 +2289,6 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_tick_pinned_head_checked_after_dependencies() {
-        let temp = TempDir::new().expect("temp dir");
-        let repo = init_repo(&temp).expect("init repo");
-        seed_repo(&repo).expect("seed repo");
-        let project_root = temp.path();
-        let jobs_root = project_root.join(".vizier/jobs");
-
-        let head = repo.head().expect("head");
-        let branch = head.shorthand().expect("branch").to_string();
-        let pinned = PinnedHead {
-            branch: branch.clone(),
-            oid: "deadbeef".to_string(),
-        };
-        let dep_artifact = JobArtifact::AskSavePatch {
-            job_id: "pinned-dep".to_string(),
-        };
-
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "pinned-with-deps",
-            JobStatus::Queued,
-            JobSchedule {
-                dependencies: vec![JobDependency {
-                    artifact: dep_artifact.clone(),
-                }],
-                pinned_head: Some(pinned),
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("pinned with deps");
-
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "pinned-only",
-            JobStatus::Queued,
-            JobSchedule {
-                pinned_head: Some(PinnedHead {
-                    branch: branch.clone(),
-                    oid: "deadbeef".to_string(),
-                }),
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("pinned only");
-
-        let binary = std::env::current_exe().expect("current exe");
-        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
-
-        let record = read_record(&jobs_root, "pinned-with-deps").expect("read pinned");
-        let wait_reason = record
-            .schedule
-            .as_ref()
-            .and_then(|sched| sched.wait_reason.as_ref())
-            .expect("wait reason");
-        assert_eq!(wait_reason.kind, JobWaitKind::Dependencies);
-
-        let record = read_record(&jobs_root, "pinned-only").expect("read pinned");
-        let wait_reason = record
-            .schedule
-            .as_ref()
-            .and_then(|sched| sched.wait_reason.as_ref())
-            .expect("wait reason");
-        assert_eq!(wait_reason.kind, JobWaitKind::PinnedHead);
-        let detail = wait_reason.detail.as_deref().unwrap_or("");
-        assert!(
-            detail.contains(&branch),
-            "expected pinned head detail to include branch: {detail}"
-        );
-    }
-
-    #[test]
-    fn scheduler_tick_lock_contention_honors_created_at() {
-        let temp = TempDir::new().expect("temp dir");
-        init_repo(&temp).expect("init repo");
-        let project_root = temp.path();
-        let jobs_root = project_root.join(".vizier/jobs");
-
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "job-early",
-            JobStatus::Queued,
-            JobSchedule {
-                locks: vec![JobLock {
-                    key: "lock-serial".to_string(),
-                    mode: LockMode::Exclusive,
-                }],
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("job early");
-        write_job_with_status(
-            project_root,
-            &jobs_root,
-            "job-late",
-            JobStatus::Queued,
-            JobSchedule {
-                locks: vec![JobLock {
-                    key: "lock-serial".to_string(),
-                    mode: LockMode::Exclusive,
-                }],
-                ..JobSchedule::default()
-            },
-            &["--help".to_string()],
-        )
-        .expect("job late");
-
-        update_job_record(&jobs_root, "job-early", |record| {
-            record.created_at = Utc::now() - Duration::seconds(10);
-        })
-        .expect("update early");
-        update_job_record(&jobs_root, "job-late", |record| {
-            record.created_at = Utc::now() - Duration::seconds(5);
-        })
-        .expect("update late");
-
-        let binary = std::env::current_exe().expect("current exe");
-        scheduler_tick(project_root, &jobs_root, &binary).expect("scheduler tick");
-
-        let early = read_record(&jobs_root, "job-early").expect("read early");
-        let late = read_record(&jobs_root, "job-late").expect("read late");
-        assert_eq!(early.status, JobStatus::Running);
-        assert_eq!(late.status, JobStatus::WaitingOnLocks);
-        let wait_reason = late
-            .schedule
-            .as_ref()
-            .and_then(|sched| sched.wait_reason.as_ref())
-            .expect("wait reason");
-        assert_eq!(wait_reason.kind, JobWaitKind::Locks);
-    }
-
-    #[test]
     fn scheduler_tick_missing_child_args_fails() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
@@ -2818,45 +2363,209 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_tick_self_dependency_waits_forever() {
+    fn scheduler_facts_collect_artifact_existence() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let kinds = [
+            ArtifactKind::PlanBranch,
+            ArtifactKind::PlanDoc,
+            ArtifactKind::PlanCommits,
+            ArtifactKind::TargetBranch,
+            ArtifactKind::MergeSentinel,
+            ArtifactKind::AskSavePatch,
+        ];
+
+        for (idx, kind) in kinds.iter().enumerate() {
+            let exists = artifact_for(*kind, &format!("exists-{idx}"));
+            let missing = artifact_for(*kind, &format!("missing-{idx}"));
+            ensure_artifact_exists(&repo, &jobs_root, &exists).expect("create artifact");
+
+            write_job_with_status(
+                project_root,
+                &jobs_root,
+                &format!("job-{idx}"),
+                JobStatus::Queued,
+                JobSchedule {
+                    dependencies: vec![
+                        JobDependency {
+                            artifact: exists.clone(),
+                        },
+                        JobDependency {
+                            artifact: missing.clone(),
+                        },
+                    ],
+                    ..JobSchedule::default()
+                },
+                &["--help".to_string()],
+            )
+            .expect("write job");
+        }
+
+        let mut records = list_records(&jobs_root).expect("list records");
+        records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let facts = build_scheduler_facts(&repo, &records).expect("facts");
+
+        for (idx, kind) in kinds.iter().enumerate() {
+            let exists = artifact_for(*kind, &format!("exists-{idx}"));
+            let missing = artifact_for(*kind, &format!("missing-{idx}"));
+            assert!(
+                facts.artifact_exists.contains(&exists),
+                "expected artifact to exist: {exists:?}"
+            );
+            assert!(
+                !facts.artifact_exists.contains(&missing),
+                "expected artifact to be missing: {missing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduler_facts_collect_producer_statuses() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
         let project_root = temp.path();
         let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
 
         let artifact = JobArtifact::AskSavePatch {
-            job_id: "self-cycle".to_string(),
+            job_id: "artifact".to_string(),
         };
         write_job_with_status(
             project_root,
             &jobs_root,
-            "self-cycle",
-            JobStatus::Queued,
+            "producer-running",
+            JobStatus::Running,
             JobSchedule {
-                dependencies: vec![JobDependency {
-                    artifact: artifact.clone(),
-                }],
                 artifacts: vec![artifact.clone()],
                 ..JobSchedule::default()
             },
             &["--help".to_string()],
         )
-        .expect("self cycle");
+        .expect("producer running");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "producer-succeeded",
+            JobStatus::Succeeded,
+            JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("producer succeeded");
 
-        let binary = std::env::current_exe().expect("current exe");
-        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+        let mut records = list_records(&jobs_root).expect("list records");
+        records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let facts =
+            build_scheduler_facts(&Repository::discover(project_root).expect("repo"), &records)
+                .expect("facts");
+        let statuses = facts
+            .producer_statuses
+            .get(&artifact)
+            .expect("producer statuses");
+        assert!(statuses.contains(&JobStatus::Running));
+        assert!(statuses.contains(&JobStatus::Succeeded));
+    }
 
-        let record = read_record(&jobs_root, "self-cycle").expect("record");
-        assert_eq!(record.status, JobStatus::WaitingOnDeps);
-        let detail = record
-            .schedule
-            .as_ref()
-            .and_then(|sched| sched.wait_reason.as_ref())
-            .and_then(|reason| reason.detail.clone())
-            .unwrap_or_default();
+    #[test]
+    fn scheduler_facts_record_pinned_head_status() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let head = repo.head().expect("head");
+        let branch = head.shorthand().expect("branch").to_string();
+        let oid = head.target().map(|id| id.to_string()).expect("head oid");
+
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "pinned-ok",
+            JobStatus::Queued,
+            JobSchedule {
+                pinned_head: Some(PinnedHead {
+                    branch: branch.clone(),
+                    oid: oid.clone(),
+                }),
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("pinned ok");
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "pinned-bad",
+            JobStatus::Queued,
+            JobSchedule {
+                pinned_head: Some(PinnedHead {
+                    branch: branch.clone(),
+                    oid: "deadbeef".to_string(),
+                }),
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("pinned bad");
+
+        let mut records = list_records(&jobs_root).expect("list records");
+        records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let facts = build_scheduler_facts(&repo, &records).expect("facts");
+
+        let ok = facts.pinned_heads.get("pinned-ok").expect("pinned ok fact");
+        assert!(ok.matches);
+        assert_eq!(ok.branch, branch);
+
+        let bad = facts
+            .pinned_heads
+            .get("pinned-bad")
+            .expect("pinned bad fact");
+        assert!(!bad.matches);
+        assert_eq!(bad.branch, branch);
+    }
+
+    #[test]
+    fn scheduler_facts_track_running_locks() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let lock = JobLock {
+            key: "lock-a".to_string(),
+            mode: LockMode::Exclusive,
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "lock-holder",
+            JobStatus::Running,
+            JobSchedule {
+                locks: vec![lock.clone()],
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("lock holder");
+
+        let mut records = list_records(&jobs_root).expect("list records");
+        records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let facts =
+            build_scheduler_facts(&Repository::discover(project_root).expect("repo"), &records)
+                .expect("facts");
         assert!(
-            detail.contains("waiting on ask_save_patch:self-cycle"),
-            "unexpected wait detail: {detail}"
+            !facts.lock_state.can_acquire(&lock),
+            "expected lock to be held"
         );
     }
 

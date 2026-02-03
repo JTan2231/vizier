@@ -13,7 +13,7 @@
 - **Default-Action Posture (DAP)**: Unless explicitly opted out, every user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
 - **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; that authorization covers snapshot/glossary plus supporting thread-doc updates, and remains the prerequisite until DAP precedence is codified.
-- **Explicit update instruction**: The task-level phrase "Update the snapshot, glossary, and supporting narrative docs as needed" that satisfies the explicit-instruction guardrail for narrative edits.
+- **Explicit update instruction**: The task-level phrase "Update the snapshot, glossary, and supporting narrative docs as needed" that satisfies the explicit-instruction guardrail for narrative edits; when absent, narrative updates are treated as opt-out until DAP precedence is codified.
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
 - **Integration test lock**: A global mutex held by the integration-test harness so `IntegrationRepo`-backed tests—and any non-`IntegrationRepo` tests that spawn external processes—run serially instead of racing on temp repos and agent shim setup.
 - **Job artifact**: A named output that jobs produce/consume (plan docs/branches, plan commits, target branches, ask/save patches) for dependency tracking.

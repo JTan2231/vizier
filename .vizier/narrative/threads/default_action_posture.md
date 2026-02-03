@@ -52,4 +52,4 @@ Update (2026-02-01)
 Update (2026-02-02)
 - Clarified that explicit update instructions authorize edits to supporting narrative thread docs (not just snapshot/glossary) while keeping updates minimal and commit-style.
 Update (2026-02-03)
-- Documented that tasks now explicitly include "Update the snapshot, glossary, and supporting narrative docs as needed" as the guardrail-satisfying authorization while DAP precedence remains unresolved.
+- Documented that tasks now explicitly include "Update the snapshot, glossary, and supporting narrative docs as needed" as the guardrail-satisfying authorization; when absent, narrative updates are treated as a no-op while DAP precedence remains unresolved.
