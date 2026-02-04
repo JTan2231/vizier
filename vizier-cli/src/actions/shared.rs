@@ -2,12 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use vizier_core::{
-    agent::AgentRequest,
+    agent::{AgentRequest, DEFAULT_AGENT_TIMEOUT},
     auditor::{self, Auditor},
     config,
     display::{self, LogLevel, ProgressEvent, Verbosity, format_label_value_block},
@@ -311,7 +309,7 @@ pub(crate) fn build_agent_request(
         allow_script_wrapper: agent.agent_runtime.enable_script_wrapper,
         scope: Some(agent.scope),
         metadata,
-        timeout: Some(Duration::from_secs(9000)),
+        timeout: Some(DEFAULT_AGENT_TIMEOUT),
     }
 }
 

@@ -10,11 +10,10 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::{
-    agent::{AgentRequest, ProgressHook},
+    agent::{AgentRequest, DEFAULT_AGENT_TIMEOUT, ProgressHook},
     config::{self, PromptOrigin, SystemPrompt},
     display, file_tracking, tools, vcs,
 };
@@ -750,7 +749,7 @@ impl Auditor {
                 allow_script_wrapper: opts_clone.enable_script_wrapper,
                 scope: Some(agent_scope),
                 metadata,
-                timeout: Some(Duration::from_secs(9000)),
+                timeout: Some(DEFAULT_AGENT_TIMEOUT),
             };
 
             let response = runner
@@ -847,7 +846,7 @@ impl Auditor {
             allow_script_wrapper: runtime_opts.enable_script_wrapper,
             scope: Some(agent_scope),
             metadata,
-            timeout: Some(Duration::from_secs(9000)),
+            timeout: Some(DEFAULT_AGENT_TIMEOUT),
         };
 
         match runner.execute(request, progress_hook).await {

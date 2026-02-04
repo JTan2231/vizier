@@ -26,6 +26,9 @@ use crate::{
     display::{self, ProgressEvent, ProgressKind, Status},
 };
 
+pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 12 * 60 * 60;
+pub const DEFAULT_AGENT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_AGENT_TIMEOUT_SECS);
+
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
     pub prompt: String,
@@ -736,6 +739,15 @@ mod tests {
     use super::*;
     use crate::config::CommandScope;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn default_agent_timeout_is_12_hours() {
+        assert_eq!(DEFAULT_AGENT_TIMEOUT_SECS, 12 * 60 * 60);
+        assert_eq!(
+            DEFAULT_AGENT_TIMEOUT,
+            std::time::Duration::from_secs(DEFAULT_AGENT_TIMEOUT_SECS)
+        );
+    }
 
     #[tokio::test]
     async fn renders_progress_events_for_stderr() {
