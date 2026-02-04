@@ -18,77 +18,13 @@ use crate::{
     display, file_tracking, tools, vcs,
 };
 
+pub use vizier_kernel::audit::{
+    AgentRunRecord, AuditResult, AuditState, CommitDisposition, Message, MessageRole,
+    NarrativeChangeSet, SessionArtifact,
+};
+
 lazy_static! {
     static ref AUDITOR: Mutex<Auditor> = Mutex::new(Auditor::new());
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MessageRole {
-    System,
-    User,
-    Assistant,
-}
-
-impl MessageRole {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MessageRole::System => "System",
-            MessageRole::User => "User",
-            MessageRole::Assistant => "Assistant",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Message {
-    pub role: MessageRole,
-    pub content: String,
-}
-
-impl Message {
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: MessageRole::System,
-            content: content.into(),
-        }
-    }
-
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: MessageRole::User,
-            content: content.into(),
-        }
-    }
-
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: MessageRole::Assistant,
-            content: content.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AgentRunRecord {
-    pub command: Vec<String>,
-    pub output: config::AgentOutputHandling,
-    pub progress_filter: Option<Vec<String>>,
-    pub exit_code: i32,
-    pub stdout: String,
-    pub stderr: Vec<String>,
-    pub duration_ms: u128,
-}
-
-impl AgentRunRecord {
-    pub fn to_rows(&self) -> Vec<(String, String)> {
-        let mut rows = Vec::new();
-        rows.push(("Exit code".to_string(), self.exit_code.to_string()));
-        rows.push((
-            "Duration".to_string(),
-            format!("{:.2}s", self.duration_ms as f64 / 1000.0),
-        ));
-        rows
-    }
 }
 
 #[derive(Clone)]
@@ -159,58 +95,6 @@ pub fn find_project_root() -> std::io::Result<Option<PathBuf>> {
         } else {
             return Ok(None);
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommitDisposition {
-    Auto,
-    Hold,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AuditState {
-    Clean,
-    Committed,
-    Pending,
-}
-
-#[derive(Clone, Debug)]
-pub struct NarrativeChangeSet {
-    pub paths: Vec<String>,
-    pub summary: Option<String>,
-}
-
-impl NarrativeChangeSet {
-    pub fn is_empty(&self) -> bool {
-        self.paths.is_empty()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AuditResult {
-    pub session_artifact: Option<SessionArtifact>,
-    pub state: AuditState,
-    pub narrative_changes: Option<NarrativeChangeSet>,
-}
-
-impl AuditResult {
-    pub fn session_display(&self) -> Option<String> {
-        self.session_artifact
-            .as_ref()
-            .map(|artifact| artifact.display_path())
-    }
-
-    pub fn narrative_changes(&self) -> Option<&NarrativeChangeSet> {
-        self.narrative_changes.as_ref()
-    }
-
-    pub fn committed(&self) -> bool {
-        matches!(self.state, AuditState::Committed)
-    }
-
-    pub fn pending(&self) -> bool {
-        matches!(self.state, AuditState::Pending)
     }
 }
 
@@ -654,7 +538,8 @@ impl Auditor {
         #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
         user_message: String,
     ) -> Result<Message, Box<dyn std::error::Error>> {
-        let agent = crate::config::get_config().resolve_prompt_profile(
+        let agent = crate::config::resolve_prompt_profile(
+            &crate::config::get_config(),
             config::CommandScope::Ask,
             SystemPrompt::Commit,
             None,
@@ -1005,34 +890,6 @@ struct SessionLogWrapper {
     messages: Vec<Message>,
 }
 
-#[derive(Clone, Debug)]
-pub struct SessionArtifact {
-    pub id: String,
-    pub path: PathBuf,
-    relative_path: Option<String>,
-}
-
-impl SessionArtifact {
-    fn new(id: &str, path: PathBuf, project_root: &Path) -> Self {
-        let relative = path
-            .strip_prefix(project_root)
-            .ok()
-            .map(|value| value.to_string_lossy().to_string());
-
-        Self {
-            id: id.to_string(),
-            path,
-            relative_path: relative,
-        }
-    }
-
-    pub fn display_path(&self) -> String {
-        self.relative_path
-            .clone()
-            .unwrap_or_else(|| self.path.display().to_string())
-    }
-}
-
 fn meta_lines(
     meta: &config::CommitMetaConfig,
     session_id: &str,
@@ -1239,7 +1096,7 @@ mod tests {
     };
     use crate::config;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
     fn with_config<F: FnOnce()>(cfg: config::Config, f: F) {
@@ -1379,11 +1236,8 @@ mod tests {
             let tmp = tempdir().unwrap();
             let path = tmp.path().join("session.json");
             fs::write(&path, "{}").unwrap();
-            let artifact = SessionArtifact {
-                id: "abc".to_string(),
-                path: PathBuf::from(&path),
-                relative_path: None,
-            };
+            let artifact =
+                SessionArtifact::new("abc", PathBuf::from(&path), Path::new("/nonexistent"));
             let mut builder = CommitMessageBuilder::new("feat: path test".to_string());
             builder
                 .set_header(CommitMessageType::CodeChange)

@@ -62,7 +62,8 @@ pub async fn bootstrap_snapshot(
     options: BootstrapOptions,
 ) -> Result<BootstrapReport, Box<dyn std::error::Error>> {
     let repo = Repository::discover(".")?;
-    let agent = config::get_config().resolve_agent_settings(config::CommandScope::Ask, None)?;
+    let cfg = config::get_config();
+    let agent = config::resolve_agent_settings(&cfg, config::CommandScope::Ask, None)?;
     let agent = agent.for_prompt(config::PromptKind::Documentation)?;
 
     let narrative_dir = resolve_narrative_dir()?;

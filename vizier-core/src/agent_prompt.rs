@@ -2,28 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::{agent::AgentError, config, tools};
-
-// Default bounds applied when no per-agent bounds prompt is configured.
-pub const DEFAULT_AGENT_BOUNDS: &str = r#"You are operating inside the current Git repository working tree.
-- Edit files directly (especially the snapshot under `.vizier/` (default `.vizier/narrative/snapshot.md`, legacy `.vizier/.snapshot`) and any narrative docs under `.vizier/narrative/`) instead of calling Vizier CLI commands.
-- Do not invoke Vizier tools; you have full shell/file access already.
-- Stay within the repo boundaries; never access parent directories or network resources unless the prompt explicitly authorizes it.
-- Aggressively make changes--the story is continuously evolving.
-- Every run must end with a brief summary of the narrative changes you made."#;
-
-pub const AGENT_BOUNDS_TAG: &str = "agentBounds";
-
-#[derive(Clone, Debug)]
-pub struct NarrativeDoc {
-    pub slug: String,
-    pub body: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct PromptContext {
-    pub snapshot: String,
-    pub docs: Vec<NarrativeDoc>,
-}
+use vizier_kernel::prompt::{self as kernel_prompt, NarrativeDoc, PromptContext};
 
 pub fn gather_prompt_context() -> Result<PromptContext, AgentError> {
     let narrative_dir = tools::try_get_narrative_dir();
@@ -116,41 +95,10 @@ fn load_context_if_needed(
     gather_prompt_context().map(Some)
 }
 
-fn append_bounds_section(prompt: &mut String, bounds: &str) {
-    prompt.push_str(&format!("<{AGENT_BOUNDS_TAG}>\n"));
-    prompt.push_str(bounds);
-    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
-}
-
-fn append_snapshot_section(prompt: &mut String, context: Option<&PromptContext>) {
-    prompt.push_str("<snapshot>\n");
-    if let Some(ctx) = context {
-        if ctx.snapshot.trim().is_empty() {
-            prompt.push_str("(snapshot is currently empty)\n");
-        } else {
-            prompt.push_str(ctx.snapshot.trim());
-            prompt.push('\n');
-        }
-    } else {
-        prompt.push_str("(snapshot is currently empty)\n");
+fn map_prompt_error(error: kernel_prompt::PromptError) -> AgentError {
+    match error {
+        kernel_prompt::PromptError::MissingPrompt(kind) => AgentError::MissingPrompt(kind),
     }
-    prompt.push_str("</snapshot>\n\n");
-}
-
-fn append_narrative_docs_section(prompt: &mut String, context: Option<&PromptContext>) {
-    prompt.push_str("<narrativeDocs>\n");
-    if let Some(ctx) = context {
-        if ctx.docs.is_empty() {
-            prompt.push_str("(no additional narrative docs)\n");
-        } else {
-            for doc in &ctx.docs {
-                prompt.push_str(&format!("### {}\n{}\n\n", doc.slug, doc.body.trim()));
-            }
-        }
-    } else {
-        prompt.push_str("(no additional narrative docs)\n");
-    }
-    prompt.push_str("</narrativeDocs>\n\n");
 }
 
 pub fn build_documentation_prompt(
@@ -163,30 +111,14 @@ pub fn build_documentation_prompt(
         documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
-
-    let mut prompt = String::new();
-    if documentation.use_documentation_prompt {
-        let selection =
-            prompt_selection.ok_or(AgentError::MissingPrompt(config::PromptKind::Documentation))?;
-        prompt.push_str(&selection.text);
-        prompt.push_str("\n\n");
-    }
-
-    append_bounds_section(&mut prompt, &bounds);
-
-    if documentation.include_snapshot {
-        append_snapshot_section(&mut prompt, context.as_ref());
-    }
-
-    if documentation.include_narrative_docs {
-        append_narrative_docs_section(&mut prompt, context.as_ref());
-    }
-
-    prompt.push_str("<task>\n");
-    prompt.push_str(user_input.trim());
-    prompt.push_str("\n</task>\n");
-
-    Ok(prompt)
+    kernel_prompt::build_documentation_prompt(
+        prompt_selection,
+        user_input,
+        documentation,
+        &bounds,
+        context.as_ref(),
+    )
+    .map_err(map_prompt_error)
 }
 
 pub fn build_implementation_plan_prompt(
@@ -201,32 +133,16 @@ pub fn build_implementation_plan_prompt(
         documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
-
-    let mut prompt = String::new();
-    prompt.push_str(&prompt_selection.text);
-    prompt.push_str("\n\n");
-    append_bounds_section(&mut prompt, &bounds);
-
-    prompt.push_str("<planMetadata>\n");
-    prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nbranch: {branch_name}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
-    ));
-    prompt.push_str("</planMetadata>\n\n");
-
-    if documentation.include_snapshot {
-        append_snapshot_section(&mut prompt, context.as_ref());
-    }
-
-    if documentation.include_narrative_docs {
-        append_narrative_docs_section(&mut prompt, context.as_ref());
-    }
-
-    prompt.push_str("<operatorSpec>\n");
-    prompt.push_str(operator_spec.trim());
-    prompt.push('\n');
-    prompt.push_str("</operatorSpec>\n");
-
-    Ok(prompt)
+    kernel_prompt::build_implementation_plan_prompt(
+        prompt_selection,
+        plan_slug,
+        branch_name,
+        operator_spec,
+        documentation,
+        &bounds,
+        context.as_ref(),
+    )
+    .map_err(map_prompt_error)
 }
 
 pub struct ReviewPromptInput<'a> {
@@ -250,113 +166,20 @@ pub fn build_review_prompt(
     )?;
     let bounds = load_bounds_prompt()?;
 
-    let mut prompt = String::new();
-    prompt.push_str(&prompt_selection.text);
-    prompt.push_str("\n\n");
-    append_bounds_section(&mut prompt, &bounds);
+    let kernel_input = kernel_prompt::ReviewPromptInput {
+        plan_slug: input.plan_slug,
+        branch_name: input.branch_name,
+        target_branch: input.target_branch,
+        plan_document: input.plan_document,
+        diff_summary: input.diff_summary,
+        check_results: input.check_results,
+        cicd_gate: input.cicd_gate,
+        documentation: input.documentation,
+        bounds: &bounds,
+        context: context.as_ref(),
+    };
 
-    prompt.push_str("<planMetadata>\n");
-    prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n",
-        plan_slug = input.plan_slug,
-        branch_name = input.branch_name,
-        target_branch = input.target_branch,
-    ));
-    prompt.push_str("</planMetadata>\n\n");
-
-    if input.documentation.include_snapshot {
-        append_snapshot_section(&mut prompt, context.as_ref());
-    }
-
-    if input.documentation.include_narrative_docs {
-        append_narrative_docs_section(&mut prompt, context.as_ref());
-    }
-
-    prompt.push_str("<planDocument>\n");
-    if input.plan_document.trim().is_empty() {
-        prompt.push_str("(plan document appears empty)\n");
-    } else {
-        prompt.push_str(input.plan_document.trim());
-        prompt.push('\n');
-    }
-    prompt.push_str("</planDocument>\n\n");
-
-    prompt.push_str("<diffSummary>\n");
-    if input.diff_summary.trim().is_empty() {
-        prompt.push_str("(diff between plan branch and target branch was empty or unavailable)\n");
-    } else {
-        prompt.push_str(input.diff_summary.trim());
-        prompt.push('\n');
-    }
-    prompt.push_str("</diffSummary>\n\n");
-
-    prompt.push_str("<checkResults>\n");
-    if input.check_results.is_empty() {
-        prompt.push_str("No review checks were executed before this critique.\n");
-    } else {
-        for check in input.check_results {
-            let status_label = if check.success { "success" } else { "failure" };
-            let status_code = check
-                .status_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "signal".to_string());
-            prompt.push_str(&format!(
-                "### Command: {}\nstatus: {} (code={})\nduration_ms: {}\nstdout:\n{}\n\nstderr:\n{}\n\n",
-                check.command.trim(),
-                status_label,
-                status_code,
-                check.duration_ms,
-                check.stdout.trim(),
-                check.stderr.trim(),
-            ));
-        }
-    }
-    prompt.push_str("</checkResults>\n\n");
-
-    prompt.push_str("<cicdGate>\n");
-    if let Some(gate) = input.cicd_gate {
-        let status = match gate.status {
-            crate::agent::ReviewGateStatus::Passed => "passed",
-            crate::agent::ReviewGateStatus::Failed => "failed",
-            crate::agent::ReviewGateStatus::Skipped => "skipped",
-        };
-        let script_label = gate
-            .script
-            .as_ref()
-            .map(|path| path.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "unset".to_string());
-        let exit_code = gate
-            .exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "signal".to_string());
-        let duration = gate
-            .duration_ms
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "unset".to_string());
-        let stdout = gate.stdout.trim();
-        let stderr = gate.stderr.trim();
-        prompt.push_str(&format!(
-            "status: {status}\nscript: {script_label}\nattempts: {}\nexit_code: {exit_code}\nduration_ms: {duration}\nauto_resolve: {}\nstdout:\n{}\n\nstderr:\n{}\n",
-            gate.attempts,
-            gate.auto_resolve_enabled,
-            if stdout.is_empty() {
-                "(stdout was empty)".to_string()
-            } else {
-                stdout.to_string()
-            },
-            if stderr.is_empty() {
-                "(stderr was empty)".to_string()
-            } else {
-                stderr.to_string()
-            },
-        ));
-    } else {
-        prompt.push_str("No CI/CD gate was configured before this review.\n");
-    }
-    prompt.push_str("</cicdGate>\n");
-
-    Ok(prompt)
+    kernel_prompt::build_review_prompt(prompt_selection, kernel_input).map_err(map_prompt_error)
 }
 
 pub fn build_merge_conflict_prompt(
@@ -371,35 +194,16 @@ pub fn build_merge_conflict_prompt(
         documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
-
-    let mut prompt = String::new();
-    prompt.push_str(&prompt_selection.text);
-    prompt.push_str("\n\n");
-    append_bounds_section(&mut prompt, &bounds);
-
-    prompt.push_str("<mergeContext>\n");
-    prompt.push_str(&format!(
-        "target_branch: {target_branch}\nsource_branch: {source_branch}\n"
-    ));
-    prompt.push_str("conflict_files:\n");
-    if conflicts.is_empty() {
-        prompt.push_str("- (conflicts were detected but no file list was provided)\n");
-    } else {
-        for file in conflicts {
-            prompt.push_str(&format!("- {file}\n"));
-        }
-    }
-    prompt.push_str("</mergeContext>\n\n");
-
-    if documentation.include_snapshot {
-        append_snapshot_section(&mut prompt, context.as_ref());
-    }
-
-    if documentation.include_narrative_docs {
-        append_narrative_docs_section(&mut prompt, context.as_ref());
-    }
-
-    Ok(prompt)
+    kernel_prompt::build_merge_conflict_prompt(
+        prompt_selection,
+        target_branch,
+        source_branch,
+        conflicts,
+        documentation,
+        &bounds,
+        context.as_ref(),
+    )
+    .map_err(map_prompt_error)
 }
 
 pub struct CicdFailurePromptInput<'a> {
@@ -421,65 +225,26 @@ pub fn build_cicd_failure_prompt(input: CicdFailurePromptInput<'_>) -> Result<St
         input.documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
+    let kernel_input = kernel_prompt::CicdFailurePromptInput {
+        plan_slug: input.plan_slug,
+        plan_branch: input.plan_branch,
+        target_branch: input.target_branch,
+        script_path: input.script_path,
+        attempt: input.attempt,
+        max_attempts: input.max_attempts,
+        exit_code: input.exit_code,
+        stdout: input.stdout,
+        stderr: input.stderr,
+        documentation: input.documentation,
+        bounds: &bounds,
+        context: context.as_ref(),
+    };
 
-    let mut prompt = String::new();
-    prompt.push_str("You are assisting after `vizier merge` ran the repository's CI/CD gate script and it failed. Diagnose the failure using the captured output, make the minimal scoped edits needed for the script to pass, update `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, plus any relevant narrative docs when behavior changes, and never delete or bypass the gate. Provide a concise summary of the fixes you applied.\n\n");
-
-    prompt.push_str(&format!("<{AGENT_BOUNDS_TAG}>\n"));
-    prompt.push_str(&bounds);
-    prompt.push_str(&format!("\n</{AGENT_BOUNDS_TAG}>\n\n"));
-
-    prompt.push_str("<planMetadata>\n");
-    prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nplan_branch: {plan_branch}\ntarget_branch: {target_branch}\n",
-        plan_slug = input.plan_slug,
-        plan_branch = input.plan_branch,
-        target_branch = input.target_branch,
-    ));
-    prompt.push_str("</planMetadata>\n\n");
-
-    prompt.push_str("<cicdContext>\n");
-    prompt.push_str(&format!(
-        "script_path: {}\nattempt: {}\nmax_attempts: {}\nexit_code: {}\n",
-        input.script_path.display(),
-        input.attempt,
-        input.max_attempts,
-        input
-            .exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "signal".to_string())
-    ));
-    prompt.push_str("</cicdContext>\n\n");
-
-    prompt.push_str("<gateOutput>\nstdout:\n");
-    if input.stdout.trim().is_empty() {
-        prompt.push_str("(stdout was empty)\n");
-    } else {
-        prompt.push_str(input.stdout.trim());
-        prompt.push('\n');
-    }
-    prompt.push_str("\nstderr:\n");
-    if input.stderr.trim().is_empty() {
-        prompt.push_str("(stderr was empty)\n");
-    } else {
-        prompt.push_str(input.stderr.trim());
-        prompt.push('\n');
-    }
-    prompt.push_str("</gateOutput>\n\n");
-
-    if input.documentation.include_snapshot {
-        append_snapshot_section(&mut prompt, context.as_ref());
-    }
-
-    if input.documentation.include_narrative_docs {
-        append_narrative_docs_section(&mut prompt, context.as_ref());
-    }
-
-    Ok(prompt)
+    kernel_prompt::build_cicd_failure_prompt(kernel_input).map_err(map_prompt_error)
 }
 
 fn load_bounds_prompt() -> Result<String, AgentError> {
-    Ok(DEFAULT_AGENT_BOUNDS.to_string())
+    Ok(kernel_prompt::DEFAULT_AGENT_BOUNDS.to_string())
 }
 
 #[cfg(test)]

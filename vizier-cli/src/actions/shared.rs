@@ -429,8 +429,7 @@ mod tests {
         ];
         cfg.agent_runtime.label = Some("merge-script".to_string());
 
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Merge, None)
+        let agent = config::resolve_agent_settings(&cfg, CommandScope::Merge, None)
             .expect("merge scope should resolve");
 
         let request = build_agent_request(

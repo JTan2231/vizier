@@ -1,4 +1,4 @@
-# Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults. When no --config-file is provided, Vizier loads the global config first (if it exists) and overlays .vizier/config.toml so repo entries override while missing keys inherit your personal defaults; VIZIER_CONFIG_FILE is only used when neither config file is present. See docs/config-reference.md for the full catalogue of keys, defaults, and CLI overrides.
+# Copy this file to ~/.config/vizier/config.toml for user-wide settings or to .vizier/config.toml so the repo carries its defaults. When no --config-file is provided, Vizier loads the global config first (if it exists) and overlays .vizier/config.toml so repo entries override while missing keys inherit your personal defaults; VIZIER_CONFIG_FILE is only used when neither config file is present. See docs/user/config-reference.md for the full catalogue of keys, defaults, and CLI overrides.
 # Global defaults (apply unless overridden below)
 agent = "codex"
 # Commands fail fast when the selected agent shim is unavailable; there is no fallback toggle.
@@ -16,7 +16,7 @@ agent = "codex"
 
 # Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
 # together with agent overrides for that scope+prompt pairing. Available kinds: documentation, commit,
-# implementation_plan, review, merge_conflict. See `docs/prompt-config-matrix.md` for the full scope×prompt-kind
+# implementation_plan, review, merge_conflict. See `docs/user/prompt-config-matrix.md` for the full scope×prompt-kind
 # matrix, fallback order, and documentation toggles.
 [agents.default.prompts.documentation]
 path = "./prompts/documentation.md"

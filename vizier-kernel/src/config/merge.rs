@@ -1,3 +1,5 @@
+use super::*;
+
 impl ApproveStopConditionConfig {
     fn apply_layer(&mut self, layer: &ApproveStopConditionLayer) {
         if let Some(script) = layer.script.as_ref() {

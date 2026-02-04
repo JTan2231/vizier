@@ -1,3 +1,11 @@
+use crate::prompts::{
+    COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
+    REVIEW_PROMPT,
+};
+use std::path::PathBuf;
+
+use super::CommandScope;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum PromptKind {
     Documentation,
@@ -32,7 +40,7 @@ impl PromptKind {
         }
     }
 
-    fn filename_candidates(&self) -> &'static [&'static str] {
+    pub fn filename_candidates(&self) -> &'static [&'static str] {
         match self {
             PromptKind::Documentation => &["DOCUMENTATION_PROMPT.md"],
             PromptKind::Commit => &["COMMIT_PROMPT.md"],
@@ -42,7 +50,7 @@ impl PromptKind {
         }
     }
 
-    fn default_template(&self) -> &'static str {
+    pub(crate) fn default_template(&self) -> &'static str {
         match self {
             PromptKind::Documentation => DOCUMENTATION_PROMPT,
             PromptKind::Commit => COMMIT_PROMPT,

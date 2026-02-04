@@ -499,7 +499,7 @@ pub(crate) fn build_job_metadata(
 
     if let Some(scope) = command_scope_for(command) {
         metadata.scope = Some(scope.as_str().to_string());
-        if let Ok(agent) = cfg.resolve_agent_settings(scope, cli_agent_override) {
+        if let Ok(agent) = config::resolve_agent_settings(cfg, scope, cli_agent_override) {
             metadata.agent_selector = Some(agent.selector.clone());
             metadata.agent_backend = Some(agent.backend.to_string());
             metadata.agent_label = Some(agent.agent_runtime.label.clone());

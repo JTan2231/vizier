@@ -213,7 +213,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut cfg = if let Some(ref config_file) = cli.global.config_file {
-        config::Config::from_path(std::path::PathBuf::from(config_file))?
+        config::load_config_from_path(std::path::PathBuf::from(config_file))?
     } else {
         let mut layers = Vec::new();
 
@@ -222,7 +222,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 LogLevel::Info,
                 format!("Loading global config from {}", path.display()),
             );
-            layers.push(config::ConfigLayer::from_path(path)?);
+            layers.push(config::load_config_layer_from_path(path)?);
         }
 
         if let Some(path) = config::project_config_path(&project_root) {
@@ -230,7 +230,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 LogLevel::Info,
                 format!("Loading repo config from {}", path.display()),
             );
-            layers.push(config::ConfigLayer::from_path(path)?);
+            layers.push(config::load_config_layer_from_path(path)?);
         }
 
         if !layers.is_empty() {
@@ -240,7 +240,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 LogLevel::Info,
                 format!("Loading env config from {}", path.display()),
             );
-            config::Config::from_path(path)?
+            config::load_config_from_path(path)?
         } else {
             config::get_config()
         }
@@ -705,7 +705,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 commit_message,
                 commit_message_editor,
             }) => {
-                let agent = config::get_config().resolve_agent_settings(
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
                     config::CommandScope::Save,
                     cli_agent_override.as_ref(),
                 )?;
@@ -740,7 +741,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             Commands::Ask(cmd) => {
-                let agent = config::get_config().resolve_agent_settings(
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
                     config::CommandScope::Ask,
                     cli_agent_override.as_ref(),
                 )?;
@@ -763,14 +765,16 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             Commands::TestDisplay(cmd) => {
                 let opts = resolve_test_display_options(&cmd)?;
-                let agent = config::get_config()
-                    .resolve_agent_settings(opts.scope, cli_agent_override.as_ref())?;
+                let cfg = config::get_config();
+                let agent =
+                    config::resolve_agent_settings(&cfg, opts.scope, cli_agent_override.as_ref())?;
                 run_test_display(opts, &agent).await
             }
 
             Commands::Draft(cmd) => {
                 let resolved = resolve_draft_spec(&cmd)?;
-                let agent = config::get_config().resolve_agent_settings(
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
                     config::CommandScope::Draft,
                     cli_agent_override.as_ref(),
                 )?;
@@ -800,7 +804,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             Commands::Approve(cmd) => {
                 let opts = resolve_approve_options(&cmd, push_after)?;
-                let agent = config::get_config().resolve_agent_settings(
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
                     config::CommandScope::Approve,
                     cli_agent_override.as_ref(),
                 )?;
@@ -808,7 +813,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Commands::Review(cmd) => {
                 let opts = resolve_review_options(&cmd, push_after)?;
-                let agent = config::get_config().resolve_agent_settings(
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
                     config::CommandScope::Review,
                     cli_agent_override.as_ref(),
                 )?;
@@ -816,7 +822,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Commands::Merge(cmd) => {
                 let opts = resolve_merge_options(&cmd, push_after)?;
-                let agent = config::get_config().resolve_agent_settings(
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
                     config::CommandScope::Merge,
                     cli_agent_override.as_ref(),
                 )?;

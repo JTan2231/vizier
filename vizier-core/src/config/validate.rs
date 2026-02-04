@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::config::driver;
+    use crate::config::*;
+    use lazy_static::lazy_static;
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -60,7 +62,7 @@ text = "profile documentation prompt"
         .expect("write config");
 
         let _cwd = CwdGuard::enter(temp_dir.path());
-        let cfg = Config::from_toml(config_path).expect("parse config");
+        let cfg = load_config_from_toml(config_path).expect("parse config");
         let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation);
         assert_eq!(selection.text, "profile documentation prompt");
     }
@@ -75,12 +77,13 @@ text = "nope"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let err = match Config::from_toml(file.path().to_path_buf()) {
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("plan_refine prompt kind should be rejected"),
             Err(err) => err,
         };
         assert!(
-            err.to_string().contains("unknown prompt kind `plan_refine`"),
+            err.to_string()
+                .contains("unknown prompt kind `plan_refine`"),
             "error message should mention unknown prompt kind: {err}"
         );
     }
@@ -95,7 +98,7 @@ agent = "codex"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let err = match Config::from_toml(file.path().to_path_buf()) {
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("refine scope should be rejected"),
             Err(err) => err,
         };
@@ -124,21 +127,21 @@ include_narrative_docs = true
             .expect("failed to write toml temp file");
 
         let mut cfg =
-            Config::from_toml(file.path().to_path_buf()).expect("should parse TOML config");
+            load_config_from_toml(file.path().to_path_buf()).expect("should parse TOML config");
         cfg.agent_runtime.command = vec!["/bin/echo".to_string()];
         cfg.agent_runtime.label = Some("doc-agent".to_string());
 
-        let ask_settings = cfg
-            .resolve_prompt_profile(CommandScope::Ask, PromptKind::Documentation, None)
-            .expect("resolve ask settings");
+        let ask_settings =
+            resolve_prompt_profile(&cfg, CommandScope::Ask, PromptKind::Documentation, None)
+                .expect("resolve ask settings");
         assert!(ask_settings.documentation.use_documentation_prompt);
         assert!(ask_settings.documentation.include_snapshot);
         assert!(ask_settings.documentation.include_narrative_docs);
         assert!(ask_settings.prompt_selection().is_some());
 
-        let save_settings = cfg
-            .resolve_prompt_profile(CommandScope::Save, PromptKind::Documentation, None)
-            .expect("resolve save settings");
+        let save_settings =
+            resolve_prompt_profile(&cfg, CommandScope::Save, PromptKind::Documentation, None)
+                .expect("resolve save settings");
         assert!(!save_settings.documentation.use_documentation_prompt);
         assert!(!save_settings.documentation.include_snapshot);
         assert!(!save_settings.documentation.include_narrative_docs);
@@ -148,14 +151,14 @@ include_narrative_docs = true
     #[test]
     fn test_from_json_invalid_file() {
         let file = write_json_file("{ this is not valid json ");
-        let result = Config::from_json(file.path().to_path_buf());
+        let result = load_config_from_json(file.path().to_path_buf());
         assert!(result.is_err(), "expected error for invalid JSON");
     }
 
     #[test]
     fn test_from_json_missing_file() {
         let path = std::path::PathBuf::from("does_not_exist.json");
-        let result = Config::from_json(path);
+        let result = load_config_from_json(path);
         assert!(result.is_err(), "expected error for missing file");
     }
 
@@ -164,7 +167,7 @@ include_narrative_docs = true
         let json = r#"{ "model": "gpt-5", "reasoning_effort": "medium" }"#;
         let file = write_json_file(json);
 
-        let cfg = Config::from_json(file.path().to_path_buf());
+        let cfg = load_config_from_json(file.path().to_path_buf());
         assert!(
             cfg.is_err(),
             "model/reasoning keys should be rejected after wire removal"
@@ -181,7 +184,7 @@ fallback_backend = "wire"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let err = match Config::from_toml(file.path().to_path_buf()) {
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("fallback_backend should be rejected"),
             Err(err) => err,
         };
@@ -203,7 +206,7 @@ fallback_backend = "codex"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let err = match Config::from_toml(file.path().to_path_buf()) {
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("fallback_backend in agents.* should be rejected"),
             Err(err) => err,
         };
@@ -224,7 +227,7 @@ backend = "gemini"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let err = match Config::from_toml(file.path().to_path_buf()) {
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("backend should be rejected"),
             Err(err) => err,
         };
@@ -244,7 +247,7 @@ backend = "gemini"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let err = match Config::from_toml(file.path().to_path_buf()) {
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("backend in agents.* should be rejected"),
             Err(err) => err,
         };
@@ -262,7 +265,7 @@ commands = ["npm test", "cargo fmt -- --check"]
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
         file.write_all(toml.as_bytes()).unwrap();
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse review config");
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse review config");
         assert_eq!(
             cfg.review.checks.commands,
             vec!["npm test", "cargo fmt -- --check"]
@@ -279,7 +282,7 @@ retries = 3
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
         file.write_all(toml.as_bytes()).unwrap();
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse merge config");
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse merge config");
         assert_eq!(
             cfg.merge.cicd_gate.script,
             Some(PathBuf::from("./scripts/run-ci.sh"))
@@ -302,7 +305,7 @@ retries = 3
         }
         "#;
         let file = write_json_file(json);
-        let cfg = Config::from_json(file.path().to_path_buf()).expect("parse merge config");
+        let cfg = load_config_from_json(file.path().to_path_buf()).expect("parse merge config");
         assert_eq!(
             cfg.merge.cicd_gate.script,
             Some(PathBuf::from("./ci/run.sh"))
@@ -327,7 +330,7 @@ retries = 5
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
         file.write_all(toml.as_bytes()).unwrap();
-        let cfg = Config::from_toml(file.path().to_path_buf())
+        let cfg = load_config_from_toml(file.path().to_path_buf())
             .expect("parse approve stop-condition config");
         assert_eq!(
             cfg.approve.stop_condition.script,
@@ -349,7 +352,7 @@ retries = 5
         }
         "#;
         let file = write_json_file(json);
-        let cfg = Config::from_json(file.path().to_path_buf())
+        let cfg = load_config_from_json(file.path().to_path_buf())
             .expect("parse approve stop-condition config");
         assert_eq!(
             cfg.approve.stop_condition.script,
@@ -386,15 +389,21 @@ plan_label = "Plan Summary"
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
         file.write_all(toml.as_bytes()).unwrap();
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse commit config");
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse commit config");
         assert!(!cfg.commits.meta.enabled);
         assert_eq!(cfg.commits.meta.style, CommitMetaStyle::Trailers);
         assert_eq!(cfg.commits.meta.include, vec![CommitMetaField::SessionId]);
-        assert_eq!(cfg.commits.meta.session_log_path, CommitSessionLogPath::None);
+        assert_eq!(
+            cfg.commits.meta.session_log_path,
+            CommitSessionLogPath::None
+        );
         assert_eq!(cfg.commits.meta.labels.session_id, "Vizier-Session");
         assert_eq!(cfg.commits.fallback_subjects.code_change, "CUSTOM CODE");
         assert_eq!(cfg.commits.implementation.subject, "chore: apply {slug}");
-        assert_eq!(cfg.commits.implementation.fields, vec![CommitImplementationField::Summary]);
+        assert_eq!(
+            cfg.commits.implementation.fields,
+            vec![CommitImplementationField::Summary]
+        );
         assert_eq!(cfg.commits.merge.subject, "chore: merge {slug}");
         assert!(!cfg.commits.merge.include_operator_note);
         assert_eq!(cfg.commits.merge.operator_note_label, "Note");
@@ -425,13 +434,10 @@ fields = ["Job", "Status", "Command"]
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
         file.write_all(toml.as_bytes()).unwrap();
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("parse display config");
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse display config");
         assert_eq!(cfg.display.lists.list.format, ListFormat::Table);
         assert_eq!(cfg.display.lists.list.header_fields, vec!["Outcome"]);
-        assert_eq!(
-            cfg.display.lists.list.entry_fields,
-            vec!["Plan", "Summary"]
-        );
+        assert_eq!(cfg.display.lists.list.entry_fields, vec!["Plan", "Summary"]);
         assert_eq!(cfg.display.lists.list.job_fields.len(), 0);
         assert_eq!(cfg.display.lists.list.command_fields.len(), 0);
         assert_eq!(cfg.display.lists.list.summary_max_len, 42);
@@ -455,7 +461,7 @@ auto_resolve = true
         let mut file = NamedTempFile::new().expect("temp toml");
         file.write_all(toml.as_bytes()).unwrap();
         let cfg =
-            Config::from_toml(file.path().to_path_buf()).expect("parse merge conflict config");
+            load_config_from_toml(file.path().to_path_buf()).expect("parse merge conflict config");
         assert!(
             cfg.merge.conflicts.auto_resolve,
             "conflict auto-resolve should parse from toml"
@@ -508,8 +514,8 @@ auto_resolve = true
         .expect("write repo config");
 
         let cfg = Config::from_layers(&[
-            ConfigLayer::from_toml(global_path).expect("global layer"),
-            ConfigLayer::from_toml(repo_path).expect("repo layer"),
+            load_config_layer_from_toml(global_path).expect("global layer"),
+            load_config_layer_from_toml(repo_path).expect("repo layer"),
         ]);
 
         assert_eq!(
@@ -625,14 +631,14 @@ agent = "gemini"
         .expect("write config");
 
         let cfg =
-            Config::from_toml(config_path).expect("should parse config with prompt overrides");
+            load_config_from_toml(config_path).expect("should parse config with prompt overrides");
         let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation);
         assert_eq!(selection.text.trim(), "scoped prompt from file");
         assert_eq!(selection.source_path, Some(prompt_path.clone()));
 
-        let agent = cfg
-            .resolve_prompt_profile(CommandScope::Ask, PromptKind::Documentation, None)
-            .expect("resolve prompt profile");
+        let agent =
+            resolve_prompt_profile(&cfg, CommandScope::Ask, PromptKind::Documentation, None)
+                .expect("resolve prompt profile");
         assert_eq!(
             agent
                 .prompt
@@ -656,7 +662,8 @@ command = ["./bin/codex", "exec", "--local"]
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse agent command");
+        let cfg =
+            load_config_from_toml(file.path().to_path_buf()).expect("should parse agent command");
         assert_eq!(
             cfg.agent_runtime.command,
             vec![
@@ -678,7 +685,8 @@ label = "gemini"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        let cfg = Config::from_toml(file.path().to_path_buf()).expect("should parse agent label");
+        let cfg =
+            load_config_from_toml(file.path().to_path_buf()).expect("should parse agent label");
         assert_eq!(cfg.agent_runtime.label.as_deref(), Some("gemini"));
     }
 
@@ -693,7 +701,7 @@ profile = "deprecated"
         file.write_all(toml.as_bytes())
             .expect("failed to write toml temp file");
 
-        match Config::from_toml(file.path().to_path_buf()) {
+        match load_config_from_toml(file.path().to_path_buf()) {
             Ok(_) => panic!("legacy agent keys should be rejected"),
             Err(err) => assert!(
                 err.to_string()
@@ -718,7 +726,7 @@ profile = "deprecated"
         }
 
         let runtime = AgentRuntimeOptions::default();
-        let resolved = resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
+        let resolved = driver::resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
             .expect("bundled shim should resolve from env");
 
         match original {
@@ -746,7 +754,7 @@ profile = "deprecated"
             ..Default::default()
         };
 
-        let resolved = resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
+        let resolved = driver::resolve_agent_runtime(runtime, "codex", BackendKind::Agent)
             .expect("explicit command should resolve");
         assert_eq!(resolved.label, "custom");
         assert_eq!(
@@ -762,8 +770,7 @@ profile = "deprecated"
     #[test]
     fn default_codex_runtime_wraps_and_sets_progress_filter() {
         let cfg = Config::default();
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
             .expect("default agent settings should resolve");
         assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert!(
@@ -778,8 +785,7 @@ profile = "deprecated"
         cfg.agent_selector = "gemini".to_string();
         cfg.backend = backend_kind_for_selector(&cfg.agent_selector);
 
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
             .expect("default gemini settings should resolve");
         assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert!(
@@ -807,8 +813,7 @@ profile = "deprecated"
         let mut cfg = Config::default();
         cfg.agent_runtime.label = Some("custom".to_string());
 
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
             .expect("custom agent settings should resolve");
 
         match original {
@@ -838,8 +843,7 @@ profile = "deprecated"
         cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
         cfg.agent_runtime.progress_filter = Some(vec!["/usr/bin/cat".to_string()]);
 
-        let agent = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
             .expect("agent with filter should resolve");
         assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert_eq!(
@@ -877,8 +881,7 @@ profile = "deprecated"
         };
         cfg.agent_scopes.insert(CommandScope::Ask, scoped);
 
-        let ask = cfg
-            .resolve_agent_settings(CommandScope::Ask, None)
+        let ask = resolve_agent_settings(&cfg, CommandScope::Ask, None)
             .expect("ask scope should resolve");
         assert_eq!(
             ask.agent_runtime.command,
@@ -887,8 +890,7 @@ profile = "deprecated"
         );
         assert_eq!(ask.agent_runtime.label, "scoped");
 
-        let save = cfg
-            .resolve_agent_settings(CommandScope::Save, None)
+        let save = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("save scope should resolve");
         assert_eq!(
             save.agent_runtime.command,
@@ -908,8 +910,7 @@ profile = "deprecated"
             ..Default::default()
         };
 
-        let ask_with_cli = cfg
-            .resolve_agent_settings(CommandScope::Ask, Some(&cli_override))
+        let ask_with_cli = resolve_agent_settings(&cfg, CommandScope::Ask, Some(&cli_override))
             .expect("cli override should resolve");
         assert_eq!(
             ask_with_cli.agent_runtime.command,

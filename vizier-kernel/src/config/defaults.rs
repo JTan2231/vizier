@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use super::*;
+
 impl Default for DocumentationSettings {
     fn default() -> Self {
         Self {
@@ -217,21 +221,6 @@ impl Default for MergeCicdGateConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        let prompt_directory = tools::try_get_vizier_dir().map(std::path::PathBuf::from);
-        let mut repo_prompts = HashMap::new();
-
-        if let Some(dir) = prompt_directory.as_ref() {
-            for kind in PromptKind::all().iter().copied() {
-                for filename in kind.filename_candidates() {
-                    let path = dir.join(filename);
-                    if let Ok(contents) = std::fs::read_to_string(&path) {
-                        repo_prompts.insert(kind, RepoPrompt { path, contents });
-                        break;
-                    }
-                }
-            }
-        }
-
         let selector = default_selector_for_backend(BackendKind::Agent).to_string();
         Self {
             no_session: false,
@@ -247,7 +236,7 @@ impl Default for Config {
             workflow: WorkflowConfig::default(),
             agent_defaults: AgentOverrides::default(),
             agent_scopes: HashMap::new(),
-            repo_prompts,
+            repo_prompts: HashMap::new(),
         }
     }
 }

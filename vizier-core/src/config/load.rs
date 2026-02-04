@@ -1,4 +1,51 @@
-use crate::display;
+use std::collections::HashMap;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+
+use crate::{display, tools, tree};
+
+use super::*;
+
+use lazy_static::lazy_static;
+
+#[derive(Copy, Clone)]
+enum FileFormat {
+    Json,
+    Toml,
+}
+
+const MODEL_KEY_PATHS: &[&[&str]] = &[
+    &["model"],
+    &["provider"],
+    &["provider", "model"],
+    &["provider", "name"],
+];
+const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
+const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
+const FALLBACK_BACKEND_DEPRECATION_MESSAGE: &str =
+    "fallback_backend entries are unsupported; remove them from your config.";
+const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
+    &["reasoning_effort"],
+    &["reasoning-effort"],
+    &["thinking_level"],
+    &["thinking-level"],
+    &["provider", "reasoning_effort"],
+    &["provider", "reasoning-effort"],
+    &["provider", "thinking_level"],
+    &["provider", "thinking-level"],
+    &["flags", "reasoning_effort"],
+    &["flags", "reasoning-effort"],
+    &["flags", "thinking_level"],
+    &["flags", "thinking-level"],
+];
+const MODEL_CONFIG_REMOVED_MESSAGE: &str =
+    "model overrides are no longer supported now that the wire backend has been removed.";
+const REASONING_CONFIG_REMOVED_MESSAGE: &str = "reasoning-effort overrides are no longer supported now that the wire backend has been removed.";
+
+lazy_static! {
+    static ref CONFIG: RwLock<Config> = RwLock::new(default_config_with_repo_prompts());
+}
 
 fn value_at_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
     let mut current = value;
@@ -253,519 +300,206 @@ fn parse_agent_sections_into_layer(
     Ok(())
 }
 
-impl ConfigLayer {
-    pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_reader(filepath.as_path(), FileFormat::Json)
+pub fn load_config_layer_from_json(
+    filepath: PathBuf,
+) -> Result<ConfigLayer, Box<dyn std::error::Error>> {
+    load_config_layer_from_reader(filepath.as_path(), FileFormat::Json)
+}
+
+pub fn load_config_layer_from_toml(
+    filepath: PathBuf,
+) -> Result<ConfigLayer, Box<dyn std::error::Error>> {
+    load_config_layer_from_reader(filepath.as_path(), FileFormat::Toml)
+}
+
+pub fn load_config_layer_from_path<P: AsRef<Path>>(
+    filepath: P,
+) -> Result<ConfigLayer, Box<dyn std::error::Error>> {
+    let path = filepath.as_ref();
+
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+
+    match ext.as_deref() {
+        Some("json") => load_config_layer_from_reader(path, FileFormat::Json),
+        Some("toml") => load_config_layer_from_reader(path, FileFormat::Toml),
+        _ => load_config_layer_from_reader(path, FileFormat::Toml)
+            .or_else(|_| load_config_layer_from_reader(path, FileFormat::Json)),
+    }
+}
+
+fn load_config_layer_from_reader(
+    path: &Path,
+    format: FileFormat,
+) -> Result<ConfigLayer, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(path)?;
+    let base_dir = path.parent();
+    load_config_layer_from_str(&contents, format, base_dir)
+}
+
+fn load_config_layer_from_str(
+    contents: &str,
+    format: FileFormat,
+    base_dir: Option<&Path>,
+) -> Result<ConfigLayer, Box<dyn std::error::Error>> {
+    let file_config: serde_json::Value = match format {
+        FileFormat::Json => serde_json::from_str(contents)?,
+        FileFormat::Toml => toml::from_str(contents)?,
+    };
+
+    load_config_layer_from_value(file_config, base_dir)
+}
+
+fn load_config_layer_from_value(
+    file_config: serde_json::Value,
+    base_dir: Option<&Path>,
+) -> Result<ConfigLayer, Box<dyn std::error::Error>> {
+    let mut layer = ConfigLayer::default();
+
+    if find_string(&file_config, MODEL_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            MODEL_CONFIG_REMOVED_MESSAGE,
+        )));
     }
 
-    pub fn from_toml(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_reader(filepath.as_path(), FileFormat::Toml)
+    if find_string(&file_config, REASONING_EFFORT_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            REASONING_CONFIG_REMOVED_MESSAGE,
+        )));
     }
 
-    pub fn from_path<P: AsRef<Path>>(filepath: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let path = filepath.as_ref();
+    if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            FALLBACK_BACKEND_DEPRECATION_MESSAGE,
+        )));
+    }
 
-        let ext = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase());
-
-        match ext.as_deref() {
-            Some("json") => Self::from_reader(path, FileFormat::Json),
-            Some("toml") => Self::from_reader(path, FileFormat::Toml),
-            _ => Self::from_reader(path, FileFormat::Toml)
-                .or_else(|_| Self::from_reader(path, FileFormat::Json)),
+    if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
+        if let Some(raw) = agent_value.as_str() {
+            if let Some(selector) = normalize_selector_value(raw) {
+                layer.agent_selector = Some(selector);
+            }
+        } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
+            layer.agent_runtime = Some(parsed);
         }
     }
 
-    fn from_reader(path: &Path, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = std::fs::read_to_string(path)?;
-        let base_dir = path.parent();
-        Self::from_str(&contents, format, base_dir)
+    if find_string(&file_config, BACKEND_KEY_PATHS).is_some() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "backend entries are unsupported; use agent selectors instead",
+        )));
     }
 
-    fn from_str(
-        contents: &str,
-        format: FileFormat,
-        base_dir: Option<&Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file_config: serde_json::Value = match format {
-            FileFormat::Json => serde_json::from_str(contents)?,
-            FileFormat::Toml => toml::from_str(contents)?,
-        };
-
-        Self::from_value(file_config, base_dir)
+    if let Some(commands) = parse_string_array(value_at_path(
+        &file_config,
+        &["review", "checks", "commands"],
+    )) {
+        layer.review.checks = Some(commands);
+    } else if let Some(commands) =
+        parse_string_array(value_at_path(&file_config, &["review", "checks"]))
+    {
+        layer.review.checks = Some(commands);
     }
 
-    fn from_value(
-        file_config: serde_json::Value,
-        base_dir: Option<&Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut layer = ConfigLayer::default();
-
-        if find_string(&file_config, MODEL_KEY_PATHS).is_some() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                MODEL_CONFIG_REMOVED_MESSAGE,
-            )));
-        }
-
-        if find_string(&file_config, REASONING_EFFORT_KEY_PATHS).is_some() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                REASONING_CONFIG_REMOVED_MESSAGE,
-            )));
-        }
-
-        if find_string(&file_config, FALLBACK_BACKEND_KEY_PATHS).is_some() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                FALLBACK_BACKEND_DEPRECATION_MESSAGE,
-            )));
-        }
-
-        if let Some(agent_value) = value_at_path(&file_config, &["agent"]) {
-            if let Some(raw) = agent_value.as_str() {
-                if let Some(selector) = normalize_selector_value(raw) {
-                    layer.agent_selector = Some(selector);
-                }
-            } else if let Some(parsed) = parse_agent_runtime_override(agent_value)? {
-                layer.agent_runtime = Some(parsed);
-            }
-        }
-
-        if find_string(&file_config, BACKEND_KEY_PATHS).is_some() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "backend entries are unsupported; use agent selectors instead",
-            )));
-        }
-
-        if let Some(commands) = parse_string_array(value_at_path(
-            &file_config,
-            &["review", "checks", "commands"],
-        )) {
-            layer.review.checks = Some(commands);
-        } else if let Some(commands) =
-            parse_string_array(value_at_path(&file_config, &["review", "checks"]))
+    if let Some(stop_condition) = value_at_path(&file_config, &["approve", "stop_condition"]) {
+        if let Some(script) = stop_condition
+            .get("script")
+            .and_then(|value| value.as_str())
+            && !script.trim().is_empty()
         {
-            layer.review.checks = Some(commands);
+            layer.approve.stop_condition.script = Some(PathBuf::from(script.trim()));
         }
 
-        if let Some(stop_condition) = value_at_path(&file_config, &["approve", "stop_condition"])
-            && let Some(object) = stop_condition.as_object()
-        {
-            if let Some(script_value) = object
-                .get("script")
-                .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
-            {
-                layer.approve.stop_condition.script = Some(PathBuf::from(script_value));
-            }
-
-            if let Some(retries) = parse_u32(object.get("retries"))
-                .or_else(|| parse_u32(object.get("max_retries")))
-                .or_else(|| parse_u32(object.get("max_attempts")))
-            {
-                layer.approve.stop_condition.retries = Some(retries);
-            }
+        if let Some(retries) = parse_u32(
+            stop_condition
+                .get("retries")
+                .or_else(|| stop_condition.get("max_attempts"))
+                .or_else(|| stop_condition.get("max-attempts")),
+        ) {
+            layer.approve.stop_condition.retries = Some(retries);
         }
-
-        if let Some(cicd_gate) = value_at_path(&file_config, &["merge", "cicd_gate"])
-            && let Some(gate_object) = cicd_gate.as_object()
-        {
-            if let Some(script_value) = gate_object
-                .get("script")
-                .and_then(|value| value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
-            {
-                layer.merge.cicd_gate.script = Some(PathBuf::from(script_value));
-            }
-
-            if let Some(auto_value) = parse_bool(gate_object.get("auto_resolve")) {
-                layer.merge.cicd_gate.auto_resolve = Some(auto_value);
-            } else if let Some(auto_value) = parse_bool(gate_object.get("auto-fix")) {
-                layer.merge.cicd_gate.auto_resolve = Some(auto_value);
-            }
-
-            if let Some(retries) = parse_u32(gate_object.get("retries")) {
-                layer.merge.cicd_gate.retries = Some(retries);
-            } else if let Some(retries) = parse_u32(gate_object.get("max_retries")) {
-                layer.merge.cicd_gate.retries = Some(retries);
-            } else if let Some(retries) = parse_u32(gate_object.get("max_attempts")) {
-                layer.merge.cicd_gate.retries = Some(retries);
-            }
-        }
-
-        if let Some(merge_table) = value_at_path(&file_config, &["merge"])
-            && let Some(table) = merge_table.as_object()
-        {
-            if let Some(squash) = parse_bool(
-                table
-                    .get("squash")
-                    .or_else(|| table.get("squash_default"))
-                    .or_else(|| table.get("squash-default")),
-            ) {
-                layer.merge.squash_default = Some(squash);
-            }
-
-            if let Some(mainline) = parse_u32(
-                table
-                    .get("squash_mainline")
-                    .or_else(|| table.get("squash-mainline")),
-            ) {
-                layer.merge.squash_mainline = Some(mainline);
-            }
-
-            if let Some(conflicts_value) = table.get("conflicts")
-                && let Some(conflicts) = conflicts_value.as_object()
-            {
-                let auto_resolve = conflicts
-                    .get("auto_resolve")
-                    .or_else(|| conflicts.get("auto-resolve"))
-                    .or_else(|| conflicts.get("auto_resolve_conflicts"))
-                    .or_else(|| conflicts.get("auto-resolve-conflicts"))
-                    .and_then(|value| parse_bool(Some(value)));
-                if let Some(auto) = auto_resolve {
-                    layer.merge.conflicts.auto_resolve = Some(auto);
-                }
-            }
-        }
-
-        if let Some(commits_value) = value_at_path(&file_config, &["commits"])
-            && let Some(commits_table) = commits_value.as_object()
-        {
-            if let Some(meta_value) = commits_table.get("meta")
-                && let Some(meta_table) = meta_value.as_object()
-            {
-                if let Some(enabled) = parse_bool(
-                    meta_table
-                        .get("enabled")
-                        .or_else(|| meta_table.get("enable")),
-                ) {
-                    layer.commits.meta.enabled = Some(enabled);
-                }
-
-                if let Some(style_value) = meta_table.get("style").and_then(|v| v.as_str()) {
-                    if let Some(style) = CommitMetaStyle::parse(style_value) {
-                        layer.commits.meta.style = Some(style);
-                    } else {
-                        display::warn(format!(
-                            "unknown commits.meta.style `{}`; using default",
-                            style_value
-                        ));
-                    }
-                }
-
-                if let Some(include_values) =
-                    parse_string_array_allow_empty(meta_table.get("include"))
-                {
-                    let fields = parse_commit_meta_fields(&include_values);
-                    layer.commits.meta.include = Some(fields);
-                }
-
-                if let Some(path_value) = meta_table
-                    .get("session_log_path")
-                    .or_else(|| meta_table.get("session-log-path"))
-                    .and_then(|v| v.as_str())
-                {
-                    if let Some(mode) = CommitSessionLogPath::parse(path_value) {
-                        layer.commits.meta.session_log_path = Some(mode);
-                    } else {
-                        display::warn(format!(
-                            "unknown commits.meta.session_log_path `{}`; using default",
-                            path_value
-                        ));
-                    }
-                }
-
-                if let Some(labels_value) = meta_table.get("labels")
-                    && let Some(labels_table) = labels_value.as_object()
-                {
-                    for (raw_key, raw_value) in labels_table {
-                        let Some(label) = raw_value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-                            continue;
-                        };
-                        let normalized = raw_key
-                            .trim()
-                            .to_ascii_lowercase()
-                            .replace('-', "_");
-                        match normalized.as_str() {
-                            "session_id" => {
-                                layer.commits.meta.labels.session_id =
-                                    Some(label.to_string());
-                            }
-                            "session_log" => {
-                                layer.commits.meta.labels.session_log =
-                                    Some(label.to_string());
-                            }
-                            "author_note" => {
-                                layer.commits.meta.labels.author_note =
-                                    Some(label.to_string());
-                            }
-                            "narrative_summary" => {
-                                layer.commits.meta.labels.narrative_summary =
-                                    Some(label.to_string());
-                            }
-                            _ => {
-                                display::warn(format!(
-                                    "unknown commits.meta.labels key `{}`; ignoring",
-                                    raw_key
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Some(fallback_value) = commits_table.get("fallback_subjects")
-                && let Some(fallback_table) = fallback_value.as_object()
-            {
-                if let Some(text) = parse_nonempty_string(
-                    fallback_table
-                        .get("code_change")
-                        .or_else(|| fallback_table.get("code-change")),
-                ) {
-                    layer.commits.fallback_subjects.code_change = Some(text);
-                }
-                if let Some(text) = parse_nonempty_string(
-                    fallback_table
-                        .get("narrative_change")
-                        .or_else(|| fallback_table.get("narrative-change")),
-                ) {
-                    layer.commits.fallback_subjects.narrative_change = Some(text);
-                }
-                if let Some(text) = parse_nonempty_string(
-                    fallback_table
-                        .get("conversation")
-                        .or_else(|| fallback_table.get("conversation-change")),
-                ) {
-                    layer.commits.fallback_subjects.conversation = Some(text);
-                }
-            }
-
-            if let Some(implementation_value) = commits_table.get("implementation")
-                && let Some(implementation_table) = implementation_value.as_object()
-            {
-                if let Some(subject) = parse_nonempty_string(implementation_table.get("subject"))
-                {
-                    layer.commits.implementation.subject = Some(subject);
-                }
-                if let Some(fields_values) =
-                    parse_string_array_allow_empty(implementation_table.get("fields"))
-                {
-                    let fields = parse_commit_implementation_fields(&fields_values);
-                    layer.commits.implementation.fields = Some(fields);
-                }
-            }
-
-            if let Some(merge_value) = commits_table.get("merge")
-                && let Some(merge_table) = merge_value.as_object()
-            {
-                if let Some(subject) = parse_nonempty_string(merge_table.get("subject")) {
-                    layer.commits.merge.subject = Some(subject);
-                }
-                if let Some(include_note) = parse_bool(
-                    merge_table
-                        .get("include_operator_note")
-                        .or_else(|| merge_table.get("include-operator-note")),
-                ) {
-                    layer.commits.merge.include_operator_note = Some(include_note);
-                }
-                if let Some(label) = parse_nonempty_string(
-                    merge_table
-                        .get("operator_note_label")
-                        .or_else(|| merge_table.get("operator-note-label")),
-                ) {
-                    layer.commits.merge.operator_note_label = Some(label);
-                }
-                if let Some(mode_value) = merge_table
-                    .get("plan_mode")
-                    .or_else(|| merge_table.get("plan-mode"))
-                    .and_then(|v| v.as_str())
-                {
-                    if let Some(mode) = CommitMergePlanMode::parse(mode_value) {
-                        layer.commits.merge.plan_mode = Some(mode);
-                    } else {
-                        display::warn(format!(
-                            "unknown commits.merge.plan_mode `{}`; using default",
-                            mode_value
-                        ));
-                    }
-                }
-                if let Some(label) = parse_nonempty_string(
-                    merge_table
-                        .get("plan_label")
-                        .or_else(|| merge_table.get("plan-label")),
-                ) {
-                    layer.commits.merge.plan_label = Some(label);
-                }
-            }
-        }
-
-        if let Some(display_value) = value_at_path(&file_config, &["display"])
-            && let Some(display_table) = display_value.as_object()
-            && let Some(lists_value) = display_table.get("lists")
-            && let Some(lists_table) = lists_value.as_object()
-        {
-            if let Some(list_value) = lists_table.get("list")
-                && let Some(list_table) = list_value.as_object()
-            {
-                if let Some(format_value) = list_table.get("format").and_then(|v| v.as_str()) {
-                    if let Some(format) = ListFormat::parse(format_value) {
-                        layer.display.lists.list.format = Some(format);
-                    } else {
-                        display::warn(format!(
-                            "unknown display.lists.list.format `{}`; using default",
-                            format_value
-                        ));
-                    }
-                }
-                if let Some(fields) =
-                    parse_string_array_allow_empty(list_table.get("header_fields"))
-                        .or_else(|| parse_string_array_allow_empty(list_table.get("header-fields")))
-                {
-                    layer.display.lists.list.header_fields = Some(fields);
-                }
-                if let Some(fields) =
-                    parse_string_array_allow_empty(list_table.get("entry_fields"))
-                        .or_else(|| parse_string_array_allow_empty(list_table.get("entry-fields")))
-                {
-                    layer.display.lists.list.entry_fields = Some(fields);
-                }
-                if let Some(fields) =
-                    parse_string_array_allow_empty(list_table.get("job_fields"))
-                        .or_else(|| parse_string_array_allow_empty(list_table.get("job-fields")))
-                {
-                    layer.display.lists.list.job_fields = Some(fields);
-                }
-                if let Some(fields) =
-                    parse_string_array_allow_empty(list_table.get("command_fields"))
-                        .or_else(|| parse_string_array_allow_empty(list_table.get("command-fields")))
-                {
-                    layer.display.lists.list.command_fields = Some(fields);
-                }
-                if let Some(max_len) =
-                    parse_usize(list_table.get("summary_max_len"))
-                        .or_else(|| parse_usize(list_table.get("summary-max-len")))
-                {
-                    layer.display.lists.list.summary_max_len = Some(max_len);
-                }
-                if let Some(single_line) =
-                    parse_bool(list_table.get("summary_single_line"))
-                        .or_else(|| parse_bool(list_table.get("summary-single-line")))
-                {
-                    layer.display.lists.list.summary_single_line = Some(single_line);
-                }
-                if let Some(labels) = parse_string_map(list_table.get("labels")) {
-                    layer.display.lists.list.labels = Some(labels);
-                }
-            }
-
-            if let Some(jobs_value) = lists_table.get("jobs")
-                && let Some(jobs_table) = jobs_value.as_object()
-            {
-                if let Some(format_value) = jobs_table.get("format").and_then(|v| v.as_str()) {
-                    if let Some(format) = ListFormat::parse(format_value) {
-                        layer.display.lists.jobs.format = Some(format);
-                    } else {
-                        display::warn(format!(
-                            "unknown display.lists.jobs.format `{}`; using default",
-                            format_value
-                        ));
-                    }
-                }
-                if let Some(show) = parse_bool(
-                    jobs_table
-                        .get("show_succeeded")
-                        .or_else(|| jobs_table.get("show-succeeded")),
-                ) {
-                    layer.display.lists.jobs.show_succeeded = Some(show);
-                }
-                if let Some(fields) =
-                    parse_string_array_allow_empty(jobs_table.get("fields"))
-                {
-                    layer.display.lists.jobs.fields = Some(fields);
-                }
-                if let Some(labels) = parse_string_map(jobs_table.get("labels")) {
-                    layer.display.lists.jobs.labels = Some(labels);
-                }
-            }
-
-            if let Some(show_value) = lists_table
-                .get("jobs_show")
-                .or_else(|| lists_table.get("jobs-show"))
-                && let Some(show_table) = show_value.as_object()
-            {
-                if let Some(format_value) = show_table.get("format").and_then(|v| v.as_str()) {
-                    if let Some(format) = ListFormat::parse(format_value) {
-                        layer.display.lists.jobs_show.format = Some(format);
-                    } else {
-                        display::warn(format!(
-                            "unknown display.lists.jobs_show.format `{}`; using default",
-                            format_value
-                        ));
-                    }
-                }
-                if let Some(fields) =
-                    parse_string_array_allow_empty(show_table.get("fields"))
-                {
-                    layer.display.lists.jobs_show.fields = Some(fields);
-                }
-                if let Some(labels) = parse_string_map(show_table.get("labels")) {
-                    layer.display.lists.jobs_show.labels = Some(labels);
-                }
-            }
-        }
-
-        if let Some(jobs_value) = value_at_path(&file_config, &["jobs"])
-            && let Some(jobs_table) = jobs_value.as_object()
-            && let Some(cancel_value) = jobs_table.get("cancel")
-            && let Some(cancel_table) = cancel_value.as_object()
-            && let Some(cleanup) = parse_bool(
-                cancel_table
-                    .get("cleanup_worktree")
-                    .or_else(|| cancel_table.get("cleanup-worktree"))
-                    .or_else(|| cancel_table.get("cleanup")),
-            )
-        {
-            layer.jobs.cancel.cleanup_worktree = Some(cleanup);
-        }
-
-        if let Some(workflow_value) = value_at_path(&file_config, &["workflow"])
-            && let Some(workflow_table) = workflow_value.as_object()
-        {
-            if let Some(no_commit) = parse_bool(workflow_table.get("no_commit_default"))
-                .or_else(|| parse_bool(workflow_table.get("no-commit-default")))
-            {
-                layer.workflow.no_commit_default = Some(no_commit);
-            }
-
-            if let Some(background_value) = workflow_table.get("background")
-                && let Some(background_table) = background_value.as_object()
-            {
-                if let Some(enabled) = parse_bool(
-                    background_table
-                        .get("enabled")
-                        .or_else(|| background_table.get("allow")),
-                ) {
-                    layer.workflow.background.enabled = Some(enabled);
-                }
-
-                if let Some(quiet) = parse_bool(
-                    background_table
-                        .get("quiet")
-                        .or_else(|| background_table.get("silent")),
-                ) {
-                    layer.workflow.background.quiet = Some(quiet);
-                }
-            }
-        }
-
-        if let Some(agent_value) = value_at_path(&file_config, &["agents"]) {
-            parse_agent_sections_into_layer(&mut layer, agent_value, base_dir)?;
-        }
-
-        Ok(layer)
     }
+
+    if let Some(merge_table) = value_at_path(&file_config, &["merge"]) {
+        if let Some(squash) = merge_table.get("squash").and_then(|value| value.as_bool()) {
+            layer.merge.squash_default = Some(squash);
+        }
+
+        if let Some(mainline) = merge_table
+            .get("squash_mainline")
+            .or_else(|| merge_table.get("squash-mainline"))
+            .and_then(|value| value.as_i64())
+            && mainline > 0
+        {
+            layer.merge.squash_mainline = Some(mainline as u32);
+        }
+
+        if let Some(gate) = merge_table
+            .get("cicd_gate")
+            .or_else(|| merge_table.get("cicd-gate"))
+        {
+            parse_merge_cicd_gate(gate, base_dir, &mut layer.merge.cicd_gate)?;
+        }
+
+        if let Some(conflicts) = merge_table
+            .get("conflicts")
+            .or_else(|| merge_table.get("conflict"))
+            && let Some(auto_resolve) = conflicts
+                .get("auto_resolve")
+                .or_else(|| conflicts.get("auto-resolve"))
+                .and_then(|value| value.as_bool())
+        {
+            layer.merge.conflicts.auto_resolve = Some(auto_resolve);
+        }
+    }
+
+    if let Some(commits_table) = value_at_path(&file_config, &["commits"]) {
+        parse_commit_table(commits_table, &mut layer.commits)?;
+    }
+
+    if let Some(display_table) = value_at_path(&file_config, &["display"]) {
+        parse_display_table(display_table, &mut layer.display)?;
+    }
+
+    if let Some(jobs_table) = value_at_path(&file_config, &["jobs"]) {
+        parse_jobs_table(jobs_table, &mut layer.jobs)?;
+    }
+
+    if let Some(workflow_table) = value_at_path(&file_config, &["workflow"]) {
+        parse_workflow_table(workflow_table, &mut layer.workflow)?;
+    }
+
+    if let Some(agents_value) = value_at_path(&file_config, &["agents"]) {
+        parse_agent_sections_into_layer(&mut layer, agents_value, base_dir)?;
+    }
+
+    Ok(layer)
+}
+
+pub fn load_config_from_json(filepath: PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
+    load_config_from_layer(load_config_layer_from_json(filepath)?)
+}
+
+pub fn load_config_from_toml(filepath: PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
+    load_config_from_layer(load_config_layer_from_toml(filepath)?)
+}
+
+pub fn load_config_from_path<P: AsRef<Path>>(
+    filepath: P,
+) -> Result<Config, Box<dyn std::error::Error>> {
+    load_config_from_layer(load_config_layer_from_path(filepath)?)
+}
+
+fn load_config_from_layer(layer: ConfigLayer) -> Result<Config, Box<dyn std::error::Error>> {
+    let mut config = Config::from_layers(&[layer]);
+    attach_repo_prompts(&mut config);
+    Ok(config)
 }
 
 fn parse_agent_runtime_override(
@@ -953,7 +687,11 @@ fn parse_string_map(value: Option<&serde_json::Value>) -> Option<HashMap<String,
     let object = value?.as_object()?;
     let mut values = HashMap::new();
     for (key, raw_value) in object {
-        if let Some(text) = raw_value.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(text) = raw_value
+            .as_str()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             values.insert(key.clone(), text.to_string());
         }
     }
@@ -1046,6 +784,499 @@ fn parse_u32(value: Option<&serde_json::Value>) -> Option<u32> {
     None
 }
 
+fn parse_merge_cicd_gate(
+    value: &serde_json::Value,
+    _base_dir: Option<&Path>,
+    gate: &mut MergeCicdGateLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(script) = parse_nonempty_string(
+        table
+            .get("script")
+            .or_else(|| table.get("path"))
+            .or_else(|| table.get("file")),
+    ) {
+        gate.script = Some(PathBuf::from(script));
+    }
+
+    if let Some(auto_resolve) = parse_bool(
+        table
+            .get("auto_resolve")
+            .or_else(|| table.get("auto-resolve"))
+            .or_else(|| table.get("auto_fix"))
+            .or_else(|| table.get("auto-fix"))
+            .or_else(|| table.get("auto_resolve"))
+            .or_else(|| table.get("auto-resolve")),
+    ) {
+        gate.auto_resolve = Some(auto_resolve);
+    }
+
+    if let Some(retries) = parse_u32(
+        table
+            .get("retries")
+            .or_else(|| table.get("max_attempts"))
+            .or_else(|| table.get("max-attempts")),
+    ) {
+        gate.retries = Some(retries);
+    }
+
+    Ok(())
+}
+
+fn parse_commit_table(
+    value: &serde_json::Value,
+    layer: &mut CommitLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(meta_table) = table.get("meta") {
+        parse_commit_meta_table(meta_table, &mut layer.meta)?;
+    }
+
+    if let Some(fallback) = table
+        .get("fallback_subjects")
+        .or_else(|| table.get("fallback-subjects"))
+    {
+        parse_commit_fallback_subjects(fallback, &mut layer.fallback_subjects)?;
+    }
+
+    if let Some(implementation) = table.get("implementation") {
+        parse_commit_implementation_table(implementation, &mut layer.implementation)?;
+    }
+
+    if let Some(merge_table) = table.get("merge") {
+        parse_commit_merge_table(merge_table, &mut layer.merge)?;
+    }
+
+    Ok(())
+}
+
+fn parse_commit_meta_table(
+    value: &serde_json::Value,
+    layer: &mut CommitMetaLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(enabled) = parse_bool(table.get("enabled").or_else(|| table.get("enable"))) {
+        layer.enabled = Some(enabled);
+    }
+
+    if let Some(style) = parse_nonempty_string(table.get("style")) {
+        if let Some(parsed) = CommitMetaStyle::parse(&style) {
+            layer.style = Some(parsed);
+        } else {
+            display::warn(format!(
+                "unknown commits.meta.style value `{}`; ignoring",
+                style
+            ));
+        }
+    }
+
+    if let Some(include) = parse_string_array_allow_empty(table.get("include")) {
+        layer.include = Some(parse_commit_meta_fields(&include));
+    }
+
+    if let Some(path_mode) = parse_nonempty_string(
+        table
+            .get("session_log_path")
+            .or_else(|| table.get("session-log-path"))
+            .or_else(|| table.get("session_log")),
+    ) {
+        if let Some(parsed) = CommitSessionLogPath::parse(&path_mode) {
+            layer.session_log_path = Some(parsed);
+        } else {
+            display::warn(format!(
+                "unknown commits.meta.session_log_path value `{}`; ignoring",
+                path_mode
+            ));
+        }
+    }
+
+    if let Some(labels) = table.get("labels").and_then(|value| value.as_object()) {
+        if let Some(value) = parse_nonempty_string(
+            labels
+                .get("session_id")
+                .or_else(|| labels.get("session-id")),
+        ) {
+            layer.labels.session_id = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            labels
+                .get("session_log")
+                .or_else(|| labels.get("session-log")),
+        ) {
+            layer.labels.session_log = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            labels
+                .get("author_note")
+                .or_else(|| labels.get("author-note")),
+        ) {
+            layer.labels.author_note = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            labels
+                .get("narrative_summary")
+                .or_else(|| labels.get("narrative-summary")),
+        ) {
+            layer.labels.narrative_summary = Some(value);
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_commit_fallback_subjects(
+    value: &serde_json::Value,
+    layer: &mut CommitFallbackSubjectsLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(code_change) = parse_nonempty_string(
+        table
+            .get("code_change")
+            .or_else(|| table.get("code-change")),
+    ) {
+        layer.code_change = Some(code_change);
+    }
+
+    if let Some(narrative_change) = parse_nonempty_string(
+        table
+            .get("narrative_change")
+            .or_else(|| table.get("narrative-change")),
+    ) {
+        layer.narrative_change = Some(narrative_change);
+    }
+
+    if let Some(conversation) = parse_nonempty_string(
+        table
+            .get("conversation")
+            .or_else(|| table.get("conversation_subject")),
+    ) {
+        layer.conversation = Some(conversation);
+    }
+
+    Ok(())
+}
+
+fn parse_commit_implementation_table(
+    value: &serde_json::Value,
+    layer: &mut CommitImplementationLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(subject) = parse_nonempty_string(table.get("subject")) {
+        layer.subject = Some(subject);
+    }
+
+    if let Some(fields) = parse_string_array_allow_empty(table.get("fields")) {
+        layer.fields = Some(parse_commit_implementation_fields(&fields));
+    }
+
+    Ok(())
+}
+
+fn parse_commit_merge_table(
+    value: &serde_json::Value,
+    layer: &mut CommitMergeLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(subject) = parse_nonempty_string(table.get("subject")) {
+        layer.subject = Some(subject);
+    }
+
+    if let Some(include_note) = parse_bool(
+        table
+            .get("include_operator_note")
+            .or_else(|| table.get("include-operator-note")),
+    ) {
+        layer.include_operator_note = Some(include_note);
+    }
+
+    if let Some(label) = parse_nonempty_string(
+        table
+            .get("operator_note_label")
+            .or_else(|| table.get("operator-note-label")),
+    ) {
+        layer.operator_note_label = Some(label);
+    }
+
+    if let Some(plan_mode) =
+        parse_nonempty_string(table.get("plan_mode").or_else(|| table.get("plan-mode")))
+    {
+        if let Some(parsed) = CommitMergePlanMode::parse(&plan_mode) {
+            layer.plan_mode = Some(parsed);
+        } else {
+            display::warn(format!(
+                "unknown commits.merge.plan_mode value `{}`; ignoring",
+                plan_mode
+            ));
+        }
+    }
+
+    if let Some(label) =
+        parse_nonempty_string(table.get("plan_label").or_else(|| table.get("plan-label")))
+    {
+        layer.plan_label = Some(label);
+    }
+
+    Ok(())
+}
+
+fn parse_display_table(
+    value: &serde_json::Value,
+    layer: &mut DisplayLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(lists) = table.get("lists") {
+        parse_display_lists_table(lists, &mut layer.lists)?;
+    }
+
+    Ok(())
+}
+
+fn parse_display_lists_table(
+    value: &serde_json::Value,
+    layer: &mut DisplayListsLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(list_table) = table.get("list") {
+        parse_display_list_table(list_table, &mut layer.list)?;
+    }
+
+    if let Some(jobs_table) = table.get("jobs") {
+        parse_display_jobs_list_table(jobs_table, &mut layer.jobs)?;
+    }
+
+    if let Some(jobs_show_table) = table.get("jobs_show").or_else(|| table.get("jobs-show")) {
+        parse_display_jobs_show_table(jobs_show_table, &mut layer.jobs_show)?;
+    }
+
+    Ok(())
+}
+
+fn parse_display_list_table(
+    value: &serde_json::Value,
+    layer: &mut DisplayListLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(format) = parse_nonempty_string(table.get("format")) {
+        if let Some(parsed) = ListFormat::parse(&format) {
+            layer.format = Some(parsed);
+        } else {
+            display::warn(format!(
+                "unknown display.lists.list.format value `{}`; ignoring",
+                format
+            ));
+        }
+    }
+
+    if let Some(fields) = parse_string_array_allow_empty(
+        table
+            .get("header_fields")
+            .or_else(|| table.get("header-fields")),
+    ) {
+        layer.header_fields = Some(fields);
+    }
+
+    if let Some(fields) = parse_string_array_allow_empty(
+        table
+            .get("entry_fields")
+            .or_else(|| table.get("entry-fields")),
+    ) {
+        layer.entry_fields = Some(fields);
+    }
+
+    if let Some(fields) =
+        parse_string_array_allow_empty(table.get("job_fields").or_else(|| table.get("job-fields")))
+    {
+        layer.job_fields = Some(fields);
+    }
+
+    if let Some(fields) = parse_string_array_allow_empty(
+        table
+            .get("command_fields")
+            .or_else(|| table.get("command-fields")),
+    ) {
+        layer.command_fields = Some(fields);
+    }
+
+    if let Some(max_len) = parse_usize(
+        table
+            .get("summary_max_len")
+            .or_else(|| table.get("summary-max-len")),
+    ) {
+        layer.summary_max_len = Some(max_len);
+    }
+
+    if let Some(single_line) = parse_bool(
+        table
+            .get("summary_single_line")
+            .or_else(|| table.get("summary-single-line")),
+    ) {
+        layer.summary_single_line = Some(single_line);
+    }
+
+    if let Some(labels) = parse_string_map(table.get("labels")) {
+        layer.labels = Some(labels);
+    }
+
+    Ok(())
+}
+
+fn parse_display_jobs_list_table(
+    value: &serde_json::Value,
+    layer: &mut DisplayJobsListLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(format) = parse_nonempty_string(table.get("format")) {
+        if let Some(parsed) = ListFormat::parse(&format) {
+            layer.format = Some(parsed);
+        } else {
+            display::warn(format!(
+                "unknown display.lists.jobs.format value `{}`; ignoring",
+                format
+            ));
+        }
+    }
+
+    if let Some(show) = parse_bool(
+        table
+            .get("show_succeeded")
+            .or_else(|| table.get("show-succeeded")),
+    ) {
+        layer.show_succeeded = Some(show);
+    }
+
+    if let Some(fields) = parse_string_array_allow_empty(table.get("fields")) {
+        layer.fields = Some(fields);
+    }
+
+    if let Some(labels) = parse_string_map(table.get("labels")) {
+        layer.labels = Some(labels);
+    }
+
+    Ok(())
+}
+
+fn parse_display_jobs_show_table(
+    value: &serde_json::Value,
+    layer: &mut DisplayJobsShowLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(format) = parse_nonempty_string(table.get("format")) {
+        if let Some(parsed) = ListFormat::parse(&format) {
+            layer.format = Some(parsed);
+        } else {
+            display::warn(format!(
+                "unknown display.lists.jobs_show.format value `{}`; ignoring",
+                format
+            ));
+        }
+    }
+
+    if let Some(fields) = parse_string_array_allow_empty(table.get("fields")) {
+        layer.fields = Some(fields);
+    }
+
+    if let Some(labels) = parse_string_map(table.get("labels")) {
+        layer.labels = Some(labels);
+    }
+
+    Ok(())
+}
+
+fn parse_jobs_table(
+    value: &serde_json::Value,
+    layer: &mut JobsLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(cancel_table) = table.get("cancel")
+        && let Some(cleanup_worktree) = parse_bool(
+            cancel_table
+                .get("cleanup_worktree")
+                .or_else(|| cancel_table.get("cleanup-worktree")),
+        )
+    {
+        layer.cancel.cleanup_worktree = Some(cleanup_worktree);
+    }
+
+    Ok(())
+}
+
+fn parse_workflow_table(
+    value: &serde_json::Value,
+    layer: &mut WorkflowLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(no_commit_default) = parse_bool(
+        table
+            .get("no_commit_default")
+            .or_else(|| table.get("no-commit-default")),
+    ) {
+        layer.no_commit_default = Some(no_commit_default);
+    }
+
+    if let Some(background) = table.get("background").and_then(|value| value.as_object()) {
+        if let Some(enabled) = parse_bool(background.get("enabled")) {
+            layer.background.enabled = Some(enabled);
+        }
+        if let Some(quiet) = parse_bool(background.get("quiet")) {
+            layer.background.quiet = Some(quiet);
+        }
+    }
+
+    Ok(())
+}
+
 /// Returns the repo-local config path if `.vizier/config.toml` or `.vizier/config.json` exists.
 ///
 /// Canonical search order (highest precedence first):
@@ -1123,8 +1354,45 @@ pub fn base_config_dir() -> Option<PathBuf> {
     None
 }
 
+fn default_config_with_repo_prompts() -> Config {
+    let mut config = Config::default();
+    attach_repo_prompts(&mut config);
+    config
+}
+
+fn attach_repo_prompts(config: &mut Config) {
+    if !config.repo_prompts().is_empty() {
+        return;
+    }
+    let prompts = load_repo_prompts();
+    if !prompts.is_empty() {
+        config.set_repo_prompts(prompts);
+    }
+}
+
+fn load_repo_prompts() -> HashMap<SystemPrompt, PromptTemplate> {
+    let prompt_directory = tools::try_get_vizier_dir().map(PathBuf::from);
+    let mut repo_prompts = HashMap::new();
+
+    if let Some(dir) = prompt_directory.as_ref() {
+        for kind in PromptKind::all().iter().copied() {
+            for filename in kind.filename_candidates() {
+                let path = dir.join(filename);
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    repo_prompts.insert(kind, PromptTemplate { path, contents });
+                    break;
+                }
+            }
+        }
+    }
+
+    repo_prompts
+}
+
 pub fn set_config(new_config: Config) {
-    *CONFIG.write().unwrap() = new_config;
+    let mut config = new_config;
+    attach_repo_prompts(&mut config);
+    *CONFIG.write().unwrap() = config;
 }
 
 pub fn get_config() -> Config {

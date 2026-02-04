@@ -7,6 +7,7 @@
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
 - **Change discipline**: The AGENTS.md contract that code changes must update tests/docs and pass `./cicd.sh` before being treated as done.
 - **Config reference**: `docs/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings.
+- **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
 - **Background-by-default**: Workflow posture where assistant-backed commands always enqueue scheduler jobs; `--no-background` now errors and `--follow` attaches to job logs.
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.

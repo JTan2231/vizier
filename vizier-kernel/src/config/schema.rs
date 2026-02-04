@@ -1,20 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
-use lazy_static::lazy_static;
-
-use crate::{
-    COMMIT_PROMPT, DOCUMENTATION_PROMPT, IMPLEMENTATION_PLAN_PROMPT, MERGE_CONFLICT_PROMPT,
-    REVIEW_PROMPT,
-    agent::{AgentRunner, ScriptRunner},
-    tools, tree,
-};
-
-lazy_static! {
-    static ref CONFIG: RwLock<Config> = RwLock::new(Config::default());
-}
+use super::{PromptKind, PromptOrigin, PromptSelection, SystemPrompt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
@@ -124,7 +111,7 @@ pub struct DocumentationSettingsOverride {
 }
 
 impl DocumentationSettingsOverride {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.use_documentation_prompt.is_none()
             && self.include_snapshot.is_none()
             && self.include_narrative_docs.is_none()
@@ -144,7 +131,7 @@ impl DocumentationSettingsOverride {
         }
     }
 
-    fn apply_to(&self, settings: &mut DocumentationSettings) {
+    pub fn apply_to(&self, settings: &mut DocumentationSettings) {
         if let Some(enabled) = self.use_documentation_prompt {
             settings.use_documentation_prompt = enabled;
         }
@@ -209,41 +196,6 @@ impl AgentOverrides {
         for (kind, overrides) in other.prompt_overrides.iter() {
             self.prompt_overrides.insert(*kind, overrides.clone());
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct AgentSettings {
-    pub scope: CommandScope,
-    pub selector: String,
-    pub backend: BackendKind,
-    pub runner: Option<Arc<dyn AgentRunner>>,
-    pub agent_runtime: ResolvedAgentRuntime,
-    pub documentation: DocumentationSettings,
-    pub prompt: Option<PromptSelection>,
-    pub cli_override: Option<AgentOverrides>,
-}
-
-impl AgentSettings {
-    pub fn for_prompt(
-        &self,
-        kind: PromptKind,
-    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        get_config().resolve_prompt_profile(self.scope, kind, self.cli_override.as_ref())
-    }
-
-    pub fn prompt_selection(&self) -> Option<&PromptSelection> {
-        self.prompt.as_ref()
-    }
-
-    pub fn agent_runner(&self) -> Result<&Arc<dyn AgentRunner>, Box<dyn std::error::Error>> {
-        self.runner.as_ref().ok_or_else(|| {
-            format!(
-                "agent scope `{}` requires an agent backend runner, but none was resolved",
-                self.scope.as_str()
-            )
-            .into()
-        })
     }
 }
 
@@ -317,7 +269,7 @@ pub struct AgentRuntimeOptions {
 }
 
 impl AgentRuntimeOptions {
-    fn apply_override(&mut self, overrides: &AgentRuntimeOverride) {
+    pub(crate) fn apply_override(&mut self, overrides: &AgentRuntimeOverride) {
         if let Some(label) = overrides.label.as_ref() {
             self.label = Some(label.clone());
         }
@@ -365,9 +317,9 @@ pub struct ResolvedAgentRuntime {
 }
 
 #[derive(Clone, Debug)]
-struct RepoPrompt {
-    path: PathBuf,
-    contents: String,
+pub struct PromptTemplate {
+    pub path: PathBuf,
+    pub contents: String,
 }
 
 #[derive(Clone)]
@@ -385,7 +337,7 @@ pub struct Config {
     pub workflow: WorkflowConfig,
     pub agent_defaults: AgentOverrides,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
-    repo_prompts: HashMap<SystemPrompt, RepoPrompt>,
+    pub(crate) repo_prompts: HashMap<SystemPrompt, PromptTemplate>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -452,10 +404,7 @@ pub enum CommitMetaField {
 
 impl CommitMetaField {
     pub fn parse(value: &str) -> Option<Self> {
-        let normalized = value
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['-', ' '], "_");
+        let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
         match normalized.as_str() {
             "session_id" => Some(Self::SessionId),
             "session_log" => Some(Self::SessionLog),
@@ -526,10 +475,7 @@ pub enum CommitImplementationField {
 
 impl CommitImplementationField {
     pub fn parse(value: &str) -> Option<Self> {
-        let normalized = value
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['-', '_'], " ");
+        let normalized = value.trim().to_ascii_lowercase().replace(['-', '_'], " ");
         match normalized.as_str() {
             "target branch" => Some(Self::TargetBranch),
             "plan branch" => Some(Self::PlanBranch),
@@ -834,45 +780,6 @@ pub struct ConfigLayer {
 }
 
 impl Config {
-    pub fn from_json(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_reader(filepath.as_path(), FileFormat::Json)
-    }
-
-    pub fn from_toml(filepath: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_reader(filepath.as_path(), FileFormat::Toml)
-    }
-
-    pub fn from_path<P: AsRef<Path>>(filepath: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let path = filepath.as_ref();
-
-        let ext = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase());
-
-        match ext.as_deref() {
-            Some("json") => Self::from_reader(path, FileFormat::Json),
-            Some("toml") => Self::from_reader(path, FileFormat::Toml),
-            _ => Self::from_reader(path, FileFormat::Toml)
-                .or_else(|_| Self::from_reader(path, FileFormat::Json)),
-        }
-    }
-
-    fn from_reader(path: &Path, format: FileFormat) -> Result<Self, Box<dyn std::error::Error>> {
-        let contents = std::fs::read_to_string(path)?;
-        let base_dir = path.parent();
-        Self::from_str(&contents, format, base_dir)
-    }
-
-    fn from_str(
-        contents: &str,
-        format: FileFormat,
-        base_dir: Option<&Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let layer = ConfigLayer::from_str(contents, format, base_dir)?;
-        Ok(Config::from_layers(&[layer]))
-    }
-
     pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
         if let Some(selection) = self.prompt_from_agent_override(scope, kind) {
             return selection;
@@ -941,221 +848,17 @@ impl Config {
         self.prompt_for(CommandScope::Ask, prompt).text
     }
 
-    pub fn resolve_agent_settings(
-        &self,
-        scope: CommandScope,
-        cli_override: Option<&AgentOverrides>,
-    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        let mut builder = AgentSettingsBuilder::new(self);
-
-        if !self.agent_defaults.is_empty() {
-            builder.apply(&self.agent_defaults);
-        }
-
-        if let Some(overrides) = self.agent_scopes.get(&scope) {
-            builder.apply(overrides);
-        }
-
-        if let Some(overrides) = cli_override
-            && !overrides.is_empty()
-        {
-            builder.apply_cli_override(overrides);
-        }
-
-        builder.build(scope, None, cli_override)
+    pub fn set_repo_prompts(&mut self, prompts: HashMap<SystemPrompt, PromptTemplate>) {
+        self.repo_prompts = prompts;
     }
 
-    pub fn resolve_prompt_profile(
-        &self,
-        scope: CommandScope,
-        kind: PromptKind,
-        cli_override: Option<&AgentOverrides>,
-    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        let mut builder = AgentSettingsBuilder::new(self);
-
-        if !self.agent_defaults.is_empty() {
-            builder.apply(&self.agent_defaults);
-        }
-
-        if let Some(scope_overrides) = self.agent_scopes.get(&scope) {
-            builder.apply(scope_overrides);
-        }
-
-        if let Some(default_prompt) = self.agent_defaults.prompt_overrides.get(&kind) {
-            builder.apply_prompt_overrides(default_prompt);
-        }
-
-        if let Some(scoped_prompt) = self
-            .agent_scopes
-            .get(&scope)
-            .and_then(|scope_overrides| scope_overrides.prompt_overrides.get(&kind))
-        {
-            builder.apply_prompt_overrides(scoped_prompt);
-        }
-
-        if let Some(overrides) = cli_override
-            && !overrides.is_empty()
-        {
-            builder.apply_cli_override(overrides);
-        }
-
-        let prompt = if kind == PromptKind::Documentation
-            && !builder.documentation.use_documentation_prompt
-        {
-            None
-        } else {
-            Some(self.prompt_for(scope, kind))
-        };
-        builder.build(scope, prompt, cli_override)
-    }
-}
-
-#[derive(Copy, Clone)]
-enum FileFormat {
-    Json,
-    Toml,
-}
-
-const MODEL_KEY_PATHS: &[&[&str]] = &[
-    &["model"],
-    &["provider"],
-    &["provider", "model"],
-    &["provider", "name"],
-];
-const BACKEND_KEY_PATHS: &[&[&str]] = &[&["backend"], &["provider", "backend"]];
-const FALLBACK_BACKEND_KEY_PATHS: &[&[&str]] = &[&["fallback_backend"], &["fallback-backend"]];
-const FALLBACK_BACKEND_DEPRECATION_MESSAGE: &str =
-    "fallback_backend entries are unsupported; remove them from your config.";
-const REASONING_EFFORT_KEY_PATHS: &[&[&str]] = &[
-    &["reasoning_effort"],
-    &["reasoning-effort"],
-    &["thinking_level"],
-    &["thinking-level"],
-    &["provider", "reasoning_effort"],
-    &["provider", "reasoning-effort"],
-    &["provider", "thinking_level"],
-    &["provider", "thinking-level"],
-    &["flags", "reasoning_effort"],
-    &["flags", "reasoning-effort"],
-    &["flags", "thinking_level"],
-    &["flags", "thinking-level"],
-];
-const MODEL_CONFIG_REMOVED_MESSAGE: &str =
-    "model overrides are no longer supported now that the wire backend has been removed.";
-const REASONING_CONFIG_REMOVED_MESSAGE: &str = "reasoning-effort overrides are no longer supported now that the wire backend has been removed.";
-// Prompt templates resolve from scoped agent profiles, then repo prompt files, then defaults.
-
-#[derive(Clone)]
-struct AgentSettingsBuilder {
-    selector: String,
-    backend: BackendKind,
-    agent_runtime: AgentRuntimeOptions,
-    documentation: DocumentationSettings,
-}
-
-impl AgentSettingsBuilder {
-    fn new(cfg: &Config) -> Self {
-        let selector = cfg.agent_selector.clone();
-        Self {
-            selector: selector.clone(),
-            backend: backend_kind_for_selector(&selector),
-            agent_runtime: cfg.agent_runtime.clone(),
-            documentation: DocumentationSettings::default(),
-        }
+    pub fn with_repo_prompts(mut self, prompts: HashMap<SystemPrompt, PromptTemplate>) -> Self {
+        self.repo_prompts = prompts;
+        self
     }
 
-    fn apply(&mut self, overrides: &AgentOverrides) {
-        if let Some(selector) = overrides.selector.as_ref() {
-            self.set_selector(selector);
-        }
-
-        if let Some(runtime) = overrides.agent_runtime.as_ref() {
-            if let Some(label) = runtime.label.as_ref() {
-                self.agent_runtime.label = Some(label.clone());
-            }
-
-            if let Some(command) = runtime.command.as_ref() {
-                self.agent_runtime.command = command.clone();
-            }
-
-            if let Some(filter) = runtime.progress_filter.as_ref() {
-                self.agent_runtime.progress_filter = Some(filter.clone());
-            }
-
-            if let Some(output) = runtime.output.as_ref() {
-                self.agent_runtime.output = *output;
-            }
-        }
-
-        overrides.documentation.apply_to(&mut self.documentation);
-    }
-
-    fn apply_cli_override(&mut self, overrides: &AgentOverrides) {
-        if let Some(selector) = overrides.selector.as_ref() {
-            self.set_selector(selector);
-        }
-
-        if let Some(runtime) = overrides.agent_runtime.as_ref() {
-            if let Some(label) = runtime.label.as_ref() {
-                self.agent_runtime.label = Some(label.clone());
-            }
-
-            if let Some(command) = runtime.command.as_ref() {
-                self.agent_runtime.command = command.clone();
-            }
-
-            if let Some(filter) = runtime.progress_filter.as_ref() {
-                self.agent_runtime.progress_filter = Some(filter.clone());
-            }
-
-            if let Some(output) = runtime.output.as_ref() {
-                self.agent_runtime.output = *output;
-            }
-
-            if let Some(enable_script_wrapper) = runtime.enable_script_wrapper {
-                self.agent_runtime.enable_script_wrapper = enable_script_wrapper;
-            }
-        }
-
-        overrides.documentation.apply_to(&mut self.documentation);
-    }
-
-    fn apply_prompt_overrides(&mut self, overrides: &PromptOverrides) {
-        if let Some(agent) = overrides.agent_overrides() {
-            self.apply(agent);
-        }
-    }
-
-    fn set_selector<S: AsRef<str>>(&mut self, selector: S) {
-        let normalized = selector.as_ref().trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return;
-        }
-        self.backend = backend_kind_for_selector(&normalized);
-        self.selector = normalized;
-    }
-
-    fn build(
-        &self,
-        scope: CommandScope,
-        prompt: Option<PromptSelection>,
-        cli_override: Option<&AgentOverrides>,
-    ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        let agent_runtime = self.agent_runtime.normalized_for_selector(&self.selector);
-
-        let resolved_runtime =
-            resolve_agent_runtime(agent_runtime.clone(), &self.selector, self.backend)?;
-
-        Ok(AgentSettings {
-            scope,
-            selector: self.selector.clone(),
-            backend: self.backend,
-            runner: resolve_agent_runner(self.backend)?,
-            agent_runtime: resolved_runtime,
-            documentation: self.documentation.clone(),
-            prompt,
-            cli_override: cli_override.cloned(),
-        })
+    pub fn repo_prompts(&self) -> &HashMap<SystemPrompt, PromptTemplate> {
+        &self.repo_prompts
     }
 }
 
@@ -1166,14 +869,14 @@ pub fn backend_kind_for_selector(selector: &str) -> BackendKind {
     }
 }
 
-fn default_selector_for_backend(backend: BackendKind) -> &'static str {
+pub fn default_selector_for_backend(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::Gemini => "gemini",
         BackendKind::Agent => "codex",
     }
 }
 
-fn normalize_selector_value(value: &str) -> Option<String> {
+pub fn normalize_selector_value(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None
@@ -1182,167 +885,52 @@ fn normalize_selector_value(value: &str) -> Option<String> {
     }
 }
 
-fn command_label(command: &[String]) -> Option<String> {
-    let candidate = PathBuf::from(command.first()?);
-    let stem = candidate.file_stem()?.to_string_lossy().to_string();
-    if stem.is_empty() { None } else { Some(stem) }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// Attach a bundled progress filter for any agent label that ships one (codex, gemini,
-// or custom shims), so wrapped output stays consistent without per-backend branching.
-fn default_progress_filter_for_label(label: &str) -> Option<Vec<String>> {
-    bundled_progress_filter(label).map(|path| vec![path.display().to_string()])
-}
-
-fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    if let Ok(dir) = std::env::var("VIZIER_AGENT_SHIMS_DIR") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            dirs.push(PathBuf::from(trimmed));
-        }
+    #[test]
+    fn normalize_selector_trims_and_lowercases() {
+        assert_eq!(
+            normalize_selector_value("  CODEX  "),
+            Some("codex".to_string())
+        );
+        assert_eq!(normalize_selector_value(""), None);
+        assert_eq!(normalize_selector_value("   "), None);
     }
 
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        dirs.push(dir.join("agents"));
-        if let Some(prefix) = dir.parent() {
-            dirs.push(prefix.join("share").join("vizier").join("agents"));
-        }
-    }
-
-    let workspace_agents = PathBuf::from("examples").join("agents");
-    dirs.push(workspace_agents);
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workspace_root) = manifest_dir.parent() {
-        dirs.push(workspace_root.join("examples").join("agents"));
-    }
-
-    dirs.retain(|path| path.is_dir());
-    dirs
-}
-
-fn bundled_agent_command(label: &str) -> Option<PathBuf> {
-    find_first_in_shim_dirs(vec![
-        format!("{label}/agent.sh"),
-        format!("{label}.sh"), // backward compatibility
-    ])
-}
-
-fn bundled_progress_filter(label: &str) -> Option<PathBuf> {
-    find_first_in_shim_dirs(vec![
-        format!("{label}/filter.sh"),
-        format!("{label}-filter.sh"), // backward compatibility
-    ])
-}
-
-fn find_in_shim_dirs(filename: &str) -> Option<PathBuf> {
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    for dir in bundled_agent_shim_dir_candidates() {
-        if !seen.insert(dir.clone()) {
-            continue;
-        }
-        let candidate = dir.join(filename);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn find_first_in_shim_dirs(candidates: Vec<String>) -> Option<PathBuf> {
-    for name in candidates {
-        if let Some(path) = find_in_shim_dirs(&name) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn resolve_agent_runtime(
-    runtime: AgentRuntimeOptions,
-    selector: &str,
-    backend: BackendKind,
-) -> Result<ResolvedAgentRuntime, Box<dyn std::error::Error>> {
-    let mut label = runtime.label.clone().unwrap_or_else(|| {
-        if selector.trim().is_empty() {
-            default_selector_for_backend(backend).to_string()
-        } else {
-            selector.to_string()
-        }
-    });
-    let mut progress_filter = runtime.progress_filter.clone();
-    let output = AgentOutputHandling::Wrapped;
-
-    if progress_filter.is_none() {
-        progress_filter = default_progress_filter_for_label(&label);
-    }
-
-    if !runtime.command.is_empty() {
-        if label.is_empty() {
-            label = default_selector_for_backend(backend).to_string();
-        } else if runtime.label.is_none() {
-            label = command_label(&runtime.command).unwrap_or(label);
-        }
-
-        return Ok(ResolvedAgentRuntime {
-            label,
-            command: runtime.command,
-            progress_filter,
-            output,
-            enable_script_wrapper: runtime.enable_script_wrapper,
-            resolution: AgentRuntimeResolution::ProvidedCommand,
-        });
-    }
-
-    if backend.requires_agent_runner() {
-        let Some(path) = bundled_agent_command(&label) else {
-            let locations: Vec<String> = bundled_agent_shim_dir_candidates()
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
-            let hint = if locations.is_empty() {
-                "no shim directories detected".to_string()
-            } else {
-                format!("looked in {}", locations.join(", "))
-            };
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "no bundled agent shim named `{label}` was found ({hint}); set agent.command to a script that prints assistant output to stdout and progress/errors to stderr"
-                ),
-            )));
+    #[test]
+    fn runtime_normalization_sets_missing_label() {
+        let runtime = AgentRuntimeOptions {
+            label: None,
+            command: vec!["/bin/echo".to_string()],
+            progress_filter: None,
+            output: AgentOutputMode::Auto,
+            enable_script_wrapper: true,
         };
 
-        return Ok(ResolvedAgentRuntime {
-            label: label.clone(),
-            command: vec![path.display().to_string()],
-            progress_filter,
-            output,
-            enable_script_wrapper: runtime.enable_script_wrapper,
-            resolution: AgentRuntimeResolution::BundledShim { label, path },
-        });
+        let normalized = runtime.normalized_for_selector("codex");
+        assert_eq!(normalized.label.as_deref(), Some("codex"));
+        assert_eq!(normalized.command, runtime.command);
     }
 
-    Ok(ResolvedAgentRuntime {
-        label,
-        command: Vec::new(),
-        progress_filter,
-        output,
-        enable_script_wrapper: runtime.enable_script_wrapper,
-        resolution: AgentRuntimeResolution::ProvidedCommand,
-    })
-}
+    #[test]
+    fn runtime_normalization_keeps_existing_label() {
+        let runtime = AgentRuntimeOptions {
+            label: Some("custom".to_string()),
+            command: vec!["/bin/echo".to_string()],
+            progress_filter: None,
+            output: AgentOutputMode::Auto,
+            enable_script_wrapper: true,
+        };
 
-fn resolve_agent_runner(
-    backend: BackendKind,
-) -> Result<Option<Arc<dyn AgentRunner>>, Box<dyn std::error::Error>> {
-    if !backend.requires_agent_runner() {
-        return Ok(None);
+        let normalized = runtime.normalized_for_selector("codex");
+        assert_eq!(normalized.label.as_deref(), Some("custom"));
     }
 
-    Ok(Some(Arc::new(ScriptRunner)))
+    #[test]
+    fn selector_to_backend_is_case_insensitive() {
+        assert_eq!(backend_kind_for_selector("GEMINI"), BackendKind::Gemini);
+        assert_eq!(backend_kind_for_selector("codex"), BackendKind::Agent);
+    }
 }

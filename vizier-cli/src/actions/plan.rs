@@ -96,7 +96,7 @@ fn resolve_default_agent_settings(
 ) -> Result<config::AgentSettings, Box<dyn std::error::Error>> {
     let mut base = cfg.clone();
     base.agent_scopes.clear();
-    base.resolve_agent_settings(config::CommandScope::Ask, cli_override)
+    config::resolve_agent_settings(&base, config::CommandScope::Ask, cli_override)
 }
 
 fn runtime_report(runtime: &config::ResolvedAgentRuntime) -> AgentRuntimeReport {
@@ -157,7 +157,7 @@ fn build_config_report(
 
     let mut scopes = BTreeMap::new();
     for scope in config::CommandScope::all() {
-        let agent = cfg.resolve_agent_settings(*scope, cli_override)?;
+        let agent = config::resolve_agent_settings(cfg, *scope, cli_override)?;
         scopes.insert(scope.as_str().to_string(), scope_report(&agent));
     }
 

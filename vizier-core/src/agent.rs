@@ -25,6 +25,7 @@ use crate::{
     config,
     display::{self, ProgressEvent, ProgressKind, Status},
 };
+pub use vizier_kernel::prompt::{ReviewCheckContext, ReviewGateContext, ReviewGateStatus};
 
 pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 12 * 60 * 60;
 pub const DEFAULT_AGENT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_AGENT_TIMEOUT_SECS);
@@ -64,35 +65,6 @@ pub struct AgentResponse {
     pub stderr: Vec<String>,
     pub exit_code: i32,
     pub duration_ms: u128,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReviewCheckContext {
-    pub command: String,
-    pub status_code: Option<i32>,
-    pub success: bool,
-    pub duration_ms: u128,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ReviewGateStatus {
-    Passed,
-    Failed,
-    Skipped,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReviewGateContext {
-    pub script: Option<String>,
-    pub status: ReviewGateStatus,
-    pub attempts: u32,
-    pub duration_ms: Option<u128>,
-    pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub auto_resolve_enabled: bool,
 }
 
 #[derive(Clone)]
