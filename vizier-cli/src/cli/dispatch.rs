@@ -30,6 +30,65 @@ use crate::cli::scheduler::{
 use crate::cli::util::flag_present;
 use crate::{jobs, plan};
 
+fn global_args_for_build(global: &GlobalOpts) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if global.json {
+        return Err("--json is not supported for vizier build".into());
+    }
+
+    let mut args = Vec::new();
+    if global.quiet {
+        args.push("--quiet".to_string());
+    } else if global.verbose > 0 {
+        let count = global.verbose.min(3) as usize;
+        args.push(format!("-{}", "v".repeat(count)));
+    }
+
+    if global.debug {
+        args.push("--debug".to_string());
+    }
+
+    if global.no_ansi {
+        args.push("--no-ansi".to_string());
+    }
+    if global.pager {
+        args.push("--pager".to_string());
+    }
+    if global.no_pager {
+        args.push("--no-pager".to_string());
+    }
+    if let Some(session) = global.load_session.as_ref() {
+        args.push("--load-session".to_string());
+        args.push(session.clone());
+    }
+    if global.no_session {
+        args.push("--no-session".to_string());
+    }
+    if let Some(agent) = global.agent.as_ref() {
+        args.push("--agent".to_string());
+        args.push(agent.clone());
+    }
+    if let Some(label) = global.agent_label.as_ref() {
+        args.push("--agent-label".to_string());
+        args.push(label.clone());
+    }
+    if let Some(command) = global.agent_command.as_ref() {
+        args.push("--agent-command".to_string());
+        args.push(command.clone());
+    }
+    if let Some(config_file) = global.config_file.as_ref() {
+        args.push("--config-file".to_string());
+        args.push(config_file.clone());
+    }
+    if global.push {
+        args.push("--push".to_string());
+    }
+    if global.no_commit {
+        args.push("--no-commit".to_string());
+    }
+
+    Ok(args)
+}
+
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if crate::completions::try_handle_completion(Cli::command)
         .map_err(Box::<dyn std::error::Error>::from)?
@@ -788,6 +847,17 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     commit_mode,
                 )
                 .await
+            }
+
+            Commands::Build(cmd) => {
+                let global_args = global_args_for_build(&cli.global)?;
+                run_build(
+                    cmd.file,
+                    &global_args,
+                    &project_root,
+                    &jobs_root,
+                    cli_agent_override.as_ref(),
+                )
             }
 
             Commands::List(cmd) => run_list(resolve_list_options(&cmd, cli.global.json)?),

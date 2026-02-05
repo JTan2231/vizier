@@ -403,6 +403,9 @@ pub(crate) enum Commands {
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
 
+    /// Schedule one or more implementation-plan drafts from an intent build file
+    Build(BuildCmd),
+
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
 
@@ -492,6 +495,13 @@ pub(crate) struct DraftCmd {
     /// Override the derived plan/branch slug (letters, numbers, dashes only)
     #[arg(long = "name", value_name = "NAME")]
     pub(crate) name: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct BuildCmd {
+    /// Path to the build file (TOML or JSON)
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    pub(crate) file: PathBuf,
 }
 
 #[derive(ClapArgs, Debug)]

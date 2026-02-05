@@ -6,6 +6,7 @@ mod agent_shims;
 mod approve;
 mod ask;
 mod background;
+mod build;
 mod config;
 mod display;
 mod draft;

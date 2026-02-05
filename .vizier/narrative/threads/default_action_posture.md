@@ -55,3 +55,5 @@ Update (2026-02-03)
 - Documented that tasks now explicitly include "Update the snapshot, glossary, and supporting narrative docs as needed" as the guardrail-satisfying authorization; when absent, narrative updates are treated as a no-op while DAP precedence remains unresolved.
 Update (2026-02-04)
 - Added a response cue: when users signal lost context, surface the relevant snapshot slice and active threads before proceeding.
+Update (2026-02-05)
+- Reaffirmed the snapshot framing as two slices (Code state and Narrative state) and that DAP updates should preserve the split while keeping user-facing output to a commit-style summary with snapshotDelta retained only inside `.vizier`.

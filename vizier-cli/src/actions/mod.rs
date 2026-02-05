@@ -1,5 +1,6 @@
 mod approve;
 mod ask;
+mod build;
 mod draft;
 mod gates;
 mod list;
@@ -14,6 +15,7 @@ mod types;
 
 pub(crate) use approve::run_approve;
 pub(crate) use ask::{inline_command, run_ask_in_worktree};
+pub(crate) use build::run_build;
 pub(crate) use draft::run_draft;
 pub(crate) use list::{run_cd, run_clean, run_list};
 pub(crate) use merge::run_merge;
