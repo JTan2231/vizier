@@ -2,6 +2,16 @@
 
 This guide explains how Vizier’s plan workflow turns a high-level spec into audited code without disturbing your working tree. Use it whenever you want Vizier (or an external agent) to implement a scoped change on a dedicated branch and then merge it back with a metadata-rich commit.
 
+## Queue Multiple Drafts with `vizier build`
+
+When you want to batch related plan drafts, start with:
+
+```bash
+vizier build --file examples/build/todo.toml
+```
+
+That command queues one `vizier draft` job per build step (serial or parallel based on the file layout). For the schema and JSON variant, see `docs/user/build.md`, `examples/build/todo.toml`, and `examples/build/todo.json`.
+
 ### Agent configuration
 
 The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing stacks as needed (see also `docs/user/prompt-config-matrix.md` for the full scope×prompt-kind matrix and config levers):

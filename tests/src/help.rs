@@ -42,8 +42,10 @@ fn test_help_landing_page_is_curated() -> TestResult {
         "expected curated help sections, got: {stdout}"
     );
     assert!(
-        stdout.contains("vizier draft") && stdout.contains("vizier merge"),
-        "expected curated workflow commands, got: {stdout}"
+        stdout.contains("vizier build")
+            && stdout.contains("vizier draft")
+            && stdout.contains("vizier merge"),
+        "expected curated workflow commands (including build), got: {stdout}"
     );
     assert!(
         !stdout.contains("Commands:") && !stdout.contains("test-display"),

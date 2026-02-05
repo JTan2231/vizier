@@ -57,3 +57,5 @@ Update (2026-02-04)
 - Added a response cue: when users signal lost context, surface the relevant snapshot slice and active threads before proceeding.
 Update (2026-02-05)
 - Reaffirmed the snapshot framing as two slices (Code state and Narrative state) and that DAP updates should preserve the split while keeping user-facing output to a commit-style summary with snapshotDelta retained only inside `.vizier`.
+Update (2026-02-05, follow-up)
+- Clarified task-envelope execution: when a turn bundles the explicit update instruction with inline snapshot/thread context, narrative upkeep is treated as immediately authorized for the first response, still anchored to on-disk `.vizier/narrative/*` canonical files.

@@ -26,33 +26,35 @@ Unknown keys are errors.
 
 ### Examples
 
-TOML:
+TOML (basic TODO app):
 
 ```toml
 steps = [
-  { text = "Implement X with Y constraints and tests." },
+  { text = "Build a basic TODO API in Rust with create/list/complete/delete endpoints, an in-memory store, and integration tests." },
   [
-    { file = "intents/feature-a.md" },
-    { file = "intents/feature-b.md" },
+    { text = "Build a simple TODO web UI with list/add/complete interactions and clear empty/loading/error states." },
+    { text = "Add CLI smoke checks and local run docs for the TODO app so contributors can validate API + UI together." },
   ],
-  { text = """Finalize integration plan and test strategy.""" },
+  { text = """Finalize TODO app integration details, polish docs, and capture release-readiness checks before merge.""" },
 ]
 ```
 
-JSON:
+JSON (basic TODO app):
 
 ```json
 {
   "steps": [
-    { "text": "Implement X with Y constraints and tests." },
+    { "text": "Build a basic TODO API in Rust with create/list/complete/delete endpoints, an in-memory store, and integration tests." },
     [
-      { "file": "intents/feature-a.md" },
-      { "file": "intents/feature-b.md" }
+      { "text": "Build a simple TODO web UI with list/add/complete interactions and clear empty/loading/error states." },
+      { "text": "Add CLI smoke checks and local run docs for the TODO app so contributors can validate API + UI together." }
     ],
-    { "text": "Finalize integration plan and test strategy." }
+    { "text": "Finalize TODO app integration details, polish docs, and capture release-readiness checks before merge." }
   ]
 }
 ```
+
+Repository copies of these examples are available at `examples/build/todo.toml` and `examples/build/todo.json`.
 
 ### Path Resolution
 

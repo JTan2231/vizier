@@ -63,6 +63,7 @@ pub(crate) fn curated_help_text() -> &'static str {
         "  vizier merge   add-redis\n",
         "\n",
         "Examples:\n",
+        "  vizier build --file examples/build/todo.toml\n",
         "  vizier draft --name fix-help \"curate root help output\"\n",
         "  vizier merge fix-help --yes\n",
         "\n",
