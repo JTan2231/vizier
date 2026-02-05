@@ -145,6 +145,67 @@ pub fn build_implementation_plan_prompt(
     .map_err(map_prompt_error)
 }
 
+#[derive(Debug, Clone)]
+pub struct BuildPlanReference {
+    pub step_key: String,
+    pub plan_path: String,
+    pub summary: String,
+    pub digest: Option<String>,
+}
+
+pub struct BuildPlanPromptInput<'a> {
+    pub build_id: &'a str,
+    pub build_branch: &'a str,
+    pub manifest_path: &'a str,
+    pub step_key: &'a str,
+    pub stage_index: usize,
+    pub parallel_index: Option<usize>,
+    pub output_plan_path: &'a str,
+    pub intent_text: &'a str,
+    pub references: &'a [BuildPlanReference],
+    pub documentation: &'a config::DocumentationSettings,
+}
+
+pub fn build_build_implementation_plan_prompt(
+    prompt_selection: &config::PromptSelection,
+    input: BuildPlanPromptInput<'_>,
+) -> Result<String, AgentError> {
+    let context = load_context_if_needed(
+        input.documentation.include_snapshot,
+        input.documentation.include_narrative_docs,
+    )?;
+    let bounds = load_bounds_prompt()?;
+    let references = input
+        .references
+        .iter()
+        .map(|entry| kernel_prompt::BuildPlanReference {
+            step_key: entry.step_key.clone(),
+            plan_path: entry.plan_path.clone(),
+            summary: entry.summary.clone(),
+            digest: entry.digest.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    kernel_prompt::build_build_implementation_plan_prompt(
+        prompt_selection,
+        kernel_prompt::BuildPlanPromptInput {
+            build_id: input.build_id,
+            build_branch: input.build_branch,
+            manifest_path: input.manifest_path,
+            step_key: input.step_key,
+            stage_index: input.stage_index,
+            parallel_index: input.parallel_index,
+            output_plan_path: input.output_plan_path,
+            intent_text: input.intent_text,
+            references: &references,
+            documentation: input.documentation,
+            bounds: &bounds,
+            context: context.as_ref(),
+        },
+    )
+    .map_err(map_prompt_error)
+}
+
 pub struct ReviewPromptInput<'a> {
     pub plan_slug: &'a str,
     pub branch_name: &'a str,
@@ -282,6 +343,43 @@ mod tests {
         assert!(prompt.contains("<agentBounds>"));
 
         config::set_config(original);
+    }
+
+    #[test]
+    fn build_plan_prompt_includes_reference_index() {
+        let _guard = config::test_config_lock().lock().unwrap();
+        let selection =
+            config::get_config().prompt_for(CommandScope::Draft, PromptKind::ImplementationPlan);
+        let refs = vec![BuildPlanReference {
+            step_key: "01".to_string(),
+            plan_path: ".vizier/implementation-plans/builds/s1/plans/01-alpha.md".to_string(),
+            summary: "alpha summary".to_string(),
+            digest: Some("abc123".to_string()),
+        }];
+
+        let prompt = build_build_implementation_plan_prompt(
+            &selection,
+            BuildPlanPromptInput {
+                build_id: "s1",
+                build_branch: "build/s1",
+                manifest_path: ".vizier/implementation-plans/builds/s1/manifest.json",
+                step_key: "02a",
+                stage_index: 2,
+                parallel_index: Some(1),
+                output_plan_path: ".vizier/implementation-plans/builds/s1/plans/02a-bravo.md",
+                intent_text: "Add bravo flow",
+                references: &refs,
+                documentation: &DocumentationSettings::default(),
+            },
+        )
+        .unwrap();
+
+        assert!(prompt.contains("<buildMetadata>"));
+        assert!(prompt.contains("build_id: s1"));
+        assert!(prompt.contains("step_key: 02a"));
+        assert!(prompt.contains("<planReferenceIndex>"));
+        assert!(prompt.contains("step_key: 01"));
+        assert!(prompt.contains("summary: alpha summary"));
     }
 
     #[test]

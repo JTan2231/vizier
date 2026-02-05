@@ -1,135 +1,31 @@
 use crate::fixtures::*;
 
-use serde_json::Value;
-
-fn collect_job_records(repo: &IntegrationRepo) -> TestResult<Vec<Value>> {
-    let jobs_dir = repo.path().join(".vizier/jobs");
-    let mut records = Vec::new();
-    if !jobs_dir.exists() {
-        return Ok(records);
-    }
-    for entry in fs::read_dir(jobs_dir)? {
-        let entry = entry?;
-        let path = entry.path().join("job.json");
-        if !path.exists() {
-            continue;
-        }
-        let contents = fs::read_to_string(path)?;
-        let record: Value = serde_json::from_str(&contents)?;
-        records.push(record);
-    }
-    Ok(records)
+fn read_branch_file(repo: &Repository, branch: &str, rel_path: &str) -> TestResult<String> {
+    let branch_ref = repo.find_branch(branch, BranchType::Local)?;
+    let commit = branch_ref.get().peel_to_commit()?;
+    let tree = commit.tree()?;
+    let entry = tree.get_path(Path::new(rel_path))?;
+    let blob = repo.find_blob(entry.id())?;
+    Ok(String::from_utf8(blob.content().to_vec())?)
 }
 
-fn plan_slug(record: &Value) -> Option<String> {
-    record
-        .get("metadata")
-        .and_then(|meta| meta.get("plan"))
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-}
-
-fn dependency_plan_docs(record: &Value) -> Vec<(String, String)> {
-    let mut deps = Vec::new();
-    let Some(entries) = record
-        .get("schedule")
-        .and_then(|schedule| schedule.get("dependencies"))
+fn step_reads(step: &Value) -> Vec<String> {
+    step.get("reads")
         .and_then(Value::as_array)
-    else {
-        return deps;
-    };
-
-    for entry in entries {
-        let Some(artifact) = entry.get("artifact") else {
-            continue;
-        };
-        let Some(plan_doc) = artifact.get("plan_doc") else {
-            continue;
-        };
-        let slug = plan_doc
-            .get("slug")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let branch = plan_doc
-            .get("branch")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if !slug.is_empty() {
-            deps.push((slug, branch));
-        }
-    }
-    deps
-}
-
-fn extract_child_file(record: &Value) -> Option<String> {
-    let args = record.get("child_args").and_then(Value::as_array)?;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        let Some(arg_str) = arg.as_str() else {
-            continue;
-        };
-        if arg_str == "--file" {
-            return iter.next().and_then(Value::as_str).map(|s| s.to_string());
-        }
-        if let Some(value) = arg_str.strip_prefix("--file=") {
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
-fn normalize_slug(input: &str) -> String {
-    let mut normalized = String::new();
-    let mut last_dash = false;
-
-    for ch in input.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            normalized.push(lower);
-            last_dash = false;
-        } else if !last_dash {
-            normalized.push('-');
-            last_dash = true;
-        }
-    }
-
-    while normalized.starts_with('-') {
-        normalized.remove(0);
-    }
-    while normalized.ends_with('-') {
-        normalized.pop();
-    }
-
-    if normalized.len() > 32 {
-        normalized.truncate(32);
-        while normalized.ends_with('-') {
-            normalized.pop();
-        }
-    }
-
-    normalized
-}
-
-fn slug_from_spec(spec: &str) -> String {
-    let words: Vec<&str> = spec.split_whitespace().take(6).collect();
-    let candidate = if words.is_empty() {
-        "draft-plan".to_string()
-    } else {
-        words.join("-")
-    };
-
-    let normalized = normalize_slug(&candidate);
-    if normalized.is_empty() {
-        "draft-plan".to_string()
-    } else {
-        normalized
-    }
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("step_key")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+        })
+        .collect()
 }
 
 #[test]
-fn test_build_parses_toml_and_resolves_relative_paths() -> TestResult {
+fn test_build_creates_session_artifacts_on_build_branch() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
@@ -143,44 +39,79 @@ steps = [
 "#;
     repo.write("configs/build.toml", toml)?;
 
-    let output = repo
-        .vizier_cmd_background()
-        .args(["build", "--file", "configs/build.toml"])
-        .output()?;
+    let output = repo.vizier_output(&["build", "--file", "configs/build.toml"])?;
     assert!(
         output.status.success(),
         "vizier build failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let records = collect_job_records(&repo)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let build_id = find_save_field(&stdout, "Build").ok_or("build output missing Build")?;
+    let branch = find_save_field(&stdout, "Branch").ok_or("build output missing Branch")?;
+    let manifest_rel =
+        find_save_field(&stdout, "Manifest").ok_or("build output missing Manifest")?;
+
+    assert_eq!(branch, format!("build/{build_id}"));
+
+    let repo_handle = repo.repo();
+    let _ = repo_handle.find_branch(&branch, BranchType::Local)?;
+
+    let manifest_text = read_branch_file(&repo_handle, &branch, &manifest_rel)?;
+    let manifest: Value = serde_json::from_str(&manifest_text)?;
+
     assert_eq!(
-        records.len(),
-        2,
-        "expected 2 build jobs, got {}",
-        records.len()
+        manifest
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "succeeded"
     );
 
-    let mut found_file_spec = false;
-    for record in records {
-        if let Some(path) = extract_child_file(&record) {
-            let path = PathBuf::from(path);
-            let resolved = if path.is_absolute() {
-                path
-            } else {
-                repo.path().join(path)
-            };
-            let contents = fs::read_to_string(resolved)?;
-            if contents.contains("Alpha spec for build") {
-                found_file_spec = true;
-            }
-        }
+    let copied_input = manifest
+        .get("input_file")
+        .and_then(|value| value.get("copied_path"))
+        .and_then(Value::as_str)
+        .ok_or("manifest input_file.copied_path missing")?;
+    let copied_input_text = read_branch_file(&repo_handle, &branch, copied_input)?;
+    assert!(copied_input_text.contains("Inline spec for build"));
+    assert!(copied_input_text.contains("intents/alpha.md"));
+
+    let steps = manifest
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("manifest steps missing")?;
+    assert_eq!(steps.len(), 2);
+
+    for step in steps {
+        let plan_path = step
+            .get("output_plan_path")
+            .and_then(Value::as_str)
+            .ok_or("step output_plan_path missing")?;
+        let plan_text = read_branch_file(&repo_handle, &branch, plan_path)?;
+        assert!(plan_text.contains("## Operator Spec"));
+        assert!(plan_text.contains("## Implementation Plan"));
     }
 
-    assert!(
-        found_file_spec,
-        "expected at least one job input file to include intent file contents"
-    );
+    let summary_rel = manifest
+        .get("artifacts")
+        .and_then(|value| value.get("summary"))
+        .and_then(Value::as_str)
+        .ok_or("manifest artifacts.summary missing")?;
+    let summary_text = read_branch_file(&repo_handle, &branch, summary_rel)?;
+    assert!(summary_text.contains("# Build Session Summary"));
+
+    let temp_root = repo.path().join(".vizier/tmp-worktrees");
+    if temp_root.exists() {
+        let leftover_build_worktrees = fs::read_dir(&temp_root)?
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("build-"))
+            .count();
+        assert_eq!(
+            leftover_build_worktrees, 0,
+            "build worktree should be cleaned"
+        );
+    }
 
     Ok(())
 }
@@ -199,23 +130,35 @@ fn test_build_parses_json() -> TestResult {
 "#;
     repo.write("build.json", json)?;
 
-    let output = repo
-        .vizier_cmd_background()
-        .args(["build", "--file", "build.json"])
-        .output()?;
+    let output = repo.vizier_output(&["build", "--file", "build.json"])?;
     assert!(
         output.status.success(),
         "vizier build JSON failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let records = collect_job_records(&repo)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branch = find_save_field(&stdout, "Branch").ok_or("build output missing Branch")?;
+    let manifest_rel =
+        find_save_field(&stdout, "Manifest").ok_or("build output missing Manifest")?;
+
+    let repo_handle = repo.repo();
+    let manifest_text = read_branch_file(&repo_handle, &branch, &manifest_rel)?;
+    let manifest: Value = serde_json::from_str(&manifest_text)?;
+
+    let steps = manifest
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("manifest steps missing")?;
+    assert_eq!(steps.len(), 1);
     assert_eq!(
-        records.len(),
-        1,
-        "expected 1 build job, got {}",
-        records.len()
+        steps[0]
+            .get("step_key")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "01"
     );
+
     Ok(())
 }
 
@@ -232,10 +175,7 @@ fn test_build_rejects_invalid_entries() -> TestResult {
 }
 "#;
     repo.write("bad.json", json)?;
-    let output = repo
-        .vizier_cmd_background()
-        .args(["build", "--file", "bad.json"])
-        .output()?;
+    let output = repo.vizier_output(&["build", "--file", "bad.json"])?;
     assert!(
         !output.status.success(),
         "expected build with unknown keys to fail"
@@ -249,10 +189,7 @@ fn test_build_rejects_invalid_entries() -> TestResult {
 }
 "#;
     repo.write("empty.json", json_empty)?;
-    let output = repo
-        .vizier_cmd_background()
-        .args(["build", "--file", "empty.json"])
-        .output()?;
+    let output = repo.vizier_output(&["build", "--file", "empty.json"])?;
     assert!(
         !output.status.success(),
         "expected build with empty intent content to fail"
@@ -262,7 +199,7 @@ fn test_build_rejects_invalid_entries() -> TestResult {
 }
 
 #[test]
-fn test_build_wires_dependencies_between_groups() -> TestResult {
+fn test_build_manifest_reads_prior_stages_only() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
@@ -278,82 +215,107 @@ steps = [
 "#;
     repo.write("build.toml", steps)?;
 
-    let output = repo
-        .vizier_cmd_background()
-        .args(["build", "--file", "build.toml"])
-        .output()?;
+    let output = repo.vizier_output(&["build", "--file", "build.toml"])?;
     assert!(
         output.status.success(),
         "vizier build failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let records = collect_job_records(&repo)?;
-    assert_eq!(
-        records.len(),
-        4,
-        "expected 4 build jobs, got {}",
-        records.len()
-    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branch = find_save_field(&stdout, "Branch").ok_or("build output missing Branch")?;
+    let manifest_rel =
+        find_save_field(&stdout, "Manifest").ok_or("build output missing Manifest")?;
 
-    let alpha = slug_from_spec("Alpha builder");
-    let bravo = slug_from_spec("Bravo builder");
-    let charlie = slug_from_spec("Charlie builder");
-    let delta = slug_from_spec("Delta builder");
+    let repo_handle = repo.repo();
+    let manifest_text = read_branch_file(&repo_handle, &branch, &manifest_rel)?;
+    let manifest: Value = serde_json::from_str(&manifest_text)?;
+    let steps = manifest
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("manifest steps missing")?;
 
-    let mut records_by_slug = std::collections::HashMap::new();
-    for record in records {
-        if let Some(slug) = plan_slug(&record) {
-            records_by_slug.insert(slug, record);
-        }
+    let mut by_key = std::collections::HashMap::new();
+    for step in steps {
+        let key = step
+            .get("step_key")
+            .and_then(Value::as_str)
+            .ok_or("step_key missing")?
+            .to_string();
+        by_key.insert(key, step.clone());
     }
 
-    let alpha_record = records_by_slug
-        .get(&alpha)
-        .ok_or("missing alpha job record")?;
+    let reads_01 = step_reads(by_key.get("01").ok_or("missing step 01")?);
+    assert!(reads_01.is_empty(), "01 should have no reads");
+
+    let reads_02a = step_reads(by_key.get("02a").ok_or("missing step 02a")?);
+    assert_eq!(reads_02a, vec!["01".to_string()]);
+
+    let reads_02b = step_reads(by_key.get("02b").ok_or("missing step 02b")?);
+    assert_eq!(reads_02b, vec!["01".to_string()]);
+
+    let reads_03 = step_reads(by_key.get("03").ok_or("missing step 03")?);
+    assert!(reads_03.contains(&"01".to_string()));
+    assert!(reads_03.contains(&"02a".to_string()));
+    assert!(reads_03.contains(&"02b".to_string()));
+
+    Ok(())
+}
+
+#[test]
+fn test_build_failure_preserves_failed_manifest() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let toml = r#"
+steps = [
+  { text = "Alpha build that will fail" },
+  { text = "Bravo build should not run" },
+]
+"#;
+    repo.write("build.toml", toml)?;
+
+    let mut cmd = repo.vizier_cmd();
+    cmd.env("VIZIER_FORCE_AGENT_ERROR", "1");
+    cmd.args(["build", "--file", "build.toml"]);
+    let output = cmd.output()?;
     assert!(
-        dependency_plan_docs(alpha_record).is_empty(),
-        "alpha step should have no dependencies"
+        !output.status.success(),
+        "vizier build should fail when agent backend fails"
     );
 
-    let bravo_record = records_by_slug
-        .get(&bravo)
-        .ok_or("missing bravo job record")?;
-    let bravo_deps = dependency_plan_docs(bravo_record);
-    assert!(
-        bravo_deps
-            .iter()
-            .any(|(slug, branch)| { slug == &alpha && branch == &format!("draft/{alpha}") }),
-        "bravo should depend on alpha plan_doc"
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branch = find_save_field(&stdout, "Branch").ok_or("build output missing Branch")?;
+    let manifest_rel =
+        find_save_field(&stdout, "Manifest").ok_or("build output missing Manifest")?;
+
+    let repo_handle = repo.repo();
+    let _ = repo_handle.find_branch(&branch, BranchType::Local)?;
+
+    let manifest_text = read_branch_file(&repo_handle, &branch, &manifest_rel)?;
+    let manifest: Value = serde_json::from_str(&manifest_text)?;
+    assert_eq!(
+        manifest
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "failed"
     );
 
-    let charlie_record = records_by_slug
-        .get(&charlie)
-        .ok_or("missing charlie job record")?;
-    let charlie_deps = dependency_plan_docs(charlie_record);
-    assert!(
-        charlie_deps
-            .iter()
-            .any(|(slug, branch)| { slug == &alpha && branch == &format!("draft/{alpha}") }),
-        "charlie should depend on alpha plan_doc"
-    );
-
-    let delta_record = records_by_slug
-        .get(&delta)
-        .ok_or("missing delta job record")?;
-    let delta_deps = dependency_plan_docs(delta_record);
-    assert!(
-        delta_deps
-            .iter()
-            .any(|(slug, branch)| { slug == &bravo && branch == &format!("draft/{bravo}") }),
-        "delta should depend on bravo plan_doc"
-    );
-    assert!(
-        delta_deps
-            .iter()
-            .any(|(slug, branch)| { slug == &charlie && branch == &format!("draft/{charlie}") }),
-        "delta should depend on charlie plan_doc"
-    );
+    let failed_steps = manifest
+        .get("steps")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|step| {
+            step.get("result")
+                .and_then(Value::as_str)
+                .map(|value| value == "failed")
+                .unwrap_or(false)
+        })
+        .count();
+    assert!(failed_steps >= 1, "expected at least one failed step");
 
     Ok(())
 }

@@ -403,7 +403,7 @@ pub(crate) enum Commands {
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
 
-    /// Schedule one or more implementation-plan drafts from an intent build file
+    /// Run a build session that generates batched implementation plans on a dedicated build branch
     Build(BuildCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch

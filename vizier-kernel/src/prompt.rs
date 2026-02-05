@@ -179,6 +179,112 @@ pub fn build_implementation_plan_prompt(
     Ok(prompt)
 }
 
+#[derive(Debug, Clone)]
+pub struct BuildPlanReference {
+    pub step_key: String,
+    pub plan_path: String,
+    pub summary: String,
+    pub digest: Option<String>,
+}
+
+pub struct BuildPlanPromptInput<'a> {
+    pub build_id: &'a str,
+    pub build_branch: &'a str,
+    pub manifest_path: &'a str,
+    pub step_key: &'a str,
+    pub stage_index: usize,
+    pub parallel_index: Option<usize>,
+    pub output_plan_path: &'a str,
+    pub intent_text: &'a str,
+    pub references: &'a [BuildPlanReference],
+    pub documentation: &'a DocumentationSettings,
+    pub bounds: &'a str,
+    pub context: Option<&'a PromptContext>,
+}
+
+pub fn build_build_implementation_plan_prompt(
+    prompt_selection: &PromptSelection,
+    input: BuildPlanPromptInput<'_>,
+) -> Result<String, PromptError> {
+    let mut prompt = String::new();
+    prompt.push_str(&prompt_selection.text);
+    prompt.push_str("\n\n");
+    append_bounds_section(&mut prompt, input.bounds);
+
+    prompt.push_str("<buildMetadata>\n");
+    prompt.push_str(&format!(
+        "build_id: {build_id}\nbranch: {build_branch}\nmanifest_path: {manifest_path}\nstep_key: {step_key}\nstage_index: {stage_index}\nparallel_index: {parallel_index}\noutput_plan_path: {output_plan_path}\n",
+        build_id = input.build_id,
+        build_branch = input.build_branch,
+        manifest_path = input.manifest_path,
+        step_key = input.step_key,
+        stage_index = input.stage_index,
+        parallel_index = input
+            .parallel_index
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        output_plan_path = input.output_plan_path,
+    ));
+    prompt.push_str("</buildMetadata>\n\n");
+
+    if input.documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, input.context);
+    }
+
+    if input.documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, input.context);
+    }
+
+    prompt.push_str("<planReferenceIndex>\n");
+    if input.references.is_empty() {
+        prompt.push_str("No prior-stage plans are available for this step.\n");
+    } else {
+        for reference in input.references {
+            let digest = reference
+                .digest
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("none");
+            let summary = if reference.summary.trim().is_empty() {
+                "(summary unavailable)"
+            } else {
+                reference.summary.trim()
+            };
+            prompt.push_str(&format!(
+                "- step_key: {}\n  plan_path: {}\n  summary: {}\n  digest: {}\n",
+                reference.step_key.trim(),
+                reference.plan_path.trim(),
+                summary,
+                digest,
+            ));
+        }
+    }
+    prompt.push_str("</planReferenceIndex>\n\n");
+
+    prompt.push_str("<operatorSpec>\n");
+    if input.intent_text.trim().is_empty() {
+        prompt.push_str("(operator spec was empty)\n");
+    } else {
+        prompt.push_str(input.intent_text.trim());
+        prompt.push('\n');
+    }
+    prompt.push_str("</operatorSpec>\n\n");
+
+    prompt.push_str("<instructions>\n");
+    prompt.push_str("Write a complete implementation plan for this step.\n");
+    prompt.push_str("Treat the plan reference index as a compact catalog.\n");
+    prompt.push_str(
+        "Do not inline full prior plan bodies by default; read referenced plan files by path only when relevant.\n",
+    );
+    prompt.push_str(&format!(
+        "Write the resulting plan to `{}`.\n",
+        input.output_plan_path
+    ));
+    prompt.push_str("</instructions>\n");
+
+    Ok(prompt)
+}
+
 pub struct ReviewPromptInput<'a> {
     pub plan_slug: &'a str,
     pub branch_name: &'a str,
@@ -515,5 +621,50 @@ mod tests {
         assert!(prompt.contains("branch: draft/kernel"));
         assert!(prompt.contains("plan_file: .vizier/implementation-plans/kernel.md"));
         assert!(prompt.contains("<operatorSpec>"));
+    }
+
+    #[test]
+    fn build_plan_prompt_sets_metadata_and_reference_index() {
+        let selection = PromptSelection {
+            text: "PLAN TEMPLATE".to_string(),
+            kind: PromptKind::ImplementationPlan,
+            requested_scope: CommandScope::Draft,
+            origin: PromptOrigin::Default,
+            source_path: None,
+        };
+
+        let refs = vec![BuildPlanReference {
+            step_key: "01".to_string(),
+            plan_path: ".vizier/implementation-plans/builds/s1/plans/01-alpha.md".to_string(),
+            summary: "alpha summary".to_string(),
+            digest: Some("abc123".to_string()),
+        }];
+
+        let prompt = build_build_implementation_plan_prompt(
+            &selection,
+            BuildPlanPromptInput {
+                build_id: "s1",
+                build_branch: "build/s1",
+                manifest_path: ".vizier/implementation-plans/builds/s1/manifest.json",
+                step_key: "02a",
+                stage_index: 2,
+                parallel_index: Some(1),
+                output_plan_path: ".vizier/implementation-plans/builds/s1/plans/02a-bravo.md",
+                intent_text: "Add bravo flow",
+                references: &refs,
+                documentation: &doc_settings(),
+                bounds: "bounds text",
+                context: None,
+            },
+        )
+        .expect("build plan prompt");
+
+        assert!(prompt.contains("<buildMetadata>"));
+        assert!(prompt.contains("build_id: s1"));
+        assert!(prompt.contains("step_key: 02a"));
+        assert!(prompt.contains("<planReferenceIndex>"));
+        assert!(prompt.contains("step_key: 01"));
+        assert!(prompt.contains("summary: alpha summary"));
+        assert!(!prompt.contains("full alpha plan body"));
     }
 }

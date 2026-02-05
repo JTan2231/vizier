@@ -7,6 +7,7 @@
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
 - **Change discipline**: The AGENTS.md contract that code changes must update tests/docs and pass `./cicd.sh` before being treated as done.
 - **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
+- **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests or safety/correctness constraints require specificity.
 - **Config reference**: `docs/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings.
 - **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.

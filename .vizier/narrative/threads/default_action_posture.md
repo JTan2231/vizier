@@ -13,6 +13,7 @@ Problem/Tension
 
 Desired behavior (Product-level)
 - Default action: treat every user input as authorization to update `.vizier/narrative/snapshot.md` and (when needed) `.vizier/narrative/threads/*.md`.
+- No-wait execution: do not wait for a separate "please update" request when no opt-out signal is present; the turn itself is the authorization surface.
 - Explicit opt-out: when users signal “no update” for a turn (e.g., `no-op:` / `discuss-only:`), do not change narrative files.
 - Snapshot discipline: merge into existing threads, update minimally, de-duplicate, and ground claims in observable evidence (code, tests, or user reports).
 - Glossary lockstep: when snapshot edits introduce or clarify high-signal terms, update `.vizier/narrative/glossary.md` in the same change.
