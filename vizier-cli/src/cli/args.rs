@@ -696,6 +696,12 @@ pub(crate) enum JobsAction {
         job: String,
     },
 
+    /// Rewind a failed/blocked job chain to its predecessor state and re-queue it
+    Retry {
+        #[arg(value_name = "JOB")]
+        job: String,
+    },
+
     /// Tail logs for a background job (stdout/stderr); add --follow to stream until completion
     Tail {
         #[arg(value_name = "JOB")]

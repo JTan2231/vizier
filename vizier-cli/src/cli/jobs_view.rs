@@ -733,6 +733,41 @@ pub(crate) fn run_jobs_command(
             }
             Ok(())
         }
+        JobsAction::Retry { job } => {
+            let binary = std::env::current_exe()?;
+            let outcome = jobs::retry_job(project_root, jobs_root, &binary, &job)?;
+            if emit_json {
+                let payload = json!({
+                    "outcome": "Jobs retried",
+                    "requested_job": outcome.requested_job,
+                    "retry_root": outcome.retry_root,
+                    "last_successful_point": outcome.last_successful_point,
+                    "retry_set": outcome.retry_set,
+                    "reset": outcome.reset,
+                    "restarted": outcome.restarted,
+                    "updated": outcome.updated,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                let mut rows = vec![
+                    ("Outcome".to_string(), "Jobs retried".to_string()),
+                    ("Requested".to_string(), outcome.requested_job),
+                    ("Retry root".to_string(), outcome.retry_root),
+                    (
+                        "Last successful point".to_string(),
+                        join_or_none(outcome.last_successful_point),
+                    ),
+                    ("Retry set".to_string(), join_or_none(outcome.retry_set)),
+                    ("Reset".to_string(), join_or_none(outcome.reset)),
+                    ("Restarted".to_string(), join_or_none(outcome.restarted)),
+                ];
+                if !outcome.updated.is_empty() {
+                    rows.push(("Updated".to_string(), join_or_none(outcome.updated)));
+                }
+                println!("{}", format_label_value_block(&rows, 0));
+            }
+            Ok(())
+        }
         JobsAction::Tail { job, stream } => {
             jobs::tail_job_logs(jobs_root, &job, stream.into(), follow)
         }

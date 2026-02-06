@@ -1292,12 +1292,11 @@ fn build_scheduler_facts(
     Ok(facts)
 }
 
-pub fn scheduler_tick(
+fn scheduler_tick_locked(
     project_root: &Path,
     jobs_root: &Path,
     binary: &Path,
 ) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
-    let _lock = SchedulerLock::acquire(jobs_root)?;
     let mut records = list_records(jobs_root)?;
     let mut outcome = SchedulerOutcome::default();
 
@@ -1366,6 +1365,319 @@ pub fn scheduler_tick(
     }
 
     Ok(outcome)
+}
+
+pub fn scheduler_tick(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
+    let _lock = SchedulerLock::acquire(jobs_root)?;
+    scheduler_tick_locked(project_root, jobs_root, binary)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RetryOutcome {
+    pub requested_job: String,
+    pub retry_root: String,
+    pub last_successful_point: Vec<String>,
+    pub retry_set: Vec<String>,
+    pub reset: Vec<String>,
+    pub restarted: Vec<String>,
+    pub updated: Vec<String>,
+}
+
+/// Retry contract:
+/// - `retry_root` is the requested job id.
+/// - `last_successful_point` is the set of direct predecessors currently succeeded.
+/// - `retry_set` is `retry_root` plus all downstream dependents (after/artifact edges).
+/// - upstream predecessors are never rewound.
+pub fn retry_job(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    requested_job_id: &str,
+) -> Result<RetryOutcome, Box<dyn std::error::Error>> {
+    let _lock = SchedulerLock::acquire(jobs_root)?;
+    let records = list_records(jobs_root)?;
+    let graph = ScheduleGraph::new(records);
+
+    if graph.record(requested_job_id).is_none() {
+        return Err(format!("no background job {}", requested_job_id).into());
+    }
+
+    let retry_root = requested_job_id.to_string();
+    let predecessors = collect_retry_predecessors(&graph, &retry_root);
+    let last_successful_point = predecessors
+        .into_iter()
+        .filter(|job_id| {
+            graph
+                .record(job_id)
+                .map(|record| record.status == JobStatus::Succeeded)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let retry_set = collect_retry_set(&graph, &retry_root);
+
+    let mut active = Vec::new();
+    for job_id in &retry_set {
+        let Some(record) = graph.record(job_id) else {
+            continue;
+        };
+        if job_is_active(record.status) {
+            active.push(format!("{} ({})", record.id, status_label(record.status)));
+        }
+    }
+    if !active.is_empty() {
+        return Err(format!(
+            "cannot retry while jobs are active in the retry set: {}",
+            active.join(", ")
+        )
+        .into());
+    }
+
+    let mut merge_retry_slugs = HashSet::new();
+    for job_id in &retry_set {
+        if let Some(record) = graph.record(job_id) {
+            merge_retry_slugs.extend(collect_merge_retry_slugs(record));
+        }
+    }
+    if !merge_retry_slugs.is_empty() {
+        ensure_retry_git_state_safe(project_root)?;
+        remove_merge_sentinel_files(project_root, &merge_retry_slugs)?;
+    }
+
+    let mut reset = Vec::new();
+    for job_id in &retry_set {
+        let paths = paths_for(jobs_root, job_id);
+        let mut record = load_record(&paths)?;
+        rewind_job_record_for_retry(project_root, jobs_root, &mut record)?;
+        persist_record(&paths, &record)?;
+        reset.push(job_id.clone());
+    }
+
+    let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, binary)?;
+    let retry_lookup = retry_set.iter().cloned().collect::<HashSet<_>>();
+    let restarted = scheduler_outcome
+        .started
+        .iter()
+        .filter(|job_id| retry_lookup.contains(*job_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let updated = scheduler_outcome
+        .updated
+        .iter()
+        .filter(|job_id| retry_lookup.contains(*job_id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    Ok(RetryOutcome {
+        requested_job: requested_job_id.to_string(),
+        retry_root,
+        last_successful_point,
+        retry_set,
+        reset,
+        restarted,
+        updated,
+    })
+}
+
+fn collect_retry_predecessors(graph: &ScheduleGraph, job_id: &str) -> Vec<String> {
+    let mut predecessors = graph
+        .after_for(job_id)
+        .into_iter()
+        .map(|dependency| dependency.job_id)
+        .collect::<Vec<_>>();
+
+    for dependency in graph.dependencies_for(job_id) {
+        predecessors.extend(graph.producers_for(&dependency));
+    }
+
+    predecessors.sort();
+    predecessors.dedup();
+
+    let predecessor_lookup = predecessors.into_iter().collect::<HashSet<_>>();
+    graph
+        .job_ids_sorted()
+        .into_iter()
+        .filter(|candidate| predecessor_lookup.contains(candidate))
+        .collect::<Vec<_>>()
+}
+
+fn collect_retry_set(graph: &ScheduleGraph, retry_root: &str) -> Vec<String> {
+    if graph.record(retry_root).is_none() {
+        return Vec::new();
+    }
+
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::new();
+    seen.insert(retry_root.to_string());
+    queue.push_back(retry_root.to_string());
+
+    while let Some(job_id) = queue.pop_front() {
+        let mut dependents = graph.after_dependents_for(&job_id);
+        for artifact in graph.artifacts_for(&job_id) {
+            dependents.extend(graph.consumers_for(&artifact));
+        }
+        dependents.sort();
+        dependents.dedup();
+
+        for dependent in dependents {
+            if seen.insert(dependent.clone()) {
+                queue.push_back(dependent);
+            }
+        }
+    }
+
+    let mut ordered = graph
+        .job_ids_sorted()
+        .into_iter()
+        .filter(|job_id| seen.contains(job_id))
+        .collect::<Vec<_>>();
+    if let Some(index) = ordered.iter().position(|job_id| job_id == retry_root) {
+        let root = ordered.remove(index);
+        ordered.insert(0, root);
+    }
+    ordered
+}
+
+fn collect_merge_retry_slugs(record: &JobRecord) -> HashSet<String> {
+    let mut slugs = HashSet::new();
+
+    if let Some(schedule) = record.schedule.as_ref() {
+        for dependency in &schedule.dependencies {
+            if let JobArtifact::MergeSentinel { slug } = &dependency.artifact {
+                slugs.insert(slug.clone());
+            }
+        }
+        for artifact in &schedule.artifacts {
+            if let JobArtifact::MergeSentinel { slug } = artifact {
+                slugs.insert(slug.clone());
+            }
+        }
+        for lock in &schedule.locks {
+            if let Some(slug) = lock.key.strip_prefix("merge_sentinel:")
+                && !slug.trim().is_empty()
+            {
+                slugs.insert(slug.trim().to_string());
+            }
+        }
+    }
+
+    if record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.scope.as_deref())
+        == Some("merge")
+        && let Some(slug) = record.metadata.as_ref().and_then(|meta| meta.plan.as_ref())
+    {
+        slugs.insert(slug.clone());
+    }
+
+    slugs
+}
+
+fn ensure_retry_git_state_safe(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let repo = Repository::discover(project_root)?;
+    let git_dir = repo.path();
+    let merge_head = git_dir.join("MERGE_HEAD");
+    let cherry_pick_head = git_dir.join("CHERRY_PICK_HEAD");
+    if merge_head.exists() || cherry_pick_head.exists() {
+        return Err("cannot retry merge-related jobs while Git has an in-progress merge/cherry-pick; run `git merge --abort` or `git cherry-pick --abort` (or resolve/commit), then retry".into());
+    }
+    Ok(())
+}
+
+fn remove_merge_sentinel_files(
+    project_root: &Path,
+    slugs: &HashSet<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if slugs.is_empty() {
+        return Ok(());
+    }
+
+    let sentinel_root = project_root.join(".vizier/tmp/merge-conflicts");
+    for slug in slugs {
+        let sentinel = sentinel_root.join(format!("{slug}.json"));
+        remove_file_if_exists(&sentinel)?;
+    }
+
+    if sentinel_root.exists() {
+        let mut entries = fs::read_dir(&sentinel_root)?;
+        if entries.next().is_none() {
+            let _ = fs::remove_dir(&sentinel_root);
+        }
+    }
+
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn truncate_log(path: &Path) -> io::Result<()> {
+    File::create(path).map(|_| ())
+}
+
+fn rewind_job_record_for_retry(
+    project_root: &Path,
+    jobs_root: &Path,
+    record: &mut JobRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(metadata) = record.metadata.as_ref()
+        && metadata.worktree_owned == Some(true)
+        && let Some(recorded_path) = metadata.worktree_path.as_ref()
+    {
+        let worktree_path = resolve_recorded_path(project_root, recorded_path);
+        let worktree_name = metadata.worktree_name.as_deref();
+        if worktree_safe_to_remove(project_root, &worktree_path, worktree_name)
+            && let Err(err) = cleanup_worktree(project_root, &worktree_path, worktree_name)
+        {
+            display::warn(format!(
+                "unable to fully clean retry worktree for {}: {}",
+                record.id, err
+            ));
+        }
+    }
+
+    let paths = paths_for(jobs_root, &record.id);
+    if let Some(outcome_path) = record.outcome_path.take() {
+        let outcome = resolve_recorded_path(project_root, &outcome_path);
+        remove_file_if_exists(&outcome)?;
+    }
+    remove_file_if_exists(&paths.job_dir.join("outcome.json"))?;
+    remove_file_if_exists(&ask_save_patch_path(jobs_root, &record.id))?;
+    remove_file_if_exists(&save_input_patch_path(jobs_root, &record.id))?;
+    truncate_log(&paths.stdout_path)?;
+    truncate_log(&paths.stderr_path)?;
+
+    if let Some(schedule) = record.schedule.as_mut() {
+        schedule.wait_reason = None;
+        schedule.waited_on.clear();
+    }
+
+    if let Some(metadata) = record.metadata.as_mut() {
+        metadata.worktree_name = None;
+        metadata.worktree_path = None;
+        metadata.worktree_owned = None;
+        metadata.agent_exit_code = None;
+        metadata.cancel_cleanup_status = None;
+        metadata.cancel_cleanup_error = None;
+    }
+
+    record.status = JobStatus::Queued;
+    record.started_at = None;
+    record.finished_at = None;
+    record.pid = None;
+    record.exit_code = None;
+    record.session_path = None;
+
+    Ok(())
 }
 
 pub fn read_record(
@@ -3365,6 +3677,279 @@ mod tests {
                 .iter()
                 .any(|edge| edge.from == "job-b" && edge.to == "job-c"),
             "expected depth=2 to include job-b -> job-c edge"
+        );
+    }
+
+    #[test]
+    fn retry_set_includes_downstream_dependents_only() {
+        let predecessor = make_record(
+            "job-predecessor",
+            JobStatus::Succeeded,
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                artifacts: vec![JobArtifact::AskSavePatch {
+                    job_id: "pred-artifact".to_string(),
+                }],
+                ..JobSchedule::default()
+            }),
+        );
+        let root_artifact = JobArtifact::AskSavePatch {
+            job_id: "root-artifact".to_string(),
+        };
+        let root = make_record(
+            "job-root",
+            JobStatus::Failed,
+            Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                after: vec![after_dependency("job-predecessor")],
+                artifacts: vec![root_artifact.clone()],
+                ..JobSchedule::default()
+            }),
+        );
+        let dependent_after = make_record(
+            "job-dependent-after",
+            JobStatus::BlockedByDependency,
+            Utc.with_ymd_and_hms(2026, 1, 3, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                after: vec![after_dependency("job-root")],
+                ..JobSchedule::default()
+            }),
+        );
+        let dependent_artifact = make_record(
+            "job-dependent-artifact",
+            JobStatus::BlockedByDependency,
+            Utc.with_ymd_and_hms(2026, 1, 4, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: root_artifact,
+                }],
+                ..JobSchedule::default()
+            }),
+        );
+
+        let graph =
+            ScheduleGraph::new(vec![dependent_artifact, dependent_after, predecessor, root]);
+        let retry_set = collect_retry_set(&graph, "job-root");
+        assert_eq!(
+            retry_set,
+            vec![
+                "job-root".to_string(),
+                "job-dependent-after".to_string(),
+                "job-dependent-artifact".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn rewind_job_record_for_retry_clears_runtime_and_artifacts() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-retry",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+
+        let worktree_path = project_root.join(".vizier/tmp-worktrees/retry-cleanup");
+        fs::create_dir_all(&worktree_path).expect("create worktree path");
+
+        let paths = paths_for(&jobs_root, "job-retry");
+        fs::write(&paths.stdout_path, "stdout").expect("write stdout");
+        fs::write(&paths.stderr_path, "stderr").expect("write stderr");
+        let outcome_path = paths.job_dir.join("outcome.json");
+        fs::write(&outcome_path, "{}").expect("write outcome");
+        let ask_patch = ask_save_patch_path(&jobs_root, "job-retry");
+        let save_patch = save_input_patch_path(&jobs_root, "job-retry");
+        fs::write(&ask_patch, "ask patch").expect("write ask patch");
+        fs::write(&save_patch, "save patch").expect("write save patch");
+
+        let mut record = update_job_record(&jobs_root, "job-retry", |record| {
+            record.status = JobStatus::Failed;
+            let now = Utc::now();
+            record.started_at = Some(now);
+            record.finished_at = Some(now);
+            record.pid = Some(4242);
+            record.exit_code = Some(1);
+            record.session_path = Some(".vizier/sessions/s1/session.json".to_string());
+            record.outcome_path = Some(".vizier/jobs/job-retry/outcome.json".to_string());
+            record.schedule = Some(JobSchedule {
+                wait_reason: Some(JobWaitReason {
+                    kind: JobWaitKind::Dependencies,
+                    detail: Some("waiting on old state".to_string()),
+                }),
+                waited_on: vec![JobWaitKind::Dependencies],
+                ..record.schedule.clone().unwrap_or_default()
+            });
+            record.metadata = Some(JobMetadata {
+                worktree_owned: Some(true),
+                worktree_path: Some(".vizier/tmp-worktrees/retry-cleanup".to_string()),
+                agent_exit_code: Some(12),
+                cancel_cleanup_status: Some(CancelCleanupStatus::Failed),
+                cancel_cleanup_error: Some("old error".to_string()),
+                ..JobMetadata::default()
+            });
+        })
+        .expect("set runtime fields");
+
+        rewind_job_record_for_retry(project_root, &jobs_root, &mut record).expect("rewind record");
+        persist_record(&paths, &record).expect("persist rewinded record");
+
+        assert_eq!(record.status, JobStatus::Queued);
+        assert!(record.started_at.is_none());
+        assert!(record.finished_at.is_none());
+        assert!(record.pid.is_none());
+        assert!(record.exit_code.is_none());
+        assert!(record.session_path.is_none());
+        assert!(record.outcome_path.is_none());
+
+        let schedule = record.schedule.as_ref().expect("schedule");
+        assert!(schedule.wait_reason.is_none(), "wait reason should clear");
+        assert!(schedule.waited_on.is_empty(), "waited_on should clear");
+
+        let metadata = record.metadata.as_ref().expect("metadata");
+        assert!(metadata.worktree_name.is_none());
+        assert!(metadata.worktree_path.is_none());
+        assert!(metadata.worktree_owned.is_none());
+        assert!(metadata.agent_exit_code.is_none());
+        assert!(metadata.cancel_cleanup_status.is_none());
+        assert!(metadata.cancel_cleanup_error.is_none());
+
+        assert!(
+            !outcome_path.exists(),
+            "expected outcome file to be removed during rewind"
+        );
+        assert!(
+            !ask_patch.exists(),
+            "expected ask-save patch to be removed during rewind"
+        );
+        assert!(
+            !save_patch.exists(),
+            "expected save-input patch to be removed during rewind"
+        );
+        assert!(
+            !worktree_path.exists(),
+            "expected retry-owned worktree to be removed during rewind"
+        );
+        let stdout = fs::read_to_string(&paths.stdout_path).expect("read stdout");
+        let stderr = fs::read_to_string(&paths.stderr_path).expect("read stderr");
+        assert!(stdout.is_empty(), "expected stdout log truncation");
+        assert!(stderr.is_empty(), "expected stderr log truncation");
+    }
+
+    #[test]
+    fn retry_job_clears_merge_sentinel_when_git_state_is_clean() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-merge-retry",
+            &["--help".to_string()],
+            &["vizier".to_string(), "merge".to_string()],
+            Some(JobMetadata {
+                scope: Some("merge".to_string()),
+                plan: Some("retry-merge".to_string()),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: JobArtifact::TargetBranch {
+                        name: "missing-target".to_string(),
+                    },
+                }],
+                locks: vec![JobLock {
+                    key: "merge_sentinel:retry-merge".to_string(),
+                    mode: LockMode::Exclusive,
+                }],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue merge retry");
+        update_job_record(&jobs_root, "job-merge-retry", |record| {
+            record.status = JobStatus::Failed;
+            record.exit_code = Some(1);
+        })
+        .expect("set failed status");
+
+        let sentinel = project_root
+            .join(".vizier/tmp/merge-conflicts")
+            .join("retry-merge.json");
+        if let Some(parent) = sentinel.parent() {
+            fs::create_dir_all(parent).expect("create merge-conflict parent");
+        }
+        fs::write(&sentinel, "{}").expect("write sentinel");
+
+        let binary = std::env::current_exe().expect("current exe");
+        retry_job(project_root, &jobs_root, &binary, "job-merge-retry").expect("retry merge job");
+
+        assert!(
+            !sentinel.exists(),
+            "expected merge sentinel cleanup during retry"
+        );
+    }
+
+    #[test]
+    fn retry_job_rejects_active_jobs_in_retry_set() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-root",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue root");
+        update_job_record(&jobs_root, "job-root", |record| {
+            record.status = JobStatus::Failed;
+            record.exit_code = Some(1);
+        })
+        .expect("mark root failed");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-dependent",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("job-root")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue dependent");
+        update_job_record(&jobs_root, "job-dependent", |record| {
+            record.status = JobStatus::Running;
+        })
+        .expect("mark dependent running");
+
+        let binary = std::env::current_exe().expect("current exe");
+        let err = retry_job(project_root, &jobs_root, &binary, "job-root")
+            .expect_err("expected active dependent to block retry");
+        assert!(
+            err.to_string().contains("job-dependent (running)"),
+            "unexpected retry active-set error: {err}"
         );
     }
 

@@ -68,7 +68,7 @@ All assistant-backed commands now enqueue background jobs. Use `--follow` when y
 
 Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary). By default each entry renders as a label/value block with `Plan`, `Branch`, and `Summary`, and when a matching background job exists the block adds inline job details (`Job`, `Job status`, optional `Job scope`, optional `Job started`) plus copy-pastable commands (`Status`, `Logs` with `--follow`, `Attach`). You can switch to table/JSON output or trim the fields via `[display.lists.list]` config or `vizier list --format/--fields`. The empty state returns a single `Outcome: No pending draft branches` block.
 
-Jobs can sit in `waiting_on_deps` or `waiting_on_locks` when upstream artifacts, explicit `--after` predecessors, or locks are not yet available. Use `vizier jobs show <id>` to see `After`, dependency, lock, pinned-head, and wait-reason details when a job is queued, or add `After`, `Wait`, `Dependencies`, `Locks`, and `Pinned head` to `[display.lists.jobs].fields` so `vizier jobs list` surfaces them inline.
+Jobs can sit in `waiting_on_deps` or `waiting_on_locks` when upstream artifacts, explicit `--after` predecessors, or locks are not yet available. Use `vizier jobs show <id>` to see `After`, dependency, lock, pinned-head, and wait-reason details when a job is queued, or add `After`, `Wait`, `Dependencies`, `Locks`, and `Pinned head` to `[display.lists.jobs].fields` so `vizier jobs list` surfaces them inline. If a segment ends in `failed`/`blocked_by_dependency` and you want to re-run from that point, use `vizier jobs retry <job-id>` to rewind the job plus downstream dependents and let the scheduler start them again.
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
@@ -225,6 +225,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 
 | Situation | Recovery |
 | --- | --- |
+| Failed/blocked scheduler segment | Fix the root cause (for example, a failing agent script or missing prerequisite), then run `vizier jobs retry <job-id>` using the failed/blocked job id as the retry root. Vizier rewinds that job and downstream dependents, clears scheduler-owned runtime artifacts/logs, and re-queues the segment. |
 | Draft worktree creation fails | Vizier deletes the stub branch unless the plan file was already committed. Re-run `vizier draft` once the error is fixed. |
 | `vizier approve` fails mid-run | Temp worktree path is printed; inspect it to salvage partially staged files, then rerun once corrected. The plan branch remains intact. |
 | Merge conflicts | Resolve conflicts on the target branch, stage the files, rerun `vizier merge <slug> --complete-conflict`. Vizier reuses `.vizier/tmp/merge-conflicts/<slug>.json` to finalize and fails fast if no pending merge exists. |

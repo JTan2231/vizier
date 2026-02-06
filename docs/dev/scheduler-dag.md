@@ -33,6 +33,36 @@ Statuses:
 Terminal jobs are never re-run by the scheduler. `blocked_by_dependency` indicates a
 dependency can no longer be satisfied (see below).
 
+## Retry (`vizier jobs retry <job-id>`)
+Use retry to rewind a failed/blocked segment and re-queue it without editing
+job JSON by hand.
+
+Internal contract:
+- **retry root**: the requested job id.
+- **last successful point**: direct predecessors of the root that are currently
+  `succeeded`.
+- **retry set**: retry root plus all downstream dependents reachable via
+  `after` edges and produced-artifact consumer edges.
+- **predecessors are untouched**: upstream jobs are not rewound.
+
+Safety and rewind behavior:
+- Retry fails fast if any job in the retry set is still active
+  (`queued`/`waiting_on_*`/`running`).
+- For each job in the retry set, retry clears runtime state:
+  `status=queued`, `pid`, `started_at`, `finished_at`, `exit_code`,
+  `session_path`, `outcome_path`, `schedule.wait_reason`, and
+  `schedule.waited_on`.
+- Retry truncates `stdout.log`/`stderr.log`, removes stale `outcome.json`,
+  `ask-save.patch`, and `save-input.patch`, and attempts cleanup of owned
+  temp worktrees when ownership/safety checks pass.
+- Merge-related retry sets also clear scheduler-owned conflict sentinels under
+  `.vizier/tmp/merge-conflicts/<slug>.json`. If Git is currently in an
+  in-progress merge/cherry-pick state, retry fails with guidance instead of
+  mutating conflict state.
+
+After rewind, retry immediately runs one scheduler tick and reports which jobs
+were reset and which were restarted.
+
 ## Gate order
 1) `after` dependencies  
 2) Artifact dependencies  
@@ -101,7 +131,8 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
   Scheduler data errors (for example, a job missing `child_args`) are also marked
   failed and finalized with `exit_code = 1`.
 - `cancelled` is operator-initiated (`vizier jobs cancel`) and uses exit code `143`.
-- `blocked_by_dependency` is terminal; the scheduler will not retry it automatically.
+- `blocked_by_dependency` is terminal; the scheduler will not retry it automatically
+  (use `vizier jobs retry <job-id>` to rewind/requeue manually).
 - `scheduler_tick` can return an error (for example, missing binary or record
   persistence failure). In those cases the job record remains queued until retried.
 - `exit_code` is recorded on finalization; active or blocked jobs have no exit code.

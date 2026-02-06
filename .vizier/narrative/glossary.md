@@ -32,7 +32,7 @@
 - **Narrative state**: The snapshot slice that captures active themes, tensions, and open threads explaining why the code exists and where it’s headed.
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
-- **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches, which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
+- **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches (for example, docs `refactor.md`/`removing-wire.md` while branches are `draft/after`/`draft/retry`), which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
 - **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
 - **Prompt-config matrix**: `docs/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.

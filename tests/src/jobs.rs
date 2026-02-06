@@ -1896,6 +1896,193 @@ fn test_jobs_cancel_missing_worktree_reports_done() -> TestResult {
 }
 
 #[test]
+fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-retry-cleanup";
+    let worktree_rel = ".vizier/tmp-worktrees/retry-cleanup";
+    fs::create_dir_all(repo.path().join(worktree_rel))?;
+
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "failed",
+            "command": ["vizier", "ask", "retry cleanup"],
+            "child_args": ["ask", "retry cleanup"],
+            "created_at": "2026-01-30T02:00:00Z",
+            "started_at": "2026-01-30T02:00:01Z",
+            "finished_at": "2026-01-30T02:00:02Z",
+            "pid": 4321,
+            "exit_code": 1,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": ".vizier/sessions/retry/session.json",
+            "outcome_path": format!(".vizier/jobs/{job_id}/outcome.json"),
+            "metadata": {
+                "worktree_owned": true,
+                "worktree_path": worktree_rel,
+                "agent_exit_code": 9,
+                "cancel_cleanup_status": "failed",
+                "cancel_cleanup_error": "stale error"
+            },
+            "config_snapshot": null,
+            "schedule": {
+                "dependencies": [
+                    { "artifact": { "target_branch": { "name": "missing-retry-target" } } }
+                ],
+                "wait_reason": { "kind": "dependencies", "detail": "stale wait reason" },
+                "waited_on": ["dependencies"]
+            }
+        }),
+    )?;
+
+    let job_dir = repo.path().join(".vizier/jobs").join(job_id);
+    fs::write(job_dir.join("stdout.log"), "old stdout\n")?;
+    fs::write(job_dir.join("stderr.log"), "old stderr\n")?;
+    fs::write(job_dir.join("outcome.json"), "{}")?;
+    fs::write(job_dir.join("ask-save.patch"), "old ask patch\n")?;
+    fs::write(job_dir.join("save-input.patch"), "old save patch\n")?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "retry", job_id])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs retry failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Outcome") && stdout.contains("Jobs retried"),
+        "expected retry outcome block:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(job_id),
+        "expected retry output to include job id:\n{stdout}"
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("blocked_by_dependency"),
+        "expected retried job to re-enter scheduler as blocked by missing dependency: {record}"
+    );
+    assert_eq!(record.get("started_at"), Some(&Value::Null));
+    assert_eq!(record.get("finished_at"), Some(&Value::Null));
+    assert_eq!(record.get("pid"), Some(&Value::Null));
+    assert_eq!(record.get("exit_code"), Some(&Value::Null));
+    assert_eq!(record.get("session_path"), Some(&Value::Null));
+    assert_eq!(record.get("outcome_path"), Some(&Value::Null));
+
+    let metadata = record
+        .get("metadata")
+        .and_then(Value::as_object)
+        .ok_or("expected metadata object")?;
+    assert_eq!(metadata.get("worktree_path"), Some(&Value::Null));
+    assert_eq!(metadata.get("worktree_owned"), Some(&Value::Null));
+    assert_eq!(metadata.get("agent_exit_code"), Some(&Value::Null));
+    assert_eq!(metadata.get("cancel_cleanup_status"), Some(&Value::Null));
+    assert_eq!(metadata.get("cancel_cleanup_error"), Some(&Value::Null));
+
+    assert!(
+        !repo.path().join(worktree_rel).exists(),
+        "expected retry cleanup to remove owned worktree"
+    );
+    assert!(
+        !job_dir.join("outcome.json").exists(),
+        "expected retry cleanup to remove stale outcome.json"
+    );
+    assert!(
+        !job_dir.join("ask-save.patch").exists(),
+        "expected retry cleanup to remove stale ask-save.patch"
+    );
+    assert!(
+        !job_dir.join("save-input.patch").exists(),
+        "expected retry cleanup to remove stale save-input.patch"
+    );
+    assert_eq!(fs::read_to_string(job_dir.join("stdout.log"))?, "");
+    assert_eq!(fs::read_to_string(job_dir.join("stderr.log"))?, "");
+    Ok(())
+}
+
+#[test]
+fn test_jobs_retry_json_output() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-retry-json";
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "failed",
+            "command": ["vizier", "ask", "retry json"],
+            "child_args": ["ask", "retry json"],
+            "created_at": "2026-01-30T02:00:00Z",
+            "started_at": "2026-01-30T02:00:01Z",
+            "finished_at": "2026-01-30T02:00:02Z",
+            "pid": null,
+            "exit_code": 1,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": null,
+            "config_snapshot": null,
+            "schedule": {
+                "dependencies": [
+                    { "artifact": { "target_branch": { "name": "missing-retry-json-target" } } }
+                ]
+            }
+        }),
+    )?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["--json", "jobs", "retry", job_id])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier --json jobs retry failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("Jobs retried"),
+        "unexpected retry JSON outcome: {payload}"
+    );
+    assert_eq!(
+        payload.get("requested_job").and_then(Value::as_str),
+        Some(job_id),
+        "unexpected requested_job in retry JSON: {payload}"
+    );
+    assert_eq!(
+        payload.get("retry_root").and_then(Value::as_str),
+        Some(job_id),
+        "unexpected retry_root in retry JSON: {payload}"
+    );
+    let retry_set = payload
+        .get("retry_set")
+        .and_then(Value::as_array)
+        .ok_or("missing retry_set array")?;
+    assert!(
+        retry_set.iter().any(|value| value.as_str() == Some(job_id)),
+        "retry_set should include requested job: {payload}"
+    );
+    let reset = payload
+        .get("reset")
+        .and_then(Value::as_array)
+        .ok_or("missing reset array")?;
+    assert!(
+        reset.iter().any(|value| value.as_str() == Some(job_id)),
+        "reset should include requested job: {payload}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_jobs_gc_removes_old_jobs() -> TestResult {
     let repo = IntegrationRepo::new()?;
     write_job_record_simple(

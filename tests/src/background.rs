@@ -535,6 +535,119 @@ fn test_scheduler_after_dependency_blocks_on_failed_predecessor() -> TestResult 
 }
 
 #[test]
+fn test_scheduler_retry_unblocks_after_dependency_chain() -> TestResult {
+    let repo = IntegrationRepo::new_without_mock()?;
+
+    let bin_dir = repo.path().join(".vizier/tmp/bin");
+    fs::create_dir_all(&bin_dir)?;
+    let retry_agent = bin_dir.join("retry-after.sh");
+    fs::write(
+        &retry_agent,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\necho 'intentional failure' 1>&2\nexit 1\n",
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&retry_agent)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&retry_agent, perms)?;
+    }
+
+    let retry_config = write_agent_config(&repo, "config-retry-after.toml", "draft", &retry_agent)?;
+    let fast_agent = write_sleeping_agent(&repo, "fast-after-retry", 0)?;
+    let fast_config =
+        write_agent_config(&repo, "config-fast-after-retry.toml", "draft", &fast_agent)?;
+
+    let predecessor = repo
+        .vizier_cmd_background_with_config(&retry_config)
+        .args([
+            "draft",
+            "--name",
+            "retry-predecessor",
+            "retry predecessor spec",
+        ])
+        .output()?;
+    assert!(
+        predecessor.status.success(),
+        "scheduling predecessor draft failed: {}",
+        String::from_utf8_lossy(&predecessor.stderr)
+    );
+    let predecessor_job_id = extract_job_id(&String::from_utf8_lossy(&predecessor.stdout))
+        .ok_or("missing predecessor job id")?;
+    wait_for_job_completion(&repo, &predecessor_job_id, Duration::from_secs(20))?;
+    assert_eq!(
+        read_job_record(&repo, &predecessor_job_id)?
+            .get("status")
+            .and_then(Value::as_str),
+        Some("failed"),
+        "predecessor should fail before retry"
+    );
+
+    let dependent = repo
+        .vizier_cmd_background_with_config(&fast_config)
+        .args([
+            "draft",
+            "--name",
+            "retry-dependent",
+            "--after",
+            &predecessor_job_id,
+            "retry dependent spec",
+        ])
+        .output()?;
+    assert!(
+        dependent.status.success(),
+        "scheduling dependent draft failed: {}",
+        String::from_utf8_lossy(&dependent.stderr)
+    );
+    let dependent_job_id = extract_job_id(&String::from_utf8_lossy(&dependent.stdout))
+        .ok_or("missing dependent job id")?;
+    wait_for_job_status(
+        &repo,
+        &dependent_job_id,
+        "blocked_by_dependency",
+        Duration::from_secs(10),
+    )?;
+
+    // Flip the predecessor script to succeed so retry can advance the chain.
+    fs::write(
+        &retry_agent,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\necho 'retry success' 1>&2\necho 'mock agent response'\n",
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&retry_agent)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&retry_agent, perms)?;
+    }
+
+    let retry = repo
+        .vizier_cmd_background()
+        .args(["jobs", "retry", &predecessor_job_id])
+        .output()?;
+    assert!(
+        retry.status.success(),
+        "jobs retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+
+    wait_for_job_completion(&repo, &predecessor_job_id, Duration::from_secs(30))?;
+    wait_for_job_completion(&repo, &dependent_job_id, Duration::from_secs(30))?;
+
+    let predecessor_record = read_job_record(&repo, &predecessor_job_id)?;
+    assert_eq!(
+        predecessor_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "predecessor should succeed after retry"
+    );
+    let dependent_record = read_job_record(&repo, &dependent_job_id)?;
+    assert_eq!(
+        dependent_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "dependent should succeed once predecessor retry passes"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_scheduler_lock_contention_waits() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
     let draft_agent_path = write_sleeping_agent(&repo, "fast-draft", 0)?;
