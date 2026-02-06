@@ -9,18 +9,21 @@ Snapshot anchor
 Tension
 - As Vizier evolves as a layer above Git and external agents, new features can feel over-opinionated or opaque when they hard-code behaviors instead of offering configuration levers.
 - Existing configuration stories (agent backends, CI/CD gate script, repo-local config precedence) are landing piecemeal, so operators lack a cohesive mental model for where to set defaults and how CLI flags interact with repo and global config.
+- Orientation references currently drift between AGENTS shorthand doc paths (`docs/config-reference.md`, `docs/prompt-config-matrix.md`) and the on-disk canonical files (`docs/user/config-reference.md`, `docs/user/prompt-config-matrix.md`), which creates avoidable lookup confusion during setup and planning.
 
 Desired behavior (Product-level)
 - Treat configuration as a first-class surface: every new feature that changes workflow, IO, or agent behavior ships with a documented config entry and a clear flag override, plus a sensible default that works out of the box.
 - Keep the configuration story small and coherent by grouping related knobs (agents, gates, prompts, IO/mode, snapshot/narrative posture) so operators can reason about them without scanning multiple scattered docs.
 - Defaults deliver high utility with low surprise: a fresh repo using `.vizier/config.toml` and the provided examples should get a safe, non-intrusive experience, while power users can tighten or relax gates without patching code.
 - Future threads (stdout/stderr contract, Outcome summaries, architecture doc gate, agent orchestration, pluggable backends) integrate with this configuration story instead of inventing parallel toggles or one-off environment variables.
+- Canonical operator references stay explicit: when shorthand aliases are used in orientation docs, they are documented as aliases and mapped to the on-disk canonical paths so users can reliably find the source material.
 
 Acceptance criteria
 - Docs include an operator-facing configuration guide that explains the main configuration groups (agents, gates, workflows, IO/mode, snapshot/narrative posture) and their precedence (CLI vs repo vs global), referencing `.vizier/config.toml` and `example-config.toml`.
 - New CLI features and narrative threads explicitly route their knobs through this guide: flags map to config keys, and repositories can opt in/out or adjust behavior without code changes.
 - Help output and config examples stay in sync: for at least one representative feature in each group (agent backend, CI/CD gate, verbosity/mode, workflow gating), there is a round-trip example showing “set in config → override on CLI” that behaves as documented.
 - Tests cover at least: default behavior with no config present, behavior when repo-level config is present, and CLI-override precedence for representative knobs (for example, agent backend, gate script, mode), asserting that behavior matches the documented configuration story.
+- Snapshot/glossary orientation notes distinguish canonical doc locations from shorthand aliases whenever both are present, so onboarding instructions do not imply missing files.
 
 Pointers
 - `.vizier/config.toml` and `example-config.toml` for current gate/agent defaults and precedence.
@@ -31,3 +34,4 @@ Pointers
 
 Update (2025-11-22): Config loading now layers global defaults with repo overrides when `--config-file` is absent, logs both sources, and only consults `VIZIER_CONFIG_FILE` when no config files exist; docs/examples/tests cover agent/gate/review inheritance under the merged precedence.
 Update (2025-11-29): `docs/user/config-reference.md` now carries quick-start override examples (pin review to Gemini, tighten merge gate retries, disable auto-commit, per-scope prompt swaps) plus a config-vs-CLI override matrix, and AGENTS.md points to it. Added automated checks for help output (quiet + `--no-ansi`, pager suppression in non-TTY) alongside a regression test that bundled progress filters attach to any agent label with a sibling `filter.sh`.
+Update (2026-02-06): Captured docs-path alias drift in orientation guidance: AGENTS currently references shorthand `docs/*.md` paths, while canonical config/prompt references remain under `docs/user/*.md`; snapshot/glossary now call out the alias mapping until docs are flattened.

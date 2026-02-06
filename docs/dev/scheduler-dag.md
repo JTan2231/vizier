@@ -6,6 +6,9 @@ in a DAG; edges are expressed as explicit job dependencies (`after`) and artifac
 dependencies. The scheduler decides when a job is eligible to run, records wait
 reasons, and spawns the job process.
 
+For the full non-agent `.vizier/*` material contract (including jobs/build/sessions/sentinels
+durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
+
 `vizier build execute` also uses scheduler jobs for build-session pipelines:
 - internal `build_materialize` jobs materialize draft plan docs/branches
 - existing `approve` / `review` / `merge` jobs execute per-step phases

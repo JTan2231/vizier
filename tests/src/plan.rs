@@ -1,4 +1,6 @@
 use crate::fixtures::*;
+use git2::BranchType;
+use std::path::Path;
 
 #[test]
 fn test_plan_command_outputs_resolved_config() -> TestResult {
@@ -236,5 +238,48 @@ fn test_plan_reports_agent_command_override() -> TestResult {
         compact.contains("Resolution:providedcommand"),
         "plan output should mark the agent runtime as a provided command when CLI overrides are supplied:\n{stdout}"
     );
+    Ok(())
+}
+
+#[test]
+fn test_plan_docs_require_plan_and_branch_front_matter() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let output = repo.vizier_output(&[
+        "draft",
+        "--name",
+        "plan-front-matter",
+        "verify plan front matter contract",
+    ])?;
+    assert!(
+        output.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let branch = repo_handle.find_branch("draft/plan-front-matter", BranchType::Local)?;
+    let commit = branch.get().peel_to_commit()?;
+    let tree = commit.tree()?;
+    let entry = tree.get_path(Path::new(
+        ".vizier/implementation-plans/plan-front-matter.md",
+    ))?;
+    let blob = repo_handle.find_blob(entry.id())?;
+    let contents = std::str::from_utf8(blob.content())?;
+
+    assert!(
+        contents
+            .starts_with("---\nplan: plan-front-matter\nbranch: draft/plan-front-matter\n---\n"),
+        "plan front matter should require `plan` and `branch` keys:\n{contents}"
+    );
+    assert!(
+        contents.contains("## Operator Spec"),
+        "plan doc should include an Operator Spec section"
+    );
+    assert!(
+        contents.contains("## Implementation Plan"),
+        "plan doc should include an Implementation Plan section"
+    );
+
     Ok(())
 }

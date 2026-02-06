@@ -429,3 +429,39 @@ fn is_ephemeral_vizier_path(path: &str) -> bool {
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{}/", prefix)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_ephemeral_vizier_path;
+
+    #[test]
+    fn ephemeral_vizier_paths_are_excluded_from_clean_worktree_checks() {
+        for path in [
+            ".vizier/jobs",
+            ".vizier/jobs/job-1/job.json",
+            ".vizier/sessions/session-1/session.json",
+            ".vizier/tmp/merge-conflicts/alpha.json",
+            ".vizier/tmp-worktrees/plan-123/README.md",
+        ] {
+            assert!(
+                is_ephemeral_vizier_path(path),
+                "expected `{path}` to be treated as ephemeral"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ephemeral_paths_are_not_excluded() {
+        for path in [
+            ".vizier/config.toml",
+            ".vizier/narrative/snapshot.md",
+            ".vizier/implementation-plans/alpha.md",
+            "src/main.rs",
+        ] {
+            assert!(
+                !is_ephemeral_vizier_path(path),
+                "did not expect `{path}` to be treated as ephemeral"
+            );
+        }
+    }
+}

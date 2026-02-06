@@ -29,6 +29,48 @@ fn test_load_session_ignores_legacy_config_dir() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn test_session_log_uses_v1_schema_and_repo_local_path() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let before = gather_session_logs(&repo)?;
+
+    let output = repo.vizier_output(&["save"])?;
+    assert!(
+        output.status.success(),
+        "vizier save failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = gather_session_logs(&repo)?;
+    let session_path = new_session_log(&before, &after)
+        .ok_or_else(|| io::Error::other("missing new session log"))?
+        .clone();
+
+    let relative = session_path
+        .strip_prefix(repo.path())
+        .map_err(|_| io::Error::other("session log path not repo-local"))?;
+    let relative_str = relative.to_string_lossy();
+    assert!(
+        relative_str.starts_with(".vizier/sessions/"),
+        "session log path should live under .vizier/sessions/, got: {relative_str}"
+    );
+    assert!(
+        relative_str.ends_with("/session.json"),
+        "session log filename should be session.json, got: {relative_str}"
+    );
+
+    let contents = fs::read_to_string(&session_path)?;
+    let session_json: Value = serde_json::from_str(&contents)?;
+    assert_eq!(
+        session_json.get("schema").and_then(Value::as_str),
+        Some("vizier.session.v1"),
+        "session logs should carry the v1 schema marker"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_session_log_captures_token_usage_totals() -> TestResult {
     let repo = IntegrationRepo::new()?;

@@ -5,6 +5,8 @@
 1. Create a build session from a TOML/JSON build file.
 2. Execute a succeeded build session by queueing scheduler jobs (`materialize -> approve -> review -> merge`, depending on pipeline).
 
+For the canonical artifact/state contract behind these flows (build manifests, execution state, job/sentinel/session relationships, durability classes), see `docs/dev/vizier-material-model.md`.
+
 ## Create a build session
 
 ```bash

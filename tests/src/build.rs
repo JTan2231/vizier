@@ -832,11 +832,21 @@ steps = [
         String::from_utf8_lossy(&resumed.stderr)
     );
     let after = execution_state(&repo.repo(), "resume-check")?;
+    assert_eq!(
+        after.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "execution status should derive from terminal phase jobs after resume"
+    );
     let after_step = after
         .get("steps")
         .and_then(Value::as_array)
         .and_then(|steps| steps.first())
         .ok_or("execution step missing after resume")?;
+    assert_eq!(
+        after_step.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "step status should derive from terminal phase jobs after resume"
+    );
     assert_eq!(
         after_step
             .get("materialize_job_id")

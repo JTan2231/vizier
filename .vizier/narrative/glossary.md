@@ -10,8 +10,9 @@
 - **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
 - **Commit-style summary**: The only user-facing output for a narrative-maintenance turn: a short, commit-message-like line describing what changed while detailed `snapshotDelta` content stays internal.
 - **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests or safety/correctness constraints require specificity.
-- **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings.
+- **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; AGENTS may refer to shorthand `docs/config-reference.md`, but canonical content is currently under `docs/user/`. Pair with `vizier plan` to confirm resolved settings.
 - **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
+- **Docs path alias drift**: Current orientation docs use mixed paths (`docs/*.md` in AGENTS shorthand vs on-disk `docs/user/*.md`), so snapshot guidance treats `docs/user/*` as canonical until docs are flattened.
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
 - **Background-by-default**: Workflow posture where assistant-backed commands always enqueue scheduler jobs; `--no-background` now errors and `--follow` attaches to job logs.
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
@@ -34,7 +35,7 @@
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches (for example, docs `refactor.md`/`removing-wire.md` while branches are `draft/after`/`draft/retry`), which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
 - **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
-- **Prompt-config matrix**: `docs/user/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers.
+- **Prompt-config matrix**: `docs/user/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers; AGENTS may refer to shorthand `docs/prompt-config-matrix.md`, but canonical content is currently under `docs/user/`.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
 - **Repo boundary**: Operational constraint for all agent work: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
