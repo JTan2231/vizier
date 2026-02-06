@@ -1419,19 +1419,19 @@ pub fn retry_job(
         .collect::<Vec<_>>();
     let retry_set = collect_retry_set(&graph, &retry_root);
 
-    let mut active = Vec::new();
+    let mut running = Vec::new();
     for job_id in &retry_set {
         let Some(record) = graph.record(job_id) else {
             continue;
         };
-        if job_is_active(record.status) {
-            active.push(format!("{} ({})", record.id, status_label(record.status)));
+        if record.status == JobStatus::Running {
+            running.push(format!("{} ({})", record.id, status_label(record.status)));
         }
     }
-    if !active.is_empty() {
+    if !running.is_empty() {
         return Err(format!(
-            "cannot retry while jobs are active in the retry set: {}",
-            active.join(", ")
+            "cannot retry while jobs are running in the retry set: {}",
+            running.join(", ")
         )
         .into());
     }
@@ -3902,7 +3902,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_job_rejects_active_jobs_in_retry_set() {
+    fn retry_job_rejects_running_jobs_in_retry_set() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
         let project_root = temp.path();
@@ -3946,10 +3946,92 @@ mod tests {
 
         let binary = std::env::current_exe().expect("current exe");
         let err = retry_job(project_root, &jobs_root, &binary, "job-root")
-            .expect_err("expected active dependent to block retry");
+            .expect_err("expected running dependent to block retry");
         assert!(
             err.to_string().contains("job-dependent (running)"),
             "unexpected retry active-set error: {err}"
+        );
+    }
+
+    #[test]
+    fn retry_job_allows_waiting_jobs_in_retry_set() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let root_artifact = JobArtifact::AskSavePatch {
+            job_id: "job-root".to_string(),
+        };
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-root",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: JobArtifact::TargetBranch {
+                        name: "missing-retry-target".to_string(),
+                    },
+                }],
+                artifacts: vec![root_artifact.clone()],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue root");
+        update_job_record(&jobs_root, "job-root", |record| {
+            record.status = JobStatus::Failed;
+            record.exit_code = Some(1);
+            if let Some(schedule) = record.schedule.as_mut() {
+                schedule.wait_reason = Some(JobWaitReason {
+                    kind: JobWaitKind::Dependencies,
+                    detail: Some("dependency failed for previous attempt".to_string()),
+                });
+                schedule.waited_on = vec![JobWaitKind::Dependencies];
+            }
+        })
+        .expect("mark root failed");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-dependent",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: root_artifact,
+                }],
+                wait_reason: Some(JobWaitReason {
+                    kind: JobWaitKind::Dependencies,
+                    detail: Some("waiting on ask_save_patch:job-root".to_string()),
+                }),
+                waited_on: vec![JobWaitKind::Dependencies],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue dependent");
+        update_job_record(&jobs_root, "job-dependent", |record| {
+            record.status = JobStatus::WaitingOnDeps;
+        })
+        .expect("mark dependent waiting");
+
+        let binary = std::env::current_exe().expect("current exe");
+        let outcome = retry_job(project_root, &jobs_root, &binary, "job-root")
+            .expect("waiting jobs in retry set should not block retry");
+        assert_eq!(
+            outcome.retry_set,
+            vec!["job-root".to_string(), "job-dependent".to_string()]
+        );
+        assert_eq!(
+            outcome.reset,
+            vec!["job-root".to_string(), "job-dependent".to_string()]
         );
     }
 

@@ -46,8 +46,8 @@ Internal contract:
 - **predecessors are untouched**: upstream jobs are not rewound.
 
 Safety and rewind behavior:
-- Retry fails fast if any job in the retry set is still active
-  (`queued`/`waiting_on_*`/`running`).
+- Retry fails fast if any job in the retry set is currently `running`.
+- `queued`/`waiting_on_*` jobs inside the retry set are rewound and re-queued.
 - For each job in the retry set, retry clears runtime state:
   `status=queued`, `pid`, `started_at`, `finished_at`, `exit_code`,
   `session_path`, `outcome_path`, `schedule.wait_reason`, and
