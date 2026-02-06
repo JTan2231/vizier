@@ -10,7 +10,7 @@
 - **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
 - **Commit-style summary**: The only user-facing output for a narrative-maintenance turn: a short, commit-message-like line describing what changed while detailed `snapshotDelta` content stays internal.
 - **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests or safety/correctness constraints require specificity.
-- **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; AGENTS may refer to shorthand `docs/config-reference.md`, but canonical content is currently under `docs/user/`. Pair with `vizier plan` to confirm resolved settings.
+- **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings. AGENTS.md/README currently mention `docs/config-reference.md` as a root alias, so treat `docs/user/config-reference.md` as canonical until aliases are reconciled.
 - **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
 - **Docs path alias drift**: Current orientation docs use mixed paths (`docs/*.md` in AGENTS shorthand vs on-disk `docs/user/*.md`), so snapshot guidance treats `docs/user/*` as canonical until docs are flattened.
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
@@ -19,6 +19,7 @@
 - **DAG scheduler**: The job scheduler that enqueues every command as a node with dependencies, artifacts, locks, and wait states to control background execution.
 - **Default-Action Posture (DAP)**: Unless explicitly opted out, every user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
+- **Docs-path drift**: The current mismatch where AGENTS.md/README reference root `docs/*.md` paths while the existing user docs are under `docs/user/*`; tracked under the configuration-posture thread until links or aliases are reconciled.
 - **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; that authorization covers snapshot/glossary plus supporting thread-doc updates, and remains the prerequisite until DAP precedence is codified.
 - **Explicit update instruction**: The task-level phrase "Update the snapshot, glossary, and supporting narrative docs as needed" that satisfies the explicit-instruction guardrail for narrative edits, whether presented as plain text or wrapped in `<task><instruction>...</instruction></task>`; when absent, narrative updates are treated as opt-out until DAP precedence is codified.
 - **Task envelope**: The prompt payload that includes `<task>`, `<snapshot>`, and `<narrativeDocs>` context for a turn; when it contains the explicit update instruction, narrative upkeep is authorized immediately for that response.
@@ -35,7 +36,7 @@
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches (for example, docs `refactor.md`/`removing-wire.md` while branches are `draft/after`/`draft/retry`), which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
 - **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
-- **Prompt-config matrix**: `docs/user/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers; AGENTS may refer to shorthand `docs/prompt-config-matrix.md`, but canonical content is currently under `docs/user/`.
+- **Prompt-config matrix**: `docs/user/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers. AGENTS.md/README currently mention `docs/prompt-config-matrix.md` as a root alias, so treat `docs/user/prompt-config-matrix.md` as canonical until aliases are reconciled.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
 - **Repo boundary**: Operational constraint for all agent work: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
 - **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.

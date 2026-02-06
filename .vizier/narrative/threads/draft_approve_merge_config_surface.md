@@ -17,7 +17,7 @@ Keep the configuration and flag surface for the `vizier draft → vizier approve
   - Advanced options grouped and named so operators can infer effects without reading source.
   - Consistent flag semantics across the three commands (e.g., `--target`, `--branch`) with a single, well-documented precedence story for config vs CLI flags.
 - Configuration relevant to plan workflows feels like a single component rather than scattered toggles (e.g., branch naming conventions, auto-delete policies, and doc/plan linkage all live under an identifiable configuration story, even if split across files today).
-- Docs (README, docs/workflows/draft-approve-merge.md) describe the configuration behaviors in terms of observable outcomes instead of enumerating every internal lever.
+- Docs (README, docs/user/workflows/draft-approve-merge.md) describe the configuration behaviors in terms of observable outcomes instead of enumerating every internal lever.
 
 ## Acceptance criteria
 - Usage:
@@ -28,14 +28,14 @@ Keep the configuration and flag surface for the `vizier draft → vizier approve
   - Plan-specific configuration is treated as part of a coherent component (or section) in docs/config, not as a scattered list of one-off options.
   - When future gates (architecture-doc enforcement, multi-agent orchestration) introduce new knobs for this workflow, they extend this configuration story instead of creating parallel mechanisms.
 - UX/Docs:
-  - `docs/workflows/draft-approve-merge.md` and README.md both explain the workflow’s configuration at a product level (defaults, common variants) without requiring readers to infer behavior from help text alone.
+  - `docs/user/workflows/draft-approve-merge.md` and README.md both explain the workflow’s configuration at a product level (defaults, common variants) without requiring readers to infer behavior from help text alone.
   - Help output for `vizier draft`, `vizier approve`, and `vizier merge` is consistent in structure and terminology for shared flags, and does not contradict the docs.
 - Tests:
   - Integration tests cover at least: default behavior with minimal flags; overriding target branch/location through configuration vs CLI; and a scenario where conflicting configuration sources resolve deterministically as documented.
 
 ## Pointers
 - CLI surfaces and flags: `vizier-cli/src/main.rs`, `vizier-cli/src/actions.rs`
-- Workflow docs: `docs/workflows/draft-approve-merge.md`
+- Workflow docs: `docs/user/workflows/draft-approve-merge.md`
 - Snapshot thread: Agent workflow orchestration (Running Snapshot — updated)
 
 ## Status
@@ -50,10 +50,10 @@ Update — Surface CICD gate metadata in Outcome
 - Cross: Outcome component; Agent workflow orchestration.
 
 Update (2025-11-20): Default squash merge behavior and knobs
-- `vizier merge` now defaults to replaying plan commits onto the target, soft-squashing them into a single implementation commit, then writing a follow-up `feat: merge plan <slug>` commit that embeds the stored plan under an `Implementation Plan:` block; the squash path produces a single-parent merge commit so `draft/<slug>` drops out of the target ancestry. Repositories can flip `[merge] squash = false` in `.vizier/config.toml` or operators can pass `--no-squash` to keep the legacy “merge straight from draft/<slug> history” behavior; `--squash` forces the new behavior even when config disagrees. README, `docs/workflows/draft-approve-merge.md`, and `example-config.toml` describe the flag/config story, and integration tests (`test_merge_default_squash_adds_implementation_commit`, `test_merge_no_squash_matches_legacy_parentage`) lock in the default parentage so operators can reason about commit graphs when tuning Git hygiene policies.
+- `vizier merge` now defaults to replaying plan commits onto the target, soft-squashing them into a single implementation commit, then writing a follow-up `feat: merge plan <slug>` commit that embeds the stored plan under an `Implementation Plan:` block; the squash path produces a single-parent merge commit so `draft/<slug>` drops out of the target ancestry. Repositories can flip `[merge] squash = false` in `.vizier/config.toml` or operators can pass `--no-squash` to keep the legacy “merge straight from draft/<slug> history” behavior; `--squash` forces the new behavior even when config disagrees. README, `docs/user/workflows/draft-approve-merge.md`, and `example-config.toml` describe the flag/config story, and integration tests (`test_merge_default_squash_adds_implementation_commit`, `test_merge_no_squash_matches_legacy_parentage`) lock in the default parentage so operators can reason about commit graphs when tuning Git hygiene policies.
 
 Update (2025-11-22): Squash mainline selection for merge-heavy plan branches
-- Squash-mode merges now preflight plan branches that contain merge commits and require either `--squash-mainline <parent index>` (or `[merge] squash_mainline = <n>`) to choose the mainline or `--no-squash` to keep the original graph; ambiguous octopus histories abort early with guidance. README and `docs/workflows/draft-approve-merge.md` document the new flag/config, and integration tests enforce the guard (`test_merge_squash_requires_mainline_for_merge_history`, `test_merge_squash_mainline_replays_merge_history`, `test_merge_no_squash_handles_merge_history`).
+- Squash-mode merges now preflight plan branches that contain merge commits and require either `--squash-mainline <parent index>` (or `[merge] squash_mainline = <n>`) to choose the mainline or `--no-squash` to keep the original graph; ambiguous octopus histories abort early with guidance. README and `docs/user/workflows/draft-approve-merge.md` document the new flag/config, and integration tests enforce the guard (`test_merge_squash_requires_mainline_for_merge_history`, `test_merge_squash_mainline_replays_merge_history`, `test_merge_no_squash_handles_merge_history`).
 
 
 ---

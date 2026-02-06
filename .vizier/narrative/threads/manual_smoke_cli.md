@@ -15,12 +15,12 @@ Desired behavior (Product-level)
 - The checklist lives alongside the existing workflow docs so operators know when/how to run it without learning a new surface.
 
 Acceptance criteria
-- A documented smoke playbook exists (linked from `docs/workflows/draft-approve-merge.md` or a short companion doc) that lists the commands/modes above and the expected observable outcomes (no ANSI in non-TTY/`--no-ansi`, quiet suppresses progress, Outcome lines present).
+- A documented smoke playbook exists (linked from `docs/user/workflows/draft-approve-merge.md` or a short companion doc) that lists the commands/modes above and the expected observable outcomes (no ANSI in non-TTY/`--no-ansi`, quiet suppresses progress, Outcome lines present).
 - Running the playbook produces a simple artifact per run (checklist/log) that notes pass/fail per step and the session log references; runs can occur on disposable branches/worktrees without polluting the primary checkout.
 - Release notes or gate outcomes reference the most recent smoke run or explicitly state it was skipped; regressions from smoke runs create TODO entries aligned to snapshot threads.
 - Quiet/no-ansi variants in the playbook assert that progress/history lines respect verbosity/ANSI contracts and that the final Outcome still appears on stdout.
 
 Pointers
 - vizier-cli (ask/save/draft/list/approve/review/merge flows)
-- docs/workflows/draft-approve-merge.md
+- docs/user/workflows/draft-approve-merge.md
 - .vizier/sessions/

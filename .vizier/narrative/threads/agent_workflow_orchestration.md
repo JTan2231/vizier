@@ -33,13 +33,13 @@ Provide a guided workflow that lets operators orchestrate multi-agent runs where
 - Auditor + session logging (vizier-core/src/auditor.rs, .vizier/sessions/)
 - Architecture doc gate + Pending Commit gate threads
 - DRAFT.md and APPROVE.md (integrated draft→approve flow), `.vizier/implementation-plans/`
-- docs/workflows/draft-approve-merge.md (textual runbook for today’s manual process; keeps humans aligned while orchestration tooling is built)
+- docs/user/workflows/draft-approve-merge.md (textual runbook for today’s manual process; keeps humans aligned while orchestration tooling is built)
 - Remote runner helper (`./vm_commands.sh <action> …` in the agent harness: `send`/`list`/`interrupt`, `SSH_TARGET`/`SSH_PORT`/`SSH_EXTRA_OPTS`/`SSH_STRICT`, `/run/vizier/<RUN_ID>/{stdout,stderr}`, with `send` stdout returning RUN_ID/SESSION/PGID) as the contract for orchestrating remote agent jobs
 
 ## Implementation notes
 - Reuse existing gates/outcome machinery; add workflow state as metadata rather than inventing parallel tracking. Ensure each transition is idempotent so multi-agent runs remain recoverable after interruptions.
 
-Update (2025-11-15): Authored docs/workflows/draft-approve-merge.md so operators/agents have a documented draft→approve→merge checklist today. Workflow orchestration remains CLI-first work (stage tracker, approvals, gates) beyond this documentation boost.
+Update (2025-11-15): Authored docs/user/workflows/draft-approve-merge.md so operators/agents have a documented draft→approve→merge checklist today. Workflow orchestration remains CLI-first work (stage tracker, approvals, gates) beyond this documentation boost.
 
 Update (2025-11-17): Plan/review/merge prompts now ride through the prompt store, so repositories can customize each stage via `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, `.vizier/MERGE_CONFLICT_PROMPT.md`, or scoped profiles under `[agents.<scope>.prompts.<kind>]` (with legacy `[prompts.*]` keys as fallbacks) without recompiling. The conductor UX, gate wiring, and workflow tracker still need to land.
 
