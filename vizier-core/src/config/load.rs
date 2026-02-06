@@ -459,6 +459,10 @@ fn load_config_layer_from_value(
         }
     }
 
+    if let Some(build_table) = value_at_path(&file_config, &["build"]) {
+        parse_build_table(build_table, &mut layer.build)?;
+    }
+
     if let Some(commits_table) = value_at_path(&file_config, &["commits"]) {
         parse_commit_table(commits_table, &mut layer.commits)?;
     }
@@ -782,6 +786,226 @@ fn parse_u32(value: Option<&serde_json::Value>) -> Option<u32> {
         }
     }
     None
+}
+
+fn parse_build_pipeline_value(
+    value: Option<&serde_json::Value>,
+    key_path: &str,
+) -> Option<BuildPipeline> {
+    let raw = parse_nonempty_string(value)?;
+    if let Some(parsed) = BuildPipeline::parse(&raw) {
+        Some(parsed)
+    } else {
+        display::warn(format!(
+            "unknown {} value `{}`; expected approve|approve-review|approve-review-merge",
+            key_path, raw
+        ));
+        None
+    }
+}
+
+fn parse_build_review_mode_value(
+    value: Option<&serde_json::Value>,
+    key_path: &str,
+) -> Option<BuildReviewMode> {
+    let raw = parse_nonempty_string(value)?;
+    if let Some(parsed) = BuildReviewMode::parse(&raw) {
+        Some(parsed)
+    } else {
+        display::warn(format!(
+            "unknown {} value `{}`; expected apply_fixes|review_only|review_file",
+            key_path, raw
+        ));
+        None
+    }
+}
+
+fn parse_build_stage_barrier_value(
+    value: Option<&serde_json::Value>,
+    key_path: &str,
+) -> Option<BuildStageBarrier> {
+    let raw = parse_nonempty_string(value)?;
+    if let Some(parsed) = BuildStageBarrier::parse(&raw) {
+        Some(parsed)
+    } else {
+        display::warn(format!(
+            "unknown {} value `{}`; expected strict|explicit",
+            key_path, raw
+        ));
+        None
+    }
+}
+
+fn parse_build_failure_mode_value(
+    value: Option<&serde_json::Value>,
+    key_path: &str,
+) -> Option<BuildFailureMode> {
+    let raw = parse_nonempty_string(value)?;
+    if let Some(parsed) = BuildFailureMode::parse(&raw) {
+        Some(parsed)
+    } else {
+        display::warn(format!(
+            "unknown {} value `{}`; expected block_downstream|continue_independent",
+            key_path, raw
+        ));
+        None
+    }
+}
+
+fn parse_build_merge_target_value(
+    value: Option<&serde_json::Value>,
+    key_path: &str,
+) -> Option<BuildMergeTarget> {
+    let raw = parse_nonempty_string(value)?;
+    if let Some(parsed) = BuildMergeTarget::parse(&raw) {
+        Some(parsed)
+    } else {
+        display::warn(format!("unknown {} value `{}`; ignoring", key_path, raw));
+        None
+    }
+}
+
+fn parse_build_profile_table(value: &serde_json::Value, layer: &mut BuildProfileLayer) {
+    let Some(table) = value.as_object() else {
+        return;
+    };
+
+    if let Some(pipeline) = parse_build_pipeline_value(
+        table
+            .get("pipeline")
+            .or_else(|| table.get("default_pipeline"))
+            .or_else(|| table.get("default-pipeline")),
+        "build.profiles.<name>.pipeline",
+    ) {
+        layer.pipeline = Some(pipeline);
+    }
+
+    if let Some(target) = parse_build_merge_target_value(
+        table
+            .get("merge_target")
+            .or_else(|| table.get("merge-target")),
+        "build.profiles.<name>.merge_target",
+    ) {
+        layer.merge_target = Some(target);
+    }
+
+    if let Some(review_mode) = parse_build_review_mode_value(
+        table
+            .get("review_mode")
+            .or_else(|| table.get("review-mode")),
+        "build.profiles.<name>.review_mode",
+    ) {
+        layer.review_mode = Some(review_mode);
+    }
+
+    if let Some(skip_checks) = parse_bool(
+        table
+            .get("skip_checks")
+            .or_else(|| table.get("skip-checks")),
+    ) {
+        layer.skip_checks = Some(skip_checks);
+    }
+
+    if let Some(keep_branch) = parse_bool(
+        table
+            .get("keep_branch")
+            .or_else(|| table.get("keep-branch")),
+    ) {
+        layer.keep_branch = Some(keep_branch);
+    }
+}
+
+fn parse_build_table(
+    value: &serde_json::Value,
+    layer: &mut BuildLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(pipeline) = parse_build_pipeline_value(
+        table
+            .get("default_pipeline")
+            .or_else(|| table.get("default-pipeline")),
+        "build.default_pipeline",
+    ) {
+        layer.default_pipeline = Some(pipeline);
+    }
+
+    if let Some(target) = parse_build_merge_target_value(
+        table
+            .get("default_merge_target")
+            .or_else(|| table.get("default-merge-target")),
+        "build.default_merge_target",
+    ) {
+        layer.default_merge_target = Some(target);
+    }
+
+    if let Some(stage_barrier) = parse_build_stage_barrier_value(
+        table
+            .get("stage_barrier")
+            .or_else(|| table.get("stage-barrier")),
+        "build.stage_barrier",
+    ) {
+        layer.stage_barrier = Some(stage_barrier);
+    }
+
+    if let Some(failure_mode) = parse_build_failure_mode_value(
+        table
+            .get("failure_mode")
+            .or_else(|| table.get("failure-mode")),
+        "build.failure_mode",
+    ) {
+        layer.failure_mode = Some(failure_mode);
+    }
+
+    if let Some(review_mode) = parse_build_review_mode_value(
+        table
+            .get("default_review_mode")
+            .or_else(|| table.get("default-review-mode")),
+        "build.default_review_mode",
+    ) {
+        layer.default_review_mode = Some(review_mode);
+    }
+
+    if let Some(skip_checks) = parse_bool(
+        table
+            .get("default_skip_checks")
+            .or_else(|| table.get("default-skip-checks")),
+    ) {
+        layer.default_skip_checks = Some(skip_checks);
+    }
+
+    if let Some(keep_branch) = parse_bool(
+        table
+            .get("default_keep_draft_branch")
+            .or_else(|| table.get("default-keep-draft-branch")),
+    ) {
+        layer.default_keep_draft_branch = Some(keep_branch);
+    }
+
+    if let Some(profile_name) = parse_nonempty_string(
+        table
+            .get("default_profile")
+            .or_else(|| table.get("default-profile")),
+    ) {
+        layer.default_profile = Some(profile_name);
+    }
+
+    if let Some(profiles_table) = table.get("profiles").and_then(|value| value.as_object()) {
+        for (name, profile_value) in profiles_table {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let mut profile_layer = BuildProfileLayer::default();
+            parse_build_profile_table(profile_value, &mut profile_layer);
+            layer.profiles.insert(trimmed.to_string(), profile_layer);
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_merge_cicd_gate(

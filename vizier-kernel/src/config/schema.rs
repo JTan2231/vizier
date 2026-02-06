@@ -328,6 +328,7 @@ pub struct Config {
     pub agent_selector: String,
     pub backend: BackendKind,
     pub agent_runtime: AgentRuntimeOptions,
+    pub build: BuildConfig,
     pub approve: ApproveConfig,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
@@ -620,6 +621,164 @@ pub struct MergeCicdGateConfig {
     pub retries: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuildPipeline {
+    Approve,
+    ApproveReview,
+    ApproveReviewMerge,
+}
+
+impl BuildPipeline {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "approve" => Some(Self::Approve),
+            "approve-review" | "approve_review" => Some(Self::ApproveReview),
+            "approve-review-merge" | "approve_review_merge" => Some(Self::ApproveReviewMerge),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::ApproveReview => "approve-review",
+            Self::ApproveReviewMerge => "approve-review-merge",
+        }
+    }
+
+    pub fn includes_review(self) -> bool {
+        matches!(self, Self::ApproveReview | Self::ApproveReviewMerge)
+    }
+
+    pub fn includes_merge(self) -> bool {
+        matches!(self, Self::ApproveReviewMerge)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuildReviewMode {
+    ApplyFixes,
+    ReviewOnly,
+    ReviewFile,
+}
+
+impl BuildReviewMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "apply_fixes" | "apply-fixes" => Some(Self::ApplyFixes),
+            "review_only" | "review-only" => Some(Self::ReviewOnly),
+            "review_file" | "review-file" => Some(Self::ReviewFile),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApplyFixes => "apply_fixes",
+            Self::ReviewOnly => "review_only",
+            Self::ReviewFile => "review_file",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuildStageBarrier {
+    Strict,
+    Explicit,
+}
+
+impl BuildStageBarrier {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "strict" => Some(Self::Strict),
+            "explicit" => Some(Self::Explicit),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuildFailureMode {
+    BlockDownstream,
+    ContinueIndependent,
+}
+
+impl BuildFailureMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "block_downstream" | "block-downstream" => Some(Self::BlockDownstream),
+            "continue_independent" | "continue-independent" => Some(Self::ContinueIndependent),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BlockDownstream => "block_downstream",
+            Self::ContinueIndependent => "continue_independent",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BuildMergeTarget {
+    Primary,
+    Build,
+    Branch(String),
+}
+
+impl BuildMergeTarget {
+    pub fn parse(value: &str) -> Option<Self> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        match trimmed.to_ascii_lowercase().as_str() {
+            "primary" => Some(Self::Primary),
+            "build" => Some(Self::Build),
+            _ => Some(Self::Branch(trimmed.to_string())),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Primary => "primary",
+            Self::Build => "build",
+            Self::Branch(name) => name.as_str(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildProfileConfig {
+    pub pipeline: Option<BuildPipeline>,
+    pub merge_target: Option<BuildMergeTarget>,
+    pub review_mode: Option<BuildReviewMode>,
+    pub skip_checks: Option<bool>,
+    pub keep_branch: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuildConfig {
+    pub default_pipeline: BuildPipeline,
+    pub default_merge_target: BuildMergeTarget,
+    pub stage_barrier: BuildStageBarrier,
+    pub failure_mode: BuildFailureMode,
+    pub default_review_mode: BuildReviewMode,
+    pub default_skip_checks: bool,
+    pub default_keep_draft_branch: bool,
+    pub default_profile: Option<String>,
+    pub profiles: HashMap<String, BuildProfileConfig>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeCicdGateLayer {
     pub script: Option<PathBuf>,
@@ -638,6 +797,28 @@ pub struct MergeLayer {
     pub conflicts: MergeConflictsLayer,
     pub squash_default: Option<bool>,
     pub squash_mainline: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildProfileLayer {
+    pub pipeline: Option<BuildPipeline>,
+    pub merge_target: Option<BuildMergeTarget>,
+    pub review_mode: Option<BuildReviewMode>,
+    pub skip_checks: Option<bool>,
+    pub keep_branch: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildLayer {
+    pub default_pipeline: Option<BuildPipeline>,
+    pub default_merge_target: Option<BuildMergeTarget>,
+    pub stage_barrier: Option<BuildStageBarrier>,
+    pub failure_mode: Option<BuildFailureMode>,
+    pub default_review_mode: Option<BuildReviewMode>,
+    pub default_skip_checks: Option<bool>,
+    pub default_keep_draft_branch: Option<bool>,
+    pub default_profile: Option<String>,
+    pub profiles: HashMap<String, BuildProfileLayer>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -768,6 +949,7 @@ pub struct ApproveLayer {
 pub struct ConfigLayer {
     pub agent_selector: Option<String>,
     pub agent_runtime: Option<AgentRuntimeOverride>,
+    pub build: BuildLayer,
     pub approve: ApproveLayer,
     pub review: ReviewLayer,
     pub merge: MergeLayer,

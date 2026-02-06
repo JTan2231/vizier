@@ -62,3 +62,5 @@ Update (2026-02-05, follow-up)
 - Clarified task-envelope execution: when a turn bundles the explicit update instruction with inline snapshot/thread context, narrative upkeep is treated as immediately authorized for the first response, still anchored to on-disk `.vizier/narrative/*` canonical files.
 Update (2026-02-06)
 - Clarified response wording: narrative-maintenance turns should return a short commit-style summary (not raw delta output), while detailed `snapshotDelta` remains internal to `.vizier`.
+Update (2026-02-06, follow-up)
+- Clarified guardrail parsing: the explicit update instruction is still valid when wrapped in `<task><instruction>...</instruction></task>`, so formatting does not block authorized first-response narrative upkeep.

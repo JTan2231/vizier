@@ -84,6 +84,12 @@ pub struct JobMetadata {
     pub target: Option<String>,
     pub plan: Option<String>,
     pub branch: Option<String>,
+    pub build_pipeline: Option<String>,
+    pub build_target: Option<String>,
+    pub build_review_mode: Option<String>,
+    pub build_skip_checks: Option<bool>,
+    pub build_keep_branch: Option<bool>,
+    pub build_dependencies: Option<Vec<String>>,
     pub revision: Option<String>,
     pub worktree_name: Option<String>,
     pub worktree_path: Option<String>,
@@ -277,6 +283,24 @@ fn merge_metadata(
             }
             if base.branch.is_none() {
                 base.branch = update.branch;
+            }
+            if base.build_pipeline.is_none() {
+                base.build_pipeline = update.build_pipeline;
+            }
+            if base.build_target.is_none() {
+                base.build_target = update.build_target;
+            }
+            if base.build_review_mode.is_none() {
+                base.build_review_mode = update.build_review_mode;
+            }
+            if base.build_skip_checks.is_none() {
+                base.build_skip_checks = update.build_skip_checks;
+            }
+            if base.build_keep_branch.is_none() {
+                base.build_keep_branch = update.build_keep_branch;
+            }
+            if is_empty_vec(&base.build_dependencies) {
+                base.build_dependencies = update.build_dependencies;
             }
             if base.revision.is_none() {
                 base.revision = update.revision;

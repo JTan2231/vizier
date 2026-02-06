@@ -1333,6 +1333,12 @@ fn test_jobs_show_format_json() -> TestResult {
             "plan": "alpha",
             "target": "main",
             "branch": "draft/alpha",
+            "build_pipeline": "approve-review-merge",
+            "build_target": "build/alpha",
+            "build_review_mode": "review_only",
+            "build_skip_checks": true,
+            "build_keep_branch": false,
+            "build_dependencies": ["01", "02a"],
             "revision": "abc123",
             "worktree_name": "job-worktree",
             "worktree_path": ".vizier/tmp-worktrees/job-worktree",
@@ -1402,6 +1408,36 @@ fn test_jobs_show_format_json() -> TestResult {
         json.get("plan").and_then(Value::as_str),
         Some("alpha"),
         "plan mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("build_pipeline").and_then(Value::as_str),
+        Some("approve-review-merge"),
+        "build pipeline mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("build_target").and_then(Value::as_str),
+        Some("build/alpha"),
+        "build target mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("build_review_mode").and_then(Value::as_str),
+        Some("review_only"),
+        "build review mode mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("build_skip_checks").and_then(Value::as_str),
+        Some("true"),
+        "build skip checks mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("build_keep_branch").and_then(Value::as_str),
+        Some("false"),
+        "build keep branch mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("build_dependencies").and_then(Value::as_str),
+        Some("01, 02a"),
+        "build dependencies mismatch: {json}"
     );
     assert_eq!(
         json.get("dependencies").and_then(Value::as_str),

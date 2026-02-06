@@ -33,6 +33,13 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Display/help: pager defaults are TTY-only; use `--pager`/`--no-pager` or `$VIZIER_PAGER` to force/disable. `--no-ansi` strips color; `-q/-v/-vv` control verbosity.
 - Checks/review: `[review.checks].commands` ↔ CLI `vizier review --skip-checks` (to skip) or config to set the commands; merge CI/CD gate is reused during review with auto-fix disabled.
 
+## Build orchestration settings
+- Build defaults: `[build]` controls execute-time orchestration defaults (`default_pipeline`, `default_merge_target`, `default_review_mode`, `default_skip_checks`, `default_keep_draft_branch`).
+- Graph controls: `[build].stage_barrier` (`strict|explicit`) and `[build].failure_mode` (`block_downstream|continue_independent`) tune dependency behavior/audit posture for `vizier build execute`.
+- Profile presets: `[build].default_profile` and `[build.profiles.<name>]` let you reuse policy bundles (`pipeline`, `merge_target`, `review_mode`, `skip_checks`, `keep_branch`) across steps.
+- CLI override: `vizier build execute --pipeline ...` overrides per-step/profile/config pipeline selection for that run.
+- Step-level build-file overrides (`profile`, `pipeline`, `merge_target`, `review_mode`, `skip_checks`, `keep_branch`, `after_steps`) remain authoritative for fields without CLI flags.
+
 ## Agents, prompts, and documentation toggles
 - `agent` (root or `[agents.default]`): selector for the bundled shim (`codex` by default, `gemini` as the alternate) or any custom shim name you’ve installed.
 - Legacy `backend` / `fallback_backend` keys are rejected; migrate to `agent` selectors and remove fallback entries.
@@ -63,6 +70,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - `vizier list`: `[display.lists.list]` controls `format` (`block|table|json`), header/entry/job/command field ordering, summary truncation (`summary_max_len` default 120, `summary_single_line` default true), and label overrides (`labels`).
 - `vizier jobs list`: `[display.lists.jobs]` controls `format`, whether succeeded jobs are shown (`show_succeeded`), field ordering, and label overrides. Built-in fields include `Job`, `Status`, `Created`, `After`, `Wait`, `Dependencies`, `Locks`, `Pinned head`, `Failed`, and `Command`. CLI `--all` overrides `show_succeeded`.
 - `vizier jobs show`: `[display.lists.jobs_show]` controls `format`, field ordering, and label overrides, including the `After` field (`<job-id> (success)` entries).
+- Build execution metadata for `jobs show`: include `Build pipeline`, `Build target`, `Build review mode`, `Build skip checks`, `Build keep branch`, and `Build dependencies` in `[display.lists.jobs_show].fields` (or rely on defaults) to audit effective per-step policy from job records.
 - `vizier jobs status`: prints a terse one-line status; `--json` emits `job`, `status`, `exit_code`, `stdout`, and `stderr` fields.
 - `vizier jobs retry`: rewinds a failed/blocked job chain and prints a block outcome with `Requested`, `Retry root`, `Last successful point`, `Retry set`, `Reset`, `Restarted`, and optional `Updated`; `--json` emits the same fields as structured arrays/strings.
 - CLI overrides: `vizier list --format`, `vizier list --fields` override the list display settings; `vizier jobs list --format` and `vizier jobs show --format` override job display formats. The global `--json` flag forces JSON output for list-style commands regardless of config.

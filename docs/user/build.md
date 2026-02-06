@@ -35,8 +35,15 @@ Unknown keys are rejected.
 
 ### Intent fields
 
-- `text`: inline intent text.
-- `file`: path to intent text file, resolved relative to the build file directory and constrained to repo root.
+Each intent supports `text` or `file` (exactly one), plus optional build policy overrides:
+
+- `profile`: build profile name from `[build.profiles.<name>]`.
+- `pipeline`: `approve | approve-review | approve-review-merge`.
+- `merge_target`: `primary | build | <branch-name>`.
+- `review_mode`: `apply_fixes | review_only | review_file`.
+- `skip_checks`: boolean (`review --skip-checks`).
+- `keep_branch`: boolean (`merge --keep-branch`).
+- `after_steps`: list of step keys (for example `["02a", "02b"]`) that must complete before this step can start.
 
 ### Example (TOML)
 
@@ -58,7 +65,7 @@ vizier build execute <build-id> [--pipeline approve|approve-review|approve-revie
 ```
 
 Defaults:
-- Pipeline defaults to `approve`.
+- Pipeline defaults to `[build].default_pipeline` (built-in default: `approve`) when `--pipeline` is omitted.
 - Non-interactive runs require `--yes`.
 - Interactive runs prompt unless `--yes` is set.
 
@@ -73,6 +80,48 @@ Execution mode:
 .vizier/implementation-plans/builds/<build_id>/execution.json
 ```
 
+### Build policy config (`[build]`)
+
+Use config defaults to avoid repeating orchestration flags per run:
+
+```toml
+[build]
+default_pipeline = "approve"
+default_merge_target = "primary"
+stage_barrier = "strict"
+failure_mode = "block_downstream"
+default_review_mode = "apply_fixes"
+default_skip_checks = false
+default_keep_draft_branch = false
+default_profile = "integration"
+
+[build.profiles.integration]
+pipeline = "approve-review-merge"
+merge_target = "build"
+review_mode = "review_only"
+skip_checks = true
+keep_branch = true
+```
+
+Key behavior:
+- `default_pipeline`: default phase path for steps.
+- `default_merge_target`: default merge routing (`primary`, `build/<id>`, or explicit branch).
+- `stage_barrier`: `strict` (implicit prior-stage dependencies) or `explicit` (dependencies only from `after_steps`).
+- `failure_mode`: `block_downstream` or `continue_independent` (recorded in policy/output for audit and resume drift checks).
+- `default_review_mode`, `default_skip_checks`, `default_keep_draft_branch`: defaults for review/merge flags.
+- `default_profile`: profile applied when the step omits `profile`.
+- `[build.profiles.<name>]`: reusable policy bundles; missing fields inherit from `[build]`.
+
+### Policy precedence
+
+Effective per-step policy resolves in this order:
+
+1. CLI `--pipeline` (global override for this execute run).
+2. Step inline overrides in the build file.
+3. Step `profile` values from `[build.profiles.<name>]`.
+4. `[build]` defaults.
+5. Built-in defaults.
+
 ### Pipeline phases
 
 - `approve`: `materialize -> approve`
@@ -81,16 +130,16 @@ Execution mode:
 
 ### Stage dependencies
 
-Build stage ordering is preserved:
-- Steps in stage `N` wait on terminal phase completion of all steps in stages `< N`.
-- Parallel siblings in the same stage run independently.
+- `stage_barrier = strict`: steps in stage `N` wait on terminal completion of all steps in stages `< N`.
+- `stage_barrier = explicit`: stage barriers are removed; only `after_steps` dependencies apply.
+- `after_steps` is always additive and supports cross-stage/cross-parallel dependencies by step key.
 
 ### Resume semantics
 
 `--resume` reloads `execution.json` and:
 - Reuses existing queued/running/succeeded phase jobs.
 - Re-enqueues missing or non-reusable failed/cancelled/blocked jobs.
-- Fails if pipeline does not match existing execution state.
+- Fails if resolved policy drifts from existing execution state (pipeline, target routing, review mode, checks/branch retention, dependencies, or barrier/failure settings).
 
 Running without `--resume` after execution state exists fails with guidance.
 
@@ -99,17 +148,19 @@ Running without `--resume` after execution state exists fails with guidance.
 `vizier build execute` prints:
 - Outcome (`Build execution queued` or `Build execution resumed`)
 - Build id
-- Pipeline
+- Pipeline override (if any)
+- Stage barrier
+- Failure mode
 - Execution manifest path
 - Optional failed step
-- Step table with `Step`, `Slug`, `Branch`, `Jobs`, and `Status`
+- Step table with `Step`, `Slug`, `Branch`, `Pipeline`, `Target`, `Review mode`, `Deps`, `Jobs`, and `Status`
 
 ## Internal materialization job
 
 `build execute` queues an internal scheduler entrypoint:
 
 ```bash
-vizier build __materialize <build-id> --step <step-key> --slug <slug> --branch <draft-branch>
+vizier build __materialize <build-id> --step <step-key> --slug <slug> --branch <draft-branch> --target <base-branch>
 ```
 
 This command is hidden from normal operator usage.
@@ -120,6 +171,8 @@ Preflight fails before enqueue when:
 - Build id/branch is missing.
 - Manifest is invalid or not `succeeded`.
 - Referenced step plan artifacts are missing.
+- Step policy is invalid (enum values, incompatible review/merge options for a chosen pipeline, missing profile).
+- `after_steps` contains unknown keys or dependency cycles.
 - Slug/branch allocation fails.
 
 Runtime failures follow normal scheduler behavior:

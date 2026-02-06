@@ -37,6 +37,14 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
         stdout.contains("Per-scope agents:"),
         "plan output should render per-scope agent settings:\n{stdout}"
     );
+    assert!(
+        stdout.contains("Build:"),
+        "plan output should render build policy defaults:\n{stdout}"
+    );
+    assert!(
+        compact.contains("Defaultpipeline:approve"),
+        "plan output should include build.default_pipeline with default value:\n{stdout}"
+    );
 
     let after_logs = gather_session_logs(&repo)?;
     assert_eq!(
@@ -65,6 +73,23 @@ retries = 5
 commands = ["echo alt-review"]
 [workflow]
 no_commit_default = true
+
+[build]
+default_pipeline = "approve-review-merge"
+default_merge_target = "release/main"
+stage_barrier = "explicit"
+failure_mode = "continue_independent"
+default_review_mode = "review_only"
+default_skip_checks = true
+default_keep_draft_branch = true
+default_profile = "integration"
+
+[build.profiles.integration]
+pipeline = "approve-review"
+merge_target = "build"
+review_mode = "apply_fixes"
+skip_checks = false
+keep_branch = true
 "#,
     )?;
 
@@ -130,6 +155,46 @@ no_commit_default = true
         json.pointer("/review/checks/0").and_then(Value::as_str),
         Some("echo alt-review"),
         "review checks from the config file should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/default_pipeline")
+            .and_then(Value::as_str),
+        Some("approve-review-merge"),
+        "build.default_pipeline should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/default_merge_target")
+            .and_then(Value::as_str),
+        Some("release/main"),
+        "build.default_merge_target should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/stage_barrier").and_then(Value::as_str),
+        Some("explicit"),
+        "build.stage_barrier should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/failure_mode").and_then(Value::as_str),
+        Some("continue_independent"),
+        "build.failure_mode should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/default_profile")
+            .and_then(Value::as_str),
+        Some("integration"),
+        "build.default_profile should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/profiles/integration/merge_target")
+            .and_then(Value::as_str),
+        Some("build"),
+        "build profile merge target should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/build/profiles/integration/keep_branch")
+            .and_then(Value::as_bool),
+        Some(true),
+        "build profile keep_branch should appear in the report"
     );
     assert_eq!(
         json.pointer("/scopes/ask/agent").and_then(Value::as_str),

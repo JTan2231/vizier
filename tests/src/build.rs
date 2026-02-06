@@ -71,6 +71,17 @@ fn assert_schedule_after_empty(job_record: &Value, job_label: &str) -> TestResul
     Ok(())
 }
 
+fn job_command_tokens(job_record: &Value) -> Vec<String> {
+    job_record
+        .get("command")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(|text| text.to_string()))
+        .collect()
+}
+
 #[test]
 fn test_build_creates_session_artifacts_on_build_branch() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -859,8 +870,8 @@ steps = [
     );
     let mismatch_stderr = String::from_utf8_lossy(&mismatch.stderr);
     assert!(
-        mismatch_stderr.contains("pipeline mismatch"),
-        "pipeline mismatch reason missing: {mismatch_stderr}"
+        mismatch_stderr.contains("execution policy mismatch"),
+        "policy mismatch reason missing: {mismatch_stderr}"
     );
 
     let missing_resume = run_build_execute(
@@ -956,6 +967,518 @@ steps = [
         "blocked_by_dependency",
         Duration::from_secs(60),
     )?;
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_uses_config_default_pipeline_when_flag_omitted() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "default-pipeline.toml",
+        r#"
+steps = [
+  { text = "Use config default pipeline" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "default-pipeline.toml",
+        "--name",
+        "default-pipeline-check",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let config_path = repo.path().join(".vizier/tmp/build-default-pipeline.toml");
+    fs::create_dir_all(config_path.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &config_path,
+        r#"
+[build]
+default_pipeline = "approve-review-merge"
+"#,
+    )?;
+
+    let execute = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["build", "execute", "default-pipeline-check", "--yes"])
+        .output()?;
+    assert!(
+        execute.status.success(),
+        "build execute failed: {}",
+        String::from_utf8_lossy(&execute.stderr)
+    );
+
+    let state = execution_state(&repo.repo(), "default-pipeline-check")?;
+    let step = state
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .ok_or("execution step missing")?;
+    assert_eq!(
+        step.pointer("/policy/pipeline").and_then(Value::as_str),
+        Some("approve-review-merge"),
+        "expected policy pipeline from [build] default when --pipeline is omitted: {step}"
+    );
+    assert!(
+        step.get("review_job_id").and_then(Value::as_str).is_some(),
+        "review job should be queued by default pipeline override"
+    );
+    assert!(
+        step.get("merge_job_id").and_then(Value::as_str).is_some(),
+        "merge job should be queued by default pipeline override"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_step_policy_maps_to_job_flags_and_targets() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "step-policy.toml",
+        r#"
+steps = [
+  { text = "Step policy mapping", pipeline = "approve-review-merge", merge_target = "build", review_mode = "review_only", skip_checks = true, keep_branch = true }
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "step-policy.toml",
+        "--name",
+        "step-policy-check",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let execute = run_build_execute(&repo, &["build", "execute", "step-policy-check", "--yes"])?;
+    assert!(
+        execute.status.success(),
+        "build execute failed: {}",
+        String::from_utf8_lossy(&execute.stderr)
+    );
+
+    let state = execution_state(&repo.repo(), "step-policy-check")?;
+    let step = state
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .ok_or("execution step missing")?;
+    let build_branch = "build/step-policy-check";
+    assert_eq!(
+        step.pointer("/policy/target_branch")
+            .and_then(Value::as_str),
+        Some(build_branch),
+        "merge_target=build should route to the build session branch"
+    );
+    assert_eq!(
+        step.pointer("/policy/review_mode").and_then(Value::as_str),
+        Some("review_only"),
+        "review mode should be persisted in policy"
+    );
+    assert_eq!(
+        step.pointer("/policy/skip_checks").and_then(Value::as_bool),
+        Some(true),
+        "skip_checks should be persisted in policy"
+    );
+    assert_eq!(
+        step.pointer("/policy/keep_branch").and_then(Value::as_bool),
+        Some(true),
+        "keep_branch should be persisted in policy"
+    );
+
+    let review_job = step
+        .get("review_job_id")
+        .and_then(Value::as_str)
+        .ok_or("review job missing")?;
+    let merge_job = step
+        .get("merge_job_id")
+        .and_then(Value::as_str)
+        .ok_or("merge job missing")?;
+
+    let review_record = read_job_record(&repo, review_job)?;
+    let review_command = job_command_tokens(&review_record);
+    assert!(
+        review_command.iter().any(|token| token == "--review-only"),
+        "review command missing --review-only: {review_command:?}"
+    );
+    assert!(
+        review_command.iter().any(|token| token == "--skip-checks"),
+        "review command missing --skip-checks: {review_command:?}"
+    );
+    assert!(
+        !review_command.iter().any(|token| token == "--yes"),
+        "review command should not include --yes in review_only mode: {review_command:?}"
+    );
+
+    let merge_record = read_job_record(&repo, merge_job)?;
+    let merge_command = job_command_tokens(&merge_record);
+    assert!(
+        merge_command.iter().any(|token| token == "--keep-branch"),
+        "merge command missing --keep-branch: {merge_command:?}"
+    );
+    assert!(
+        merge_command
+            .windows(2)
+            .any(|pair| pair == ["--target", build_branch]),
+        "merge command should target the build branch: {merge_command:?}"
+    );
+
+    assert_eq!(
+        merge_record
+            .pointer("/metadata/build_pipeline")
+            .and_then(Value::as_str),
+        Some("approve-review-merge"),
+        "merge job metadata should include effective build pipeline"
+    );
+    assert_eq!(
+        merge_record
+            .pointer("/metadata/build_review_mode")
+            .and_then(Value::as_str),
+        Some("review_only"),
+        "merge job metadata should include effective review mode"
+    );
+    assert_eq!(
+        merge_record
+            .pointer("/metadata/build_keep_branch")
+            .and_then(Value::as_bool),
+        Some(true),
+        "merge job metadata should include keep_branch policy"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_rejects_invalid_step_policy_combinations() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "invalid-review.toml",
+        r#"
+steps = [
+  { text = "Invalid review mode", pipeline = "approve", review_mode = "review_only" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "invalid-review.toml",
+        "--name",
+        "invalid-review-policy",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let review_fail = run_build_execute(
+        &repo,
+        &["build", "execute", "invalid-review-policy", "--yes"],
+    )?;
+    assert!(
+        !review_fail.status.success(),
+        "execute should fail when review_mode is set on approve-only pipeline"
+    );
+    let review_fail_stderr = String::from_utf8_lossy(&review_fail.stderr);
+    assert!(
+        review_fail_stderr.contains("sets review_mode"),
+        "missing invalid review_mode diagnostic: {review_fail_stderr}"
+    );
+
+    repo.write(
+        "invalid-merge.toml",
+        r#"
+steps = [
+  { text = "Invalid merge target", pipeline = "approve-review", merge_target = "primary" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "invalid-merge.toml",
+        "--name",
+        "invalid-merge-policy",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let merge_fail = run_build_execute(
+        &repo,
+        &["build", "execute", "invalid-merge-policy", "--yes"],
+    )?;
+    assert!(
+        !merge_fail.status.success(),
+        "execute should fail when merge_target is set on non-merge pipeline"
+    );
+    let merge_fail_stderr = String::from_utf8_lossy(&merge_fail.stderr);
+    assert!(
+        merge_fail_stderr.contains("sets merge_target"),
+        "missing invalid merge_target diagnostic: {merge_fail_stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_validates_after_steps_graph() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "unknown-after.toml",
+        r#"
+steps = [
+  { text = "Known" },
+  { text = "Unknown dependency", after_steps = ["99"] },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "unknown-after.toml",
+        "--name",
+        "after-unknown",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let unknown = run_build_execute(&repo, &["build", "execute", "after-unknown", "--yes"])?;
+    assert!(
+        !unknown.status.success(),
+        "execute should fail when after_steps references unknown step key"
+    );
+    let unknown_stderr = String::from_utf8_lossy(&unknown.stderr);
+    assert!(
+        unknown_stderr.contains("unknown after_steps dependency"),
+        "missing unknown after_steps diagnostic: {unknown_stderr}"
+    );
+
+    repo.write(
+        "cycle-after.toml",
+        r#"
+steps = [
+  { text = "First", after_steps = ["02"] },
+  { text = "Second", after_steps = ["01"] },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "cycle-after.toml",
+        "--name",
+        "after-cycle",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let cycle = run_build_execute(&repo, &["build", "execute", "after-cycle", "--yes"])?;
+    assert!(
+        !cycle.status.success(),
+        "execute should fail when after_steps introduces a dependency cycle"
+    );
+    let cycle_stderr = String::from_utf8_lossy(&cycle.stderr);
+    assert!(
+        cycle_stderr.contains("dependency cycle detected"),
+        "missing cycle diagnostic: {cycle_stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_explicit_barrier_allows_independent_stages() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "explicit-barrier.toml",
+        r#"
+steps = [
+  { text = "First stage" },
+  { text = "Second stage" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "explicit-barrier.toml",
+        "--name",
+        "explicit-barrier-check",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let config_path = repo.path().join(".vizier/tmp/build-explicit.toml");
+    fs::create_dir_all(config_path.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &config_path,
+        r#"
+[build]
+stage_barrier = "explicit"
+failure_mode = "continue_independent"
+default_pipeline = "approve"
+"#,
+    )?;
+
+    let execute = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["build", "execute", "explicit-barrier-check", "--yes"])
+        .output()?;
+    assert!(
+        execute.status.success(),
+        "build execute failed: {}",
+        String::from_utf8_lossy(&execute.stderr)
+    );
+
+    let state = execution_state(&repo.repo(), "explicit-barrier-check")?;
+    let steps = state
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("execution steps missing")?;
+    let step_two = steps
+        .iter()
+        .find(|step| step.get("step_key").and_then(Value::as_str) == Some("02"))
+        .ok_or("step 02 missing")?;
+    assert_eq!(
+        step_two
+            .pointer("/policy/stage_barrier")
+            .and_then(Value::as_str),
+        Some("explicit"),
+        "stage barrier policy should be explicit"
+    );
+    assert_eq!(
+        step_two
+            .pointer("/policy/failure_mode")
+            .and_then(Value::as_str),
+        Some("continue_independent"),
+        "failure mode policy should be continue_independent"
+    );
+
+    let step_two_materialize = step_two
+        .get("materialize_job_id")
+        .and_then(Value::as_str)
+        .ok_or("step 02 materialize job missing")?;
+    let step_two_record = read_job_record(&repo, step_two_materialize)?;
+    let deps = step_two_record
+        .pointer("/schedule/dependencies")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        deps.is_empty(),
+        "explicit barrier should not add implicit prior-stage dependencies: {deps:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_resume_rejects_policy_drift_from_config_changes() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "resume-policy.toml",
+        r#"
+steps = [
+  { text = "Resume policy drift" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "resume-policy.toml",
+        "--name",
+        "resume-policy-drift",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let cfg_apply = repo.path().join(".vizier/tmp/build-resume-apply.toml");
+    fs::create_dir_all(cfg_apply.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &cfg_apply,
+        r#"
+[build]
+default_pipeline = "approve-review"
+default_review_mode = "apply_fixes"
+"#,
+    )?;
+    let first = repo
+        .vizier_cmd_background_with_config(&cfg_apply)
+        .args(["build", "execute", "resume-policy-drift", "--yes"])
+        .output()?;
+    assert!(
+        first.status.success(),
+        "initial execute failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let cfg_review_only = repo
+        .path()
+        .join(".vizier/tmp/build-resume-review-only.toml");
+    fs::write(
+        &cfg_review_only,
+        r#"
+[build]
+default_pipeline = "approve-review"
+default_review_mode = "review_only"
+"#,
+    )?;
+    let resumed = repo
+        .vizier_cmd_background_with_config(&cfg_review_only)
+        .args([
+            "build",
+            "execute",
+            "resume-policy-drift",
+            "--resume",
+            "--yes",
+        ])
+        .output()?;
+    assert!(
+        !resumed.status.success(),
+        "resume should fail when resolved policy drifts"
+    );
+    let resumed_stderr = String::from_utf8_lossy(&resumed.stderr);
+    assert!(
+        resumed_stderr.contains("execution policy mismatch"),
+        "missing policy drift diagnostic: {resumed_stderr}"
+    );
 
     Ok(())
 }

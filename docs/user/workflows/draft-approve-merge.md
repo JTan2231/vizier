@@ -13,10 +13,10 @@ vizier build --file examples/build/todo.toml --name todo-batch
 Create mode writes a build session to `build/<id>` with plan artifacts under `.vizier/implementation-plans/builds/<id>/`. To turn that session into executable plan work, run:
 
 ```bash
-vizier build execute todo-batch --pipeline approve-review --yes
+vizier build execute todo-batch --yes
 ```
 
-Execution mode queues per-step scheduler jobs that materialize canonical `draft/<slug>` plan docs, then runs `approve`/`review`/`merge` phases according to pipeline selection while preserving build stage ordering (serial/parallel semantics). Use `--resume` to continue from `execution.json` without duplicating queued/running jobs.
+Execution mode queues per-step scheduler jobs that materialize canonical `draft/<slug>` plan docs, then runs `approve`/`review`/`merge` phases according to resolved build policy. By default, pipeline/target/review behavior comes from `[build]` config and optional step-level overrides in the build file; pass `--pipeline ...` only when you need a one-off global override. Use `--resume` to continue from `execution.json` without duplicating queued/running jobs; resume rejects policy drift if the resolved per-step policy changed.
 
 For the build schema, execute options, and artifact details, see `docs/user/build.md`, `examples/build/todo.toml`, and `examples/build/todo.json`.
 

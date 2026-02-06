@@ -31,24 +31,31 @@ use crate::{jobs, plan};
 const BUILD_PLAN_ROOT: &str = ".vizier/implementation-plans/builds";
 const BUILD_EXECUTION_FILE: &str = "execution.json";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BuildFile {
     steps: Vec<BuildStep>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum BuildStep {
     Single(IntentDoc),
     Parallel(Vec<IntentDoc>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IntentDoc {
     text: Option<String>,
     file: Option<String>,
+    profile: Option<String>,
+    pipeline: Option<String>,
+    merge_target: Option<String>,
+    review_mode: Option<String>,
+    skip_checks: Option<bool>,
+    keep_branch: Option<bool>,
+    after_steps: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +163,66 @@ impl ManifestStepResult {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct StepPolicyInput {
+    profile: Option<String>,
+    pipeline: Option<BuildExecutionPipeline>,
+    merge_target: Option<config::BuildMergeTarget>,
+    review_mode: Option<BuildExecutionReviewMode>,
+    skip_checks: Option<bool>,
+    keep_branch: Option<bool>,
+    after_steps: Vec<String>,
+    explicit_pipeline: bool,
+    explicit_merge_target: bool,
+    explicit_review_mode: bool,
+    explicit_skip_checks: bool,
+    explicit_keep_branch: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedPolicyStep {
+    step_key: String,
+    policy: StepPolicyInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildStageBarrierMode {
+    Strict,
+    Explicit,
+}
+
+impl BuildStageBarrierMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildFailureModeSetting {
+    BlockDownstream,
+    ContinueIndependent,
+}
+
+impl BuildFailureModeSetting {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BlockDownstream => "block_downstream",
+            Self::ContinueIndependent => "continue_independent",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedBuildPolicies {
+    stage_barrier: BuildStageBarrierMode,
+    failure_mode: BuildFailureModeSetting,
+    cli_pipeline_override: Option<BuildExecutionPipeline>,
+    steps: BTreeMap<String, BuildExecutionStepPolicy>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum BuildExecutionPipeline {
@@ -165,6 +232,15 @@ pub(crate) enum BuildExecutionPipeline {
 }
 
 impl BuildExecutionPipeline {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "approve" => Some(Self::Approve),
+            "approve-review" | "approve_review" => Some(Self::ApproveReview),
+            "approve-review-merge" | "approve_review_merge" => Some(Self::ApproveReviewMerge),
+            _ => None,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Approve => "approve",
@@ -180,6 +256,67 @@ impl BuildExecutionPipeline {
     fn includes_merge(self) -> bool {
         matches!(self, Self::ApproveReviewMerge)
     }
+}
+
+impl From<config::BuildPipeline> for BuildExecutionPipeline {
+    fn from(value: config::BuildPipeline) -> Self {
+        match value {
+            config::BuildPipeline::Approve => Self::Approve,
+            config::BuildPipeline::ApproveReview => Self::ApproveReview,
+            config::BuildPipeline::ApproveReviewMerge => Self::ApproveReviewMerge,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BuildExecutionReviewMode {
+    ApplyFixes,
+    ReviewOnly,
+    ReviewFile,
+}
+
+impl BuildExecutionReviewMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "apply_fixes" | "apply-fixes" => Some(Self::ApplyFixes),
+            "review_only" | "review-only" => Some(Self::ReviewOnly),
+            "review_file" | "review-file" => Some(Self::ReviewFile),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::ApplyFixes => "apply_fixes",
+            Self::ReviewOnly => "review_only",
+            Self::ReviewFile => "review_file",
+        }
+    }
+}
+
+impl From<config::BuildReviewMode> for BuildExecutionReviewMode {
+    fn from(value: config::BuildReviewMode) -> Self {
+        match value {
+            config::BuildReviewMode::ApplyFixes => Self::ApplyFixes,
+            config::BuildReviewMode::ReviewOnly => Self::ReviewOnly,
+            config::BuildReviewMode::ReviewFile => Self::ReviewFile,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BuildExecutionStepPolicy {
+    pipeline: BuildExecutionPipeline,
+    target_branch: String,
+    merge_target: String,
+    review_mode: BuildExecutionReviewMode,
+    skip_checks: bool,
+    keep_branch: bool,
+    dependencies: Vec<String>,
+    profile: Option<String>,
+    stage_barrier: String,
+    failure_mode: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,7 +344,12 @@ impl BuildExecutionStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BuildExecutionState {
     build_id: String,
-    pipeline: BuildExecutionPipeline,
+    #[serde(default)]
+    pipeline_override: Option<BuildExecutionPipeline>,
+    #[serde(default)]
+    stage_barrier: Option<String>,
+    #[serde(default)]
+    failure_mode: Option<String>,
     created_at: String,
     status: BuildExecutionStatus,
     steps: Vec<BuildExecutionStep>,
@@ -220,6 +362,8 @@ struct BuildExecutionStep {
     build_plan_path: String,
     derived_slug: String,
     derived_branch: String,
+    #[serde(default)]
+    policy: Option<BuildExecutionStepPolicy>,
     materialize_job_id: Option<String>,
     approve_job_id: Option<String>,
     review_job_id: Option<String>,
@@ -228,8 +372,28 @@ struct BuildExecutionStep {
 }
 
 impl BuildExecutionStep {
-    fn terminal_job_id(&self, pipeline: BuildExecutionPipeline) -> Option<&str> {
-        match pipeline {
+    fn resolved_policy(
+        &self,
+        fallback_pipeline: BuildExecutionPipeline,
+    ) -> BuildExecutionStepPolicy {
+        self.policy
+            .clone()
+            .unwrap_or_else(|| BuildExecutionStepPolicy {
+                pipeline: fallback_pipeline,
+                target_branch: String::new(),
+                merge_target: "primary".to_string(),
+                review_mode: BuildExecutionReviewMode::ApplyFixes,
+                skip_checks: false,
+                keep_branch: false,
+                dependencies: Vec::new(),
+                profile: None,
+                stage_barrier: "strict".to_string(),
+                failure_mode: "block_downstream".to_string(),
+            })
+    }
+
+    fn terminal_job_id(&self, fallback_pipeline: BuildExecutionPipeline) -> Option<&str> {
+        match self.resolved_policy(fallback_pipeline).pipeline {
             BuildExecutionPipeline::Approve => self.approve_job_id.as_deref(),
             BuildExecutionPipeline::ApproveReview => self.review_job_id.as_deref(),
             BuildExecutionPipeline::ApproveReviewMerge => self.merge_job_id.as_deref(),
@@ -666,7 +830,7 @@ pub(crate) async fn run_build(
 
 pub(crate) async fn run_build_execute(
     build_id: String,
-    pipeline: BuildExecutionPipeline,
+    pipeline_override: Option<BuildExecutionPipeline>,
     resume: bool,
     assume_yes: bool,
     follow: bool,
@@ -679,11 +843,16 @@ pub(crate) async fn run_build_execute(
         if !std::io::stdin().is_terminal() {
             return Err("vizier build execute requires --yes in non-interactive mode".into());
         }
-        let confirmed = prompt_yes_no(&format!(
-            "Queue build execution {} with pipeline {}?",
-            build_id,
-            pipeline.label()
-        ))?;
+        let prompt = if let Some(pipeline) = pipeline_override {
+            format!(
+                "Queue build execution {} with pipeline override {}?",
+                build_id,
+                pipeline.label()
+            )
+        } else {
+            format!("Queue build execution {}?", build_id)
+        };
+        let confirmed = prompt_yes_no(&prompt)?;
         if !confirmed {
             return Err("aborted by user".into());
         }
@@ -711,6 +880,20 @@ pub(crate) async fn run_build_execute(
         }
     }
 
+    let policy_steps = load_build_policy_steps(&repo, &session)?;
+    let resolved_policies = resolve_build_policies(&session, &policy_steps, pipeline_override)?;
+    let fallback_pipeline = resolved_policies
+        .cli_pipeline_override
+        .or_else(|| {
+            session
+                .manifest
+                .steps
+                .iter()
+                .find_map(|step| resolved_policies.steps.get(&step.step_key))
+                .map(|policy| policy.pipeline)
+        })
+        .unwrap_or(BuildExecutionPipeline::Approve);
+
     let existing_state = load_execution_state(&repo_root, &session)?;
     if resume && existing_state.is_none() {
         return Err(format!(
@@ -730,18 +913,38 @@ pub(crate) async fn run_build_execute(
     let mut execution = reconcile_execution_state(
         existing_state,
         &session,
-        pipeline,
+        &resolved_policies,
         &repo_root,
         Utc::now().to_rfc3339(),
     )?;
 
     let jobs_root = jobs::ensure_jobs_root(&repo_root)?;
-    let mut stage_terminal: BTreeMap<usize, Vec<jobs::JobArtifact>> = BTreeMap::new();
+    let step_order = topological_step_order(&execution, fallback_pipeline)?;
+    let step_index = execution
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(idx, step)| (step.step_key.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+    let mut completion_artifacts: BTreeMap<String, jobs::JobArtifact> = BTreeMap::new();
     let mut queued_job_ids = Vec::new();
     let mut resumed_job_ids = Vec::new();
     let config_snapshot = background_config_snapshot(&config::get_config());
 
-    for step in &mut execution.steps {
+    for step_key in step_order {
+        let Some(step_idx) = step_index.get(&step_key).copied() else {
+            return Err(format!(
+                "internal build execution error: unknown step key {}",
+                step_key
+            )
+            .into());
+        };
+        let step = execution
+            .steps
+            .get_mut(step_idx)
+            .ok_or_else(|| format!("missing build execution step {}", step_key))?;
+        let policy = step.resolved_policy(fallback_pipeline);
+
         let plan_doc_artifact = jobs::JobArtifact::PlanDoc {
             slug: step.derived_slug.clone(),
             branch: step.derived_branch.clone(),
@@ -751,16 +954,21 @@ pub(crate) async fn run_build_execute(
             branch: step.derived_branch.clone(),
         };
 
-        let mut prior_stage_dependencies = Vec::new();
-        for (stage_idx, artifacts) in &stage_terminal {
-            if *stage_idx < step.stage_index {
-                prior_stage_dependencies.extend(artifacts.clone());
-            }
+        let mut policy_dependencies = Vec::new();
+        for dependency in &policy.dependencies {
+            let Some(artifact) = completion_artifacts.get(dependency) else {
+                return Err(format!(
+                    "build step {} depends on {} before that step has a completion artifact",
+                    step.step_key, dependency
+                )
+                .into());
+            };
+            policy_dependencies.push(artifact.clone());
         }
 
         let materialize_schedule = jobs::JobSchedule {
             after: Vec::new(),
-            dependencies: prior_stage_dependencies
+            dependencies: policy_dependencies
                 .iter()
                 .cloned()
                 .map(|artifact| jobs::JobDependency { artifact })
@@ -790,6 +998,8 @@ pub(crate) async fn run_build_execute(
             step.derived_slug.clone(),
             "--branch".to_string(),
             step.derived_branch.clone(),
+            "--target".to_string(),
+            policy.target_branch.clone(),
         ];
         let materialize_job = ensure_phase_job(
             &repo_root,
@@ -800,7 +1010,17 @@ pub(crate) async fn run_build_execute(
                 scope: Some("build_materialize".to_string()),
                 plan: Some(step.derived_slug.clone()),
                 branch: Some(step.derived_branch.clone()),
-                target: Some(session.manifest.target_branch.clone()),
+                target: Some(policy.target_branch.clone()),
+                build_pipeline: Some(policy.pipeline.label().to_string()),
+                build_target: Some(policy.target_branch.clone()),
+                build_review_mode: Some(policy.review_mode.label().to_string()),
+                build_skip_checks: Some(policy.skip_checks),
+                build_keep_branch: Some(policy.keep_branch),
+                build_dependencies: if policy.dependencies.is_empty() {
+                    None
+                } else {
+                    Some(policy.dependencies.clone())
+                },
                 ..Default::default()
             },
             materialize_schedule,
@@ -868,7 +1088,7 @@ pub(crate) async fn run_build_execute(
             "--branch".to_string(),
             step.derived_branch.clone(),
             "--target".to_string(),
-            session.manifest.target_branch.clone(),
+            policy.target_branch.clone(),
             "--yes".to_string(),
         ];
         let approve_job = ensure_phase_job(
@@ -880,7 +1100,17 @@ pub(crate) async fn run_build_execute(
                 scope: Some("approve".to_string()),
                 plan: Some(step.derived_slug.clone()),
                 branch: Some(step.derived_branch.clone()),
-                target: Some(session.manifest.target_branch.clone()),
+                target: Some(policy.target_branch.clone()),
+                build_pipeline: Some(policy.pipeline.label().to_string()),
+                build_target: Some(policy.target_branch.clone()),
+                build_review_mode: Some(policy.review_mode.label().to_string()),
+                build_skip_checks: Some(policy.skip_checks),
+                build_keep_branch: Some(policy.keep_branch),
+                build_dependencies: if policy.dependencies.is_empty() {
+                    None
+                } else {
+                    Some(policy.dependencies.clone())
+                },
                 ..Default::default()
             },
             approve_schedule,
@@ -904,7 +1134,7 @@ pub(crate) async fn run_build_execute(
 
         let mut terminal_artifact = approve_completion.clone();
 
-        if pipeline.includes_review() {
+        if policy.pipeline.includes_review() {
             let review_schedule = jobs::JobSchedule {
                 after: Vec::new(),
                 dependencies: vec![
@@ -936,15 +1166,26 @@ pub(crate) async fn run_build_execute(
                 wait_reason: None,
                 waited_on: Vec::new(),
             };
-            let review_args = vec![
+            let mut review_args = vec![
                 "review".to_string(),
                 step.derived_slug.clone(),
                 "--branch".to_string(),
                 step.derived_branch.clone(),
                 "--target".to_string(),
-                session.manifest.target_branch.clone(),
-                "--yes".to_string(),
+                policy.target_branch.clone(),
             ];
+            match policy.review_mode {
+                BuildExecutionReviewMode::ApplyFixes => review_args.push("--yes".to_string()),
+                BuildExecutionReviewMode::ReviewOnly => {
+                    review_args.push("--review-only".to_string())
+                }
+                BuildExecutionReviewMode::ReviewFile => {
+                    review_args.push("--review-file".to_string())
+                }
+            }
+            if policy.skip_checks {
+                review_args.push("--skip-checks".to_string());
+            }
             let review_job = ensure_phase_job(
                 &repo_root,
                 &jobs_root,
@@ -954,7 +1195,17 @@ pub(crate) async fn run_build_execute(
                     scope: Some("review".to_string()),
                     plan: Some(step.derived_slug.clone()),
                     branch: Some(step.derived_branch.clone()),
-                    target: Some(session.manifest.target_branch.clone()),
+                    target: Some(policy.target_branch.clone()),
+                    build_pipeline: Some(policy.pipeline.label().to_string()),
+                    build_target: Some(policy.target_branch.clone()),
+                    build_review_mode: Some(policy.review_mode.label().to_string()),
+                    build_skip_checks: Some(policy.skip_checks),
+                    build_keep_branch: Some(policy.keep_branch),
+                    build_dependencies: if policy.dependencies.is_empty() {
+                        None
+                    } else {
+                        Some(policy.dependencies.clone())
+                    },
                     ..Default::default()
                 },
                 review_schedule,
@@ -978,7 +1229,7 @@ pub(crate) async fn run_build_execute(
             terminal_artifact = review_completion.clone();
         }
 
-        if pipeline.includes_merge() {
+        if policy.pipeline.includes_merge() {
             let review_id = step
                 .review_job_id
                 .as_deref()
@@ -996,7 +1247,7 @@ pub(crate) async fn run_build_execute(
                 dependencies: merge_dependencies,
                 locks: vec![
                     jobs::JobLock {
-                        key: format!("branch:{}", session.manifest.target_branch),
+                        key: format!("branch:{}", policy.target_branch),
                         mode: jobs::LockMode::Exclusive,
                     },
                     jobs::JobLock {
@@ -1009,21 +1260,24 @@ pub(crate) async fn run_build_execute(
                     },
                 ],
                 artifacts: vec![jobs::JobArtifact::TargetBranch {
-                    name: session.manifest.target_branch.clone(),
+                    name: policy.target_branch.clone(),
                 }],
                 pinned_head: None,
                 wait_reason: None,
                 waited_on: Vec::new(),
             };
-            let merge_args = vec![
+            let mut merge_args = vec![
                 "merge".to_string(),
                 step.derived_slug.clone(),
                 "--branch".to_string(),
                 step.derived_branch.clone(),
                 "--target".to_string(),
-                session.manifest.target_branch.clone(),
+                policy.target_branch.clone(),
                 "--yes".to_string(),
             ];
+            if policy.keep_branch {
+                merge_args.push("--keep-branch".to_string());
+            }
             let merge_job = ensure_phase_job(
                 &repo_root,
                 &jobs_root,
@@ -1033,7 +1287,17 @@ pub(crate) async fn run_build_execute(
                     scope: Some("merge".to_string()),
                     plan: Some(step.derived_slug.clone()),
                     branch: Some(step.derived_branch.clone()),
-                    target: Some(session.manifest.target_branch.clone()),
+                    target: Some(policy.target_branch.clone()),
+                    build_pipeline: Some(policy.pipeline.label().to_string()),
+                    build_target: Some(policy.target_branch.clone()),
+                    build_review_mode: Some(policy.review_mode.label().to_string()),
+                    build_skip_checks: Some(policy.skip_checks),
+                    build_keep_branch: Some(policy.keep_branch),
+                    build_dependencies: if policy.dependencies.is_empty() {
+                        None
+                    } else {
+                        Some(policy.dependencies.clone())
+                    },
                     ..Default::default()
                 },
                 merge_schedule,
@@ -1057,19 +1321,16 @@ pub(crate) async fn run_build_execute(
             terminal_artifact = merge_completion;
         }
 
-        stage_terminal
-            .entry(step.stage_index)
-            .or_default()
-            .push(terminal_artifact);
+        completion_artifacts.insert(step.step_key.clone(), terminal_artifact);
     }
 
     let binary = std::env::current_exe()?;
     jobs::scheduler_tick(&repo_root, &jobs_root, &binary)
         .map_err(|err| format!("unable to advance scheduler after build execute enqueue: {err}"))?;
 
-    execution.status = derive_execution_status(&execution, pipeline, &jobs_root);
+    execution.status = derive_execution_status(&execution, fallback_pipeline, &jobs_root);
     for step in &mut execution.steps {
-        step.status = derive_step_status(step, pipeline, &jobs_root);
+        step.status = derive_step_status(step, fallback_pipeline, &jobs_root);
     }
     persist_execution_state(&repo_root, &session, &execution)?;
 
@@ -1083,7 +1344,20 @@ pub(crate) async fn run_build_execute(
         },
     ));
     rows.push(("Build".to_string(), build_id.clone()));
-    rows.push(("Pipeline".to_string(), pipeline.label().to_string()));
+    rows.push((
+        "Pipeline override".to_string(),
+        pipeline_override
+            .map(|value| value.label().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    ));
+    rows.push((
+        "Stage barrier".to_string(),
+        resolved_policies.stage_barrier.as_str().to_string(),
+    ));
+    rows.push((
+        "Failure mode".to_string(),
+        resolved_policies.failure_mode.as_str().to_string(),
+    ));
     rows.push((
         "Execution manifest".to_string(),
         to_repo_string(&session.execution_rel),
@@ -1095,7 +1369,7 @@ pub(crate) async fn run_build_execute(
     if !resumed_job_ids.is_empty() {
         rows.push(("Reused jobs".to_string(), resumed_job_ids.join(",")));
     }
-    if let Some(step_key) = first_failed_step(&execution, pipeline, &jobs_root) {
+    if let Some(step_key) = first_failed_step(&execution, fallback_pipeline, &jobs_root) {
         rows.push(("Failed step".to_string(), step_key));
     }
     append_agent_rows(&mut rows, current_verbosity());
@@ -1105,16 +1379,29 @@ pub(crate) async fn run_build_execute(
         "Step".to_string(),
         "Slug".to_string(),
         "Branch".to_string(),
+        "Pipeline".to_string(),
+        "Target".to_string(),
+        "Review mode".to_string(),
+        "Deps".to_string(),
         "Jobs".to_string(),
         "Status".to_string(),
     ]];
     for step in &execution.steps {
+        let policy = step.resolved_policy(fallback_pipeline);
         table.push(vec![
             step.step_key.clone(),
             step.derived_slug.clone(),
             step.derived_branch.clone(),
-            render_phase_jobs(step, pipeline),
-            derive_step_status(step, pipeline, &jobs_root)
+            policy.pipeline.label().to_string(),
+            policy.target_branch.clone(),
+            policy.review_mode.label().to_string(),
+            if policy.dependencies.is_empty() {
+                "none".to_string()
+            } else {
+                policy.dependencies.join(",")
+            },
+            render_phase_jobs(step, fallback_pipeline),
+            derive_step_status(step, fallback_pipeline, &jobs_root)
                 .label()
                 .to_string(),
         ]);
@@ -1144,6 +1431,7 @@ pub(crate) async fn run_build_materialize(
     step_key: String,
     slug: String,
     branch: String,
+    target: String,
     project_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let repo_root = std::fs::canonicalize(project_root)?;
@@ -1171,14 +1459,12 @@ pub(crate) async fn run_build_materialize(
     let materialized_doc = rewrite_plan_front_matter(&build_plan_text, &slug, &branch);
 
     if !branch_exists(&branch).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })? {
-        create_branch_from(&session.manifest.target_branch, &branch).map_err(
-            |err| -> Box<dyn std::error::Error> {
-                Box::from(format!(
-                    "create_branch_from({}<-{}): {}",
-                    branch, session.manifest.target_branch, err
-                ))
-            },
-        )?;
+        create_branch_from(&target, &branch).map_err(|err| -> Box<dyn std::error::Error> {
+            Box::from(format!(
+                "create_branch_from({}<-{}): {}",
+                branch, target, err
+            ))
+        })?;
     }
 
     let worktree = plan::PlanWorktree::create(&slug, &branch, "build-materialize")?;
@@ -1220,6 +1506,7 @@ pub(crate) async fn run_build_materialize(
     rows.push(("Step".to_string(), step_key));
     rows.push(("Plan".to_string(), to_repo_string(&plan_rel)));
     rows.push(("Branch".to_string(), branch));
+    rows.push(("Target".to_string(), target));
     println!("{}", format_block(rows));
 
     Ok(())
@@ -1282,10 +1569,374 @@ fn load_execution_state(
     Ok(Some(state))
 }
 
+fn load_build_policy_steps(
+    repo: &Repository,
+    session: &BuildSession,
+) -> Result<Vec<ParsedPolicyStep>, Box<dyn std::error::Error>> {
+    let input_rel = Path::new(&session.manifest.input_file.copied_path);
+    let contents = read_branch_file(repo, &session.build_branch, input_rel)?;
+    let parsed = parse_build_file_contents(&contents, input_rel)?;
+    collect_policy_steps(parsed)
+}
+
+fn resolve_build_policies(
+    session: &BuildSession,
+    policy_steps: &[ParsedPolicyStep],
+    pipeline_override: Option<BuildExecutionPipeline>,
+) -> Result<ResolvedBuildPolicies, Box<dyn std::error::Error>> {
+    let cfg = config::get_config();
+    let stage_barrier = match cfg.build.stage_barrier {
+        config::BuildStageBarrier::Strict => BuildStageBarrierMode::Strict,
+        config::BuildStageBarrier::Explicit => BuildStageBarrierMode::Explicit,
+    };
+    let failure_mode = match cfg.build.failure_mode {
+        config::BuildFailureMode::BlockDownstream => BuildFailureModeSetting::BlockDownstream,
+        config::BuildFailureMode::ContinueIndependent => {
+            BuildFailureModeSetting::ContinueIndependent
+        }
+    };
+
+    let mut input_by_key = policy_steps
+        .iter()
+        .map(|entry| (entry.step_key.clone(), entry.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut resolved = BTreeMap::new();
+
+    for step in &session.manifest.steps {
+        let input = input_by_key.remove(&step.step_key).ok_or_else(|| {
+            format!(
+                "build policy input is missing step {} from manifest",
+                step.step_key
+            )
+        })?;
+
+        let selected_profile = input
+            .policy
+            .profile
+            .clone()
+            .or(cfg.build.default_profile.clone());
+        let profile = if let Some(name) = selected_profile.as_ref() {
+            Some(cfg.build.profiles.get(name).ok_or_else(|| {
+                format!(
+                    "step {} references unknown profile `{}`",
+                    step.step_key, name
+                )
+            })?)
+        } else {
+            None
+        };
+
+        let profile_pipeline = profile.and_then(|entry| entry.pipeline).map(Into::into);
+        let profile_merge_target = profile.and_then(|entry| entry.merge_target.clone());
+        let profile_review_mode = profile.and_then(|entry| entry.review_mode).map(Into::into);
+        let profile_skip_checks = profile.and_then(|entry| entry.skip_checks);
+        let profile_keep_branch = profile.and_then(|entry| entry.keep_branch);
+
+        let pipeline = pipeline_override
+            .or(input.policy.pipeline)
+            .or(profile_pipeline)
+            .unwrap_or_else(|| cfg.build.default_pipeline.into());
+
+        let explicit_merge_target =
+            input.policy.explicit_merge_target || profile_merge_target.is_some();
+        let explicit_review_mode =
+            input.policy.explicit_review_mode || profile_review_mode.is_some();
+        let explicit_skip_checks =
+            input.policy.explicit_skip_checks || profile_skip_checks.is_some();
+        let explicit_keep_branch =
+            input.policy.explicit_keep_branch || profile_keep_branch.is_some();
+
+        if !pipeline.includes_review() {
+            if explicit_review_mode {
+                return Err(format!(
+                    "step {} sets review_mode but pipeline {} has no review phase",
+                    step.step_key,
+                    pipeline.label()
+                )
+                .into());
+            }
+            if explicit_skip_checks {
+                return Err(format!(
+                    "step {} sets skip_checks but pipeline {} has no review phase",
+                    step.step_key,
+                    pipeline.label()
+                )
+                .into());
+            }
+        }
+
+        if !pipeline.includes_merge() {
+            if explicit_merge_target {
+                return Err(format!(
+                    "step {} sets merge_target but pipeline {} has no merge phase",
+                    step.step_key,
+                    pipeline.label()
+                )
+                .into());
+            }
+            if explicit_keep_branch {
+                return Err(format!(
+                    "step {} sets keep_branch but pipeline {} has no merge phase",
+                    step.step_key,
+                    pipeline.label()
+                )
+                .into());
+            }
+        }
+
+        let merge_target = input
+            .policy
+            .merge_target
+            .clone()
+            .or(profile_merge_target)
+            .unwrap_or_else(|| cfg.build.default_merge_target.clone());
+
+        let target_branch = match &merge_target {
+            config::BuildMergeTarget::Primary => session.manifest.target_branch.clone(),
+            config::BuildMergeTarget::Build => session.build_branch.clone(),
+            config::BuildMergeTarget::Branch(name) => name.clone(),
+        };
+
+        let review_mode = input
+            .policy
+            .review_mode
+            .or(profile_review_mode)
+            .unwrap_or_else(|| cfg.build.default_review_mode.into());
+        let skip_checks = input
+            .policy
+            .skip_checks
+            .or(profile_skip_checks)
+            .unwrap_or(cfg.build.default_skip_checks);
+        let keep_branch = input
+            .policy
+            .keep_branch
+            .or(profile_keep_branch)
+            .unwrap_or(cfg.build.default_keep_draft_branch);
+
+        resolved.insert(
+            step.step_key.clone(),
+            BuildExecutionStepPolicy {
+                pipeline,
+                target_branch,
+                merge_target: merge_target.as_str().to_string(),
+                review_mode,
+                skip_checks,
+                keep_branch,
+                dependencies: Vec::new(),
+                profile: selected_profile,
+                stage_barrier: stage_barrier.as_str().to_string(),
+                failure_mode: failure_mode.as_str().to_string(),
+            },
+        );
+    }
+
+    if !input_by_key.is_empty() {
+        let extras = input_by_key.keys().cloned().collect::<Vec<_>>().join(", ");
+        return Err(format!(
+            "build policy input has steps missing from manifest: {}",
+            extras
+        )
+        .into());
+    }
+
+    let dependency_map = compile_step_dependencies(session, policy_steps, stage_barrier)?;
+    for (step_key, dependencies) in dependency_map {
+        let entry = resolved
+            .get_mut(&step_key)
+            .ok_or_else(|| format!("missing resolved policy for step {}", step_key))?;
+        entry.dependencies = dependencies;
+    }
+
+    Ok(ResolvedBuildPolicies {
+        stage_barrier,
+        failure_mode,
+        cli_pipeline_override: pipeline_override,
+        steps: resolved,
+    })
+}
+
+fn compile_step_dependencies(
+    session: &BuildSession,
+    policy_steps: &[ParsedPolicyStep],
+    stage_barrier: BuildStageBarrierMode,
+) -> Result<BTreeMap<String, Vec<String>>, Box<dyn std::error::Error>> {
+    let known_keys = session
+        .manifest
+        .steps
+        .iter()
+        .map(|step| step.step_key.clone())
+        .collect::<BTreeSet<_>>();
+    let policy_by_key = policy_steps
+        .iter()
+        .map(|step| (step.step_key.clone(), step.clone()))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut dependencies = BTreeMap::new();
+    for step in &session.manifest.steps {
+        let policy = policy_by_key
+            .get(&step.step_key)
+            .ok_or_else(|| format!("build policy missing step {}", step.step_key))?;
+        let mut step_dependencies = Vec::new();
+        if matches!(stage_barrier, BuildStageBarrierMode::Strict) {
+            for prior in &session.manifest.steps {
+                if prior.stage_index < step.stage_index {
+                    step_dependencies.push(prior.step_key.clone());
+                }
+            }
+        }
+
+        for dependency in &policy.policy.after_steps {
+            if !known_keys.contains(dependency) {
+                return Err(format!(
+                    "step {} references unknown after_steps dependency `{}`",
+                    step.step_key, dependency
+                )
+                .into());
+            }
+            step_dependencies.push(dependency.clone());
+        }
+
+        let mut deduped = Vec::new();
+        for dependency in step_dependencies {
+            if dependency == step.step_key {
+                return Err(format!("step {} cannot depend on itself", step.step_key).into());
+            }
+            if !deduped.contains(&dependency) {
+                deduped.push(dependency);
+            }
+        }
+        dependencies.insert(step.step_key.clone(), deduped);
+    }
+
+    if let Some(cycle) = dependency_cycle(&dependencies) {
+        return Err(format!(
+            "build step dependency cycle detected: {}",
+            cycle.join(" -> ")
+        )
+        .into());
+    }
+
+    Ok(dependencies)
+}
+
+fn dependency_cycle(graph: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Visited,
+    }
+
+    fn visit(
+        node: &str,
+        graph: &BTreeMap<String, Vec<String>>,
+        states: &mut BTreeMap<String, VisitState>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        states.insert(node.to_string(), VisitState::Visiting);
+        stack.push(node.to_string());
+
+        if let Some(dependencies) = graph.get(node) {
+            for dependency in dependencies {
+                if let Some(pos) = stack.iter().position(|value| value == dependency) {
+                    let mut cycle = stack[pos..].to_vec();
+                    cycle.push(dependency.clone());
+                    return Some(cycle);
+                }
+                if !matches!(states.get(dependency), Some(VisitState::Visited))
+                    && let Some(cycle) = visit(dependency, graph, states, stack)
+                {
+                    return Some(cycle);
+                }
+            }
+        }
+
+        stack.pop();
+        states.insert(node.to_string(), VisitState::Visited);
+        None
+    }
+
+    let mut states = BTreeMap::new();
+    for node in graph.keys() {
+        if matches!(states.get(node), Some(VisitState::Visited)) {
+            continue;
+        }
+        let mut stack = Vec::new();
+        if let Some(cycle) = visit(node, graph, &mut states, &mut stack) {
+            return Some(cycle);
+        }
+    }
+
+    None
+}
+
+fn topological_step_order(
+    execution: &BuildExecutionState,
+    fallback_pipeline: BuildExecutionPipeline,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Visited,
+    }
+
+    fn dfs(
+        key: &str,
+        graph: &BTreeMap<String, Vec<String>>,
+        states: &mut BTreeMap<String, VisitState>,
+        order: &mut Vec<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if matches!(states.get(key), Some(VisitState::Visited)) {
+            return Ok(());
+        }
+        if matches!(states.get(key), Some(VisitState::Visiting)) {
+            return Err(format!("cycle encountered while ordering build steps at {}", key).into());
+        }
+
+        states.insert(key.to_string(), VisitState::Visiting);
+        if let Some(dependencies) = graph.get(key) {
+            for dependency in dependencies {
+                dfs(dependency, graph, states, order)?;
+            }
+        }
+        states.insert(key.to_string(), VisitState::Visited);
+        if !order.contains(&key.to_string()) {
+            order.push(key.to_string());
+        }
+        Ok(())
+    }
+
+    let mut graph = BTreeMap::new();
+    let known = execution
+        .steps
+        .iter()
+        .map(|step| step.step_key.clone())
+        .collect::<BTreeSet<_>>();
+    for step in &execution.steps {
+        let policy = step.resolved_policy(fallback_pipeline);
+        for dependency in &policy.dependencies {
+            if !known.contains(dependency) {
+                return Err(format!(
+                    "step {} depends on missing step {}",
+                    step.step_key, dependency
+                )
+                .into());
+            }
+        }
+        graph.insert(step.step_key.clone(), policy.dependencies);
+    }
+
+    let mut states = BTreeMap::new();
+    let mut order = Vec::new();
+    for step in &execution.steps {
+        dfs(&step.step_key, &graph, &mut states, &mut order)?;
+    }
+    Ok(order)
+}
+
 fn reconcile_execution_state(
     existing: Option<BuildExecutionState>,
     session: &BuildSession,
-    pipeline: BuildExecutionPipeline,
+    resolved_policies: &ResolvedBuildPolicies,
     repo_root: &Path,
     created_at: String,
 ) -> Result<BuildExecutionState, Box<dyn std::error::Error>> {
@@ -1305,14 +1956,6 @@ fn reconcile_execution_state(
             )
             .into());
         }
-        if state.pipeline != pipeline {
-            return Err(format!(
-                "execution pipeline mismatch: existing {}, requested {}",
-                state.pipeline.label(),
-                pipeline.label()
-            )
-            .into());
-        }
 
         let mut by_key = BTreeMap::new();
         for step in state.steps {
@@ -1320,15 +1963,39 @@ fn reconcile_execution_state(
         }
 
         for manifest_step in &session.manifest.steps {
+            let policy = resolved_policies
+                .steps
+                .get(&manifest_step.step_key)
+                .ok_or_else(|| {
+                    format!(
+                        "resolved build policy missing step {}",
+                        manifest_step.step_key
+                    )
+                })?
+                .clone();
+
             if let Some(mut existing_step) = by_key.remove(&manifest_step.step_key) {
+                if let Some(previous_policy) = existing_step.policy.as_ref()
+                    && previous_policy != &policy
+                {
+                    return Err(format!(
+                        "execution policy mismatch for step {} (existing={}, requested={})",
+                        manifest_step.step_key,
+                        serde_json::to_string(previous_policy)?,
+                        serde_json::to_string(&policy)?
+                    )
+                    .into());
+                }
                 existing_step.stage_index = manifest_step.stage_index;
                 existing_step.build_plan_path = manifest_step.output_plan_path.clone();
+                existing_step.policy = Some(policy);
                 steps.push(existing_step);
                 continue;
             }
 
             let new_step = build_execution_step_from_manifest(
                 manifest_step,
+                &policy,
                 &session.build_id,
                 repo_root,
                 &mut used_slugs,
@@ -1347,15 +2014,28 @@ fn reconcile_execution_state(
 
         Ok(BuildExecutionState {
             build_id: session.build_id.clone(),
-            pipeline,
+            pipeline_override: resolved_policies.cli_pipeline_override,
+            stage_barrier: Some(resolved_policies.stage_barrier.as_str().to_string()),
+            failure_mode: Some(resolved_policies.failure_mode.as_str().to_string()),
             created_at: state.created_at,
             status: state.status,
             steps,
         })
     } else {
         for manifest_step in &session.manifest.steps {
+            let policy = resolved_policies
+                .steps
+                .get(&manifest_step.step_key)
+                .ok_or_else(|| {
+                    format!(
+                        "resolved build policy missing step {}",
+                        manifest_step.step_key
+                    )
+                })?
+                .clone();
             let new_step = build_execution_step_from_manifest(
                 manifest_step,
+                &policy,
                 &session.build_id,
                 repo_root,
                 &mut used_slugs,
@@ -1364,7 +2044,9 @@ fn reconcile_execution_state(
         }
         Ok(BuildExecutionState {
             build_id: session.build_id.clone(),
-            pipeline,
+            pipeline_override: resolved_policies.cli_pipeline_override,
+            stage_barrier: Some(resolved_policies.stage_barrier.as_str().to_string()),
+            failure_mode: Some(resolved_policies.failure_mode.as_str().to_string()),
             created_at,
             status: BuildExecutionStatus::Queued,
             steps,
@@ -1374,6 +2056,7 @@ fn reconcile_execution_state(
 
 fn build_execution_step_from_manifest(
     manifest_step: &ManifestStep,
+    policy: &BuildExecutionStepPolicy,
     build_id: &str,
     repo_root: &Path,
     used_slugs: &mut BTreeSet<String>,
@@ -1393,6 +2076,7 @@ fn build_execution_step_from_manifest(
         build_plan_path: manifest_step.output_plan_path.clone(),
         derived_slug,
         derived_branch,
+        policy: Some(policy.clone()),
         materialize_job_id: None,
         approve_job_id: None,
         review_job_id: None,
@@ -1626,6 +2310,7 @@ fn derive_execution_status(
 }
 
 fn render_phase_jobs(step: &BuildExecutionStep, pipeline: BuildExecutionPipeline) -> String {
+    let resolved = step.resolved_policy(pipeline);
     let mut parts = Vec::new();
     if let Some(job_id) = step.materialize_job_id.as_ref() {
         parts.push(format!("materialize={job_id}"));
@@ -1633,12 +2318,12 @@ fn render_phase_jobs(step: &BuildExecutionStep, pipeline: BuildExecutionPipeline
     if let Some(job_id) = step.approve_job_id.as_ref() {
         parts.push(format!("approve={job_id}"));
     }
-    if pipeline.includes_review()
+    if resolved.pipeline.includes_review()
         && let Some(job_id) = step.review_job_id.as_ref()
     {
         parts.push(format!("review={job_id}"));
     }
-    if pipeline.includes_merge()
+    if resolved.pipeline.includes_merge()
         && let Some(job_id) = step.merge_job_id.as_ref()
     {
         parts.push(format!("merge={job_id}"));
@@ -1998,6 +2683,14 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
 
 fn parse_build_file(path: &Path) -> Result<(BuildFile, String), Box<dyn std::error::Error>> {
     let contents = std::fs::read_to_string(path)?;
+    let parsed = parse_build_file_contents(&contents, path)?;
+    Ok((parsed, contents))
+}
+
+fn parse_build_file_contents(
+    contents: &str,
+    path: &Path,
+) -> Result<BuildFile, Box<dyn std::error::Error>> {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -2005,13 +2698,13 @@ fn parse_build_file(path: &Path) -> Result<(BuildFile, String), Box<dyn std::err
         .to_ascii_lowercase();
 
     let parsed = match extension.as_str() {
-        "toml" => toml::from_str(&contents).map_err(|err| {
+        "toml" => toml::from_str(contents).map_err(|err| {
             Box::<dyn std::error::Error>::from(format!(
                 "failed to parse TOML build file {}: {err}",
                 path.display()
             ))
         })?,
-        "json" => serde_json::from_str(&contents).map_err(|err| {
+        "json" => serde_json::from_str(contents).map_err(|err| {
             Box::<dyn std::error::Error>::from(format!(
                 "failed to parse JSON build file {}: {err}",
                 path.display()
@@ -2026,7 +2719,171 @@ fn parse_build_file(path: &Path) -> Result<(BuildFile, String), Box<dyn std::err
         }
     };
 
-    Ok((parsed, contents))
+    Ok(parsed)
+}
+
+fn collect_policy_steps(
+    parsed: BuildFile,
+) -> Result<Vec<ParsedPolicyStep>, Box<dyn std::error::Error>> {
+    if parsed.steps.is_empty() {
+        return Err("build file steps must be non-empty".into());
+    }
+
+    let mut policy_steps = Vec::new();
+    for (stage_idx, step) in parsed.steps.into_iter().enumerate() {
+        let stage_index = stage_idx + 1;
+        match step {
+            BuildStep::Single(intent) => {
+                let step_key = build_step_key(stage_index, None);
+                policy_steps.push(parse_policy_step(intent, step_key)?);
+            }
+            BuildStep::Parallel(intents) => {
+                if intents.is_empty() {
+                    return Err(
+                        format!("step {stage_index} parallel group must be non-empty").into(),
+                    );
+                }
+                for (intent_idx, intent) in intents.into_iter().enumerate() {
+                    let step_key = build_step_key(stage_index, Some(intent_idx + 1));
+                    policy_steps.push(parse_policy_step(intent, step_key)?);
+                }
+            }
+        }
+    }
+
+    Ok(policy_steps)
+}
+
+fn parse_policy_step(
+    intent: IntentDoc,
+    step_key: String,
+) -> Result<ParsedPolicyStep, Box<dyn std::error::Error>> {
+    let IntentDoc {
+        text,
+        file,
+        profile,
+        pipeline,
+        merge_target,
+        review_mode,
+        skip_checks,
+        keep_branch,
+        after_steps,
+    } = intent;
+
+    validate_policy_intent_source(&step_key, text.as_deref(), file.as_deref())?;
+
+    let mut policy = StepPolicyInput::default();
+
+    if let Some(profile_name) = profile {
+        let trimmed = profile_name.trim();
+        if trimmed.is_empty() {
+            return Err(format!("step {} profile must be non-empty", step_key).into());
+        }
+        policy.profile = Some(trimmed.to_string());
+    }
+
+    if let Some(raw_pipeline) = pipeline {
+        let trimmed = raw_pipeline.trim();
+        if trimmed.is_empty() {
+            return Err(format!("step {} pipeline must be non-empty", step_key).into());
+        }
+        policy.pipeline = Some(BuildExecutionPipeline::parse(trimmed).ok_or_else(|| {
+            format!(
+                "step {} has invalid pipeline `{}` (expected approve|approve-review|approve-review-merge)",
+                step_key, raw_pipeline
+            )
+        })?);
+        policy.explicit_pipeline = true;
+    }
+
+    if let Some(raw_merge_target) = merge_target {
+        let trimmed = raw_merge_target.trim();
+        if trimmed.is_empty() {
+            return Err(format!("step {} merge_target must be non-empty", step_key).into());
+        }
+        policy.merge_target = Some(config::BuildMergeTarget::parse(trimmed).ok_or_else(|| {
+            format!(
+                "step {} has invalid merge_target `{}`",
+                step_key, raw_merge_target
+            )
+        })?);
+        policy.explicit_merge_target = true;
+    }
+
+    if let Some(raw_review_mode) = review_mode {
+        let trimmed = raw_review_mode.trim();
+        if trimmed.is_empty() {
+            return Err(format!("step {} review_mode must be non-empty", step_key).into());
+        }
+        policy.review_mode = Some(BuildExecutionReviewMode::parse(trimmed).ok_or_else(|| {
+            format!(
+                "step {} has invalid review_mode `{}` (expected apply_fixes|review_only|review_file)",
+                step_key, raw_review_mode
+            )
+        })?);
+        policy.explicit_review_mode = true;
+    }
+
+    if let Some(value) = skip_checks {
+        policy.skip_checks = Some(value);
+        policy.explicit_skip_checks = true;
+    }
+
+    if let Some(value) = keep_branch {
+        policy.keep_branch = Some(value);
+        policy.explicit_keep_branch = true;
+    }
+
+    if let Some(values) = after_steps {
+        for dependency in values {
+            let trimmed = dependency.trim();
+            if trimmed.is_empty() {
+                return Err(format!("step {} has empty after_steps entry", step_key).into());
+            }
+            if !policy
+                .after_steps
+                .iter()
+                .any(|existing| existing == trimmed)
+            {
+                policy.after_steps.push(trimmed.to_string());
+            }
+        }
+    }
+
+    Ok(ParsedPolicyStep { step_key, policy })
+}
+
+fn validate_policy_intent_source(
+    step_key: &str,
+    text: Option<&str>,
+    file: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match (text, file) {
+        (Some(text), None) => {
+            if text.trim().is_empty() {
+                Err(format!("step {} intent text must be non-empty", step_key).into())
+            } else {
+                Ok(())
+            }
+        }
+        (None, Some(path)) => {
+            if path.trim().is_empty() {
+                Err(format!("step {} intent file must be non-empty", step_key).into())
+            } else {
+                Ok(())
+            }
+        }
+        (Some(_), Some(_)) => Err(format!(
+            "step {} intent must set exactly one of text or file",
+            step_key
+        )
+        .into()),
+        (None, None) => Err(format!(
+            "step {} intent must set exactly one of text or file",
+            step_key
+        )
+        .into()),
+    }
 }
 
 fn resolve_steps(

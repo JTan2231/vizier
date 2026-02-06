@@ -54,6 +54,24 @@ script = "./cicd.sh"
 auto_resolve = true
 retries = 2
 
+# Build orchestration defaults for `vizier build execute`
+[build]
+default_pipeline = "approve-review"
+default_merge_target = "primary"
+stage_barrier = "strict"
+failure_mode = "block_downstream"
+default_review_mode = "apply_fixes"
+default_skip_checks = false
+default_keep_draft_branch = false
+default_profile = "integration"
+
+[build.profiles.integration]
+pipeline = "approve-review-merge"
+merge_target = "build"
+review_mode = "review_only"
+skip_checks = true
+keep_branch = true
+
 # Commit metadata controls (defaults shown)
 [commits.meta]
 enabled = true
@@ -128,6 +146,12 @@ fields = [
   "Plan",
   "Target",
   "Branch",
+  "Build pipeline",
+  "Build target",
+  "Build review mode",
+  "Build skip checks",
+  "Build keep branch",
+  "Build dependencies",
   "Revision",
   "After",
   "Dependencies",
@@ -136,11 +160,6 @@ fields = [
   "Waited on",
   "Pinned head",
   "Artifacts",
-  "Queue",
-  "Queue entry",
-  "Queue position",
-  "Queue status",
-  "Queue blocked reason",
   "Worktree",
   "Worktree name",
   "Agent backend",

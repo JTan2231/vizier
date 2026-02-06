@@ -1,18 +1,29 @@
 {
   "steps": [
     {
-      "text": "Build a basic TODO API in Rust with create/list/complete/delete endpoints, an in-memory store, and integration tests."
+      "text": "Build a basic TODO API in Rust with create/list/complete/delete endpoints, an in-memory store, and integration tests.",
+      "pipeline": "approve-review-merge",
+      "merge_target": "build"
     },
     [
       {
-        "text": "Build a simple TODO web UI with list/add/complete interactions and clear empty/loading/error states."
+        "text": "Build a simple TODO web UI with list/add/complete interactions and clear empty/loading/error states.",
+        "profile": "integration",
+        "review_mode": "review_only"
       },
       {
-        "text": "Add CLI smoke checks and local run docs for the TODO app so contributors can validate API + UI together."
+        "text": "Add CLI smoke checks and local run docs for the TODO app so contributors can validate API + UI together.",
+        "pipeline": "approve"
       }
     ],
     {
-      "text": "Finalize TODO app integration details, polish docs, and capture release-readiness checks before merge."
+      "text": "Finalize TODO app integration details, polish docs, and capture release-readiness checks before merge.",
+      "pipeline": "approve-review-merge",
+      "merge_target": "primary",
+      "after_steps": [
+        "02a",
+        "02b"
+      ]
     }
   ]
 }

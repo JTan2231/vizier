@@ -814,7 +814,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 match command {
                     Some(BuildActionCmd::Execute(exec)) => {
-                        let pipeline = match exec.pipeline {
+                        let pipeline = exec.pipeline.map(|value| match value {
                             BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
                             BuildPipelineArg::ApproveReview => {
                                 BuildExecutionPipeline::ApproveReview
@@ -822,7 +822,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             BuildPipelineArg::ApproveReviewMerge => {
                                 BuildExecutionPipeline::ApproveReviewMerge
                             }
-                        };
+                        });
                         run_build_execute(
                             exec.build_id,
                             pipeline,
@@ -839,6 +839,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             materialize.step_key,
                             materialize.slug,
                             materialize.branch,
+                            materialize.target,
                             &project_root,
                         )
                         .await

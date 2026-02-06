@@ -44,6 +44,22 @@ impl Default for MergeConfig {
     }
 }
 
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            default_pipeline: BuildPipeline::Approve,
+            default_merge_target: BuildMergeTarget::Primary,
+            stage_barrier: BuildStageBarrier::Strict,
+            failure_mode: BuildFailureMode::BlockDownstream,
+            default_review_mode: BuildReviewMode::ApplyFixes,
+            default_skip_checks: false,
+            default_keep_draft_branch: false,
+            default_profile: None,
+            profiles: HashMap::new(),
+        }
+    }
+}
+
 impl Default for CommitMetaLabels {
     fn default() -> Self {
         Self {
@@ -177,6 +193,12 @@ impl Default for DisplayJobsShowConfig {
                 "Plan".to_string(),
                 "Target".to_string(),
                 "Branch".to_string(),
+                "Build pipeline".to_string(),
+                "Build target".to_string(),
+                "Build review mode".to_string(),
+                "Build skip checks".to_string(),
+                "Build keep branch".to_string(),
+                "Build dependencies".to_string(),
                 "Revision".to_string(),
                 "After".to_string(),
                 "Dependencies".to_string(),
@@ -228,6 +250,7 @@ impl Default for Config {
             agent_selector: selector.clone(),
             backend: backend_kind_for_selector(&selector),
             agent_runtime: AgentRuntimeOptions::default(),
+            build: BuildConfig::default(),
             approve: ApproveConfig::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),

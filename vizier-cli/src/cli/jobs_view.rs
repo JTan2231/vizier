@@ -362,6 +362,24 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::Plan => metadata.and_then(|meta| meta.plan.clone()),
         JobsShowField::Target => metadata.and_then(|meta| meta.target.clone()),
         JobsShowField::Branch => metadata.and_then(|meta| meta.branch.clone()),
+        JobsShowField::BuildPipeline => metadata.and_then(|meta| meta.build_pipeline.clone()),
+        JobsShowField::BuildTarget => metadata.and_then(|meta| meta.build_target.clone()),
+        JobsShowField::BuildReviewMode => metadata.and_then(|meta| meta.build_review_mode.clone()),
+        JobsShowField::BuildSkipChecks => {
+            metadata.and_then(|meta| meta.build_skip_checks.map(|value| value.to_string()))
+        }
+        JobsShowField::BuildKeepBranch => {
+            metadata.and_then(|meta| meta.build_keep_branch.map(|value| value.to_string()))
+        }
+        JobsShowField::BuildDependencies => metadata.and_then(|meta| {
+            meta.build_dependencies.as_ref().map(|values| {
+                if values.is_empty() {
+                    "none".to_string()
+                } else {
+                    values.join(", ")
+                }
+            })
+        }),
         JobsShowField::Revision => metadata.and_then(|meta| meta.revision.clone()),
         JobsShowField::After => schedule.map(|sched| format_after_dependencies(&sched.after)),
         JobsShowField::Dependencies => schedule.map(|sched| {

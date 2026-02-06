@@ -469,6 +469,109 @@ auto_resolve = true
     }
 
     #[test]
+    fn test_build_config_from_toml_with_profiles() {
+        let toml = r#"
+[build]
+default_pipeline = "approve-review"
+default_merge_target = "release/main"
+stage_barrier = "explicit"
+failure_mode = "continue_independent"
+default_review_mode = "review_only"
+default_skip_checks = true
+default_keep_draft_branch = true
+default_profile = "integration"
+
+[build.profiles.integration]
+pipeline = "approve-review-merge"
+merge_target = "build"
+review_mode = "apply_fixes"
+skip_checks = false
+keep_branch = true
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse build config");
+
+        assert_eq!(cfg.build.default_pipeline, BuildPipeline::ApproveReview);
+        assert_eq!(
+            cfg.build.default_merge_target,
+            BuildMergeTarget::Branch("release/main".to_string())
+        );
+        assert_eq!(cfg.build.stage_barrier, BuildStageBarrier::Explicit);
+        assert_eq!(
+            cfg.build.failure_mode,
+            BuildFailureMode::ContinueIndependent
+        );
+        assert_eq!(cfg.build.default_review_mode, BuildReviewMode::ReviewOnly);
+        assert!(cfg.build.default_skip_checks);
+        assert!(cfg.build.default_keep_draft_branch);
+        assert_eq!(cfg.build.default_profile.as_deref(), Some("integration"));
+
+        let profile = cfg
+            .build
+            .profiles
+            .get("integration")
+            .expect("integration build profile");
+        assert_eq!(profile.pipeline, Some(BuildPipeline::ApproveReviewMerge));
+        assert_eq!(profile.merge_target, Some(BuildMergeTarget::Build));
+        assert_eq!(profile.review_mode, Some(BuildReviewMode::ApplyFixes));
+        assert_eq!(profile.skip_checks, Some(false));
+        assert_eq!(profile.keep_branch, Some(true));
+    }
+
+    #[test]
+    fn test_build_config_from_json_aliases() {
+        let json = r#"
+{
+  "build": {
+    "default-pipeline": "approve-review-merge",
+    "default-merge-target": "primary",
+    "stage-barrier": "strict",
+    "failure-mode": "block_downstream",
+    "default-review-mode": "review-file",
+    "default-skip-checks": "false",
+    "default-keep-draft-branch": "false",
+    "default-profile": "qa",
+    "profiles": {
+      "qa": {
+        "pipeline": "approve-review",
+        "merge-target": "release/qa",
+        "review-mode": "review_only",
+        "skip-checks": "true",
+        "keep-branch": "false"
+      }
+    }
+  }
+}
+"#;
+
+        let file = write_json_file(json);
+        let cfg = load_config_from_json(file.path().to_path_buf()).expect("parse build config");
+
+        assert_eq!(
+            cfg.build.default_pipeline,
+            BuildPipeline::ApproveReviewMerge
+        );
+        assert_eq!(cfg.build.default_merge_target, BuildMergeTarget::Primary);
+        assert_eq!(cfg.build.stage_barrier, BuildStageBarrier::Strict);
+        assert_eq!(cfg.build.failure_mode, BuildFailureMode::BlockDownstream);
+        assert_eq!(cfg.build.default_review_mode, BuildReviewMode::ReviewFile);
+        assert!(!cfg.build.default_skip_checks);
+        assert!(!cfg.build.default_keep_draft_branch);
+        assert_eq!(cfg.build.default_profile.as_deref(), Some("qa"));
+
+        let profile = cfg.build.profiles.get("qa").expect("qa build profile");
+        assert_eq!(profile.pipeline, Some(BuildPipeline::ApproveReview));
+        assert_eq!(
+            profile.merge_target,
+            Some(BuildMergeTarget::Branch("release/qa".to_string()))
+        );
+        assert_eq!(profile.review_mode, Some(BuildReviewMode::ReviewOnly));
+        assert_eq!(profile.skip_checks, Some(true));
+        assert_eq!(profile.keep_branch, Some(false));
+    }
+
+    #[test]
     fn layered_config_merges_global_and_repo_overrides() {
         let temp_dir = tempdir().expect("create temp dir");
         let global_path = temp_dir.path().join("global.toml");
@@ -490,6 +593,22 @@ auto_resolve = false
 
 [review.checks]
 commands = ["echo global"]
+
+[build]
+default_pipeline = "approve-review"
+default_merge_target = "release/global"
+default_review_mode = "review_only"
+default_skip_checks = false
+default_keep_draft_branch = false
+stage_barrier = "strict"
+failure_mode = "block_downstream"
+
+[build.profiles.release]
+pipeline = "approve-review-merge"
+merge_target = "primary"
+review_mode = "apply_fixes"
+skip_checks = false
+keep_branch = false
 "#,
         )
         .expect("write global config");
@@ -509,6 +628,14 @@ auto_resolve = true
 
 [merge.conflicts]
 auto_resolve = true
+
+[build]
+default_skip_checks = true
+default_keep_draft_branch = true
+default_profile = "release"
+
+[build.profiles.release]
+keep_branch = true
 "#,
         )
         .expect("write repo config");
@@ -553,6 +680,44 @@ auto_resolve = true
             cfg.review.checks.commands,
             vec!["echo global"],
             "global review checks should populate when repo config omits them"
+        );
+        assert_eq!(
+            cfg.build.default_pipeline,
+            BuildPipeline::ApproveReview,
+            "global build pipeline should persist when repo omits it"
+        );
+        assert_eq!(
+            cfg.build.default_merge_target,
+            BuildMergeTarget::Branch("release/global".to_string()),
+            "global build merge target should persist when repo omits it"
+        );
+        assert!(
+            cfg.build.default_skip_checks,
+            "repo build default_skip_checks should override global value"
+        );
+        assert!(
+            cfg.build.default_keep_draft_branch,
+            "repo build keep-branch default should override global value"
+        );
+        assert_eq!(
+            cfg.build.default_profile.as_deref(),
+            Some("release"),
+            "repo build default_profile should apply"
+        );
+        let release_profile = cfg
+            .build
+            .profiles
+            .get("release")
+            .expect("merged release profile should exist");
+        assert_eq!(
+            release_profile.pipeline,
+            Some(BuildPipeline::ApproveReviewMerge),
+            "global profile pipeline should persist"
+        );
+        assert_eq!(
+            release_profile.keep_branch,
+            Some(true),
+            "repo profile field should override global profile field"
         );
     }
 

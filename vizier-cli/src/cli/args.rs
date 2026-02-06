@@ -265,6 +265,12 @@ pub(crate) enum JobsShowField {
     Plan,
     Target,
     Branch,
+    BuildPipeline,
+    BuildTarget,
+    BuildReviewMode,
+    BuildSkipChecks,
+    BuildKeepBranch,
+    BuildDependencies,
     Revision,
     After,
     Dependencies,
@@ -302,6 +308,12 @@ impl JobsShowField {
             "plan" => Some(Self::Plan),
             "target" => Some(Self::Target),
             "branch" => Some(Self::Branch),
+            "build pipeline" => Some(Self::BuildPipeline),
+            "build target" => Some(Self::BuildTarget),
+            "build review mode" => Some(Self::BuildReviewMode),
+            "build skip checks" => Some(Self::BuildSkipChecks),
+            "build keep branch" => Some(Self::BuildKeepBranch),
+            "build dependencies" => Some(Self::BuildDependencies),
             "revision" => Some(Self::Revision),
             "after" => Some(Self::After),
             "dependencies" => Some(Self::Dependencies),
@@ -340,6 +352,12 @@ impl JobsShowField {
             Self::Plan => "Plan",
             Self::Target => "Target",
             Self::Branch => "Branch",
+            Self::BuildPipeline => "Build pipeline",
+            Self::BuildTarget => "Build target",
+            Self::BuildReviewMode => "Build review mode",
+            Self::BuildSkipChecks => "Build skip checks",
+            Self::BuildKeepBranch => "Build keep branch",
+            Self::BuildDependencies => "Build dependencies",
             Self::Revision => "Revision",
             Self::After => "After",
             Self::Dependencies => "Dependencies",
@@ -377,6 +395,12 @@ impl JobsShowField {
             Self::Plan => "plan",
             Self::Target => "target",
             Self::Branch => "branch",
+            Self::BuildPipeline => "build_pipeline",
+            Self::BuildTarget => "build_target",
+            Self::BuildReviewMode => "build_review_mode",
+            Self::BuildSkipChecks => "build_skip_checks",
+            Self::BuildKeepBranch => "build_keep_branch",
+            Self::BuildDependencies => "build_dependencies",
             Self::Revision => "revision",
             Self::After => "after",
             Self::Dependencies => "dependencies",
@@ -562,9 +586,9 @@ pub(crate) struct BuildExecuteCmd {
     #[arg(value_name = "BUILD")]
     pub(crate) build_id: String,
 
-    /// Phase pipeline to queue for each step
-    #[arg(long = "pipeline", value_enum, default_value_t = BuildPipelineArg::Approve)]
-    pub(crate) pipeline: BuildPipelineArg,
+    /// Override the default phase pipeline for each step
+    #[arg(long = "pipeline", value_enum)]
+    pub(crate) pipeline: Option<BuildPipelineArg>,
 
     /// Resume from execution.json by enqueueing only missing/non-terminal phases
     #[arg(long = "resume", action = ArgAction::SetTrue)]
@@ -592,6 +616,10 @@ pub(crate) struct BuildMaterializeCmd {
     /// Draft branch to write
     #[arg(long = "branch", value_name = "BRANCH")]
     pub(crate) branch: String,
+
+    /// Branch to use when creating the draft branch base
+    #[arg(long = "target", value_name = "BRANCH")]
+    pub(crate) target: String,
 }
 
 #[derive(ClapArgs, Debug)]

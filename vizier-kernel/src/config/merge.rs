@@ -41,6 +41,66 @@ impl MergeConfig {
     }
 }
 
+impl BuildProfileConfig {
+    fn apply_layer(&mut self, layer: &BuildProfileLayer) {
+        if let Some(pipeline) = layer.pipeline {
+            self.pipeline = Some(pipeline);
+        }
+        if let Some(target) = layer.merge_target.as_ref() {
+            self.merge_target = Some(target.clone());
+        }
+        if let Some(mode) = layer.review_mode {
+            self.review_mode = Some(mode);
+        }
+        if let Some(skip_checks) = layer.skip_checks {
+            self.skip_checks = Some(skip_checks);
+        }
+        if let Some(keep_branch) = layer.keep_branch {
+            self.keep_branch = Some(keep_branch);
+        }
+    }
+}
+
+impl BuildConfig {
+    fn apply_layer(&mut self, layer: &BuildLayer) {
+        if let Some(pipeline) = layer.default_pipeline {
+            self.default_pipeline = pipeline;
+        }
+        if let Some(target) = layer.default_merge_target.as_ref() {
+            self.default_merge_target = target.clone();
+        }
+        if let Some(stage_barrier) = layer.stage_barrier {
+            self.stage_barrier = stage_barrier;
+        }
+        if let Some(failure_mode) = layer.failure_mode {
+            self.failure_mode = failure_mode;
+        }
+        if let Some(review_mode) = layer.default_review_mode {
+            self.default_review_mode = review_mode;
+        }
+        if let Some(skip_checks) = layer.default_skip_checks {
+            self.default_skip_checks = skip_checks;
+        }
+        if let Some(keep_branch) = layer.default_keep_draft_branch {
+            self.default_keep_draft_branch = keep_branch;
+        }
+        if let Some(profile) = layer.default_profile.as_ref() {
+            self.default_profile = Some(profile.clone());
+        }
+
+        for (name, profile_layer) in &layer.profiles {
+            self.profiles
+                .entry(name.clone())
+                .and_modify(|profile| profile.apply_layer(profile_layer))
+                .or_insert_with(|| {
+                    let mut profile = BuildProfileConfig::default();
+                    profile.apply_layer(profile_layer);
+                    profile
+                });
+        }
+    }
+}
+
 impl CommitMetaLabels {
     fn apply_layer(&mut self, layer: &CommitMetaLabelsLayer) {
         if let Some(value) = layer.session_id.as_ref() {
@@ -281,6 +341,7 @@ impl Config {
             self.agent_runtime.apply_override(runtime);
         }
 
+        self.build.apply_layer(&layer.build);
         self.approve.apply_layer(&layer.approve);
 
         if let Some(commands) = layer.review.checks.as_ref() {

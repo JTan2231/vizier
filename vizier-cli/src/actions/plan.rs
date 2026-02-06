@@ -12,6 +12,7 @@ struct ConfigReport {
     agent: String,
     no_session: bool,
     workflow: WorkflowReport,
+    build: BuildReport,
     approve: ApproveReport,
     merge: MergeReport,
     review: ReviewReport,
@@ -75,6 +76,28 @@ struct WorkflowReport {
 struct ReviewReport {
     checks: Vec<String>,
     cicd_gate: MergeGateReport,
+}
+
+#[derive(Debug, Serialize)]
+struct BuildReport {
+    default_pipeline: String,
+    default_merge_target: String,
+    stage_barrier: String,
+    failure_mode: String,
+    default_review_mode: String,
+    default_skip_checks: bool,
+    default_keep_draft_branch: bool,
+    default_profile: Option<String>,
+    profiles: BTreeMap<String, BuildProfileReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct BuildProfileReport {
+    pipeline: Option<String>,
+    merge_target: Option<String>,
+    review_mode: Option<String>,
+    skip_checks: Option<bool>,
+    keep_branch: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +171,59 @@ fn format_approve_rows(report: &ApproveReport) -> Vec<(String, String)> {
     ]
 }
 
+fn merge_target_label(target: &config::BuildMergeTarget) -> String {
+    target.as_str().to_string()
+}
+
+fn review_mode_label(mode: config::BuildReviewMode) -> &'static str {
+    mode.as_str()
+}
+
+fn pipeline_label(pipeline: config::BuildPipeline) -> &'static str {
+    pipeline.as_str()
+}
+
+fn profile_value_or_inherit(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "inherit".to_string())
+}
+
+fn bool_or_inherit(value: Option<bool>) -> String {
+    value
+        .map(|inner| inner.to_string())
+        .unwrap_or_else(|| "inherit".to_string())
+}
+
+fn format_build_rows(report: &BuildReport) -> Vec<(String, String)> {
+    vec![
+        (
+            "Default pipeline".to_string(),
+            report.default_pipeline.clone(),
+        ),
+        (
+            "Default merge target".to_string(),
+            report.default_merge_target.clone(),
+        ),
+        ("Stage barrier".to_string(), report.stage_barrier.clone()),
+        ("Failure mode".to_string(), report.failure_mode.clone()),
+        (
+            "Default review mode".to_string(),
+            report.default_review_mode.clone(),
+        ),
+        (
+            "Default skip checks".to_string(),
+            report.default_skip_checks.to_string(),
+        ),
+        (
+            "Default keep draft branch".to_string(),
+            report.default_keep_draft_branch.to_string(),
+        ),
+        (
+            "Default profile".to_string(),
+            value_or_unset(report.default_profile.clone(), "unset"),
+        ),
+    ]
+}
+
 fn build_config_report(
     cfg: &config::Config,
     cli_override: Option<&config::AgentOverrides>,
@@ -161,6 +237,24 @@ fn build_config_report(
         scopes.insert(scope.as_str().to_string(), scope_report(&agent));
     }
 
+    let mut build_profiles = BTreeMap::new();
+    for (name, profile) in &cfg.build.profiles {
+        build_profiles.insert(
+            name.clone(),
+            BuildProfileReport {
+                pipeline: profile
+                    .pipeline
+                    .map(|value| pipeline_label(value).to_string()),
+                merge_target: profile.merge_target.as_ref().map(merge_target_label),
+                review_mode: profile
+                    .review_mode
+                    .map(|value| review_mode_label(value).to_string()),
+                skip_checks: profile.skip_checks,
+                keep_branch: profile.keep_branch,
+            },
+        );
+    }
+
     Ok(ConfigReport {
         agent: cfg.agent_selector.clone(),
         no_session: cfg.no_session,
@@ -170,6 +264,17 @@ fn build_config_report(
                 enabled: cfg.workflow.background.enabled,
                 quiet: cfg.workflow.background.quiet,
             },
+        },
+        build: BuildReport {
+            default_pipeline: pipeline_label(cfg.build.default_pipeline).to_string(),
+            default_merge_target: merge_target_label(&cfg.build.default_merge_target),
+            stage_barrier: cfg.build.stage_barrier.as_str().to_string(),
+            failure_mode: cfg.build.failure_mode.as_str().to_string(),
+            default_review_mode: review_mode_label(cfg.build.default_review_mode).to_string(),
+            default_skip_checks: cfg.build.default_skip_checks,
+            default_keep_draft_branch: cfg.build.default_keep_draft_branch,
+            default_profile: cfg.build.default_profile.clone(),
+            profiles: build_profiles,
         },
         approve: ApproveReport {
             stop_condition: ApproveStopConditionReport {
@@ -399,6 +504,50 @@ fn print_config_report(report: &ConfigReport) {
         for (scope, view) in report.scopes.iter() {
             println!("  {scope}:");
             println!("{}", format_label_value_block(&format_scope_rows(view), 4));
+        }
+    }
+
+    let build_block = format_label_value_block(&format_build_rows(&report.build), 2);
+    if !build_block.is_empty() {
+        if printed {
+            println!();
+        }
+        println!("Build:");
+        println!("{build_block}");
+        printed = true;
+    }
+
+    if !report.build.profiles.is_empty() {
+        if printed {
+            println!();
+        }
+        println!("Build profiles:");
+        for (name, profile) in &report.build.profiles {
+            let rows = vec![
+                ("Profile".to_string(), name.clone()),
+                (
+                    "Pipeline".to_string(),
+                    profile_value_or_inherit(profile.pipeline.clone()),
+                ),
+                (
+                    "Merge target".to_string(),
+                    profile_value_or_inherit(profile.merge_target.clone()),
+                ),
+                (
+                    "Review mode".to_string(),
+                    profile_value_or_inherit(profile.review_mode.clone()),
+                ),
+                (
+                    "Skip checks".to_string(),
+                    bool_or_inherit(profile.skip_checks),
+                ),
+                (
+                    "Keep branch".to_string(),
+                    bool_or_inherit(profile.keep_branch),
+                ),
+            ];
+            println!("{}", format_label_value_block(&rows, 2));
+            println!();
         }
     }
 }
