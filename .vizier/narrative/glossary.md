@@ -36,6 +36,7 @@
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches (for example, docs `refactor.md`/`removing-wire.md` while branches are `draft/after`/`draft/retry`), which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
 - **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
+- **Pinned-head mismatch timing window**: In background ask tests, the interval between a job entering `running` and applying its result where an out-of-band commit should trigger a pinned-head mismatch failure; fixtures now keep that window wider to reduce CI load flakes.
 - **Prompt-config matrix**: `docs/user/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers. AGENTS.md/README currently mention `docs/prompt-config-matrix.md` as a root alias, so treat `docs/user/prompt-config-matrix.md` as canonical until aliases are reconciled.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
 - **Repo boundary**: Operational constraint for all agent work: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
