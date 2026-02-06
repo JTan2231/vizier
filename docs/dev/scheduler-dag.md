@@ -2,8 +2,9 @@
 
 ## Scope
 The scheduler runs all assistant-backed commands as background jobs. Each job is a node
-in a DAG; edges are expressed as artifact dependencies. The scheduler decides when a
-job is eligible to run, records wait reasons, and spawns the job process.
+in a DAG; edges are expressed as explicit job dependencies (`after`) and artifact
+dependencies. The scheduler decides when a job is eligible to run, records wait
+reasons, and spawns the job process.
 
 `vizier build execute` also uses scheduler jobs for build-session pipelines:
 - internal `build_materialize` jobs materialize draft plan docs/branches
@@ -19,8 +20,8 @@ job is eligible to run, records wait reasons, and spawns the job process.
 - **Scheduler core** lives in `vizier-cli/src/jobs.rs` (`scheduler_tick` and helpers).
 - **CLI orchestration** enqueues jobs and advances the scheduler (see
   `vizier-cli/src/cli/dispatch.rs` and `vizier-cli/src/cli/scheduler.rs`).
-- **Schedule metadata** is stored per job: `dependencies`, `locks`, `artifacts`,
-  `pinned_head`, `wait_reason`, and `waited_on`.
+- **Schedule metadata** is stored per job: `after`, `dependencies`, `locks`,
+  `artifacts`, `pinned_head`, `wait_reason`, and `waited_on`.
 - **Scheduler lock** lives at `.vizier/jobs/scheduler.lock` and serializes scheduler
   ticks.
 
@@ -33,12 +34,30 @@ Terminal jobs are never re-run by the scheduler. `blocked_by_dependency` indicat
 dependency can no longer be satisfied (see below).
 
 ## Gate order
-1) Dependencies  
-2) Pinned head  
-3) Locks  
-4) Spawn
+1) `after` dependencies  
+2) Artifact dependencies  
+3) Pinned head  
+4) Locks  
+5) Spawn
 
-## Dependency resolution
+## Explicit `after` dependency resolution
+`after` dependencies are explicit job-id constraints (`--after <job-id>`) and are
+checked before artifact dependencies.
+
+Policy today:
+- `success` (default and only policy): predecessor must finish with `succeeded`.
+
+Resolution:
+- Missing predecessor record: block with `missing job dependency <job-id>`.
+- Active predecessor (`queued` / `waiting_on_deps` / `waiting_on_locks` / `running`):
+  wait with `waiting_on_deps` and detail `waiting on job <job-id>`.
+- `succeeded`: dependency satisfied.
+- Terminal non-success (`failed` / `cancelled` / `blocked_by_dependency`): block with
+  `dependency failed for job <job-id> (<status>)`.
+- Invalid/unreadable predecessor data: block with
+  `scheduler data error for job dependency <job-id>: <error>`.
+
+## Artifact dependency resolution
 Dependencies are checked in order. For each dependency:
 - If the artifact already exists, the dependency is satisfied regardless of producer
   status.
@@ -89,6 +108,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 
 ## Observability (jobs list/show)
 Job list/show output exposes scheduler fields so operators can inspect state:
+- `after`
 - `dependencies`
 - `locks`
 - `wait` (wait reason)
@@ -111,6 +131,7 @@ Behavior:
   `<job-id> <status> [scope/plan/target] [wait: ...] [locks: ...] [pinned: ...]`.
 - Dependencies render as `artifact -> job` edges; artifact leaves show `[present]`
   or `[missing]` when no producer exists.
+- Explicit `after` edges render as `after:success -> <job-id> <status>`.
 - `--all` includes succeeded/failed/cancelled jobs (default shows active +
   blocked_by_dependency).
 - `--job` focuses on a single job and the producers/consumers around it.
@@ -123,6 +144,7 @@ JSON output (`--format json` or global `--json`) returns an adjacency list:
     { "id": "job-24", "status": "queued", "command": "vizier ask foo", "wait": "missing plan_doc:foo" }
   ],
   "edges": [
+    { "from": "job-24", "to": "job-17", "after": { "policy": "success" } },
     { "from": "job-24", "to": "job-17", "artifact": "plan_doc:foo (draft/foo)" },
     { "from": "job-24", "to": "artifact:plan_branch:foo (draft/foo)", "artifact": "plan_branch:foo (draft/foo)", "state": "present" }
   ]
@@ -132,3 +154,7 @@ JSON output (`--format json` or global `--json`) returns an adjacency list:
 Empty state:
 - If no matching jobs: stdout prints `Outcome: No scheduled jobs`.
 - JSON format returns `{ "nodes": [], "edges": [] }`.
+
+## GC safety
+`vizier jobs gc` skips terminal records that are still referenced by any non-terminal
+job’s `schedule.after` list, so cleanup cannot invalidate active `after` dependencies.

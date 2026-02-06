@@ -759,6 +759,7 @@ pub(crate) async fn run_build_execute(
         }
 
         let materialize_schedule = jobs::JobSchedule {
+            after: Vec::new(),
             dependencies: prior_stage_dependencies
                 .iter()
                 .cloned()
@@ -822,6 +823,7 @@ pub(crate) async fn run_build_execute(
                 schedule.artifacts = materialize_artifacts.clone();
             } else {
                 record.schedule = Some(jobs::JobSchedule {
+                    after: Vec::new(),
                     dependencies: Vec::new(),
                     locks: Vec::new(),
                     artifacts: materialize_artifacts.clone(),
@@ -833,6 +835,7 @@ pub(crate) async fn run_build_execute(
         })?;
 
         let approve_schedule = jobs::JobSchedule {
+            after: Vec::new(),
             dependencies: vec![
                 jobs::JobDependency {
                     artifact: materialize_completion.clone(),
@@ -903,6 +906,7 @@ pub(crate) async fn run_build_execute(
 
         if pipeline.includes_review() {
             let review_schedule = jobs::JobSchedule {
+                after: Vec::new(),
                 dependencies: vec![
                     jobs::JobDependency {
                         artifact: approve_completion.clone(),
@@ -988,6 +992,7 @@ pub(crate) async fn run_build_execute(
                 },
             ];
             let merge_schedule = jobs::JobSchedule {
+                after: Vec::new(),
                 dependencies: merge_dependencies,
                 locks: vec![
                     jobs::JobLock {

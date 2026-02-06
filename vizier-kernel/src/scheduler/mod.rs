@@ -31,6 +31,25 @@ pub enum JobArtifact {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AfterPolicy {
+    Success,
+}
+
+impl Default for AfterPolicy {
+    fn default() -> Self {
+        Self::Success
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobAfterDependency {
+    pub job_id: String,
+    #[serde(default)]
+    pub policy: AfterPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum LockMode {
     Shared,
     Exclusive,

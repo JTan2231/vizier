@@ -52,6 +52,7 @@ Update — Conductor checkpoints and Outcome breadcrumbs
 - Cross: Architecture doc gate, Outcome component, Agent backends.
 
 Update (2025-11-30): Background execution now records richer audit trails for detached runs. `--background` inherits `[workflow.background]` defaults (enable/quiet), forces non-interactive IO (`--no-ansi/--no-pager`), and writes job records with config snapshot, scope/target/plan metadata, agent backend/exit code, and session/outcome paths under `.vizier/jobs/<id>/{job.json,outcome.json}`. `vizier jobs` gained `status`, `tail`, `attach`, `cancel`, and `gc` so operators can reattach to logs or clean stale jobs, but conductor-style checkpoints/resume tokens for the broader workflow remain open.
+Update (2026-02-06): Build orchestration paths now keep scheduler metadata schema-complete by initializing `schedule.after` for build-execute materialize/approve/review/merge jobs (empty by default when no predecessor job IDs are configured), and integration coverage now asserts the serialized field is present.
 
 
 ---

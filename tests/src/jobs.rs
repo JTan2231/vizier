@@ -767,6 +767,70 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
 }
 
 #[test]
+fn test_jobs_schedule_includes_after_edges() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    write_job_record(
+        &repo,
+        "job-predecessor",
+        schedule_record(
+            "job-predecessor",
+            "succeeded",
+            "2026-02-01T00:00:00Z",
+            json!({}),
+        ),
+    )?;
+    write_job_record(
+        &repo,
+        "job-dependent",
+        schedule_record(
+            "job-dependent",
+            "queued",
+            "2026-02-01T01:00:00Z",
+            json!({
+                "after": [
+                    { "job_id": "job-predecessor", "policy": "success" }
+                ]
+            }),
+        ),
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "schedule"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("after:success -> job-predecessor succeeded"),
+        "expected after edge in DAG output:\n{stdout}"
+    );
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--format", "json"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout)?;
+    let edges = payload
+        .get("edges")
+        .and_then(Value::as_array)
+        .ok_or("expected edges array")?;
+    assert!(
+        edges.iter().any(|edge| {
+            edge.get("from") == Some(&Value::String("job-dependent".to_string()))
+                && edge.get("to") == Some(&Value::String("job-predecessor".to_string()))
+                && edge.get("after").and_then(|after| after.get("policy"))
+                    == Some(&Value::String("success".to_string()))
+        }),
+        "expected after edge in JSON output: {payload}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_jobs_schedule_filters_terminal_without_all() -> TestResult {
     let repo = IntegrationRepo::new()?;
     write_job_record_simple(
@@ -1143,6 +1207,106 @@ fn test_jobs_list_format_json() -> TestResult {
         job.get("command").and_then(Value::as_str),
         Some("vizier ask json-list"),
         "command mismatch: {job}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_list_and_show_json_include_after_field_when_configured() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-after-field";
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "queued",
+            "command": ["vizier", "ask", "after"],
+            "created_at": "2026-01-31T01:00:00Z",
+            "started_at": null,
+            "finished_at": null,
+            "pid": null,
+            "exit_code": null,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": null,
+            "config_snapshot": null,
+            "schedule": {
+                "after": [
+                    { "job_id": "job-upstream", "policy": "success" }
+                ]
+            }
+        }),
+    )?;
+
+    let config_path = repo.path().join(".vizier/tmp/jobs-after-fields.toml");
+    fs::create_dir_all(config_path.parent().expect("config parent"))?;
+    fs::write(
+        &config_path,
+        r#"
+[display.lists.jobs]
+format = "json"
+show_succeeded = true
+fields = ["Job", "After"]
+
+[display.lists.jobs_show]
+format = "json"
+fields = ["Job", "After"]
+"#,
+    )?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args([
+            "--config-file",
+            config_path.to_str().expect("config path utf8"),
+            "jobs",
+            "list",
+            "--format",
+            "json",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs list --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let list_json: Value = serde_json::from_slice(&output.stdout)?;
+    let jobs = list_json
+        .get("jobs")
+        .and_then(Value::as_array)
+        .ok_or("expected jobs array")?;
+    let first = jobs.first().ok_or("expected one job entry")?;
+    assert_eq!(
+        first.get("after").and_then(Value::as_str),
+        Some("job-upstream (success)"),
+        "after field mismatch in jobs list JSON: {first}"
+    );
+
+    let output = repo
+        .vizier_cmd_background()
+        .args([
+            "--config-file",
+            config_path.to_str().expect("config path utf8"),
+            "jobs",
+            "show",
+            job_id,
+            "--format",
+            "json",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs show --format json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let show_json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        show_json.get("after").and_then(Value::as_str),
+        Some("job-upstream (success)"),
+        "after field mismatch in jobs show JSON: {show_json}"
     );
     Ok(())
 }
@@ -1787,6 +1951,79 @@ fn test_jobs_gc_removes_old_jobs() -> TestResult {
             .join("job-running")
             .exists(),
         "expected running job to remain"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_gc_preserves_terminal_jobs_referenced_by_active_after_dependencies() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record(
+        &repo,
+        "job-old-predecessor",
+        json!({
+            "id": "job-old-predecessor",
+            "status": "succeeded",
+            "command": ["vizier", "ask", "old"],
+            "created_at": "2000-01-01T00:00:00Z",
+            "started_at": "2000-01-01T00:00:00Z",
+            "finished_at": "2000-01-01T00:00:01Z",
+            "pid": null,
+            "exit_code": 0,
+            "stdout_path": ".vizier/jobs/job-old-predecessor/stdout.log",
+            "stderr_path": ".vizier/jobs/job-old-predecessor/stderr.log",
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": null,
+            "config_snapshot": null
+        }),
+    )?;
+    write_job_record(
+        &repo,
+        "job-active-dependent",
+        json!({
+            "id": "job-active-dependent",
+            "status": "queued",
+            "command": ["vizier", "ask", "queued"],
+            "created_at": "2099-01-01T00:00:00Z",
+            "started_at": null,
+            "finished_at": null,
+            "pid": null,
+            "exit_code": null,
+            "stdout_path": ".vizier/jobs/job-active-dependent/stdout.log",
+            "stderr_path": ".vizier/jobs/job-active-dependent/stderr.log",
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": null,
+            "config_snapshot": null,
+            "schedule": {
+                "after": [
+                    { "job_id": "job-old-predecessor", "policy": "success" }
+                ]
+            }
+        }),
+    )?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "gc", "--days", "7"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs gc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Outcome: removed 0 job(s)"),
+        "unexpected gc outcome:\n{stdout}"
+    );
+    assert!(
+        repo.path()
+            .join(".vizier/jobs")
+            .join("job-old-predecessor")
+            .exists(),
+        "expected referenced predecessor job directory to remain"
     );
     Ok(())
 }

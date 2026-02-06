@@ -327,6 +327,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut injected_args: Vec<String> = Vec::new();
         let mut schedule = jobs::JobSchedule::default();
         let mut capture_save_patch = false;
+        let requested_after = match &cli.command {
+            Commands::Ask(cmd) => cmd.after.clone(),
+            Commands::Save(cmd) => cmd.after.clone(),
+            Commands::Draft(cmd) => cmd.after.clone(),
+            Commands::Approve(cmd) => cmd.after.clone(),
+            Commands::Review(cmd) => cmd.after.clone(),
+            Commands::Merge(cmd) => cmd.after.clone(),
+            _ => Vec::new(),
+        };
 
         let mut metadata = build_job_metadata(
             &cli.command,
@@ -651,6 +660,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
 
+        schedule.after =
+            jobs::resolve_after_dependencies_for_enqueue(&jobs_root, &job_id, &requested_after)?;
+
         let child_args = build_background_child_args(
             &raw_args_for_child,
             &job_id,
@@ -704,6 +716,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 rev_or_range,
                 commit_message,
                 commit_message_editor,
+                after: _,
             }) => {
                 let agent = config::resolve_agent_settings(
                     &config::get_config(),
@@ -715,6 +728,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         rev_or_range,
                         commit_message,
                         commit_message_editor,
+                        after: Vec::new(),
                     };
                     run_scheduled_save(
                         job_id,

@@ -31,6 +31,27 @@ fn format_wait_reason(reason: &jobs::JobWaitReason) -> String {
     format!("{:?}: {detail}", reason.kind).to_lowercase()
 }
 
+fn format_after_policy(policy: jobs::AfterPolicy) -> &'static str {
+    match policy {
+        jobs::AfterPolicy::Success => "success",
+    }
+}
+
+fn format_after_dependencies(after: &[jobs::JobAfterDependency]) -> String {
+    join_or_none(
+        after
+            .iter()
+            .map(|dependency| {
+                format!(
+                    "{} ({})",
+                    dependency.job_id,
+                    format_after_policy(dependency.policy)
+                )
+            })
+            .collect(),
+    )
+}
+
 fn format_waited_on(waited_on: &[jobs::JobWaitKind]) -> String {
     join_or_none(
         waited_on
@@ -181,6 +202,21 @@ fn render_schedule_dependencies(
     }
 
     let mut entries = Vec::new();
+    for dependency in graph.after_for(job_id) {
+        let status = graph
+            .record(&dependency.job_id)
+            .map(|record| jobs::status_label(record.status))
+            .unwrap_or("missing");
+        entries.push(ScheduleEntry {
+            label: format!(
+                "after:{} -> {} {}",
+                format_after_policy(dependency.policy),
+                dependency.job_id,
+                status
+            ),
+            producer: Some(dependency.job_id),
+        });
+    }
     for dependency in graph.dependencies_for(job_id) {
         let artifact_label = jobs::format_artifact(&dependency);
         let producers = graph.producers_for(&dependency);
@@ -257,6 +293,7 @@ fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Opti
         JobsListField::Job => Some(record.id.clone()),
         JobsListField::Status => Some(jobs::status_label(record.status).to_string()),
         JobsListField::Created => Some(record.created_at.to_rfc3339()),
+        JobsListField::After => schedule.map(|sched| format_after_dependencies(&sched.after)),
         JobsListField::Dependencies => schedule.map(|sched| {
             join_or_none(
                 sched
@@ -326,6 +363,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::Target => metadata.and_then(|meta| meta.target.clone()),
         JobsShowField::Branch => metadata.and_then(|meta| meta.branch.clone()),
         JobsShowField::Revision => metadata.and_then(|meta| meta.revision.clone()),
+        JobsShowField::After => schedule.map(|sched| format_after_dependencies(&sched.after)),
         JobsShowField::Dependencies => schedule.map(|sched| {
             join_or_none(
                 sched

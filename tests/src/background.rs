@@ -148,6 +148,96 @@ fn test_scheduler_rejects_json_for_additional_commands() -> TestResult {
 }
 
 #[test]
+fn test_scheduler_rejects_unknown_after_dependency() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo
+        .vizier_cmd_background()
+        .args(["ask", "after unknown", "--after", "job-missing"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected unknown --after dependency to fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown --after job id: job-missing"),
+        "missing unknown --after error message:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_scheduler_after_flag_is_repeatable_and_recorded() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let first = repo
+        .vizier_cmd_background()
+        .args(["ask", "after dependency first"])
+        .output()?;
+    assert!(
+        first.status.success(),
+        "first scheduled ask failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_job_id =
+        extract_job_id(&String::from_utf8_lossy(&first.stdout)).ok_or("first job id missing")?;
+    wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(20))?;
+
+    let second = repo
+        .vizier_cmd_background()
+        .args(["ask", "after dependency second"])
+        .output()?;
+    assert!(
+        second.status.success(),
+        "second scheduled ask failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_job_id =
+        extract_job_id(&String::from_utf8_lossy(&second.stdout)).ok_or("second job id missing")?;
+    wait_for_job_completion(&repo, &second_job_id, Duration::from_secs(20))?;
+
+    let third = repo
+        .vizier_cmd_background()
+        .args([
+            "ask",
+            "after dependency third",
+            "--after",
+            &first_job_id,
+            "--after",
+            &first_job_id,
+            "--after",
+            &second_job_id,
+        ])
+        .output()?;
+    assert!(
+        third.status.success(),
+        "third scheduled ask failed: {}",
+        String::from_utf8_lossy(&third.stderr)
+    );
+    let third_job_id =
+        extract_job_id(&String::from_utf8_lossy(&third.stdout)).ok_or("third job id missing")?;
+
+    let record = read_job_record(&repo, &third_job_id)?;
+    let after = record
+        .get("schedule")
+        .and_then(|value| value.get("after"))
+        .and_then(Value::as_array)
+        .ok_or("missing schedule.after for third job")?;
+    let ids = after
+        .iter()
+        .filter_map(|value| value.get("job_id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![first_job_id.as_str(), second_job_id.as_str()],
+        "repeatable --after values were not deduplicated/preserved in order: {after:?}"
+    );
+
+    wait_for_job_completion(&repo, &third_job_id, Duration::from_secs(20))?;
+    Ok(())
+}
+
+#[test]
 fn test_scheduler_requires_noninteractive_flags() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let cases = [
@@ -283,6 +373,163 @@ fn test_scheduler_dependency_waits_and_unblocks() -> TestResult {
             .iter()
             .any(|value| value.as_str() == Some("dependencies")),
         "expected waited_on to include dependencies: {waited_on:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_scheduler_after_dependency_waits_and_unblocks() -> TestResult {
+    let repo = IntegrationRepo::new_without_mock()?;
+    let agent_path = write_sleeping_agent(&repo, "sleepy-draft-after", 2)?;
+    let config_path = write_agent_config(
+        &repo,
+        "config-sleepy-draft-after.toml",
+        "draft",
+        &agent_path,
+    )?;
+
+    let first = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args([
+            "draft",
+            "--name",
+            "after-wait-predecessor",
+            "after wait predecessor spec",
+        ])
+        .output()?;
+    assert!(
+        first.status.success(),
+        "scheduled predecessor draft failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_job_id =
+        extract_job_id(&String::from_utf8_lossy(&first.stdout)).ok_or("missing predecessor id")?;
+    wait_for_job_status(&repo, &first_job_id, "running", Duration::from_secs(5))?;
+
+    let second = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args([
+            "draft",
+            "--name",
+            "after-wait-dependent",
+            "--after",
+            &first_job_id,
+            "after wait dependent spec",
+        ])
+        .output()?;
+    assert!(
+        second.status.success(),
+        "scheduled dependent draft failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_job_id =
+        extract_job_id(&String::from_utf8_lossy(&second.stdout)).ok_or("missing dependent id")?;
+
+    wait_for_job_status(
+        &repo,
+        &second_job_id,
+        "waiting_on_deps",
+        Duration::from_secs(5),
+    )?;
+    let record = read_job_record(&repo, &second_job_id)?;
+    let detail = record
+        .get("schedule")
+        .and_then(|schedule| schedule.get("wait_reason"))
+        .and_then(|reason| reason.get("detail"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert_eq!(
+        detail,
+        format!("waiting on job {}", first_job_id),
+        "expected --after wait reason detail to mention predecessor"
+    );
+
+    wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(30))?;
+    wait_for_job_completion(&repo, &second_job_id, Duration::from_secs(30))?;
+    Ok(())
+}
+
+#[test]
+fn test_scheduler_after_dependency_blocks_on_failed_predecessor() -> TestResult {
+    let repo = IntegrationRepo::new_without_mock()?;
+
+    let bin_dir = repo.path().join(".vizier/tmp/bin");
+    fs::create_dir_all(&bin_dir)?;
+    let failing_agent = bin_dir.join("failing-after.sh");
+    fs::write(
+        &failing_agent,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\necho 'intentional failure' 1>&2\nexit 1\n",
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&failing_agent)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&failing_agent, perms)?;
+    }
+
+    let failing_config =
+        write_agent_config(&repo, "config-failing-after.toml", "ask", &failing_agent)?;
+    let fast_agent = write_sleeping_agent(&repo, "fast-after", 0)?;
+    let fast_config = write_agent_config(&repo, "config-fast-after.toml", "ask", &fast_agent)?;
+
+    let predecessor = repo
+        .vizier_cmd_background_with_config(&failing_config)
+        .args(["ask", "after failed predecessor"])
+        .output()?;
+    assert!(
+        predecessor.status.success(),
+        "scheduling failing predecessor ask failed: {}",
+        String::from_utf8_lossy(&predecessor.stderr)
+    );
+    let predecessor_job_id = extract_job_id(&String::from_utf8_lossy(&predecessor.stdout))
+        .ok_or("missing predecessor job id")?;
+    wait_for_job_completion(&repo, &predecessor_job_id, Duration::from_secs(20))?;
+    let predecessor_record = read_job_record(&repo, &predecessor_job_id)?;
+    assert_eq!(
+        predecessor_record
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        "failed",
+        "expected predecessor to fail"
+    );
+
+    let dependent = repo
+        .vizier_cmd_background_with_config(&fast_config)
+        .args([
+            "ask",
+            "after blocked dependent",
+            "--after",
+            &predecessor_job_id,
+        ])
+        .output()?;
+    assert!(
+        dependent.status.success(),
+        "scheduling dependent ask failed: {}",
+        String::from_utf8_lossy(&dependent.stderr)
+    );
+    let dependent_job_id = extract_job_id(&String::from_utf8_lossy(&dependent.stdout))
+        .ok_or("missing dependent id")?;
+
+    wait_for_job_status(
+        &repo,
+        &dependent_job_id,
+        "blocked_by_dependency",
+        Duration::from_secs(10),
+    )?;
+    let dependent_record = read_job_record(&repo, &dependent_job_id)?;
+    let detail = dependent_record
+        .get("schedule")
+        .and_then(|schedule| schedule.get("wait_reason"))
+        .and_then(|reason| reason.get("detail"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        detail.contains(&format!(
+            "dependency failed for job {} (failed)",
+            predecessor_job_id
+        )),
+        "expected failed predecessor detail, got: {detail}"
     );
     Ok(())
 }

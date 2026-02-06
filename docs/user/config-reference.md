@@ -15,6 +15,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Tighten merge CI/CD gates: set `[merge.cicd_gate] script = "./cicd.sh"`, `retries = 3`, and (optionally) `auto_resolve = true` so Vizier retries failures up to three times with agent remediation. Override per run with `--cicd-script`, `--cicd-retries`, and `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Disable auto-commit for inspection: set `[workflow] no_commit_default = true` to hold assistant edits dirty/staged across ask/save/draft/approve/review. For a single run, pass `--no-commit`; re-run without it before merging so history is finalized.
 - Scheduler execution: assistant-backed commands always enqueue background jobs. Use `--follow` to attach to the job’s stdout/stderr stream; `--json` is not supported (use `vizier jobs show --format json` instead). On a TTY, `vizier approve`/`vizier merge` prompt for confirmation before the job is queued, and `vizier review` prompts for the review mode unless you pass `--yes`/`--review-only`/`--review-file`. Non-TTY runs require explicit flags. `[workflow.background].quiet` controls whether detached jobs inject `--quiet` when you do not pass verbosity flags.
+- Scheduler sequencing: `vizier ask|save|draft|approve|review|merge --after <JOB_ID>` adds an explicit predecessor constraint (repeatable). Every listed predecessor must finish with `succeeded` before the new job can start.
 - Swap prompt text for a single scope: add `[agents.merge.prompts.merge_conflict] path = ".vizier/MERGE_CONFLICT_PROMPT.md"` (or `text = """..."""`) to override just merge-conflict prompting without touching other commands.
 
 ## Override matrix (config vs CLI)
@@ -22,6 +23,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 - Prompt selection: `[agents.<scope>.prompts.<kind>]` (`text`/`path` + nested `[agent]` overrides) → `.vizier/*PROMPT*.md` → baked defaults; no CLI flag exists. Inspect with `vizier plan --json`.
 - Workflow hold: `[workflow].no_commit_default` (default false) ↔ CLI `--no-commit` flag.
 - Scheduler posture: assistant-backed commands always enqueue jobs; use `--follow` to attach to logs. On a TTY, approve/merge prompt for confirmation before queueing and review prompts for mode selection unless you provided a review flag; in non-TTY contexts you must pass those flags explicitly. `[workflow.background].quiet` (default false) injects `--quiet` for detached jobs unless the caller set verbosity flags.
+- Scheduler ordering: `--after <JOB_ID>` is repeatable on scheduler-backed commands and has no config default; dependencies are explicit per run.
 - Job cancel cleanup: `[jobs.cancel].cleanup_worktree` (default false) opts in to deleting job-owned worktrees when you run `vizier jobs cancel`; override per run with `vizier jobs cancel --cleanup-worktree` or force off with `--no-cleanup-worktree`. Cleanup runs only on operator-initiated cancellation, not on job failures.
 - Merge gates: `[merge.cicd_gate].{script,retries,auto_resolve}` ↔ CLI `--cicd-script`, `--cicd-retries`, `--auto-cicd-fix/--no-auto-cicd-fix`.
 - Merge history: `[merge].squash` / `[merge].squash_mainline` ↔ CLI `--squash`/`--no-squash`, `--squash-mainline`.
@@ -57,8 +59,8 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 
 ## List output formatting
 - `vizier list`: `[display.lists.list]` controls `format` (`block|table|json`), header/entry/job/command field ordering, summary truncation (`summary_max_len` default 120, `summary_single_line` default true), and label overrides (`labels`).
-- `vizier jobs list`: `[display.lists.jobs]` controls `format`, whether succeeded jobs are shown (`show_succeeded`), field ordering, and label overrides. Built-in fields include `Job`, `Status`, `Created`, `Wait`, `Dependencies`, `Locks`, `Pinned head`, `Failed`, and `Command`. CLI `--all` overrides `show_succeeded`.
-- `vizier jobs show`: `[display.lists.jobs_show]` controls `format`, field ordering, and label overrides.
+- `vizier jobs list`: `[display.lists.jobs]` controls `format`, whether succeeded jobs are shown (`show_succeeded`), field ordering, and label overrides. Built-in fields include `Job`, `Status`, `Created`, `After`, `Wait`, `Dependencies`, `Locks`, `Pinned head`, `Failed`, and `Command`. CLI `--all` overrides `show_succeeded`.
+- `vizier jobs show`: `[display.lists.jobs_show]` controls `format`, field ordering, and label overrides, including the `After` field (`<job-id> (success)` entries).
 - `vizier jobs status`: prints a terse one-line status; `--json` emits `job`, `status`, `exit_code`, `stdout`, and `stderr` fields.
 - CLI overrides: `vizier list --format`, `vizier list --fields` override the list display settings; `vizier jobs list --format` and `vizier jobs show --format` override job display formats. The global `--json` flag forces JSON output for list-style commands regardless of config.
 

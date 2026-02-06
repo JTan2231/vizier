@@ -184,6 +184,7 @@ pub(crate) enum JobsListField {
     Job,
     Status,
     Created,
+    After,
     Dependencies,
     Locks,
     Wait,
@@ -200,6 +201,7 @@ impl JobsListField {
             "job" => Some(Self::Job),
             "status" => Some(Self::Status),
             "created" => Some(Self::Created),
+            "after" => Some(Self::After),
             "dependencies" => Some(Self::Dependencies),
             "locks" => Some(Self::Locks),
             "wait" => Some(Self::Wait),
@@ -217,6 +219,7 @@ impl JobsListField {
             Self::Job => "Job",
             Self::Status => "Status",
             Self::Created => "Created",
+            Self::After => "After",
             Self::Dependencies => "Dependencies",
             Self::Locks => "Locks",
             Self::Wait => "Wait",
@@ -233,6 +236,7 @@ impl JobsListField {
             Self::Job => "job",
             Self::Status => "status",
             Self::Created => "created",
+            Self::After => "after",
             Self::Dependencies => "dependencies",
             Self::Locks => "locks",
             Self::Wait => "wait",
@@ -262,6 +266,7 @@ pub(crate) enum JobsShowField {
     Target,
     Branch,
     Revision,
+    After,
     Dependencies,
     Locks,
     Wait,
@@ -298,6 +303,7 @@ impl JobsShowField {
             "target" => Some(Self::Target),
             "branch" => Some(Self::Branch),
             "revision" => Some(Self::Revision),
+            "after" => Some(Self::After),
             "dependencies" => Some(Self::Dependencies),
             "locks" => Some(Self::Locks),
             "wait" => Some(Self::Wait),
@@ -335,6 +341,7 @@ impl JobsShowField {
             Self::Target => "Target",
             Self::Branch => "Branch",
             Self::Revision => "Revision",
+            Self::After => "After",
             Self::Dependencies => "Dependencies",
             Self::Locks => "Locks",
             Self::Wait => "Wait",
@@ -371,6 +378,7 @@ impl JobsShowField {
             Self::Target => "target",
             Self::Branch => "branch",
             Self::Revision => "revision",
+            Self::After => "after",
             Self::Dependencies => "dependencies",
             Self::Locks => "locks",
             Self::Wait => "wait",
@@ -489,6 +497,10 @@ pub(crate) struct AskCmd {
     /// Read the user message from the specified file instead of an inline argument
     #[arg(short = 'f', long = "file", value_name = "PATH")]
     pub(crate) file: Option<PathBuf>,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -504,6 +516,10 @@ pub(crate) struct DraftCmd {
     /// Override the derived plan/branch slug (letters, numbers, dashes only)
     #[arg(long = "name", value_name = "NAME")]
     pub(crate) name: Option<String>,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -742,6 +758,10 @@ pub(crate) struct ApproveCmd {
     /// Number of stop-condition retries before giving up (`approve.stop_condition.retries` by default)
     #[arg(long = "stop-condition-retries", value_name = "COUNT")]
     pub(crate) stop_condition_retries: Option<u32>,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -789,6 +809,10 @@ pub(crate) struct ReviewCmd {
     /// Number of remediation attempts before aborting (`merge.cicd_gate.retries` by default)
     #[arg(long = "cicd-retries", value_name = "COUNT")]
     pub(crate) cicd_retries: Option<u32>,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -860,6 +884,10 @@ pub(crate) struct MergeCmd {
     /// Parent index to use when cherry-picking merge commits in squash mode (1-based)
     #[arg(long = "squash-mainline", value_name = "PARENT_INDEX")]
     pub(crate) squash_mainline: Option<u32>,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -948,6 +976,10 @@ pub(crate) struct SaveCmd {
     /// Open $EDITOR to compose the commit message
     #[arg(short = 'M', long = "edit-message")]
     pub(crate) commit_message_editor: bool,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

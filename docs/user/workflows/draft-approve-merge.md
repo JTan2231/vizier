@@ -64,11 +64,11 @@ Every step commits code and canonical narrative edits together in a single commi
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
-All assistant-backed commands now enqueue background jobs. Use `--follow` when you want to stream the job’s stdout/stderr to your terminal; otherwise inspect progress with `vizier jobs`. Scheduled commands do not support `--json` output; use `vizier jobs show --format json` instead. On a TTY, `vizier approve`/`vizier merge` prompt for confirmation before the job is queued, and `vizier review` prompts for the review mode unless you pass `--yes`/`--review-only`/`--review-file`; non-TTY runs require explicit flags.
+All assistant-backed commands now enqueue background jobs. Use `--follow` when you want to stream the job’s stdout/stderr to your terminal; otherwise inspect progress with `vizier jobs`. Scheduled commands do not support `--json` output; use `vizier jobs show --format json` instead. On a TTY, `vizier approve`/`vizier merge` prompt for confirmation before the job is queued, and `vizier review` prompts for the review mode unless you pass `--yes`/`--review-only`/`--review-file`; non-TTY runs require explicit flags. For explicit ordering across unrelated jobs, pass repeatable `--after <job-id>` flags when queueing any scheduler-backed command.
 
 Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary). By default each entry renders as a label/value block with `Plan`, `Branch`, and `Summary`, and when a matching background job exists the block adds inline job details (`Job`, `Job status`, optional `Job scope`, optional `Job started`) plus copy-pastable commands (`Status`, `Logs` with `--follow`, `Attach`). You can switch to table/JSON output or trim the fields via `[display.lists.list]` config or `vizier list --format/--fields`. The empty state returns a single `Outcome: No pending draft branches` block.
 
-Jobs can sit in `waiting_on_deps` or `waiting_on_locks` when upstream artifacts or locks are not yet available. Use `vizier jobs show <id>` to see dependency, lock, pinned-head, and wait-reason details when a job is queued, or add `Wait`, `Dependencies`, `Locks`, and `Pinned head` to `[display.lists.jobs].fields` so `vizier jobs list` surfaces them inline.
+Jobs can sit in `waiting_on_deps` or `waiting_on_locks` when upstream artifacts, explicit `--after` predecessors, or locks are not yet available. Use `vizier jobs show <id>` to see `After`, dependency, lock, pinned-head, and wait-reason details when a job is queued, or add `After`, `Wait`, `Dependencies`, `Locks`, and `Pinned head` to `[display.lists.jobs].fields` so `vizier jobs list` surfaces them inline.
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
@@ -104,6 +104,7 @@ Prompt text resolution is limited to `[agents.<scope>.prompts.<kind>]` -> `.vizi
 - `vizier draft "spec"` — inline operator spec.
 - `vizier draft --file SPEC.md` — load spec from disk.
 - `vizier draft --name hotfix-foo "..."` — override the slug + branch name.
+- `vizier draft ... --after <job-id> [--after <job-id> ...]` — require explicit predecessor jobs to succeed before this draft can start.
 
 **How to verify**
 ```bash
@@ -132,6 +133,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - `vizier approve --target release/1.0` — preview and diff against a branch other than the detected primary.
 - `vizier approve --branch feature/foo` — when your work diverges from `draft/<slug>` naming.
 - `vizier approve -y` — skip the confirmation prompt (non-TTY runs require this).
+- `vizier approve <slug> --after <job-id>` — enforce explicit job-id ordering when artifact dependencies are not enough.
 
 **Optional stop-condition**
 - Configure `[approve.stop_condition]` in `.vizier/config.toml` (and optionally override per run with `vizier approve --stop-condition-script <PATH> --stop-condition-retries <COUNT>`) to gate approve on a repo-local shell script.
@@ -166,6 +168,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - `-y/--yes` — apply fixes automatically after generating the critique
 - `--target` / `--branch` — override the diff base or plan branch name when needed
 - `--cicd-script` / `--auto-cicd-fix` / `--no-auto-cicd-fix` / `--cicd-retries` — reuse the merge CI/CD gate script and overrides for review visibility; the gate still runs read-only during review (auto fixes remain merge-only).
+- `--after <job-id>` (repeatable) — delay review until explicit predecessor jobs have succeeded.
 
 **Checks & configuration**
 - By default, Vizier tries `cargo check --all --all-targets` and `cargo test --all --all-targets` when `Cargo.toml` exists. Override this via:
@@ -208,6 +211,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Conflict auto-resolution is separate from `[merge.cicd_gate].auto_resolve`, which only controls CI/CD gate remediation when the script fails.
 - Successful merges delete `draft/<slug>` automatically when the finalized merge references the recorded implementation commit; pass `--keep-branch` to retain the branch locally.
 - Merge runs are non-interactive once queued; on a TTY you will be asked to confirm before the job is queued, otherwise pass `--yes`. `--complete-conflict` finalizes *only* an existing Vizier-managed merge (and errors when no sentinel is present), and `--target/--branch` behave like they do for `approve`.
+- `--after <job-id>` is repeatable on merge as well, allowing explicit sequencing behind unrelated background jobs when branch/artifact dependencies alone are insufficient.
 - **CI/CD gate:** When `[merge.cicd_gate]` configures a script, Vizier executes it from the repo root while the implementation commit is staged but before the merge commit is written (squash mode) or immediately after the merge commit (legacy). A zero exit code finalizes the merge; a non-zero exit surfaces the script’s stdout/stderr and aborts so you can investigate (the implementation commit and draft branch are left intact). Set `auto_resolve = true` plus `retries = <n>` to let the agent attempt fixes when the gate fails. In squash mode Vizier amends the implementation commit when the agent applies fixes so the target branch still sees exactly two commits. Override the behavior per run with `--cicd-script PATH`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, and `--cicd-retries N`. Gate checks also run when resuming merges via `--complete-conflict`, so even manual conflict resolutions must pass the script before landing.
 
 > **Manual completion tip:** After you resolve conflicts yourself, make sure you are checked out to the recorded target branch, stage the fixes, and then run `vizier merge <slug> --complete-conflict`. The flag refuses to run if Git is not in the middle of the stored merge or if no sentinel JSON exists, which protects history from accidental merges.

@@ -450,6 +450,7 @@ mod tests {
         let cmd = AskCmd {
             message: None,
             file: Some(tmp.path().to_path_buf()),
+            after: Vec::new(),
         };
 
         let resolved = resolve_ask_message(&cmd)?;
@@ -462,6 +463,7 @@ mod tests {
         let cmd = AskCmd {
             message: Some("inline".to_string()),
             file: Some(PathBuf::from("ignored")),
+            after: Vec::new(),
         };
 
         let err = resolve_ask_message(&cmd).unwrap_err();
@@ -479,6 +481,7 @@ mod tests {
         let cmd = AskCmd {
             message: None,
             file: Some(tmp.path().to_path_buf()),
+            after: Vec::new(),
         };
 
         let err = resolve_ask_message(&cmd)

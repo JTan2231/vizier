@@ -1,11 +1,13 @@
 use super::{
-    JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason, LockState, format_artifact,
+    AfterPolicy, JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason, LockState,
+    format_artifact,
 };
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct SchedulerFacts {
     pub job_statuses: HashMap<String, JobStatus>,
+    pub job_after_dependencies: HashMap<String, Vec<JobAfterDependencyStatus>>,
     pub job_dependencies: HashMap<String, Vec<JobArtifact>>,
     pub producer_statuses: HashMap<JobArtifact, Vec<JobStatus>>,
     pub artifact_exists: HashSet<JobArtifact>,
@@ -36,6 +38,20 @@ pub struct SchedulerDecision {
 pub struct PinnedHeadFact {
     pub branch: String,
     pub matches: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AfterDependencyState {
+    Missing,
+    Invalid { detail: String },
+    Status(JobStatus),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobAfterDependencyStatus {
+    pub job_id: String,
+    pub policy: AfterPolicy,
+    pub state: AfterDependencyState,
 }
 
 pub fn evaluate_job(facts: &SchedulerFacts, job_id: &str) -> SchedulerDecision {
@@ -75,6 +91,36 @@ fn evaluate_job_with_lock_state(
     job_id: &str,
     lock_state: &mut LockState,
 ) -> SchedulerDecision {
+    match after_dependency_state(facts, job_id) {
+        DependencyState::Blocked { detail } => {
+            let mut waited_on = facts.waited_on.get(job_id).cloned().unwrap_or_default();
+            note_waited(&mut waited_on, JobWaitKind::Dependencies);
+            return SchedulerDecision {
+                next_status: JobStatus::BlockedByDependency,
+                wait_reason: Some(JobWaitReason {
+                    kind: JobWaitKind::Dependencies,
+                    detail: Some(detail),
+                }),
+                waited_on,
+                action: SchedulerAction::UpdateStatus,
+            };
+        }
+        DependencyState::Waiting { detail } => {
+            let mut waited_on = facts.waited_on.get(job_id).cloned().unwrap_or_default();
+            note_waited(&mut waited_on, JobWaitKind::Dependencies);
+            return SchedulerDecision {
+                next_status: JobStatus::WaitingOnDeps,
+                wait_reason: Some(JobWaitReason {
+                    kind: JobWaitKind::Dependencies,
+                    detail: Some(detail),
+                }),
+                waited_on,
+                action: SchedulerAction::UpdateStatus,
+            };
+        }
+        DependencyState::Ready => {}
+    }
+
     let dependencies = facts
         .job_dependencies
         .get(job_id)
@@ -196,6 +242,51 @@ fn dependency_state(facts: &SchedulerFacts, deps: &[JobArtifact]) -> DependencyS
     DependencyState::Ready
 }
 
+fn after_dependency_state(facts: &SchedulerFacts, job_id: &str) -> DependencyState {
+    let deps = facts
+        .job_after_dependencies
+        .get(job_id)
+        .cloned()
+        .unwrap_or_default();
+
+    for dep in deps {
+        match dep.policy {
+            AfterPolicy::Success => match dep.state {
+                AfterDependencyState::Missing => {
+                    return DependencyState::Blocked {
+                        detail: format!("missing job dependency {}", dep.job_id),
+                    };
+                }
+                AfterDependencyState::Invalid { detail } => {
+                    return DependencyState::Blocked {
+                        detail: format!(
+                            "scheduler data error for job dependency {}: {}",
+                            dep.job_id, detail
+                        ),
+                    };
+                }
+                AfterDependencyState::Status(JobStatus::Succeeded) => {}
+                AfterDependencyState::Status(status) if job_is_active(status) => {
+                    return DependencyState::Waiting {
+                        detail: format!("waiting on job {}", dep.job_id),
+                    };
+                }
+                AfterDependencyState::Status(status) => {
+                    return DependencyState::Blocked {
+                        detail: format!(
+                            "dependency failed for job {} ({})",
+                            dep.job_id,
+                            status_label(status)
+                        ),
+                    };
+                }
+            },
+        }
+    }
+
+    DependencyState::Ready
+}
+
 fn note_waited(waited_on: &mut Vec<JobWaitKind>, kind: JobWaitKind) {
     if !waited_on.contains(&kind) {
         waited_on.push(kind);
@@ -220,6 +311,19 @@ fn job_is_active(status: JobStatus) -> bool {
             | JobStatus::WaitingOnLocks
             | JobStatus::Running
     )
+}
+
+fn status_label(status: JobStatus) -> &'static str {
+    match status {
+        JobStatus::Queued => "queued",
+        JobStatus::WaitingOnDeps => "waiting_on_deps",
+        JobStatus::WaitingOnLocks => "waiting_on_locks",
+        JobStatus::Running => "running",
+        JobStatus::Succeeded => "succeeded",
+        JobStatus::Failed => "failed",
+        JobStatus::Cancelled => "cancelled",
+        JobStatus::BlockedByDependency => "blocked_by_dependency",
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +447,137 @@ mod tests {
             assert_eq!(decision.action, SchedulerAction::Start);
             assert_eq!(decision.next_status, JobStatus::Running);
         }
+    }
+
+    #[test]
+    fn after_dependency_matrix_covers_statuses() {
+        let job_id = "job-after";
+
+        let mut facts = base_facts(job_id);
+        facts.job_after_dependencies.insert(
+            job_id.to_string(),
+            vec![JobAfterDependencyStatus {
+                job_id: "dep-running".to_string(),
+                policy: AfterPolicy::Success,
+                state: AfterDependencyState::Status(JobStatus::Running),
+            }],
+        );
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
+        assert_eq!(
+            decision.wait_reason.and_then(|value| value.detail),
+            Some("waiting on job dep-running".to_string())
+        );
+
+        let mut facts = base_facts(job_id);
+        facts.job_after_dependencies.insert(
+            job_id.to_string(),
+            vec![JobAfterDependencyStatus {
+                job_id: "dep-succeeded".to_string(),
+                policy: AfterPolicy::Success,
+                state: AfterDependencyState::Status(JobStatus::Succeeded),
+            }],
+        );
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.action, SchedulerAction::Start);
+        assert_eq!(decision.next_status, JobStatus::Running);
+
+        for status in [
+            JobStatus::Failed,
+            JobStatus::Cancelled,
+            JobStatus::BlockedByDependency,
+        ] {
+            let mut facts = base_facts(job_id);
+            facts.job_after_dependencies.insert(
+                job_id.to_string(),
+                vec![JobAfterDependencyStatus {
+                    job_id: "dep-terminal".to_string(),
+                    policy: AfterPolicy::Success,
+                    state: AfterDependencyState::Status(status),
+                }],
+            );
+            let decision = evaluate_job(&facts, job_id);
+            assert_eq!(decision.next_status, JobStatus::BlockedByDependency);
+            let detail = decision
+                .wait_reason
+                .and_then(|value| value.detail)
+                .unwrap_or_default();
+            assert!(
+                detail.contains("dependency failed for job dep-terminal"),
+                "unexpected detail for {status:?}: {detail}"
+            );
+            assert!(
+                detail.contains(status_label(status)),
+                "expected status label in detail for {status:?}: {detail}"
+            );
+        }
+
+        let mut facts = base_facts(job_id);
+        facts.job_after_dependencies.insert(
+            job_id.to_string(),
+            vec![JobAfterDependencyStatus {
+                job_id: "dep-missing".to_string(),
+                policy: AfterPolicy::Success,
+                state: AfterDependencyState::Missing,
+            }],
+        );
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::BlockedByDependency);
+        assert_eq!(
+            decision.wait_reason.and_then(|value| value.detail),
+            Some("missing job dependency dep-missing".to_string())
+        );
+
+        let mut facts = base_facts(job_id);
+        facts.job_after_dependencies.insert(
+            job_id.to_string(),
+            vec![JobAfterDependencyStatus {
+                job_id: "dep-invalid".to_string(),
+                policy: AfterPolicy::Success,
+                state: AfterDependencyState::Invalid {
+                    detail: "invalid job status".to_string(),
+                },
+            }],
+        );
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::BlockedByDependency);
+        assert_eq!(
+            decision.wait_reason.and_then(|value| value.detail),
+            Some(
+                "scheduler data error for job dependency dep-invalid: invalid job status"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn after_dependencies_checked_before_artifacts() {
+        let job_id = "job";
+        let artifact = JobArtifact::AskSavePatch {
+            job_id: "shared".to_string(),
+        };
+        let mut facts = base_facts(job_id);
+        facts.job_after_dependencies.insert(
+            job_id.to_string(),
+            vec![JobAfterDependencyStatus {
+                job_id: "dep-running".to_string(),
+                policy: AfterPolicy::Success,
+                state: AfterDependencyState::Status(JobStatus::Running),
+            }],
+        );
+        facts
+            .job_dependencies
+            .insert(job_id.to_string(), vec![artifact.clone()]);
+        facts.producer_statuses.insert(
+            artifact.clone(),
+            vec![JobStatus::Failed, JobStatus::Succeeded],
+        );
+
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
+        let reason = decision.wait_reason.expect("wait reason");
+        assert_eq!(reason.kind, JobWaitKind::Dependencies);
+        assert_eq!(reason.detail.as_deref(), Some("waiting on job dep-running"));
     }
 
     #[test]

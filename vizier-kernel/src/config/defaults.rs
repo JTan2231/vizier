@@ -178,6 +178,7 @@ impl Default for DisplayJobsShowConfig {
                 "Target".to_string(),
                 "Branch".to_string(),
                 "Revision".to_string(),
+                "After".to_string(),
                 "Dependencies".to_string(),
                 "Locks".to_string(),
                 "Wait".to_string(),

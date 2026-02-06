@@ -58,6 +58,19 @@ fn dependency_has_completion_job(job_record: &Value, job_id: &str) -> bool {
         })
 }
 
+fn assert_schedule_after_empty(job_record: &Value, job_label: &str) -> TestResult {
+    let after = job_record
+        .get("schedule")
+        .and_then(|value| value.get("after"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{job_label} schedule.after missing"))?;
+    assert!(
+        after.is_empty(),
+        "{job_label} schedule.after should default empty but was {after:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_build_creates_session_artifacts_on_build_branch() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -497,25 +510,42 @@ steps = [
         assert_eq!(steps.len(), 1);
         let step = &steps[0];
 
-        assert!(
-            step.get("materialize_job_id")
-                .and_then(Value::as_str)
-                .is_some()
-        );
-        assert!(
-            step.get("approve_job_id").and_then(Value::as_str).is_some(),
-            "approve job id missing for pipeline {pipeline}"
-        );
+        let materialize_job_id = step
+            .get("materialize_job_id")
+            .and_then(Value::as_str)
+            .ok_or("materialize job id missing")?;
+        let approve_job_id = step
+            .get("approve_job_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("approve job id missing for pipeline {pipeline}"))?;
+        let review_job_id = step.get("review_job_id").and_then(Value::as_str);
+        let merge_job_id = step.get("merge_job_id").and_then(Value::as_str);
+
         assert_eq!(
-            step.get("review_job_id").and_then(Value::as_str).is_some(),
+            review_job_id.is_some(),
             expects_review,
             "review job presence mismatch for pipeline {pipeline}"
         );
         assert_eq!(
-            step.get("merge_job_id").and_then(Value::as_str).is_some(),
+            merge_job_id.is_some(),
             expects_merge,
             "merge job presence mismatch for pipeline {pipeline}"
         );
+
+        let materialize_record = read_job_record(&repo, materialize_job_id)?;
+        assert_schedule_after_empty(&materialize_record, "materialize job")?;
+
+        let approve_record = read_job_record(&repo, approve_job_id)?;
+        assert_schedule_after_empty(&approve_record, "approve job")?;
+
+        if let Some(job_id) = review_job_id {
+            let review_record = read_job_record(&repo, job_id)?;
+            assert_schedule_after_empty(&review_record, "review job")?;
+        }
+        if let Some(job_id) = merge_job_id {
+            let merge_record = read_job_record(&repo, job_id)?;
+            assert_schedule_after_empty(&merge_record, "merge job")?;
+        }
     }
 
     Ok(())

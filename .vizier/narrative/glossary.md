@@ -24,6 +24,7 @@
 - **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
 - **Integration test lock**: A global mutex held by the integration-test harness so `IntegrationRepo`-backed tests—and any non-`IntegrationRepo` tests that spawn external processes—run serially instead of racing on temp repos and agent shim setup.
 - **Job artifact**: A named output that jobs produce/consume (plan docs/branches, plan commits, target branches, ask/save patches) for dependency tracking.
+- **Job after dependency**: A scheduler dependency encoded in `schedule.after` that waits on a specific predecessor job/status, separate from artifact-based `schedule.dependencies`.
 - **Job dependency**: An artifact-based prerequisite that keeps a job waiting or blocked until the required artifact exists.
 - **Job lock**: A named shared/exclusive mutex (for example `repo_serial`, `branch:<name>`, `temp_worktree:<id>`, `merge_sentinel:<slug>`) that gates concurrent job execution.
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.
@@ -31,6 +32,7 @@
 - **Narrative state**: The snapshot slice that captures active themes, tensions, and open threads explaining why the code exists and where it’s headed.
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
+- **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches, which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
 - **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
 - **Prompt-config matrix**: `docs/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers.
 - **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.

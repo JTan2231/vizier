@@ -13,10 +13,13 @@ use std::{
     time::Duration as StdDuration,
 };
 use vizier_core::display;
-use vizier_core::scheduler::spec::{self, PinnedHeadFact, SchedulerAction, SchedulerFacts};
+use vizier_core::scheduler::spec::{
+    self, AfterDependencyState, JobAfterDependencyStatus, PinnedHeadFact, SchedulerAction,
+    SchedulerFacts,
+};
 pub use vizier_core::scheduler::{
-    JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead,
-    format_artifact,
+    AfterPolicy, JobAfterDependency, JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason,
+    LockMode, PinnedHead, format_artifact,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +29,8 @@ pub struct JobDependency {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobSchedule {
+    #[serde(default)]
+    pub after: Vec<JobAfterDependency>,
     #[serde(default)]
     pub dependencies: Vec<JobDependency>,
     #[serde(default)]
@@ -345,6 +350,134 @@ fn load_record(paths: &JobPaths) -> Result<JobRecord, Box<dyn std::error::Error>
     Ok(record)
 }
 
+fn find_after_cycle(graph: &HashMap<String, Vec<String>>) -> Option<Vec<String>> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitState {
+        Visiting,
+        Visited,
+    }
+
+    fn dfs(
+        node: &str,
+        graph: &HashMap<String, Vec<String>>,
+        states: &mut HashMap<String, VisitState>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        states.insert(node.to_string(), VisitState::Visiting);
+        stack.push(node.to_string());
+
+        if let Some(dependencies) = graph.get(node) {
+            for dependency in dependencies {
+                if let Some(pos) = stack.iter().position(|value| value == dependency) {
+                    let mut cycle = stack[pos..].to_vec();
+                    cycle.push(dependency.clone());
+                    return Some(cycle);
+                }
+
+                if !matches!(states.get(dependency), Some(VisitState::Visited))
+                    && let Some(cycle) = dfs(dependency, graph, states, stack)
+                {
+                    return Some(cycle);
+                }
+            }
+        }
+
+        stack.pop();
+        states.insert(node.to_string(), VisitState::Visited);
+        None
+    }
+
+    let mut states = HashMap::new();
+    let mut nodes = graph.keys().cloned().collect::<Vec<_>>();
+    nodes.sort();
+    nodes.dedup();
+
+    for node in nodes {
+        if matches!(states.get(&node), Some(VisitState::Visited)) {
+            continue;
+        }
+        let mut stack = Vec::new();
+        if let Some(cycle) = dfs(&node, graph, &mut states, &mut stack) {
+            return Some(cycle);
+        }
+    }
+
+    None
+}
+
+pub fn resolve_after_dependencies_for_enqueue(
+    jobs_root: &Path,
+    new_job_id: &str,
+    requested_after: &[String],
+) -> Result<Vec<JobAfterDependency>, Box<dyn std::error::Error>> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+
+    for value in requested_after {
+        let dependency = value.trim().to_string();
+        if dependency.is_empty() {
+            return Err("unknown --after job id: <empty>".into());
+        }
+        if seen.insert(dependency.clone()) {
+            deduped.push(dependency);
+        }
+    }
+
+    if deduped.iter().any(|dependency| dependency == new_job_id) {
+        return Err(format!("invalid --after self dependency: {}", new_job_id).into());
+    }
+
+    for dependency in &deduped {
+        let paths = paths_for(jobs_root, dependency);
+        if !paths.record_path.exists() {
+            return Err(format!("unknown --after job id: {}", dependency).into());
+        }
+        if let Err(err) = load_record(&paths) {
+            return Err(
+                format!("cannot read job record for --after {}: {}", dependency, err).into(),
+            );
+        }
+    }
+
+    let records = list_records(jobs_root)?;
+    let mut after_graph: HashMap<String, Vec<String>> = HashMap::new();
+    for record in records {
+        let mut dependencies = record
+            .schedule
+            .as_ref()
+            .map(|schedule| {
+                schedule
+                    .after
+                    .iter()
+                    .map(|dependency| dependency.job_id.trim().to_string())
+                    .filter(|dependency| !dependency.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        dependencies.sort();
+        dependencies.dedup();
+        if !dependencies.is_empty() {
+            after_graph.insert(record.id.clone(), dependencies);
+        }
+    }
+
+    if !deduped.is_empty() {
+        after_graph.insert(new_job_id.to_string(), deduped.clone());
+    }
+
+    if let Some(cycle) = find_after_cycle(&after_graph) {
+        return Err(format!("invalid --after cycle: {}", cycle.join(" -> ")).into());
+    }
+
+    Ok(deduped
+        .into_iter()
+        .map(|job_id| JobAfterDependency {
+            job_id,
+            policy: AfterPolicy::Success,
+        })
+        .collect())
+}
+
 #[derive(Debug, Default)]
 pub struct SchedulerOutcome {
     pub started: Vec<String>,
@@ -643,12 +776,20 @@ pub struct ScheduleNode {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ScheduleAfterEdge {
+    pub policy: AfterPolicy,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ScheduleEdge {
     pub from: String,
     pub to: String,
-    pub artifact: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ScheduleArtifactState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<ScheduleAfterEdge>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -659,6 +800,8 @@ pub struct ScheduleSnapshot {
 
 pub(crate) struct ScheduleGraph {
     records: HashMap<String, JobRecord>,
+    after: HashMap<String, Vec<JobAfterDependency>>,
+    after_dependents: HashMap<String, Vec<String>>,
     dependencies: HashMap<String, Vec<JobArtifact>>,
     artifacts: HashMap<String, Vec<JobArtifact>>,
     producers: HashMap<JobArtifact, Vec<String>>,
@@ -673,6 +816,8 @@ impl ScheduleGraph {
             records_map.insert(record.id.clone(), record);
         }
 
+        let mut after = HashMap::new();
+        let mut after_dependents: HashMap<String, Vec<String>> = HashMap::new();
         let mut dependencies = HashMap::new();
         let mut artifacts = HashMap::new();
         let mut producers: HashMap<JobArtifact, Vec<String>> = HashMap::new();
@@ -680,6 +825,19 @@ impl ScheduleGraph {
 
         for record in records_map.values() {
             let schedule = record.schedule.as_ref();
+            let mut after_deps = schedule
+                .map(|sched| sched.after.clone())
+                .unwrap_or_default();
+            sort_after_dependencies(&mut after_deps);
+            after_deps.dedup();
+            for dep in &after_deps {
+                after_dependents
+                    .entry(dep.job_id.clone())
+                    .or_default()
+                    .push(record.id.clone());
+            }
+            after.insert(record.id.clone(), after_deps);
+
             let mut deps = schedule
                 .map(|sched| {
                     sched
@@ -721,12 +879,17 @@ impl ScheduleGraph {
         for list in consumers.values_mut() {
             sort_job_ids(list, &records_map);
         }
+        for list in after_dependents.values_mut() {
+            sort_job_ids(list, &records_map);
+        }
 
         let mut job_order = records_map.keys().cloned().collect::<Vec<_>>();
         sort_job_ids(&mut job_order, &records_map);
 
         Self {
             records: records_map,
+            after,
+            after_dependents,
             dependencies,
             artifacts,
             producers,
@@ -745,6 +908,17 @@ impl ScheduleGraph {
 
     pub(crate) fn dependencies_for(&self, job_id: &str) -> Vec<JobArtifact> {
         self.dependencies.get(job_id).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn after_for(&self, job_id: &str) -> Vec<JobAfterDependency> {
+        self.after.get(job_id).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn after_dependents_for(&self, job_id: &str) -> Vec<String> {
+        self.after_dependents
+            .get(job_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub(crate) fn artifacts_for(&self, job_id: &str) -> Vec<JobArtifact> {
@@ -786,6 +960,10 @@ impl ScheduleGraph {
                 continue;
             }
             let mut neighbors = Vec::new();
+            for dep in self.after_for(&job_id) {
+                neighbors.push(dep.job_id);
+            }
+            neighbors.extend(self.after_dependents_for(&job_id));
             for dep in self.dependencies_for(&job_id) {
                 neighbors.extend(self.producers_for(&dep));
             }
@@ -867,6 +1045,31 @@ impl ScheduleGraph {
             return;
         }
 
+        for after in self.after_for(job_id) {
+            edges.push(ScheduleEdge {
+                from: job_id.to_string(),
+                to: after.job_id.clone(),
+                artifact: None,
+                state: None,
+                after: Some(ScheduleAfterEdge {
+                    policy: after.policy,
+                }),
+            });
+            node_ids.insert(after.job_id.clone());
+            if depth_remaining > 1 && !path.contains(&after.job_id) {
+                path.insert(after.job_id.clone());
+                self.collect_edges(
+                    repo,
+                    &after.job_id,
+                    depth_remaining - 1,
+                    path,
+                    edges,
+                    node_ids,
+                );
+                path.remove(&after.job_id);
+            }
+        }
+
         for dependency in self.dependencies_for(job_id) {
             let artifact_label = format_artifact(&dependency);
             let producers = self.producers_for(&dependency);
@@ -875,8 +1078,9 @@ impl ScheduleGraph {
                 edges.push(ScheduleEdge {
                     from: job_id.to_string(),
                     to: format!("artifact:{artifact_label}"),
-                    artifact: artifact_label,
+                    artifact: Some(artifact_label),
                     state: Some(state),
+                    after: None,
                 });
                 continue;
             }
@@ -885,8 +1089,9 @@ impl ScheduleGraph {
                 edges.push(ScheduleEdge {
                     from: job_id.to_string(),
                     to: producer_id.clone(),
-                    artifact: artifact_label.clone(),
+                    artifact: Some(artifact_label.clone()),
                     state: None,
+                    after: None,
                 });
                 node_ids.insert(producer_id.clone());
                 if depth_remaining > 1 && !path.contains(&producer_id) {
@@ -931,6 +1136,20 @@ fn artifact_sort_key(artifact: &JobArtifact) -> (u8, &str, &str) {
     }
 }
 
+fn after_policy_sort_key(policy: AfterPolicy) -> u8 {
+    match policy {
+        AfterPolicy::Success => 0,
+    }
+}
+
+fn sort_after_dependencies(dependencies: &mut [JobAfterDependency]) {
+    dependencies.sort_by(|left, right| {
+        let left_key = (left.job_id.as_str(), after_policy_sort_key(left.policy));
+        let right_key = (right.job_id.as_str(), after_policy_sort_key(right.policy));
+        left_key.cmp(&right_key)
+    });
+}
+
 fn sort_artifacts(artifacts: &mut [JobArtifact]) {
     artifacts.sort_by(|left, right| artifact_sort_key(left).cmp(&artifact_sort_key(right)));
 }
@@ -958,12 +1177,39 @@ fn pinned_head_matches(repo: &Repository, pinned: &PinnedHead) -> Result<bool, g
     Ok(Some(commit.id()) == expected)
 }
 
+fn resolve_after_dependency_state(
+    jobs_root: &Path,
+    job_statuses: &HashMap<String, JobStatus>,
+    dependency: &JobAfterDependency,
+) -> AfterDependencyState {
+    if let Some(status) = job_statuses.get(&dependency.job_id) {
+        return AfterDependencyState::Status(*status);
+    }
+
+    let paths = paths_for(jobs_root, &dependency.job_id);
+    if !paths.record_path.exists() {
+        return AfterDependencyState::Missing;
+    }
+
+    match load_record(&paths) {
+        Ok(record) => AfterDependencyState::Status(record.status),
+        Err(err) => AfterDependencyState::Invalid {
+            detail: err.to_string(),
+        },
+    }
+}
+
 fn build_scheduler_facts(
     repo: &Repository,
+    jobs_root: &Path,
     records: &[JobRecord],
 ) -> Result<SchedulerFacts, Box<dyn std::error::Error>> {
     let mut facts = SchedulerFacts::default();
     let mut dependency_artifacts = HashSet::new();
+    let mut job_statuses = HashMap::new();
+    for record in records {
+        job_statuses.insert(record.id.clone(), record.status);
+    }
 
     for record in records {
         facts.job_order.push(record.id.clone());
@@ -973,6 +1219,23 @@ fn build_scheduler_facts(
         }
 
         if let Some(schedule) = record.schedule.as_ref() {
+            let mut after = schedule.after.clone();
+            sort_after_dependencies(&mut after);
+            after.dedup();
+            let after = after
+                .into_iter()
+                .map(|dependency| JobAfterDependencyStatus {
+                    job_id: dependency.job_id.clone(),
+                    policy: dependency.policy,
+                    state: resolve_after_dependency_state(jobs_root, &job_statuses, &dependency),
+                })
+                .collect::<Vec<_>>();
+            if !after.is_empty() {
+                facts
+                    .job_after_dependencies
+                    .insert(record.id.clone(), after);
+            }
+
             let deps = schedule
                 .dependencies
                 .iter()
@@ -1045,7 +1308,7 @@ pub fn scheduler_tick(
     let repo = Repository::discover(project_root)?;
 
     records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-    let facts = build_scheduler_facts(&repo, &records)?;
+    let facts = build_scheduler_facts(&repo, jobs_root, &records)?;
     let decisions = spec::evaluate_all(&facts);
 
     for mut record in records {
@@ -1540,6 +1803,8 @@ pub fn gc_jobs(
     if !jobs_root.exists() {
         return Ok(removed);
     }
+
+    let mut records = Vec::new();
     for entry in fs::read_dir(jobs_root)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
@@ -1549,12 +1814,28 @@ pub fn gc_jobs(
         let Ok(record) = read_record(jobs_root, &id) else {
             continue;
         };
+        records.push(record);
+    }
+
+    let mut protected = HashSet::new();
+    for record in &records {
+        if job_is_terminal(record.status) {
+            continue;
+        }
+        if let Some(schedule) = record.schedule.as_ref() {
+            for dependency in &schedule.after {
+                protected.insert(dependency.job_id.clone());
+            }
+        }
+    }
+
+    for record in records {
         let finished_at = record.finished_at.unwrap_or(record.created_at);
-        if job_is_active(record.status) {
+        if job_is_active(record.status) || protected.contains(&record.id) {
             continue;
         }
         if finished_at < cutoff {
-            let paths = paths_for(jobs_root, &id);
+            let paths = paths_for(jobs_root, &record.id);
             if paths.job_dir.exists() && fs::remove_dir_all(&paths.job_dir).is_ok() {
                 removed += 1;
             }
@@ -1773,6 +2054,154 @@ mod tests {
         }
     }
 
+    fn after_dependency(job_id: &str) -> JobAfterDependency {
+        JobAfterDependency {
+            job_id: job_id.to_string(),
+            policy: AfterPolicy::Success,
+        }
+    }
+
+    #[test]
+    fn resolve_after_dependencies_rejects_unknown_job_id() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let err = resolve_after_dependencies_for_enqueue(
+            &jobs_root,
+            "job-new",
+            &["missing-job".to_string()],
+        )
+        .expect_err("expected unknown dependency to fail");
+        assert!(
+            err.to_string()
+                .contains("unknown --after job id: missing-job"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_after_dependencies_rejects_self_dependency() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let err = resolve_after_dependencies_for_enqueue(
+            &jobs_root,
+            "job-self",
+            &["job-self".to_string()],
+        )
+        .expect_err("expected self dependency to fail");
+        assert!(
+            err.to_string()
+                .contains("invalid --after self dependency: job-self"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_after_dependencies_dedupes_repeated_ids() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-a",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue job-a");
+
+        let after = resolve_after_dependencies_for_enqueue(
+            &jobs_root,
+            "job-new",
+            &["job-a".to_string(), "job-a".to_string()],
+        )
+        .expect("resolve after");
+        assert_eq!(
+            after,
+            vec![JobAfterDependency {
+                job_id: "job-a".to_string(),
+                policy: AfterPolicy::Success,
+            }]
+        );
+    }
+
+    #[test]
+    fn resolve_after_dependencies_rejects_cycles() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-a",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("job-b")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue job-a");
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-b",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("job-c")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue job-b");
+
+        let err =
+            resolve_after_dependencies_for_enqueue(&jobs_root, "job-c", &["job-a".to_string()])
+                .expect_err("expected cycle to fail");
+        assert!(
+            err.to_string().contains("invalid --after cycle:"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("job-a")
+                && err.to_string().contains("job-b")
+                && err.to_string().contains("job-c"),
+            "expected cycle path in error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_after_dependencies_rejects_malformed_records() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        let job_dir = jobs_root.join("job-bad");
+        fs::create_dir_all(&job_dir).expect("create bad job dir");
+        fs::write(job_dir.join("job.json"), "{ not json }").expect("write malformed json");
+
+        let err =
+            resolve_after_dependencies_for_enqueue(&jobs_root, "job-new", &["job-bad".to_string()])
+                .expect_err("expected malformed record to fail");
+        assert!(
+            err.to_string()
+                .contains("cannot read job record for --after job-bad"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[test]
     fn scheduler_lock_busy_returns_error() {
         let temp = TempDir::new().expect("temp dir");
@@ -1842,6 +2271,100 @@ mod tests {
         assert!(
             waited_on.contains(&JobWaitKind::Dependencies),
             "expected waited_on to include dependencies"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_waits_on_after_dependency() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "dep-running",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue dep");
+        update_job_record(&jobs_root, "dep-running", |record| {
+            record.status = JobStatus::Running;
+        })
+        .expect("set dep status");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "dependent",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("dep-running")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue dependent");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "dependent").expect("read dependent");
+        assert_eq!(record.status, JobStatus::WaitingOnDeps);
+        let wait = record
+            .schedule
+            .as_ref()
+            .and_then(|schedule| schedule.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.as_deref());
+        assert_eq!(wait, Some("waiting on job dep-running"));
+    }
+
+    #[test]
+    fn scheduler_tick_blocks_on_after_data_errors() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let bad_dir = jobs_root.join("bad-predecessor");
+        fs::create_dir_all(&bad_dir).expect("bad dir");
+        fs::write(bad_dir.join("job.json"), "{ invalid }").expect("malformed job json");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "dependent",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("bad-predecessor")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue dependent");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "dependent").expect("read dependent");
+        assert_eq!(record.status, JobStatus::BlockedByDependency);
+        let wait = record
+            .schedule
+            .as_ref()
+            .and_then(|schedule| schedule.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            wait.contains("scheduler data error for job dependency bad-predecessor"),
+            "unexpected wait detail: {wait}"
         );
     }
 
@@ -2439,7 +2962,7 @@ mod tests {
 
         let mut records = list_records(&jobs_root).expect("list records");
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        let facts = build_scheduler_facts(&repo, &records).expect("facts");
+        let facts = build_scheduler_facts(&repo, &jobs_root, &records).expect("facts");
 
         for (idx, kind) in kinds.iter().enumerate() {
             let exists = artifact_for(*kind, &format!("exists-{idx}"));
@@ -2493,9 +3016,12 @@ mod tests {
 
         let mut records = list_records(&jobs_root).expect("list records");
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        let facts =
-            build_scheduler_facts(&Repository::discover(project_root).expect("repo"), &records)
-                .expect("facts");
+        let facts = build_scheduler_facts(
+            &Repository::discover(project_root).expect("repo"),
+            &jobs_root,
+            &records,
+        )
+        .expect("facts");
         let statuses = facts
             .producer_statuses
             .get(&artifact)
@@ -2550,7 +3076,7 @@ mod tests {
 
         let mut records = list_records(&jobs_root).expect("list records");
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        let facts = build_scheduler_facts(&repo, &records).expect("facts");
+        let facts = build_scheduler_facts(&repo, &jobs_root, &records).expect("facts");
 
         let ok = facts.pinned_heads.get("pinned-ok").expect("pinned ok fact");
         assert!(ok.matches);
@@ -2591,9 +3117,12 @@ mod tests {
 
         let mut records = list_records(&jobs_root).expect("list records");
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        let facts =
-            build_scheduler_facts(&Repository::discover(project_root).expect("repo"), &records)
-                .expect("facts");
+        let facts = build_scheduler_facts(
+            &Repository::discover(project_root).expect("repo"),
+            &jobs_root,
+            &records,
+        )
+        .expect("facts");
         assert!(
             !facts.lock_state.can_acquire(&lock),
             "expected lock to be held"
@@ -2675,6 +3204,73 @@ mod tests {
         let graph = ScheduleGraph::new(vec![record_b, record_a]);
         let producers = graph.producers_for(&artifact);
         assert_eq!(producers, vec!["job-a".to_string(), "job-b".to_string()]);
+    }
+
+    #[test]
+    fn schedule_graph_collect_focus_includes_after_neighbors() {
+        let focused = make_record(
+            "job-focused",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 3, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                after: vec![after_dependency("job-parent")],
+                ..JobSchedule::default()
+            }),
+        );
+        let parent = make_record(
+            "job-parent",
+            JobStatus::Succeeded,
+            Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            Some(JobSchedule::default()),
+        );
+        let child = make_record(
+            "job-child",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 4, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                after: vec![after_dependency("job-focused")],
+                ..JobSchedule::default()
+            }),
+        );
+
+        let graph = ScheduleGraph::new(vec![focused, parent, child]);
+        let focus = graph.collect_focus_jobs("job-focused", 1);
+        assert!(focus.contains("job-focused"));
+        assert!(focus.contains("job-parent"));
+        assert!(focus.contains("job-child"));
+    }
+
+    #[test]
+    fn schedule_snapshot_includes_after_edges() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+
+        let predecessor = make_record(
+            "job-predecessor",
+            JobStatus::Succeeded,
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Some(JobSchedule::default()),
+        );
+        let dependent = make_record(
+            "job-dependent",
+            JobStatus::Queued,
+            Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            Some(JobSchedule {
+                after: vec![after_dependency("job-predecessor")],
+                ..JobSchedule::default()
+            }),
+        );
+
+        let graph = ScheduleGraph::new(vec![dependent, predecessor]);
+        let snapshot = graph.snapshot(&repo, &["job-dependent".to_string()], 2);
+        assert!(
+            snapshot.edges.iter().any(|edge| {
+                edge.from == "job-dependent"
+                    && edge.to == "job-predecessor"
+                    && edge.after.as_ref().map(|after| after.policy) == Some(AfterPolicy::Success)
+            }),
+            "expected snapshot to include explicit after edge"
+        );
     }
 
     #[test]
@@ -2769,6 +3365,61 @@ mod tests {
                 .iter()
                 .any(|edge| edge.from == "job-b" && edge.to == "job-c"),
             "expected depth=2 to include job-b -> job-c edge"
+        );
+    }
+
+    #[test]
+    fn gc_jobs_preserves_terminal_records_referenced_by_active_after_dependencies() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-predecessor",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue predecessor");
+        update_job_record(&jobs_root, "job-predecessor", |record| {
+            record.status = JobStatus::Succeeded;
+            let old = Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap();
+            record.created_at = old;
+            record.started_at = Some(old);
+            record.finished_at = Some(old);
+            record.exit_code = Some(0);
+        })
+        .expect("mark predecessor terminal");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-dependent",
+            &["--help".to_string()],
+            &["vizier".to_string(), "ask".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("job-predecessor")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue dependent");
+        update_job_record(&jobs_root, "job-dependent", |record| {
+            record.status = JobStatus::Queued;
+        })
+        .expect("ensure active status");
+
+        let removed = gc_jobs(project_root, &jobs_root, Duration::days(7)).expect("gc");
+        assert_eq!(removed, 0, "expected predecessor to be retained");
+        assert!(
+            paths_for(&jobs_root, "job-predecessor").job_dir.exists(),
+            "expected referenced predecessor to remain after GC"
         );
     }
 }
