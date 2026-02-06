@@ -15,7 +15,9 @@ mod types;
 
 pub(crate) use approve::run_approve;
 pub(crate) use ask::{inline_command, run_ask_in_worktree};
-pub(crate) use build::run_build;
+pub(crate) use build::{
+    BuildExecutionPipeline, run_build, run_build_execute, run_build_materialize,
+};
 pub(crate) use draft::run_draft;
 pub(crate) use list::{run_cd, run_clean, run_list};
 pub(crate) use merge::run_merge;

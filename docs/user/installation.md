@@ -94,6 +94,10 @@ For the repo gate, run:
 ./cicd.sh
 ```
 
+If `CARGO_TARGET_DIR` is unset, the script now defaults to
+`.vizier/tmp/cargo-target` so leftover permission-restricted `target/` folders do
+not block local gate runs. Set `CARGO_TARGET_DIR` explicitly to override.
+
 The integration tests isolate their repos and artifacts per test, so default parallel
 `cargo test` runs are supported; only set `RUST_TEST_THREADS=1` if you are debugging
 ordering-specific failures locally.

@@ -599,7 +599,19 @@ fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
         JobArtifact::AskSavePatch { job_id } => {
             let repo_root = repo.path().parent().unwrap_or_else(|| Path::new("."));
             let jobs_root = repo_root.join(".vizier/jobs");
-            ask_save_patch_path(&jobs_root, job_id).exists()
+            if ask_save_patch_path(&jobs_root, job_id).exists() {
+                return true;
+            }
+
+            let paths = paths_for(&jobs_root, job_id);
+            if !paths.record_path.exists() {
+                return false;
+            }
+
+            match read_record(&jobs_root, job_id) {
+                Ok(record) => record.status == JobStatus::Succeeded,
+                Err(_) => false,
+            }
         }
     }
 }
@@ -1103,6 +1115,25 @@ pub fn read_record(
     }
 
     load_record(&paths)
+}
+
+pub fn update_job_record<F>(
+    jobs_root: &Path,
+    job_id: &str,
+    updater: F,
+) -> Result<JobRecord, Box<dyn std::error::Error>>
+where
+    F: FnOnce(&mut JobRecord),
+{
+    let paths = paths_for(jobs_root, job_id);
+    if !paths.record_path.exists() {
+        return Err(format!("no background job {}", job_id).into());
+    }
+
+    let mut record = load_record(&paths)?;
+    updater(&mut record);
+    persist_record(&paths, &record)?;
+    Ok(record)
 }
 
 pub fn status_label(status: JobStatus) -> &'static str {

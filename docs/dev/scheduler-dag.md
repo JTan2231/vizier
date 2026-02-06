@@ -5,6 +5,10 @@ The scheduler runs all assistant-backed commands as background jobs. Each job is
 in a DAG; edges are expressed as artifact dependencies. The scheduler decides when a
 job is eligible to run, records wait reasons, and spawns the job process.
 
+`vizier build execute` also uses scheduler jobs for build-session pipelines:
+- internal `build_materialize` jobs materialize draft plan docs/branches
+- existing `approve` / `review` / `merge` jobs execute per-step phases
+
 ## Architecture
 - **Job records** live under `.vizier/jobs/<id>/`:
   - `job.json` is the canonical record.
@@ -71,7 +75,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `plan_commits` (draft branch exists)
 - `target_branch` (target branch exists)
 - `merge_sentinel` (merge conflict sentinel exists)
-- `ask_save_patch` (ask/save patch file exists)
+- `ask_save_patch` (ask/save patch file exists, or the referenced job finished `succeeded`; build-execute pipelines use this as a completion sentinel between phase jobs)
 
 ## Failure modes and exit codes
 - `failed` is recorded when the background child exits with a non-zero code.

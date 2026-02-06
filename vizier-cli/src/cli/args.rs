@@ -164,6 +164,15 @@ impl From<ListFormatArg> for config::ListFormat {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum BuildPipelineArg {
+    Approve,
+    #[value(name = "approve-review")]
+    ApproveReview,
+    #[value(name = "approve-review-merge")]
+    ApproveReviewMerge,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum JobsScheduleFormatArg {
     Dag,
@@ -403,7 +412,7 @@ pub(crate) enum Commands {
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
 
-    /// Run a build session that generates batched implementation plans on a dedicated build branch
+    /// Create build sessions and execute them through queued materialize/approve/review/merge jobs
     Build(BuildCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch
@@ -500,8 +509,73 @@ pub(crate) struct DraftCmd {
 #[derive(ClapArgs, Debug)]
 pub(crate) struct BuildCmd {
     /// Path to the build file (TOML or JSON)
-    #[arg(short = 'f', long = "file", value_name = "PATH")]
-    pub(crate) file: PathBuf,
+    #[arg(
+        short = 'f',
+        long = "file",
+        value_name = "PATH",
+        conflicts_with = "command"
+    )]
+    pub(crate) file: Option<PathBuf>,
+
+    /// Optional stable build id override (letters/numbers/dashes, no leading '.', no '/')
+    #[arg(
+        long = "name",
+        value_name = "NAME",
+        requires = "file",
+        conflicts_with = "command"
+    )]
+    pub(crate) name: Option<String>,
+
+    #[command(subcommand)]
+    pub(crate) command: Option<BuildActionCmd>,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum BuildActionCmd {
+    /// Execute a succeeded build session by queueing materialize/approve/review/merge jobs
+    Execute(BuildExecuteCmd),
+
+    /// Internal scheduler hook to materialize a build step into a draft branch
+    #[command(name = "__materialize", hide = true)]
+    Materialize(BuildMaterializeCmd),
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct BuildExecuteCmd {
+    /// Build session id (matches build/<id> and .vizier/implementation-plans/builds/<id>)
+    #[arg(value_name = "BUILD")]
+    pub(crate) build_id: String,
+
+    /// Phase pipeline to queue for each step
+    #[arg(long = "pipeline", value_enum, default_value_t = BuildPipelineArg::Approve)]
+    pub(crate) pipeline: BuildPipelineArg,
+
+    /// Resume from execution.json by enqueueing only missing/non-terminal phases
+    #[arg(long = "resume", action = ArgAction::SetTrue)]
+    pub(crate) resume: bool,
+
+    /// Skip interactive confirmation prompt
+    #[arg(long = "yes", short = 'y')]
+    pub(crate) assume_yes: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct BuildMaterializeCmd {
+    /// Build session id
+    #[arg(value_name = "BUILD")]
+    pub(crate) build_id: String,
+
+    /// Build manifest step key (for example 01, 02a)
+    #[arg(long = "step", value_name = "STEP")]
+    pub(crate) step_key: String,
+
+    /// Derived plan slug to materialize
+    #[arg(long = "slug", value_name = "SLUG")]
+    pub(crate) slug: String,
+
+    /// Draft branch to write
+    #[arg(long = "branch", value_name = "BRANCH")]
+    pub(crate) branch: String,
 }
 
 #[derive(ClapArgs, Debug)]

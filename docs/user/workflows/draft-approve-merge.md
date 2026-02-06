@@ -2,15 +2,23 @@
 
 This guide explains how Vizier’s plan workflow turns a high-level spec into audited code without disturbing your working tree. Use it whenever you want Vizier (or an external agent) to implement a scoped change on a dedicated branch and then merge it back with a metadata-rich commit.
 
-## Queue Multiple Drafts with `vizier build`
+## Queue Plan Pipelines with `vizier build`
 
 When you want to batch related plan drafts, start with:
 
 ```bash
-vizier build --file examples/build/todo.toml
+vizier build --file examples/build/todo.toml --name todo-batch
 ```
 
-That command queues one `vizier draft` job per build step (serial or parallel based on the file layout). For the schema and JSON variant, see `docs/user/build.md`, `examples/build/todo.toml`, and `examples/build/todo.json`.
+Create mode writes a build session to `build/<id>` with plan artifacts under `.vizier/implementation-plans/builds/<id>/`. To turn that session into executable plan work, run:
+
+```bash
+vizier build execute todo-batch --pipeline approve-review --yes
+```
+
+Execution mode queues per-step scheduler jobs that materialize canonical `draft/<slug>` plan docs, then runs `approve`/`review`/`merge` phases according to pipeline selection while preserving build stage ordering (serial/parallel semantics). Use `--resume` to continue from `execution.json` without duplicating queued/running jobs.
+
+For the build schema, execute options, and artifact details, see `docs/user/build.md`, `examples/build/todo.toml`, and `examples/build/todo.json`.
 
 ### Agent configuration
 

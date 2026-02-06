@@ -790,16 +790,56 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .await
             }
 
-            Commands::Build(cmd) => {
+            Commands::Build(BuildCmd {
+                file,
+                name,
+                command,
+            }) => {
                 if cli.global.json {
                     return Err("--json is not supported for vizier build".into());
                 }
-                let agent = config::resolve_agent_settings(
-                    &config::get_config(),
-                    config::CommandScope::Draft,
-                    cli_agent_override.as_ref(),
-                )?;
-                run_build(cmd.file, &project_root, &agent, commit_mode).await
+                match command {
+                    Some(BuildActionCmd::Execute(exec)) => {
+                        let pipeline = match exec.pipeline {
+                            BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
+                            BuildPipelineArg::ApproveReview => {
+                                BuildExecutionPipeline::ApproveReview
+                            }
+                            BuildPipelineArg::ApproveReviewMerge => {
+                                BuildExecutionPipeline::ApproveReviewMerge
+                            }
+                        };
+                        run_build_execute(
+                            exec.build_id,
+                            pipeline,
+                            exec.resume,
+                            exec.assume_yes,
+                            cli.global.follow,
+                            &project_root,
+                        )
+                        .await
+                    }
+                    Some(BuildActionCmd::Materialize(materialize)) => {
+                        run_build_materialize(
+                            materialize.build_id,
+                            materialize.step_key,
+                            materialize.slug,
+                            materialize.branch,
+                            &project_root,
+                        )
+                        .await
+                    }
+                    None => {
+                        let build_file =
+                            file.ok_or("vizier build requires --file when no subcommand is used")?;
+                        let agent = config::resolve_agent_settings(
+                            &config::get_config(),
+                            config::CommandScope::Draft,
+                            cli_agent_override.as_ref(),
+                        )?;
+                        run_build(build_file, name, &project_root, &agent, commit_mode).await
+                    }
+                }
             }
 
             Commands::List(cmd) => run_list(resolve_list_options(&cmd, cli.global.json)?),

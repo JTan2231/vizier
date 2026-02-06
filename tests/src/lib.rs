@@ -7,6 +7,7 @@ mod approve;
 mod ask;
 mod background;
 mod build;
+mod cicd;
 mod config;
 mod display;
 mod draft;

@@ -5,8 +5,10 @@
 - **Agent scope**: Which Vizier command is running (e.g., `ask`, `save`, `draft`, `approve`, `review`, `merge`) and therefore which prompts/bounds/config apply.
 - **Auditor**: The component that records what happened (session logs), summarizes repo edits (A/M/D/R), and constructs commit/outcome metadata from observed facts.
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
+- **CI gate target-dir fallback**: `./cicd.sh` default that sets `CARGO_TARGET_DIR` to `.vizier/tmp/cargo-target` when unset so permission-restricted repo `target/` directories do not block gate runs.
 - **Change discipline**: The AGENTS.md contract that code changes must update tests/docs and pass `./cicd.sh` before being treated as done.
 - **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
+- **Commit-style summary**: The only user-facing output for a narrative-maintenance turn: a short, commit-message-like line describing what changed while detailed `snapshotDelta` content stays internal.
 - **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests or safety/correctness constraints require specificity.
 - **Config reference**: `docs/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings.
 - **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
