@@ -14,7 +14,7 @@ Problem/Tension
 Desired behavior (Product-level)
 - Default action: treat every user input as authorization to update `.vizier/narrative/snapshot.md` and (when needed) `.vizier/narrative/threads/*.md`.
 - No-wait execution: do not wait for a separate "please update" request when no opt-out signal is present; the turn itself is the authorization surface.
-- Explicit opt-out: when users signal “no update” for a turn (e.g., `no-op:` / `discuss-only:`), do not change narrative files.
+- Explicit opt-out: when users signal “no update” for a turn (e.g., `no-op:` / `discuss-only:` / explicit “do not update”), do not change narrative files.
 - Snapshot discipline: merge into existing threads, update minimally, de-duplicate, and ground claims in observable evidence (code, tests, or user reports).
 - Glossary lockstep: when snapshot edits introduce or clarify high-signal terms, update `.vizier/narrative/glossary.md` in the same change.
 - Output contract: respond with only a short, commit-message-like summary of narrative changes; keep detailed diffs/deltas internal to `.vizier` rather than printing them verbatim.
@@ -64,3 +64,5 @@ Update (2026-02-06)
 - Clarified response wording: narrative-maintenance turns should return a short commit-style summary (not raw delta output), while detailed `snapshotDelta` remains internal to `.vizier`.
 Update (2026-02-06, follow-up)
 - Clarified guardrail parsing: the explicit update instruction is still valid when wrapped in `<task><instruction>...</instruction></task>`, so formatting does not block authorized first-response narrative upkeep.
+Update (2026-02-06, task-envelope follow-up)
+- Clarified no-wait execution posture: when the task envelope contains the explicit update instruction, editorial updates are expected in the first response, and only an explicit no-update signal suppresses narrative edits for that turn.

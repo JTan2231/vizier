@@ -4,7 +4,7 @@ use crate::prompts::{
 };
 use std::path::PathBuf;
 
-use super::CommandScope;
+use super::ProfileScope;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum PromptKind {
@@ -63,7 +63,7 @@ impl PromptKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PromptOrigin {
-    ScopedConfig { scope: CommandScope },
+    ScopedConfig { scope: ProfileScope },
     RepoFile { path: PathBuf },
     Default,
 }
@@ -82,7 +82,7 @@ impl PromptOrigin {
 pub struct PromptSelection {
     pub text: String,
     pub kind: PromptKind,
-    pub requested_scope: CommandScope,
+    pub requested_scope: ProfileScope,
     pub origin: PromptOrigin,
     pub source_path: Option<PathBuf>,
 }

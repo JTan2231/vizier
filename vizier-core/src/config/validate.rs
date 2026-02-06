@@ -1084,4 +1084,93 @@ profile = "deprecated"
         );
         assert_eq!(ask_with_cli.agent_runtime.label, "cli");
     }
+
+    #[test]
+    fn resolve_default_agent_settings_ignores_command_tables() {
+        let mut cfg = Config::default();
+        cfg.agent_defaults.agent_runtime = Some(AgentRuntimeOverride {
+            label: Some("default".to_string()),
+            command: Some(vec!["default-cmd".to_string()]),
+            progress_filter: None,
+            output: None,
+            enable_script_wrapper: None,
+        });
+        cfg.agent_scopes.insert(
+            CommandScope::Ask,
+            AgentOverrides {
+                agent_runtime: Some(AgentRuntimeOverride {
+                    label: Some("ask".to_string()),
+                    command: Some(vec!["ask-cmd".to_string()]),
+                    progress_filter: None,
+                    output: None,
+                    enable_script_wrapper: None,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let default = resolve_default_agent_settings(&cfg, None).expect("resolve default scope");
+        assert_eq!(default.profile_scope, ProfileScope::Default);
+        assert_eq!(default.scope, None);
+        assert_eq!(default.agent_runtime.label, "default");
+        assert_eq!(
+            default.agent_runtime.command,
+            vec!["default-cmd".to_string()]
+        );
+
+        let ask = resolve_agent_settings(&cfg, CommandScope::Ask, None).expect("resolve ask");
+        assert_eq!(ask.profile_scope, ProfileScope::Command(CommandScope::Ask));
+        assert_eq!(ask.scope, Some(CommandScope::Ask));
+        assert_eq!(ask.agent_runtime.label, "ask");
+        assert_eq!(ask.agent_runtime.command, vec!["ask-cmd".to_string()]);
+    }
+
+    #[test]
+    fn resolve_default_prompt_profile_ignores_command_prompt_overrides() {
+        let mut cfg = Config::default();
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::Documentation,
+            PromptOverrides {
+                text: Some("default-doc".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
+        cfg.agent_scopes.insert(
+            CommandScope::Ask,
+            AgentOverrides {
+                prompt_overrides: {
+                    let mut overrides = std::collections::HashMap::new();
+                    overrides.insert(
+                        PromptKind::Documentation,
+                        PromptOverrides {
+                            text: Some("ask-doc".to_string()),
+                            source_path: None,
+                            agent: None,
+                        },
+                    );
+                    overrides
+                },
+                ..Default::default()
+            },
+        );
+
+        let default = resolve_default_prompt_profile(&cfg, PromptKind::Documentation, None)
+            .expect("resolve default documentation profile");
+        assert_eq!(default.profile_scope, ProfileScope::Default);
+        assert_eq!(default.scope, None);
+        assert_eq!(
+            default.prompt.as_ref().expect("default prompt").text.trim(),
+            "default-doc"
+        );
+
+        let ask = resolve_prompt_profile(&cfg, CommandScope::Ask, PromptKind::Documentation, None)
+            .expect("resolve ask documentation profile");
+        assert_eq!(ask.profile_scope, ProfileScope::Command(CommandScope::Ask));
+        assert_eq!(ask.scope, Some(CommandScope::Ask));
+        assert_eq!(
+            ask.prompt.as_ref().expect("ask prompt").text.trim(),
+            "ask-doc"
+        );
+    }
 }

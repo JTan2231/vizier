@@ -46,7 +46,8 @@ pub struct AgentInvocationContext {
     pub backend: config::BackendKind,
     pub backend_label: String,
     pub selector: String,
-    pub scope: config::CommandScope,
+    pub scope: config::ProfileScope,
+    pub command_scope: Option<config::CommandScope>,
     pub prompt_kind: SystemPrompt,
     pub command: Vec<String>,
     pub exit_code: Option<i32>,
@@ -154,11 +155,16 @@ impl Auditor {
     fn record_agent(settings: &config::AgentSettings, prompt_kind: Option<SystemPrompt>) {
         if let Ok(mut auditor) = AUDITOR.lock() {
             let backend_label = settings.agent_runtime.label.clone();
+            let scope = settings
+                .prompt_selection()
+                .map(|selection| selection.requested_scope)
+                .unwrap_or(settings.profile_scope);
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
                 backend_label,
                 selector: settings.selector.clone(),
-                scope: settings.scope,
+                scope,
+                command_scope: settings.scope,
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
                 command: settings.agent_runtime.command.clone(),
                 exit_code: None,
@@ -408,7 +414,7 @@ impl Auditor {
                 provider: cfg.backend.to_string(),
                 name: cfg.agent_selector.clone(),
                 reasoning_effort: None,
-                scope: None,
+                scope: Some(config::ProfileScope::Default.as_str().to_string()),
             },
         }
     }
@@ -479,11 +485,14 @@ impl Auditor {
     ) -> SessionPromptInfo {
         let scope = context
             .map(|ctx| ctx.scope)
-            .unwrap_or(config::CommandScope::Ask);
+            .unwrap_or(config::ProfileScope::Default);
         let kind = context
             .map(|ctx| ctx.prompt_kind)
             .unwrap_or(SystemPrompt::Documentation);
-        let selection = cfg.prompt_for(scope, kind);
+        let selection = match scope {
+            config::ProfileScope::Default => cfg.prompt_for_default(kind),
+            config::ProfileScope::Command(command) => cfg.prompt_for_command(command, kind),
+        };
         let origin = selection.origin.clone();
         let digest = Sha256::digest(selection.text.as_bytes());
         let hash = format!("{:x}", digest);
@@ -533,14 +542,15 @@ impl Auditor {
         Ok(SessionArtifact::new(&log.id, session_path, project_root))
     }
 
-    /// Basic LLM request without tool usage
-    pub async fn llm_request(
+    /// Basic LLM request without tool usage for an explicit command scope.
+    pub async fn llm_request_for_command(
+        scope: config::CommandScope,
         #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
         user_message: String,
     ) -> Result<Message, Box<dyn std::error::Error>> {
         let agent = crate::config::resolve_prompt_profile(
             &crate::config::get_config(),
-            config::CommandScope::Ask,
+            scope,
             SystemPrompt::Commit,
             None,
         )?;
@@ -552,6 +562,34 @@ impl Auditor {
             None,
         )
         .await
+    }
+
+    /// Basic LLM request without tool usage for non-command/default contexts.
+    pub async fn llm_request_default(
+        #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
+        user_message: String,
+    ) -> Result<Message, Box<dyn std::error::Error>> {
+        let agent = crate::config::resolve_default_prompt_profile(
+            &crate::config::get_config(),
+            SystemPrompt::Commit,
+            None,
+        )?;
+        Self::llm_request_with_tools(
+            &agent,
+            Some(SystemPrompt::Commit),
+            system_prompt,
+            user_message,
+            None,
+        )
+        .await
+    }
+
+    /// Backward-compatible wrapper; defaults to non-command/default profile resolution.
+    pub async fn llm_request(
+        #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
+        user_message: String,
+    ) -> Result<Message, Box<dyn std::error::Error>> {
+        Self::llm_request_default(system_prompt, user_message).await
     }
 
     /// Builds the prompt string sent to the agent runner, embedding the user
@@ -632,7 +670,7 @@ impl Auditor {
                 progress_filter: opts_clone.progress_filter.clone(),
                 output: opts_clone.output,
                 allow_script_wrapper: opts_clone.enable_script_wrapper,
-                scope: Some(agent_scope),
+                scope: agent_scope,
                 metadata,
                 timeout: Some(DEFAULT_AGENT_TIMEOUT),
             };
@@ -729,7 +767,7 @@ impl Auditor {
             progress_filter: runtime_opts.progress_filter.clone(),
             output: runtime_opts.output,
             allow_script_wrapper: runtime_opts.enable_script_wrapper,
-            scope: Some(agent_scope),
+            scope: agent_scope,
             metadata,
             timeout: Some(DEFAULT_AGENT_TIMEOUT),
         };
@@ -1091,7 +1129,7 @@ impl CommitMessageType {
 #[cfg(test)]
 mod tests {
     use super::{
-        Auditor, CommitMessageBuilder, CommitMessageType, SessionArtifact, SystemPrompt,
+        Auditor, CommitMessageBuilder, CommitMessageType, Message, SessionArtifact, SystemPrompt,
         find_project_root,
     };
     use crate::config;
@@ -1105,6 +1143,25 @@ mod tests {
         config::set_config(cfg);
         f();
         config::set_config(original);
+    }
+
+    #[test]
+    fn session_fallback_scopes_use_default_profile() {
+        with_config(config::Config::default(), || {
+            let mut auditor = Auditor::new();
+            auditor.messages.push(Message::user("hello".to_string()));
+            auditor
+                .messages
+                .push(Message::assistant("world".to_string()));
+
+            let tmp = tempdir().unwrap();
+            let log = auditor
+                .build_session_log(tmp.path())
+                .expect("session log should be built");
+
+            assert_eq!(log.system_prompt.scope, "default");
+            assert_eq!(log.model.scope.as_deref(), Some("default"));
+        });
     }
 
     #[test]

@@ -242,6 +242,49 @@ fn test_plan_reports_agent_command_override() -> TestResult {
 }
 
 #[test]
+fn test_plan_default_runtime_uses_agents_default_not_ask() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let config_path = repo.path().join("custom-runtime-config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[agents.default.agent]
+label = "default-runtime"
+command = ["./default-runtime.sh"]
+
+[agents.ask.agent]
+label = "ask-runtime"
+command = ["./ask-runtime.sh"]
+"#,
+    )?;
+
+    let output = repo
+        .vizier_cmd_with_config(&config_path)
+        .args(["plan", "--json"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier plan --json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        json.pointer("/agent_runtime_default/label")
+            .and_then(Value::as_str),
+        Some("default-runtime"),
+        "default runtime should come from [agents.default], not ask overrides"
+    );
+    assert_eq!(
+        json.pointer("/scopes/ask/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("ask-runtime"),
+        "ask scope should still report ask-specific runtime"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_plan_docs_require_plan_and_branch_front_matter() -> TestResult {
     let repo = IntegrationRepo::new()?;
 

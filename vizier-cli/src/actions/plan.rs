@@ -113,15 +113,6 @@ struct DocumentationReport {
     include_narrative_docs: bool,
 }
 
-fn resolve_default_agent_settings(
-    cfg: &config::Config,
-    cli_override: Option<&config::AgentOverrides>,
-) -> Result<config::AgentSettings, Box<dyn std::error::Error>> {
-    let mut base = cfg.clone();
-    base.agent_scopes.clear();
-    config::resolve_agent_settings(&base, config::CommandScope::Ask, cli_override)
-}
-
 fn runtime_report(runtime: &config::ResolvedAgentRuntime) -> AgentRuntimeReport {
     AgentRuntimeReport {
         label: runtime.label.clone(),
@@ -228,7 +219,7 @@ fn build_config_report(
     cfg: &config::Config,
     cli_override: Option<&config::AgentOverrides>,
 ) -> Result<ConfigReport, Box<dyn std::error::Error>> {
-    let default_agent = resolve_default_agent_settings(cfg, cli_override)?;
+    let default_agent = config::resolve_default_agent_settings(cfg, cli_override)?;
     let agent_runtime_default = Some(runtime_report(&default_agent.agent_runtime));
 
     let mut scopes = BTreeMap::new();

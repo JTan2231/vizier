@@ -7,13 +7,14 @@ use crate::agent::{AgentRunner, ScriptRunner};
 
 use super::{
     AgentOutputHandling, AgentOverrides, AgentRuntimeOptions, AgentRuntimeResolution, BackendKind,
-    CommandScope, Config, DocumentationSettings, PromptKind, PromptOverrides, PromptSelection,
-    ResolvedAgentRuntime, backend_kind_for_selector, default_selector_for_backend,
+    CommandScope, Config, DocumentationSettings, ProfileScope, PromptKind, PromptOverrides,
+    PromptSelection, ResolvedAgentRuntime, backend_kind_for_selector, default_selector_for_backend,
 };
 
 #[derive(Clone)]
 pub struct AgentSettings {
-    pub scope: CommandScope,
+    pub profile_scope: ProfileScope,
+    pub scope: Option<CommandScope>,
     pub selector: String,
     pub backend: BackendKind,
     pub runner: Option<Arc<dyn AgentRunner>>,
@@ -28,12 +29,19 @@ impl AgentSettings {
         &self,
         kind: PromptKind,
     ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        super::resolve_prompt_profile(
-            &super::get_config(),
-            self.scope,
-            kind,
-            self.cli_override.as_ref(),
-        )
+        match self.scope {
+            Some(scope) => super::resolve_prompt_profile(
+                &super::get_config(),
+                scope,
+                kind,
+                self.cli_override.as_ref(),
+            ),
+            None => super::resolve_default_prompt_profile(
+                &super::get_config(),
+                kind,
+                self.cli_override.as_ref(),
+            ),
+        }
     }
 
     pub fn prompt_selection(&self) -> Option<&PromptSelection> {
@@ -44,7 +52,7 @@ impl AgentSettings {
         self.runner.as_ref().ok_or_else(|| {
             format!(
                 "agent scope `{}` requires an agent backend runner, but none was resolved",
-                self.scope.as_str()
+                self.profile_scope.as_str()
             )
             .into()
         })
@@ -72,7 +80,31 @@ pub fn resolve_agent_settings(
         builder.apply_cli_override(overrides);
     }
 
-    builder.build(scope, None, cli_override)
+    builder.build(
+        ProfileScope::Command(scope),
+        Some(scope),
+        None,
+        cli_override,
+    )
+}
+
+pub fn resolve_default_agent_settings(
+    cfg: &Config,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    let mut builder = AgentSettingsBuilder::new(cfg);
+
+    if !cfg.agent_defaults.is_empty() {
+        builder.apply(&cfg.agent_defaults);
+    }
+
+    if let Some(overrides) = cli_override
+        && !overrides.is_empty()
+    {
+        builder.apply_cli_override(overrides);
+    }
+
+    builder.build(ProfileScope::Default, None, None, cli_override)
 }
 
 pub fn resolve_prompt_profile(
@@ -113,9 +145,44 @@ pub fn resolve_prompt_profile(
         if kind == PromptKind::Documentation && !builder.documentation.use_documentation_prompt {
             None
         } else {
-            Some(cfg.prompt_for(scope, kind))
+            Some(cfg.prompt_for_command(scope, kind))
         };
-    builder.build(scope, prompt, cli_override)
+    builder.build(
+        ProfileScope::Command(scope),
+        Some(scope),
+        prompt,
+        cli_override,
+    )
+}
+
+pub fn resolve_default_prompt_profile(
+    cfg: &Config,
+    kind: PromptKind,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    let mut builder = AgentSettingsBuilder::new(cfg);
+
+    if !cfg.agent_defaults.is_empty() {
+        builder.apply(&cfg.agent_defaults);
+    }
+
+    if let Some(default_prompt) = cfg.agent_defaults.prompt_overrides.get(&kind) {
+        builder.apply_prompt_overrides(default_prompt);
+    }
+
+    if let Some(overrides) = cli_override
+        && !overrides.is_empty()
+    {
+        builder.apply_cli_override(overrides);
+    }
+
+    let prompt =
+        if kind == PromptKind::Documentation && !builder.documentation.use_documentation_prompt {
+            None
+        } else {
+            Some(cfg.prompt_for_default(kind))
+        };
+    builder.build(ProfileScope::Default, None, prompt, cli_override)
 }
 
 #[derive(Clone)]
@@ -210,7 +277,8 @@ impl AgentSettingsBuilder {
 
     fn build(
         &self,
-        scope: CommandScope,
+        profile_scope: ProfileScope,
+        scope: Option<CommandScope>,
         prompt: Option<PromptSelection>,
         cli_override: Option<&AgentOverrides>,
     ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
@@ -220,6 +288,7 @@ impl AgentSettingsBuilder {
             resolve_agent_runtime(agent_runtime.clone(), &self.selector, self.backend)?;
 
         Ok(AgentSettings {
+            profile_scope,
             scope,
             selector: self.selector.clone(),
             backend: self.backend,

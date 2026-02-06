@@ -250,7 +250,7 @@ pub(crate) fn prompt_selection(
     agent.prompt_selection().ok_or_else(|| {
         io::Error::other(format!(
             "agent for `{}` is missing a resolved prompt; call AgentSettings::for_prompt first",
-            agent.scope.as_str()
+            agent.profile_scope.as_str()
         ))
         .into()
     })
@@ -307,7 +307,7 @@ pub(crate) fn build_agent_request(
         progress_filter: agent.agent_runtime.progress_filter.clone(),
         output: agent.agent_runtime.output,
         allow_script_wrapper: agent.agent_runtime.enable_script_wrapper,
-        scope: Some(agent.scope),
+        scope: agent.scope,
         metadata,
         timeout: Some(DEFAULT_AGENT_TIMEOUT),
     }

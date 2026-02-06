@@ -25,7 +25,7 @@ pub(crate) async fn run_test_display(
         return Err(format!(
             "vizier test-display requires an agent-capable backend; `{}` is configured for scope `{}`",
             agent.backend,
-            agent.scope.as_str()
+            agent.profile_scope.as_str()
         )
         .into());
     }
@@ -111,7 +111,10 @@ fn emit_test_display_summary(
             "Outcome".to_string(),
             "Agent display test succeeded".to_string(),
         ),
-        ("Scope".to_string(), agent.scope.as_str().to_string()),
+        (
+            "Scope".to_string(),
+            agent.profile_scope.as_str().to_string(),
+        ),
         ("Agent".to_string(), agent.selector.clone()),
         ("Backend".to_string(), agent.backend.to_string()),
         ("Exit code".to_string(), response.exit_code.to_string()),
@@ -164,7 +167,7 @@ fn emit_test_display_summary(
 fn render_test_display_failure(agent: &config::AgentSettings, code: i32, stderr: &[String]) {
     let mut message = format!(
         "agent for `{}` exited with status {code}",
-        agent.scope.as_str()
+        agent.profile_scope.as_str()
     );
     if let Some(line) = stderr.last() {
         message.push_str(&format!("; stderr: {line}"));
@@ -182,7 +185,7 @@ fn render_test_display_timeout(agent: &config::AgentSettings, secs: u64) {
         LogLevel::Error,
         format!(
             "agent for `{}` timed out after {secs}s",
-            agent.scope.as_str()
+            agent.profile_scope.as_str()
         ),
     );
 }

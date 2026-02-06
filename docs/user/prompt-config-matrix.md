@@ -4,6 +4,7 @@ This document is the canonical reference for how Vizier maps CLI commands (“sc
 
 - **Scopes** (commands): `ask`, `save`, `draft`, `approve`, `review`, `merge`
 - **Prompt kinds**: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict`
+- **Internal fallback profile**: `default` (not a CLI command scope; used for non-command prompt/session fallback paths)
 
 Only these prompt kind keys are accepted; aliases like `base`, `system`, `plan`, `refine`, and `merge` are rejected.
 
@@ -65,6 +66,7 @@ Prompt text resolution only consults `[agents.<scope>.prompts.<kind>]` and `.viz
 In practice:
 - Treat `[agents.<scope>.prompts.<kind>]` as the **primary surface** for customization.
 - Use `.vizier/*.md` when you want repo-local prompt files without touching config.
+- Non-command fallback resolution uses the internal `default` profile (`[agents.default.prompts.<kind>]` + repo files + built-ins) and does not read command tables like `[agents.ask.*]`.
 
 ## Documentation prompt toggles
 

@@ -4,7 +4,10 @@ mod driver;
 mod load;
 mod validate;
 
-pub use driver::{AgentSettings, resolve_agent_settings, resolve_prompt_profile};
+pub use driver::{
+    AgentSettings, resolve_agent_settings, resolve_default_agent_settings,
+    resolve_default_prompt_profile, resolve_prompt_profile,
+};
 pub use load::{
     base_config_dir, env_config_path, get_config, get_system_prompt_with_meta, global_config_path,
     load_config_from_json, load_config_from_path, load_config_from_toml,

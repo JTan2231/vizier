@@ -526,7 +526,8 @@ pub fn build_cicd_failure_prompt(input: CicdFailurePromptInput<'_>) -> Result<St
 mod tests {
     use super::*;
     use crate::config::{
-        CommandScope, DocumentationSettings, PromptKind, PromptOrigin, PromptSelection,
+        CommandScope, DocumentationSettings, ProfileScope, PromptKind, PromptOrigin,
+        PromptSelection,
     };
 
     fn doc_settings() -> DocumentationSettings {
@@ -541,7 +542,7 @@ mod tests {
         PromptSelection {
             text: "DOCUMENTATION TEMPLATE".to_string(),
             kind: PromptKind::Documentation,
-            requested_scope: CommandScope::Ask,
+            requested_scope: ProfileScope::Command(CommandScope::Ask),
             origin: PromptOrigin::Default,
             source_path: None,
         }
@@ -600,7 +601,7 @@ mod tests {
         let selection = PromptSelection {
             text: "PLAN TEMPLATE".to_string(),
             kind: PromptKind::ImplementationPlan,
-            requested_scope: CommandScope::Draft,
+            requested_scope: ProfileScope::Command(CommandScope::Draft),
             origin: PromptOrigin::Default,
             source_path: None,
         };
@@ -628,7 +629,7 @@ mod tests {
         let selection = PromptSelection {
             text: "PLAN TEMPLATE".to_string(),
             kind: PromptKind::ImplementationPlan,
-            requested_scope: CommandScope::Draft,
+            requested_scope: ProfileScope::Command(CommandScope::Draft),
             origin: PromptOrigin::Default,
             source_path: None,
         };

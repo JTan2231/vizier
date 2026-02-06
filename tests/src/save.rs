@@ -1,5 +1,16 @@
 use crate::fixtures::*;
 
+fn write_agent_script(path: &Path, output: &str) -> TestResult {
+    fs::write(path, format!("#!/bin/sh\ncat >/dev/null\necho {output}\n"))?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn test_save() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -36,6 +47,65 @@ fn test_save() -> TestResult {
             .to_ascii_lowercase()
             .contains("mock agent response"),
         "session log missing backend response"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_save_commit_generation_respects_save_scope_when_ask_differs() -> TestResult {
+    let repo = IntegrationRepo::new_without_mock()?;
+    let scripts = tempfile::tempdir()?;
+    let ask_script = scripts.path().join("ask-agent.sh");
+    let save_script = scripts.path().join("save-agent.sh");
+    write_agent_script(&ask_script, "ask-scope-commit-body")?;
+    write_agent_script(&save_script, "save-scope-commit-body")?;
+
+    let config_dir = tempfile::tempdir()?;
+    let config_path = config_dir.path().join("scope-config.toml");
+    let ask_cmd = ask_script.to_string_lossy().replace('\\', "\\\\");
+    let save_cmd = save_script.to_string_lossy().replace('\\', "\\\\");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[agents.ask.agent]
+label = "ask-test"
+command = ["{ask_cmd}"]
+
+[agents.save.agent]
+label = "save-test"
+command = ["{save_cmd}"]
+"#
+        ),
+    )?;
+
+    let output = repo
+        .vizier_cmd_with_config(&config_path)
+        .args(["save"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier save failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let commit = Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "log",
+            "-1",
+            "--pretty=%B",
+        ])
+        .output()?;
+    let message = String::from_utf8_lossy(&commit.stdout);
+    assert!(
+        message.contains("save-scope-commit-body"),
+        "save commit should use save-scoped runtime output, got:\n{message}"
+    );
+    assert!(
+        !message.contains("ask-scope-commit-body"),
+        "save commit should not use ask-scoped runtime output, got:\n{message}"
     );
     Ok(())
 }

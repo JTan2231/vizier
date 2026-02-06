@@ -50,6 +50,40 @@ pub enum CommandScope {
     Merge,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProfileScope {
+    Default,
+    Command(CommandScope),
+}
+
+impl ProfileScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProfileScope::Default => "default",
+            ProfileScope::Command(scope) => scope.as_str(),
+        }
+    }
+
+    pub fn command_scope(&self) -> Option<CommandScope> {
+        match self {
+            ProfileScope::Default => None,
+            ProfileScope::Command(scope) => Some(*scope),
+        }
+    }
+}
+
+impl From<CommandScope> for ProfileScope {
+    fn from(value: CommandScope) -> Self {
+        Self::Command(value)
+    }
+}
+
+impl std::fmt::Display for ProfileScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 impl CommandScope {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -962,8 +996,24 @@ pub struct ConfigLayer {
 }
 
 impl Config {
+    pub fn prompt_for_command(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
+        self.prompt_for_profile(ProfileScope::Command(scope), kind)
+    }
+
+    pub fn prompt_for_default(&self, kind: PromptKind) -> PromptSelection {
+        self.prompt_for_profile(ProfileScope::Default, kind)
+    }
+
     pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
-        if let Some(selection) = self.prompt_from_agent_override(scope, kind) {
+        self.prompt_for_command(scope, kind)
+    }
+
+    fn prompt_for_profile(
+        &self,
+        requested_scope: ProfileScope,
+        kind: PromptKind,
+    ) -> PromptSelection {
+        if let Some(selection) = self.prompt_from_agent_override(requested_scope, kind) {
             return selection;
         }
 
@@ -971,7 +1021,7 @@ impl Config {
             return PromptSelection {
                 text: repo.contents.clone(),
                 kind,
-                requested_scope: scope,
+                requested_scope,
                 origin: PromptOrigin::RepoFile {
                     path: repo.path.clone(),
                 },
@@ -982,7 +1032,7 @@ impl Config {
         PromptSelection {
             text: kind.default_template().to_string(),
             kind,
-            requested_scope: scope,
+            requested_scope,
             origin: PromptOrigin::Default,
             source_path: None,
         }
@@ -990,44 +1040,51 @@ impl Config {
 
     fn prompt_from_agent_override(
         &self,
-        scope: CommandScope,
+        requested_scope: ProfileScope,
         kind: PromptKind,
     ) -> Option<PromptSelection> {
-        if let Some(scoped) = self
-            .agent_scopes
-            .get(&scope)
-            .and_then(|value| value.prompt_overrides.get(&kind))
-            && let Some(selection) = Self::selection_from_override(scope, kind, scoped, scope)
+        if let Some(scope) = requested_scope.command_scope()
+            && let Some(scoped) = self
+                .agent_scopes
+                .get(&scope)
+                .and_then(|value| value.prompt_overrides.get(&kind))
+            && let Some(selection) = Self::selection_from_override(
+                requested_scope,
+                kind,
+                scoped,
+                ProfileScope::Command(scope),
+            )
         {
             return Some(selection);
         }
 
         if let Some(defaults) = self.agent_defaults.prompt_overrides.get(&kind) {
-            return Self::selection_from_override(scope, kind, defaults, scope);
+            return Self::selection_from_override(
+                requested_scope,
+                kind,
+                defaults,
+                ProfileScope::Default,
+            );
         }
 
         None
     }
 
     fn selection_from_override(
-        scope: CommandScope,
+        requested_scope: ProfileScope,
         kind: PromptKind,
         overrides: &PromptOverrides,
-        origin_scope: CommandScope,
+        origin_scope: ProfileScope,
     ) -> Option<PromptSelection> {
         overrides.text.as_ref().map(|text| PromptSelection {
             text: text.clone(),
             kind,
-            requested_scope: scope,
+            requested_scope,
             origin: PromptOrigin::ScopedConfig {
                 scope: origin_scope,
             },
             source_path: overrides.source_path.clone(),
         })
-    }
-
-    pub fn get_prompt(&self, prompt: SystemPrompt) -> String {
-        self.prompt_for(CommandScope::Ask, prompt).text
     }
 
     pub fn set_repo_prompts(&mut self, prompts: HashMap<SystemPrompt, PromptTemplate>) {
@@ -1114,5 +1171,90 @@ mod tests {
     fn selector_to_backend_is_case_insensitive() {
         assert_eq!(backend_kind_for_selector("GEMINI"), BackendKind::Gemini);
         assert_eq!(backend_kind_for_selector("codex"), BackendKind::Agent);
+    }
+
+    #[test]
+    fn prompt_for_default_ignores_command_prompt_overrides() {
+        let mut cfg = Config::default();
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::Documentation,
+            PromptOverrides {
+                text: Some("default documentation prompt".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
+        cfg.agent_scopes.insert(
+            CommandScope::Ask,
+            AgentOverrides {
+                prompt_overrides: {
+                    let mut map = HashMap::new();
+                    map.insert(
+                        PromptKind::Documentation,
+                        PromptOverrides {
+                            text: Some("ask documentation prompt".to_string()),
+                            source_path: None,
+                            agent: None,
+                        },
+                    );
+                    map
+                },
+                ..Default::default()
+            },
+        );
+
+        let selection = cfg.prompt_for_default(PromptKind::Documentation);
+        assert_eq!(selection.text, "default documentation prompt");
+        assert_eq!(selection.requested_scope, ProfileScope::Default);
+        assert_eq!(
+            selection.origin,
+            PromptOrigin::ScopedConfig {
+                scope: ProfileScope::Default
+            }
+        );
+    }
+
+    #[test]
+    fn prompt_for_command_preserves_command_overrides() {
+        let mut cfg = Config::default();
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::Documentation,
+            PromptOverrides {
+                text: Some("default documentation prompt".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
+        cfg.agent_scopes.insert(
+            CommandScope::Ask,
+            AgentOverrides {
+                prompt_overrides: {
+                    let mut map = HashMap::new();
+                    map.insert(
+                        PromptKind::Documentation,
+                        PromptOverrides {
+                            text: Some("ask documentation prompt".to_string()),
+                            source_path: None,
+                            agent: None,
+                        },
+                    );
+                    map
+                },
+                ..Default::default()
+            },
+        );
+
+        let selection = cfg.prompt_for_command(CommandScope::Ask, PromptKind::Documentation);
+        assert_eq!(selection.text, "ask documentation prompt");
+        assert_eq!(
+            selection.requested_scope,
+            ProfileScope::Command(CommandScope::Ask)
+        );
+        assert_eq!(
+            selection.origin,
+            PromptOrigin::ScopedConfig {
+                scope: ProfileScope::Command(CommandScope::Ask)
+            }
+        );
     }
 }

@@ -253,8 +253,11 @@ async fn save(
     if commit_mode.should_commit() {
         if has_code_changes || has_narrative_changes {
             let commit_body = if has_code_changes {
-                Auditor::llm_request(
-                    config::get_config().get_prompt(config::PromptKind::Commit),
+                Auditor::llm_request_for_command(
+                    config::CommandScope::Save,
+                    config::get_config()
+                        .prompt_for_command(config::CommandScope::Save, config::PromptKind::Commit)
+                        .text,
                     post_tool_diff.clone(),
                 )
                 .await?
