@@ -807,15 +807,8 @@ impl ScheduleArtifactState {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ScheduleNode {
-    pub id: String,
-    pub status: JobStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wait: Option<String>,
-}
+pub const SCHEDULE_SNAPSHOT_VERSION: u32 = 1;
+pub const SCHEDULE_SNAPSHOT_ORDERING: &str = "created_at_then_job_id";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScheduleAfterEdge {
@@ -835,9 +828,42 @@ pub struct ScheduleEdge {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ScheduleSnapshotJob {
+    pub order: usize,
+    pub job_id: String,
+    pub slug: Option<String>,
+    pub name: String,
+    pub status: JobStatus,
+    pub wait: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ScheduleSnapshot {
-    pub nodes: Vec<ScheduleNode>,
+    pub version: u32,
+    pub ordering: &'static str,
+    pub jobs: Vec<ScheduleSnapshotJob>,
     pub edges: Vec<ScheduleEdge>,
+}
+
+impl ScheduleSnapshot {
+    pub fn empty() -> Self {
+        Self {
+            version: SCHEDULE_SNAPSHOT_VERSION,
+            ordering: SCHEDULE_SNAPSHOT_ORDERING,
+            jobs: Vec::new(),
+            edges: Vec::new(),
+        }
+    }
+
+    pub fn new(jobs: Vec<ScheduleSnapshotJob>, edges: Vec<ScheduleEdge>) -> Self {
+        Self {
+            version: SCHEDULE_SNAPSHOT_VERSION,
+            ordering: SCHEDULE_SNAPSHOT_ORDERING,
+            jobs,
+            edges,
+        }
+    }
 }
 
 pub(crate) struct ScheduleGraph {
@@ -1024,54 +1050,24 @@ impl ScheduleGraph {
         seen
     }
 
-    pub(crate) fn snapshot(
+    pub(crate) fn snapshot_edges(
         &self,
         repo: &Repository,
         roots: &[String],
         max_depth: usize,
-    ) -> ScheduleSnapshot {
+    ) -> Vec<ScheduleEdge> {
         let mut edges = Vec::new();
-        let mut node_ids = HashSet::new();
 
         for root in roots {
             if !self.records.contains_key(root) {
                 continue;
             }
-            node_ids.insert(root.clone());
             let mut path = HashSet::new();
             path.insert(root.clone());
-            self.collect_edges(repo, root, max_depth, &mut path, &mut edges, &mut node_ids);
+            self.collect_edges(repo, root, max_depth, &mut path, &mut edges);
         }
 
-        let mut nodes = Vec::new();
-        for job_id in &self.job_order {
-            if !node_ids.contains(job_id) {
-                continue;
-            }
-            if let Some(record) = self.records.get(job_id) {
-                nodes.push(ScheduleNode {
-                    id: record.id.clone(),
-                    status: record.status,
-                    command: if record.command.is_empty() {
-                        None
-                    } else {
-                        Some(record.command.join(" "))
-                    },
-                    wait: record
-                        .schedule
-                        .as_ref()
-                        .and_then(|sched| sched.wait_reason.as_ref())
-                        .map(|reason| {
-                            reason
-                                .detail
-                                .clone()
-                                .unwrap_or_else(|| "waiting".to_string())
-                        }),
-                });
-            }
-        }
-
-        ScheduleSnapshot { nodes, edges }
+        edges
     }
 
     fn collect_edges(
@@ -1081,7 +1077,6 @@ impl ScheduleGraph {
         depth_remaining: usize,
         path: &mut HashSet<String>,
         edges: &mut Vec<ScheduleEdge>,
-        node_ids: &mut HashSet<String>,
     ) {
         if depth_remaining == 0 {
             return;
@@ -1097,17 +1092,9 @@ impl ScheduleGraph {
                     policy: after.policy,
                 }),
             });
-            node_ids.insert(after.job_id.clone());
             if depth_remaining > 1 && !path.contains(&after.job_id) {
                 path.insert(after.job_id.clone());
-                self.collect_edges(
-                    repo,
-                    &after.job_id,
-                    depth_remaining - 1,
-                    path,
-                    edges,
-                    node_ids,
-                );
+                self.collect_edges(repo, &after.job_id, depth_remaining - 1, path, edges);
                 path.remove(&after.job_id);
             }
         }
@@ -1135,17 +1122,9 @@ impl ScheduleGraph {
                     state: None,
                     after: None,
                 });
-                node_ids.insert(producer_id.clone());
                 if depth_remaining > 1 && !path.contains(&producer_id) {
                     path.insert(producer_id.clone());
-                    self.collect_edges(
-                        repo,
-                        &producer_id,
-                        depth_remaining - 1,
-                        path,
-                        edges,
-                        node_ids,
-                    );
+                    self.collect_edges(repo, &producer_id, depth_remaining - 1, path, edges);
                     path.remove(&producer_id);
                 }
             }
@@ -3617,9 +3596,9 @@ mod tests {
         );
 
         let graph = ScheduleGraph::new(vec![dependent, predecessor]);
-        let snapshot = graph.snapshot(&repo, &["job-dependent".to_string()], 2);
+        let edges = graph.snapshot_edges(&repo, &["job-dependent".to_string()], 2);
         assert!(
-            snapshot.edges.iter().any(|edge| {
+            edges.iter().any(|edge| {
                 edge.from == "job-dependent"
                     && edge.to == "job-predecessor"
                     && edge.after.as_ref().map(|after| after.policy) == Some(AfterPolicy::Success)
@@ -3700,23 +3679,21 @@ mod tests {
         let graph = ScheduleGraph::new(vec![job_a, job_b, job_c]);
         let roots = vec!["job-a".to_string()];
 
-        let snapshot = graph.snapshot(&repo, &roots, 1);
+        let edges = graph.snapshot_edges(&repo, &roots, 1);
         assert!(
-            snapshot
-                .edges
+            edges
                 .iter()
                 .any(|edge| edge.from == "job-a" && edge.to == "job-b"),
             "expected job-a -> job-b edge"
         );
         assert!(
-            snapshot.edges.iter().all(|edge| edge.from != "job-b"),
+            edges.iter().all(|edge| edge.from != "job-b"),
             "expected depth=1 to skip job-b dependencies"
         );
 
-        let deeper = graph.snapshot(&repo, &roots, 2);
+        let deeper = graph.snapshot_edges(&repo, &roots, 2);
         assert!(
             deeper
-                .edges
                 .iter()
                 .any(|edge| edge.from == "job-b" && edge.to == "job-c"),
             "expected depth=2 to include job-b -> job-c edge"

@@ -63,6 +63,7 @@ fn format_waited_on(waited_on: &[jobs::JobWaitKind]) -> String {
 
 #[derive(Clone, Copy, Debug)]
 enum ScheduleFormat {
+    Summary,
     Dag,
     Json,
 }
@@ -124,6 +125,160 @@ fn schedule_roots(
     }
 
     roots
+}
+
+struct ScheduleSummaryRow {
+    order: usize,
+    slug: Option<String>,
+    name: String,
+    status: JobStatus,
+    wait: Option<String>,
+    job_id: String,
+    created_at: String,
+}
+
+fn command_preview(command: &[String]) -> String {
+    if command.is_empty() {
+        return "<command unavailable>".to_string();
+    }
+
+    let preview_len = command.len().min(3);
+    let mut preview = command[..preview_len].join(" ");
+    if command.len() > preview_len {
+        preview.push_str(" ...");
+    }
+    preview
+}
+
+fn resolve_schedule_slug(graph: &jobs::ScheduleGraph, job_id: &str) -> Option<String> {
+    let record = graph.record(job_id)?;
+    if let Some(plan) = record
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.plan.as_ref())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(plan.to_string());
+    }
+
+    for artifact in graph.artifacts_for(job_id) {
+        match artifact {
+            jobs::JobArtifact::PlanBranch { slug, .. }
+            | jobs::JobArtifact::PlanDoc { slug, .. }
+            | jobs::JobArtifact::PlanCommits { slug, .. }
+            | jobs::JobArtifact::MergeSentinel { slug } => return Some(slug),
+            jobs::JobArtifact::TargetBranch { .. } | jobs::JobArtifact::CommandPatch { .. } => {}
+        }
+    }
+
+    None
+}
+
+fn resolve_schedule_name(record: &jobs::JobRecord) -> String {
+    let metadata = record.metadata.as_ref();
+    let scope = metadata
+        .and_then(|meta| meta.scope.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let plan = metadata
+        .and_then(|meta| meta.plan.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let target = metadata
+        .and_then(|meta| meta.target.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let (Some(scope), Some(plan), Some(target)) = (scope, plan, target) {
+        return format!("{scope}/{plan}/{target}");
+    }
+    if let (Some(scope), Some(target)) = (scope, target) {
+        return format!("{scope}/{target}");
+    }
+    if let Some(scope) = scope {
+        return scope.to_string();
+    }
+
+    command_preview(&record.command)
+}
+
+fn resolve_schedule_wait(record: &jobs::JobRecord) -> Option<String> {
+    record
+        .schedule
+        .as_ref()
+        .and_then(|schedule| schedule.wait_reason.as_ref())
+        .map(|reason| {
+            reason
+                .detail
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| format!("{:?}", reason.kind).to_lowercase())
+        })
+}
+
+fn schedule_summary_rows(graph: &jobs::ScheduleGraph, roots: &[String]) -> Vec<ScheduleSummaryRow> {
+    let mut rows = Vec::new();
+    for (index, job_id) in roots.iter().enumerate() {
+        let Some(record) = graph.record(job_id) else {
+            continue;
+        };
+
+        rows.push(ScheduleSummaryRow {
+            order: index + 1,
+            slug: resolve_schedule_slug(graph, job_id),
+            name: resolve_schedule_name(record),
+            status: record.status,
+            wait: resolve_schedule_wait(record),
+            job_id: record.id.clone(),
+            created_at: record.created_at.to_rfc3339(),
+        });
+    }
+    rows
+}
+
+fn render_schedule_summary(rows: &[ScheduleSummaryRow]) {
+    println!("Schedule (Summary)");
+    let mut table_rows = vec![vec![
+        "#".to_string(),
+        "Slug".to_string(),
+        "Name".to_string(),
+        "Status".to_string(),
+        "Wait".to_string(),
+        "Job".to_string(),
+    ]];
+
+    for row in rows {
+        table_rows.push(vec![
+            row.order.to_string(),
+            row.slug.clone().unwrap_or_default(),
+            row.name.clone(),
+            jobs::status_label(row.status).to_string(),
+            row.wait.clone().unwrap_or_default(),
+            row.job_id.clone(),
+        ]);
+    }
+
+    let table = format_table(&table_rows, 0);
+    if !table.is_empty() {
+        println!("{table}");
+    }
+}
+
+fn schedule_snapshot_jobs(rows: &[ScheduleSummaryRow]) -> Vec<jobs::ScheduleSnapshotJob> {
+    rows.iter()
+        .map(|row| jobs::ScheduleSnapshotJob {
+            order: row.order,
+            job_id: row.job_id.clone(),
+            slug: row.slug.clone(),
+            name: row.name.clone(),
+            status: row.status,
+            wait: row.wait.clone(),
+            created_at: row.created_at.clone(),
+        })
+        .collect()
 }
 
 fn format_schedule_job_line(record: &jobs::JobRecord) -> String {
@@ -273,7 +428,7 @@ fn render_schedule_dag(
     roots: &[String],
     max_depth: usize,
 ) {
-    println!("Schedule (DAG)");
+    println!("Schedule (DAG, verbose)");
     for (index, job_id) in roots.iter().enumerate() {
         if let Some(record) = graph.record(job_id) {
             if index > 0 {
@@ -638,8 +793,10 @@ pub(crate) fn run_jobs_command(
                 ScheduleFormat::Json
             } else {
                 match format {
+                    Some(JobsScheduleFormatArg::Summary) => ScheduleFormat::Summary,
+                    Some(JobsScheduleFormatArg::Dag) => ScheduleFormat::Dag,
                     Some(JobsScheduleFormatArg::Json) => ScheduleFormat::Json,
-                    _ => ScheduleFormat::Dag,
+                    None => ScheduleFormat::Summary,
                 }
             };
 
@@ -648,10 +805,7 @@ pub(crate) fn run_jobs_command(
             let roots = schedule_roots(&graph, all, job.as_deref(), max_depth);
             if roots.is_empty() {
                 if matches!(schedule_format, ScheduleFormat::Json) {
-                    let snapshot = jobs::ScheduleSnapshot {
-                        nodes: Vec::new(),
-                        edges: Vec::new(),
-                    };
+                    let snapshot = jobs::ScheduleSnapshot::empty();
                     println!("{}", serde_json::to_string_pretty(&snapshot)?);
                 } else {
                     println!("Outcome: No scheduled jobs");
@@ -659,11 +813,15 @@ pub(crate) fn run_jobs_command(
                 return Ok(());
             }
 
+            let rows = schedule_summary_rows(&graph, &roots);
             let repo = Repository::discover(project_root)?;
             match schedule_format {
+                ScheduleFormat::Summary => render_schedule_summary(&rows),
                 ScheduleFormat::Dag => render_schedule_dag(&graph, &repo, &roots, max_depth),
                 ScheduleFormat::Json => {
-                    let snapshot = graph.snapshot(&repo, &roots, max_depth);
+                    let edges = graph.snapshot_edges(&repo, &roots, max_depth);
+                    let snapshot =
+                        jobs::ScheduleSnapshot::new(schedule_snapshot_jobs(&rows), edges);
                     println!("{}", serde_json::to_string_pretty(&snapshot)?);
                 }
             }

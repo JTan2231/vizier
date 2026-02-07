@@ -11,7 +11,7 @@ pub(crate) use std::io::{self, BufRead, Read, Write};
 pub(crate) use std::os::unix::fs::PermissionsExt;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::{Command, Output, Stdio};
-pub(crate) use std::sync::{Mutex, OnceLock};
+pub(crate) use std::sync::{Mutex, MutexGuard, OnceLock};
 pub(crate) use std::time::{Duration, Instant};
 pub(crate) use tempfile::TempDir;
 
@@ -19,6 +19,7 @@ pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 static BUILD_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static INTEGRATION_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn build_root() -> &'static PathBuf {
     BUILD_ROOT.get_or_init(|| {
@@ -32,6 +33,10 @@ fn build_root() -> &'static PathBuf {
 
 fn build_lock() -> &'static Mutex<()> {
     BUILD_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn integration_test_lock() -> &'static Mutex<()> {
+    INTEGRATION_TEST_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 pub(crate) fn repo_root() -> PathBuf {
@@ -49,7 +54,7 @@ pub(crate) fn vizier_binary() -> &'static PathBuf {
 pub(crate) fn build_vizier_binary(features: &[&str]) -> PathBuf {
     let _guard = build_lock()
         .lock()
-        .expect("lock vizier integration test build");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = repo_root();
     let label = if features.is_empty() {
         "base".to_string()
@@ -98,6 +103,8 @@ pub(crate) struct IntegrationRepo {
     agent_bin_dir: PathBuf,
     vizier_bin: PathBuf,
     mock_agent: bool,
+    // Hold the global integration lock for the lifetime of the fixture.
+    _guard: MutexGuard<'static, ()>,
 }
 
 impl IntegrationRepo {
@@ -113,6 +120,9 @@ impl IntegrationRepo {
         bin: PathBuf,
         mock_agent: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let guard = integration_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new()?;
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
@@ -121,11 +131,23 @@ impl IntegrationRepo {
         write_default_cicd_script(dir.path())?;
         init_repo_at(dir.path())?;
         let agent_bin_dir = create_agent_shims(dir.path())?;
+        let vizier_bin_dir = dir.path().join(".vizier/tmp/bin");
+        fs::create_dir_all(&vizier_bin_dir)?;
+        let vizier_bin_name = bin.file_name().unwrap_or(std::ffi::OsStr::new("vizier"));
+        let vizier_bin = vizier_bin_dir.join(vizier_bin_name);
+        fs::copy(&bin, &vizier_bin)?;
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&vizier_bin)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&vizier_bin, perms)?;
+        }
         Ok(Self {
             dir,
             agent_bin_dir,
-            vizier_bin: bin,
+            vizier_bin,
             mock_agent,
+            _guard: guard,
         })
     }
 

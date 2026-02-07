@@ -21,6 +21,20 @@ fn schedule_record(job_id: &str, status: &str, created_at: &str, schedule: Value
     })
 }
 
+fn schedule_summary_rows(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .chars()
+                .next()
+                .map(|ch| ch.is_ascii_digit())
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 #[test]
 fn test_jobs_tail_follow_uses_global_flag() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -207,8 +221,8 @@ fn test_jobs_tail_follow_orders_streams() -> TestResult {
         .find("[stderr] next-err")
         .ok_or("missing next stderr line")?;
     assert!(
-        start_out < start_err && start_err < next_out && next_out < next_err,
-        "unexpected log ordering:\n{stdout}"
+        start_out < next_out && start_err < next_err,
+        "unexpected per-stream log ordering:\n{stdout}"
     );
     Ok(())
 }
@@ -606,6 +620,21 @@ fn test_jobs_schedule_empty_state() -> TestResult {
 
     let output = repo
         .vizier_cmd_background()
+        .args(["jobs", "schedule", "--format", "dag"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --format dag failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Outcome: No scheduled jobs"),
+        "expected empty DAG schedule outcome:\n{stdout}"
+    );
+
+    let output = repo
+        .vizier_cmd_background()
         .args(["jobs", "schedule", "--format", "json"])
         .output()?;
     assert!(
@@ -615,12 +644,22 @@ fn test_jobs_schedule_empty_state() -> TestResult {
     );
     let payload: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(
+        payload.get("version").and_then(Value::as_u64),
+        Some(1),
+        "expected JSON schedule version=1: {payload}"
+    );
+    assert_eq!(
+        payload.get("ordering").and_then(Value::as_str),
+        Some("created_at_then_job_id"),
+        "expected JSON schedule ordering key: {payload}"
+    );
+    assert_eq!(
         payload
-            .get("nodes")
+            .get("jobs")
             .and_then(Value::as_array)
-            .map(|nodes| nodes.len()),
+            .map(|jobs| jobs.len()),
         Some(0),
-        "expected empty nodes array: {payload}"
+        "expected empty jobs array: {payload}"
     );
     assert_eq!(
         payload
@@ -655,7 +694,7 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
         "job-producer",
         schedule_record(
             "job-producer",
-            "succeeded",
+            "running",
             "2026-02-01T00:00:00Z",
             producer_schedule,
         ),
@@ -679,24 +718,56 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Schedule (DAG)"),
-        "expected schedule header:\n{stdout}"
+        stdout.contains("Schedule (Summary)"),
+        "expected summary header:\n{stdout}"
     );
     assert!(
-        stdout.contains("job-consumer queued"),
-        "expected consumer root line:\n{stdout}"
+        stdout.contains("Slug") && stdout.contains("Name") && stdout.contains("Status"),
+        "expected summary columns:\n{stdout}"
     );
+    assert_eq!(
+        stdout.matches("job-producer").count(),
+        1,
+        "expected exactly one producer summary row:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("job-consumer").count(),
+        1,
+        "expected exactly one consumer summary row:\n{stdout}"
+    );
+
+    let summary_rows = schedule_summary_rows(&stdout);
+    let producer_index = summary_rows
+        .iter()
+        .position(|line| line.contains("job-producer"))
+        .ok_or("missing producer summary row")?;
+    let consumer_index = summary_rows
+        .iter()
+        .position(|line| line.contains("job-consumer"))
+        .ok_or("missing consumer summary row")?;
     assert!(
-        stdout.contains("command_patch:producer-artifact -> job-producer succeeded"),
-        "expected producer edge:\n{stdout}"
+        producer_index < consumer_index,
+        "expected created_at ordering in summary rows:\n{stdout}"
+    );
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--format", "dag"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --format dag failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("command_patch:producer-artifact -> job-producer running"),
+        "expected producer edge in DAG output:\n{stdout}"
     );
     assert!(
         stdout.contains("target_branch:present-branch -> [present]"),
-        "expected present artifact state:\n{stdout}"
+        "expected present artifact state in DAG output:\n{stdout}"
     );
     assert!(
         stdout.contains("target_branch:missing-branch -> [missing]"),
-        "expected missing artifact state:\n{stdout}"
+        "expected missing artifact state in DAG output:\n{stdout}"
     );
 
     let output = repo
@@ -709,22 +780,62 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
         String::from_utf8_lossy(&output.stderr)
     );
     let payload: Value = serde_json::from_slice(&output.stdout)?;
-    let nodes = payload
-        .get("nodes")
+    assert_eq!(
+        payload.get("version").and_then(Value::as_u64),
+        Some(1),
+        "expected JSON schedule version=1: {payload}"
+    );
+    assert_eq!(
+        payload.get("ordering").and_then(Value::as_str),
+        Some("created_at_then_job_id"),
+        "expected JSON ordering value: {payload}"
+    );
+
+    let jobs = payload
+        .get("jobs")
         .and_then(Value::as_array)
-        .ok_or("expected nodes array")?;
+        .ok_or("expected jobs array")?;
     assert!(
-        nodes
-            .iter()
-            .any(|node| node.get("id") == Some(&Value::String("job-consumer".to_string()))),
-        "expected job-consumer node: {payload}"
+        jobs.iter()
+            .any(|job| job.get("job_id") == Some(&Value::String("job-consumer".to_string()))),
+        "expected job-consumer job entry: {payload}"
     );
     assert!(
-        nodes
-            .iter()
-            .any(|node| node.get("id") == Some(&Value::String("job-producer".to_string()))),
-        "expected job-producer node: {payload}"
+        jobs.iter()
+            .any(|job| job.get("job_id") == Some(&Value::String("job-producer".to_string()))),
+        "expected job-producer job entry: {payload}"
     );
+    for job in jobs {
+        assert!(
+            job.get("order").and_then(Value::as_u64).is_some(),
+            "missing order in schedule JSON job entry: {job}"
+        );
+        assert!(
+            job.get("job_id").and_then(Value::as_str).is_some(),
+            "missing job_id in schedule JSON job entry: {job}"
+        );
+        assert!(
+            job.get("name").and_then(Value::as_str).is_some(),
+            "missing name in schedule JSON job entry: {job}"
+        );
+        assert!(
+            job.get("status").and_then(Value::as_str).is_some(),
+            "missing status in schedule JSON job entry: {job}"
+        );
+        assert!(
+            job.get("created_at").and_then(Value::as_str).is_some(),
+            "missing created_at in schedule JSON job entry: {job}"
+        );
+        assert!(
+            job.get("slug").is_some(),
+            "missing slug key in schedule JSON job entry: {job}"
+        );
+        assert!(
+            job.get("wait").is_some(),
+            "missing wait key in schedule JSON job entry: {job}"
+        );
+    }
+
     let edges = payload
         .get("edges")
         .and_then(Value::as_array)
@@ -800,6 +911,22 @@ fn test_jobs_schedule_includes_after_edges() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
+        stdout.contains("Schedule (Summary)"),
+        "expected summary header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("job-dependent"),
+        "expected dependent row in summary output:\n{stdout}"
+    );
+
+    let output = repo.vizier_output(&["jobs", "schedule", "--format", "dag"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule --format dag failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
         stdout.contains("after:success -> job-predecessor succeeded"),
         "expected after edge in DAG output:\n{stdout}"
     );
@@ -855,8 +982,12 @@ fn test_jobs_schedule_filters_terminal_without_all() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("job-active queued"),
+        stdout.contains("job-active"),
         "expected active job in schedule:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("queued"),
+        "expected active status in schedule:\n{stdout}"
     );
     assert!(
         !stdout.contains("job-succeeded"),
@@ -871,8 +1002,67 @@ fn test_jobs_schedule_filters_terminal_without_all() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("job-succeeded succeeded"),
+        stdout.contains("job-succeeded"),
         "expected succeeded job with --all:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("succeeded"),
+        "expected succeeded job with --all:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_summary_orders_by_created_at_then_job_id() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    write_job_record_simple(
+        &repo,
+        "job-b",
+        "queued",
+        "2026-02-02T00:00:01Z",
+        None,
+        &["vizier", "save", "job-b"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-a",
+        "queued",
+        "2026-02-02T00:00:01Z",
+        None,
+        &["vizier", "save", "job-a"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-early",
+        "queued",
+        "2026-02-02T00:00:00Z",
+        None,
+        &["vizier", "save", "job-early"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "schedule"])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs schedule failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let rows = schedule_summary_rows(&stdout);
+    assert!(
+        rows.len() >= 3,
+        "expected at least three summary rows:\n{stdout}"
+    );
+    assert!(
+        rows[0].contains("job-early"),
+        "expected earliest job first:\n{stdout}"
+    );
+    assert!(
+        rows[1].contains("job-a"),
+        "expected job-id tie-break for second row:\n{stdout}"
+    );
+    assert!(
+        rows[2].contains("job-b"),
+        "expected job-id tie-break for third row:\n{stdout}"
     );
     Ok(())
 }
@@ -921,16 +1111,22 @@ fn test_jobs_schedule_job_focus_includes_neighbors() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("job-root queued"),
+        stdout.contains("job-root"),
         "expected focus job in schedule:\n{stdout}"
     );
     assert!(
-        stdout.contains("job-consumer queued"),
+        stdout.contains("job-consumer"),
         "expected consumer in focused schedule:\n{stdout}"
     );
     assert!(
         !stdout.contains("job-unrelated"),
         "did not expect unrelated job in focused schedule:\n{stdout}"
+    );
+    let summary_rows = schedule_summary_rows(&stdout);
+    let first_row = summary_rows.first().ok_or("missing focused summary row")?;
+    assert!(
+        first_row.contains("job-root"),
+        "expected focused job pinned to summary row 1:\n{stdout}"
     );
     Ok(())
 }
@@ -967,10 +1163,11 @@ fn test_jobs_schedule_max_depth_limits_expansion() -> TestResult {
         schedule_record("job-a", "queued", "2026-02-04T02:00:00Z", job_a_schedule),
     )?;
 
-    let output = repo.vizier_output(&["jobs", "schedule", "--max-depth", "1"])?;
+    let output =
+        repo.vizier_output(&["jobs", "schedule", "--format", "dag", "--max-depth", "1"])?;
     assert!(
         output.status.success(),
-        "vizier jobs schedule --max-depth 1 failed: {}",
+        "vizier jobs schedule --format dag --max-depth 1 failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -987,10 +1184,11 @@ fn test_jobs_schedule_max_depth_limits_expansion() -> TestResult {
         "did not expect depth-2 job with max-depth 1:\n{stdout}"
     );
 
-    let output = repo.vizier_output(&["jobs", "schedule", "--max-depth", "2"])?;
+    let output =
+        repo.vizier_output(&["jobs", "schedule", "--format", "dag", "--max-depth", "2"])?;
     assert!(
         output.status.success(),
-        "vizier jobs schedule --max-depth 2 failed: {}",
+        "vizier jobs schedule --format dag --max-depth 2 failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);

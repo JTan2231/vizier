@@ -173,6 +173,7 @@ pub(crate) enum BuildPipelineArg {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum JobsScheduleFormatArg {
+    Summary,
     Dag,
     Json,
 }
@@ -707,7 +708,7 @@ pub(crate) enum JobsAction {
         format: Option<ListFormatArg>,
     },
 
-    /// Show the dependency DAG for scheduled jobs
+    /// Show scheduled jobs and dependency relationships
     Schedule {
         /// Include succeeded/failed/cancelled jobs (default shows active + blocked_by_dependency)
         #[arg(long = "all", short = 'a')]
@@ -717,7 +718,7 @@ pub(crate) enum JobsAction {
         #[arg(long = "job", value_name = "JOB")]
         job: Option<String>,
 
-        /// Output format (dag, json)
+        /// Output format (summary, dag, json)
         #[arg(long = "format", value_enum)]
         format: Option<JobsScheduleFormatArg>,
 

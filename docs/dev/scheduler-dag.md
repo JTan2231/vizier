@@ -153,41 +153,83 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).
 
-## Scheduler DAG view (`vizier jobs schedule`)
-`vizier jobs schedule` renders a read-only dependency graph so operators can see
-what is waiting on what without drilling into individual job records.
+## Scheduler schedule view (`vizier jobs schedule`)
+`vizier jobs schedule` renders scheduler state in three formats:
+- `summary` (default): one row per visible job for fast scanning.
+- `dag`: verbose recursive dependency output for deep debugging.
+- `json`: stable parseable contract for tooling.
 
 Usage:
-`vizier jobs schedule [--all] [--job <id>] [--format dag|json] [--max-depth N]`
+`vizier jobs schedule [--all] [--job <id>] [--format summary|dag|json] [--max-depth N]`
 
-Behavior:
-- Default output is an ASCII DAG (no Unicode, no ANSI) with node lines:
-  `<job-id> <status> [scope/plan/target] [wait: ...] [locks: ...] [pinned: ...]`.
-- Dependencies render as `artifact -> job` edges; artifact leaves show `[present]`
-  or `[missing]` when no producer exists.
-- Explicit `after` edges render as `after:success -> <job-id> <status>`.
-- `--all` includes succeeded/failed/cancelled jobs (default shows active +
-  blocked_by_dependency).
-- `--job` focuses on a single job and the producers/consumers around it.
-- `--max-depth` limits dependency expansion (default 3).
+Summary behavior (default):
+- Header: `Schedule (Summary)`.
+- Columns: `#`, `Slug`, `Name`, `Status`, `Wait`, `Job`.
+- Ordering is deterministic: `created_at ASC`, then `job_id ASC`.
+- `--job <id>` focuses to the job neighborhood and pins the focused job to row 1.
+- Default visibility includes active statuses plus `blocked_by_dependency`; `--all`
+  additionally includes terminal statuses (`succeeded`, `failed`, `cancelled`).
 
-JSON output (`--format json` or global `--json`) returns an adjacency list:
+DAG behavior (`--format dag`):
+- Header: `Schedule (DAG, verbose)`.
+- Preserves recursive dependency traversal for debugging:
+  - `artifact -> job` edges with artifact leaf state (`[present]` / `[missing]`).
+  - explicit `after:success -> <job-id> <status>` edges.
+- `--max-depth` limits recursive expansion (default 3).
+
+JSON behavior (`--format json` or global `--json`):
+- Top-level contract:
+  - `version` (currently `1`)
+  - `ordering` (`"created_at_then_job_id"`)
+  - `jobs` (ordered rows matching summary order)
+  - `edges` (dependency edges for the visible schedule view)
+- Each `jobs[]` entry includes:
+  - `order`
+  - `job_id`
+  - `slug` (nullable)
+  - `name`
+  - `status`
+  - `wait` (nullable)
+  - `created_at` (RFC3339)
+- Each `edges[]` entry includes:
+  - `from`
+  - `to`
+  - either `after` (`{ policy }`) or `artifact` (with optional `state`)
+
+Example:
 ```
 {
-  "nodes": [
-    { "id": "job-24", "status": "queued", "command": "vizier save", "wait": "missing plan_doc:foo" }
+  "version": 1,
+  "ordering": "created_at_then_job_id",
+  "jobs": [
+    {
+      "order": 1,
+      "job_id": "job-24",
+      "slug": "foo",
+      "name": "approve/foo/main",
+      "status": "queued",
+      "wait": "waiting on dependency",
+      "created_at": "2026-02-01T12:00:00+00:00"
+    }
   ],
   "edges": [
     { "from": "job-24", "to": "job-17", "after": { "policy": "success" } },
-    { "from": "job-24", "to": "job-17", "artifact": "plan_doc:foo (draft/foo)" },
-    { "from": "job-24", "to": "artifact:plan_branch:foo (draft/foo)", "artifact": "plan_branch:foo (draft/foo)", "state": "present" }
+    { "from": "job-24", "to": "job-17", "artifact": "plan_doc:foo (draft/foo)" }
   ]
 }
 ```
 
 Empty state:
-- If no matching jobs: stdout prints `Outcome: No scheduled jobs`.
-- JSON format returns `{ "nodes": [], "edges": [] }`.
+- `summary` and `dag`: stdout prints `Outcome: No scheduled jobs`.
+- `json`:
+  ```
+  {
+    "version": 1,
+    "ordering": "created_at_then_job_id",
+    "jobs": [],
+    "edges": []
+  }
+  ```
 
 ## GC safety
 `vizier jobs gc` skips terminal records that are still referenced by any non-terminal
