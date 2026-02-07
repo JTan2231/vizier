@@ -312,7 +312,9 @@ pub(crate) async fn run_merge(
         }
     }
 
-    let plan_meta = spec.load_metadata()?;
+    let loaded_plan = plan::load_plan_for_merge(&spec.slug, &spec.branch)?;
+    let plan_meta = loaded_plan.metadata;
+    let plan_document = Some(loaded_plan.contents);
 
     if !opts.assume_yes {
         return Err("vizier merge requires --yes in scheduler mode".into());
@@ -322,8 +324,6 @@ pub(crate) async fn run_merge(
     let worktree_path = worktree.path().to_path_buf();
     let plan_path = worktree.plan_path(&spec.slug);
     let mut worktree = Some(worktree);
-    let plan_document = fs::read_to_string(&plan_path).ok();
-
     if plan_path.exists() {
         display::info(format!(
             "Removing {} from the plan branch before merge",

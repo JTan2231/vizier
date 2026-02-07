@@ -116,6 +116,42 @@ fn test_merge_removes_plan_document() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn test_merge_uses_history_when_tip_plan_doc_is_missing() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&["draft", "--name", "history-plan", "history fallback smoke"])?;
+    repo.vizier_output(&["approve", "history-plan", "--yes"])?;
+    repo.git(&["checkout", "draft/history-plan"])?;
+    repo.git(&["rm", ".vizier/implementation-plans/history-plan.md"])?;
+    repo.git(&["commit", "-m", "remove plan doc from tip"])?;
+    repo.git(&["checkout", "master"])?;
+    clean_workdir(&repo)?;
+
+    let merge = repo.vizier_output(&["merge", "history-plan", "--yes"])?;
+    assert!(
+        merge.status.success(),
+        "vizier merge failed with tip-missing plan doc: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let head = repo_handle.head()?.peel_to_commit()?;
+    let message = head.message().unwrap_or_default().to_string();
+    assert!(
+        message.contains("Implementation Plan:"),
+        "merge commit should still include plan block from history"
+    );
+    assert!(
+        message.contains("plan: history-plan"),
+        "merge commit should inline recovered historical plan document"
+    );
+    assert!(
+        !message.contains("Implementation plan document unavailable"),
+        "merge commit should not fall back to unavailable placeholder when history recovery works"
+    );
+    Ok(())
+}
 #[test]
 fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
     let repo = IntegrationRepo::new()?;

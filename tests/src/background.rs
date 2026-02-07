@@ -636,6 +636,109 @@ fn test_scheduler_retry_unblocks_after_dependency_chain() -> TestResult {
 }
 
 #[test]
+fn test_scheduler_retry_merge_recovers_plan_doc_from_history() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    repo.vizier_output(&[
+        "draft",
+        "--name",
+        "retry-merge-history",
+        "retry merge history spec",
+    ])?;
+    repo.vizier_output(&["approve", "retry-merge-history", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let merge = repo
+        .vizier_cmd_background()
+        .args(["--push", "merge", "retry-merge-history", "--yes"])
+        .output()?;
+    assert!(
+        merge.status.success(),
+        "scheduling merge failed: {}",
+        String::from_utf8_lossy(&merge.stderr)
+    );
+    let merge_job_id =
+        extract_job_id(&String::from_utf8_lossy(&merge.stdout)).ok_or("missing merge job id")?;
+    wait_for_job_completion(&repo, &merge_job_id, Duration::from_secs(40))?;
+
+    let failed_record = read_job_record(&repo, &merge_job_id)?;
+    let failed_stderr_rel = failed_record
+        .get("stderr_path")
+        .and_then(Value::as_str)
+        .ok_or("missing failed merge stderr path")?;
+    let failed_stderr_log = fs::read_to_string(repo.path().join(failed_stderr_rel))?;
+    assert_eq!(
+        failed_record.get("status").and_then(Value::as_str),
+        Some("failed"),
+        "merge should fail the first time due to missing push remote:\n{failed_stderr_log}"
+    );
+    assert!(
+        failed_stderr_log.contains("origin") || failed_stderr_log.contains("push"),
+        "expected initial merge failure to involve push/origin:\n{failed_stderr_log}"
+    );
+
+    let repo_handle = repo.repo();
+    let draft_tip = repo_handle
+        .find_branch("draft/retry-merge-history", BranchType::Local)?
+        .get()
+        .peel_to_commit()?;
+    assert!(
+        draft_tip
+            .tree()?
+            .get_path(Path::new(
+                ".vizier/implementation-plans/retry-merge-history.md"
+            ))
+            .is_err(),
+        "merge prep should remove the plan doc from draft tip before retry"
+    );
+
+    let origin_dir = repo.path().join(".vizier/tmp/retry-merge-origin.git");
+    fs::create_dir_all(origin_dir.parent().ok_or("origin parent missing")?)?;
+    let init_status = Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&origin_dir)
+        .status()?;
+    if !init_status.success() {
+        return Err(format!(
+            "failed to initialize bare origin at {} (status={init_status:?})",
+            origin_dir.display()
+        )
+        .into());
+    }
+    let origin = origin_dir.to_string_lossy().to_string();
+    repo.git(&["remote", "add", "origin", &origin])?;
+    repo.git(&["push", "-u", "origin", "master"])?;
+    repo.git(&["push", "origin", "draft/retry-merge-history"])?;
+
+    let retry = repo
+        .vizier_cmd_background()
+        .args(["jobs", "retry", &merge_job_id])
+        .output()?;
+    assert!(
+        retry.status.success(),
+        "jobs retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    wait_for_job_completion(&repo, &merge_job_id, Duration::from_secs(40))?;
+
+    let retried_record = read_job_record(&repo, &merge_job_id)?;
+    let stderr_rel = retried_record
+        .get("stderr_path")
+        .and_then(Value::as_str)
+        .ok_or("missing retry stderr path")?;
+    let stderr_log = fs::read_to_string(repo.path().join(stderr_rel))?;
+    assert_eq!(
+        retried_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "merge retry should succeed once push remote is configured:\n{stderr_log}"
+    );
+    assert!(
+        !stderr_log.contains("MissingPlanFile"),
+        "retry should not fail with MissingPlanFile when history has the plan doc:\n{stderr_log}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_scheduler_lock_contention_waits() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
     let draft_agent_path = write_sleeping_agent(&repo, "fast-draft", 0)?;

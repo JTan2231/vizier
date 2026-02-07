@@ -1,4 +1,4 @@
-use git2::{BranchType, Oid, Repository};
+use git2::{BranchType, ErrorCode, Oid, Repository, Sort};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -396,6 +396,12 @@ impl PlanMetadata {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadedPlanDocument {
+    pub metadata: PlanMetadata,
+    pub contents: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanRecord {
     pub plan_id: String,
@@ -772,19 +778,74 @@ impl PlanSlugInventory {
 pub fn load_plan_from_branch(slug: &str, branch: &str) -> Result<PlanMetadata, PlanError> {
     let repo = Repository::discover(".")?;
     let plan_path = plan_rel_path(slug);
+    let commit = load_branch_head_commit(&repo, branch)?;
+    let contents =
+        load_plan_document_from_commit(&repo, &commit, &plan_path)?.ok_or_else(|| {
+            PlanError::MissingPlanFile {
+                branch: branch.to_string(),
+                path: plan_path.clone(),
+            }
+        })?;
+    PlanMetadata::from_document(&contents)
+}
+
+pub fn load_plan_for_merge(slug: &str, branch: &str) -> Result<LoadedPlanDocument, PlanError> {
+    let repo = Repository::discover(".")?;
+    let plan_path = plan_rel_path(slug);
+    let head = load_branch_head_commit(&repo, branch)?;
+
+    if let Some(contents) = load_plan_document_from_commit(&repo, &head, &plan_path)? {
+        let metadata = PlanMetadata::from_document(&contents)?;
+        return Ok(LoadedPlanDocument { metadata, contents });
+    }
+
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(head.id())?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+
+    for oid in revwalk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        let Some(contents) = load_plan_document_from_commit(&repo, &commit, &plan_path)? else {
+            continue;
+        };
+        let Ok(metadata) = PlanMetadata::from_document(&contents) else {
+            continue;
+        };
+        if metadata.slug == slug && metadata.branch == branch {
+            return Ok(LoadedPlanDocument { metadata, contents });
+        }
+    }
+
+    Err(PlanError::MissingPlanFile {
+        branch: branch.to_string(),
+        path: plan_path,
+    })
+}
+
+fn load_branch_head_commit<'repo>(
+    repo: &'repo Repository,
+    branch: &str,
+) -> Result<git2::Commit<'repo>, PlanError> {
     let branch_ref = repo.find_branch(branch, BranchType::Local)?;
     let commit = branch_ref.into_reference().peel_to_commit()?;
-    let tree = commit.tree()?;
+    Ok(commit)
+}
 
-    let entry = tree
-        .get_path(&plan_path)
-        .map_err(|_| PlanError::MissingPlanFile {
-            branch: branch.to_string(),
-            path: plan_path.clone(),
-        })?;
+fn load_plan_document_from_commit(
+    repo: &Repository,
+    commit: &git2::Commit<'_>,
+    plan_path: &Path,
+) -> Result<Option<String>, PlanError> {
+    let tree = commit.tree()?;
+    let entry = match tree.get_path(plan_path) {
+        Ok(value) => value,
+        Err(err) if err.code() == ErrorCode::NotFound => return Ok(None),
+        Err(err) => return Err(PlanError::Git(err)),
+    };
     let blob = repo.find_blob(entry.id())?;
     let contents = std::str::from_utf8(blob.content())?.to_string();
-    PlanMetadata::from_document(&contents)
+    Ok(Some(contents))
 }
 
 pub fn summarize_spec(meta: &PlanMetadata) -> String {
@@ -1068,6 +1129,83 @@ Legacy format
 "#;
         let meta = PlanMetadata::from_document(doc)?;
         assert_eq!(meta.plan_id, "pln_legacy_alpha");
+        Ok(())
+    }
+
+    #[test]
+    fn load_plan_for_merge_recovers_from_history_when_tip_file_missing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        checkout_branch(&repo, "master")?;
+        create_plan_branch(&repo, "alpha", "Alpha spec body")?;
+        checkout_branch(&repo, "draft/alpha")?;
+
+        let path = Path::new(".vizier/implementation-plans/alpha.md");
+        std::fs::remove_file(path)?;
+        commit_all(&repo, "remove plan file from tip")?;
+
+        let loaded = load_plan_for_merge("alpha", "draft/alpha")?;
+        assert_eq!(loaded.metadata.slug, "alpha");
+        assert_eq!(loaded.metadata.branch, "draft/alpha");
+        assert!(
+            loaded.contents.contains("plan: alpha"),
+            "expected recovered plan contents from history"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_plan_for_merge_fails_when_history_has_no_plan_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        let head = repo.head()?.peel_to_commit()?;
+        repo.branch("draft/missing", &head, false)?;
+        checkout_branch(&repo, "draft/missing")?;
+        std::fs::write("notes.txt", "branch without plan docs\n")?;
+        commit_all(&repo, "seed draft branch")?;
+
+        let err = load_plan_for_merge("missing", "draft/missing").unwrap_err();
+        assert!(
+            matches!(err, PlanError::MissingPlanFile { .. }),
+            "expected MissingPlanFile, got {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_plan_for_merge_rejects_mismatched_front_matter_in_history()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        let head = repo.head()?.peel_to_commit()?;
+        repo.branch("draft/alpha", &head, false)?;
+        checkout_branch(&repo, "draft/alpha")?;
+
+        let path = Path::new(".vizier/implementation-plans/alpha.md");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mismatched = r#"---
+plan_id: pln_beta
+plan: beta
+branch: draft/beta
+---
+
+## Operator Spec
+Wrong plan identity.
+
+## Implementation Plan
+- Step 1
+"#;
+        std::fs::write(path, mismatched)?;
+        commit_all(&repo, "add mismatched plan doc")?;
+        std::fs::remove_file(path)?;
+        commit_all(&repo, "remove mismatched plan doc")?;
+
+        let err = load_plan_for_merge("alpha", "draft/alpha").unwrap_err();
+        assert!(
+            matches!(err, PlanError::MissingPlanFile { .. }),
+            "expected MissingPlanFile after rejecting mismatched history, got {err}"
+        );
         Ok(())
     }
 
