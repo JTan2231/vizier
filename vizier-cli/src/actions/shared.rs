@@ -227,23 +227,6 @@ pub(crate) fn push_origin_if_requested(
     }
 }
 
-pub(crate) fn print_agent_summary() {
-    let verbosity = display::get_display_config().verbosity;
-    if matches!(verbosity, Verbosity::Quiet) {
-        return;
-    }
-
-    let rows = latest_agent_rows();
-
-    let block = format_block_with_indent(rows, 2);
-    if block.is_empty() {
-        return;
-    }
-
-    println!("Agent run:");
-    println!("{block}");
-}
-
 pub(crate) fn prompt_selection(
     agent: &config::AgentSettings,
 ) -> Result<&config::PromptSelection, Box<dyn std::error::Error>> {

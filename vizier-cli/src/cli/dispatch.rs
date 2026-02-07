@@ -17,15 +17,15 @@ use crate::cli::help::{
 use crate::cli::jobs_view::run_jobs_command;
 use crate::cli::prompt::{ReviewQueueChoice, prompt_review_queue_choice, prompt_yes_no};
 use crate::cli::resolve::{
-    build_cli_agent_overrides, resolve_approve_options, resolve_ask_message, resolve_cd_options,
-    resolve_clean_options, resolve_draft_spec, resolve_list_options, resolve_merge_options,
-    resolve_review_options, resolve_test_display_options,
+    build_cli_agent_overrides, resolve_approve_options, resolve_cd_options, resolve_clean_options,
+    resolve_draft_spec, resolve_list_options, resolve_merge_options, resolve_review_options,
+    resolve_test_display_options,
 };
 use crate::cli::scheduler::{
     background_config_snapshot, build_background_child_args, build_job_metadata,
     capture_save_input_patch, emit_job_summary, generate_job_id, has_active_plan_job,
-    prepare_prompt_input, resolve_pinned_head, run_scheduled_ask, run_scheduled_save,
-    runtime_job_metadata, scheduler_supported, strip_stdin_marker, user_friendly_args,
+    prepare_prompt_input, resolve_pinned_head, run_scheduled_save, runtime_job_metadata,
+    scheduler_supported, strip_stdin_marker, user_friendly_args,
 };
 use crate::cli::util::flag_present;
 use crate::{jobs, plan};
@@ -40,6 +40,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let stdout_is_tty = std::io::stdout().is_terminal();
     let stderr_is_tty = std::io::stderr().is_terminal();
     let raw_args: Vec<String> = std::env::args().collect();
+    if matches!(subcommand_from_raw_args(&raw_args).as_deref(), Some("ask")) {
+        return Err("`ask` has been removed; use supported workflow commands (`save`, `draft`, `approve`, `review`, `merge`).".into());
+    }
     let quiet_requested = flag_present(&raw_args, Some('q'), "--quiet");
     let json_requested = flag_present(&raw_args, Some('j'), "--json");
     let no_ansi_requested = flag_present(&raw_args, None, "--no-ansi");
@@ -328,7 +331,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut schedule = jobs::JobSchedule::default();
         let mut capture_save_patch = false;
         let requested_after = match &cli.command {
-            Commands::Ask(cmd) => cmd.after.clone(),
             Commands::Save(cmd) => cmd.after.clone(),
             Commands::Draft(cmd) => cmd.after.clone(),
             Commands::Approve(cmd) => cmd.after.clone(),
@@ -344,42 +346,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         match &cli.command {
-            Commands::Ask(cmd) => {
-                if !commit_mode.should_commit() {
-                    return Err("vizier ask requires auto-commit; drop --no-commit".into());
-                }
-                let (_resolved, input_file) = prepare_prompt_input(
-                    cmd.message.as_deref(),
-                    cmd.file.as_deref(),
-                    &project_root,
-                    &job_id,
-                )?;
-                if let Some(path) = input_file {
-                    raw_args_for_child = strip_stdin_marker(&raw_args_for_child);
-                    injected_args.push("--file".to_string());
-                    injected_args.push(path.display().to_string());
-                }
-                let pinned = resolve_pinned_head(&project_root)?;
-                schedule.pinned_head = Some(pinned.clone());
-                schedule.locks = vec![
-                    jobs::JobLock {
-                        key: "repo_serial".to_string(),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                    jobs::JobLock {
-                        key: format!("branch:{}", pinned.branch),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                    jobs::JobLock {
-                        key: format!("temp_worktree:{job_id}"),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                ];
-                schedule.artifacts = vec![jobs::JobArtifact::AskSavePatch {
-                    job_id: job_id.clone(),
-                }];
-                metadata.target = Some(pinned.branch);
-            }
             Commands::Save(cmd) => {
                 if cmd.commit_message_editor {
                     return Err(
@@ -402,7 +368,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         mode: jobs::LockMode::Exclusive,
                     },
                 ];
-                schedule.artifacts = vec![jobs::JobArtifact::AskSavePatch {
+                schedule.artifacts = vec![jobs::JobArtifact::CommandPatch {
                     job_id: job_id.clone(),
                 }];
                 metadata.target = Some(pinned.branch);
@@ -710,7 +676,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             }
             Commands::Complete(_) => Ok(()),
-            Commands::InitSnapshot(cmd) => run_snapshot_init(cmd.into()).await,
 
             Commands::Save(SaveCmd {
                 rev_or_range,
@@ -751,29 +716,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &agent,
                     )
                     .await
-                }
-            }
-
-            Commands::Ask(cmd) => {
-                let agent = config::resolve_agent_settings(
-                    &config::get_config(),
-                    config::CommandScope::Ask,
-                    cli_agent_override.as_ref(),
-                )?;
-                if let Some(job_id) = cli.global.background_job_id.as_deref() {
-                    run_scheduled_ask(
-                        job_id,
-                        &cmd,
-                        push_after,
-                        commit_mode,
-                        &agent,
-                        &project_root,
-                        &jobs_root,
-                    )
-                    .await
-                } else {
-                    let message = resolve_ask_message(&cmd)?;
-                    inline_command(message, push_after, &agent, commit_mode).await
                 }
             }
 

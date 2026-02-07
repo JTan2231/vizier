@@ -182,9 +182,12 @@ mod tests {
         let raw_args = vec![
             "vizier".to_string(),
             "--config-file=./vizier.toml".to_string(),
-            "ask".to_string(),
+            "save".to_string(),
         ];
 
-        assert_eq!(subcommand_from_raw_args(&raw_args), Some("ask".to_string()));
+        assert_eq!(
+            subcommand_from_raw_args(&raw_args),
+            Some("save".to_string())
+        );
     }
 }

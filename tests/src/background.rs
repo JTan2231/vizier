@@ -6,10 +6,7 @@ use std::process::Stdio;
 #[test]
 fn test_scheduler_default_spawns_job() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    let output = repo
-        .vizier_cmd_background()
-        .args(["ask", "scheduler default"])
-        .output()?;
+    let output = repo.vizier_cmd_background().args(["save"]).output()?;
     assert!(
         output.status.success(),
         "scheduled ask failed: {}",
@@ -34,10 +31,7 @@ fn test_scheduler_default_spawns_job() -> TestResult {
 #[test]
 fn test_scheduler_default_is_not_quiet() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    let output = repo
-        .vizier_cmd_background()
-        .args(["ask", "scheduler stderr"])
-        .output()?;
+    let output = repo.vizier_cmd_background().args(["save"]).output()?;
     assert!(
         output.status.success(),
         "scheduled ask failed: {}",
@@ -65,7 +59,7 @@ fn test_scheduler_follow_streams_logs() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let output = repo
         .vizier_cmd_background()
-        .args(["--follow", "ask", "scheduler follow"])
+        .args(["--follow", "save"])
         .output()?;
     assert!(
         output.status.success(),
@@ -74,7 +68,7 @@ fn test_scheduler_follow_streams_logs() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Agent run:"),
+        stdout.contains("Outcome    : Save complete") && stdout.contains("Agent      :"),
         "expected follow stdout to include agent summary:\n{stdout}"
     );
     Ok(())
@@ -84,7 +78,7 @@ fn test_scheduler_follow_streams_logs() -> TestResult {
 fn test_scheduler_stdin_is_supported() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let mut cmd = repo.vizier_cmd_background();
-    cmd.args(["ask"]);
+    cmd.args(["save"]);
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -109,7 +103,7 @@ fn test_scheduler_rejects_json_output() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let blocked = repo
         .vizier_cmd_background()
-        .args(["ask", "json scheduler", "--json"])
+        .args(["save", "--json"])
         .output()?;
     assert!(
         !blocked.status.success(),
@@ -152,7 +146,7 @@ fn test_scheduler_rejects_unknown_after_dependency() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let output = repo
         .vizier_cmd_background()
-        .args(["ask", "after unknown", "--after", "job-missing"])
+        .args(["save", "--after", "job-missing"])
         .output()?;
     assert!(
         !output.status.success(),
@@ -170,10 +164,7 @@ fn test_scheduler_rejects_unknown_after_dependency() -> TestResult {
 fn test_scheduler_after_flag_is_repeatable_and_recorded() -> TestResult {
     let repo = IntegrationRepo::new()?;
 
-    let first = repo
-        .vizier_cmd_background()
-        .args(["ask", "after dependency first"])
-        .output()?;
+    let first = repo.vizier_cmd_background().args(["save"]).output()?;
     assert!(
         first.status.success(),
         "first scheduled ask failed: {}",
@@ -183,10 +174,7 @@ fn test_scheduler_after_flag_is_repeatable_and_recorded() -> TestResult {
         extract_job_id(&String::from_utf8_lossy(&first.stdout)).ok_or("first job id missing")?;
     wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(20))?;
 
-    let second = repo
-        .vizier_cmd_background()
-        .args(["ask", "after dependency second"])
-        .output()?;
+    let second = repo.vizier_cmd_background().args(["save"]).output()?;
     assert!(
         second.status.success(),
         "second scheduled ask failed: {}",
@@ -199,7 +187,7 @@ fn test_scheduler_after_flag_is_repeatable_and_recorded() -> TestResult {
     let third = repo
         .vizier_cmd_background()
         .args([
-            "ask",
+            "save",
             "after dependency third",
             "--after",
             &first_job_id,
@@ -468,13 +456,13 @@ fn test_scheduler_after_dependency_blocks_on_failed_predecessor() -> TestResult 
     }
 
     let failing_config =
-        write_agent_config(&repo, "config-failing-after.toml", "ask", &failing_agent)?;
+        write_agent_config(&repo, "config-failing-after.toml", "save", &failing_agent)?;
     let fast_agent = write_sleeping_agent(&repo, "fast-after", 0)?;
-    let fast_config = write_agent_config(&repo, "config-fast-after.toml", "ask", &fast_agent)?;
+    let fast_config = write_agent_config(&repo, "config-fast-after.toml", "save", &fast_agent)?;
 
     let predecessor = repo
         .vizier_cmd_background_with_config(&failing_config)
-        .args(["ask", "after failed predecessor"])
+        .args(["save"])
         .output()?;
     assert!(
         predecessor.status.success(),
@@ -497,7 +485,7 @@ fn test_scheduler_after_dependency_blocks_on_failed_predecessor() -> TestResult 
     let dependent = repo
         .vizier_cmd_background_with_config(&fast_config)
         .args([
-            "ask",
+            "save",
             "after blocked dependent",
             "--after",
             &predecessor_job_id,
@@ -730,11 +718,11 @@ fn test_scheduler_lock_contention_waits() -> TestResult {
 fn test_scheduler_pinned_head_mismatch_waits() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
     let agent_path = write_sleeping_agent(&repo, "sleepy-ask", 2)?;
-    let config_path = write_agent_config(&repo, "config-sleepy-ask.toml", "ask", &agent_path)?;
+    let config_path = write_agent_config(&repo, "config-sleepy-ask.toml", "save", &agent_path)?;
 
     let first = repo
         .vizier_cmd_background_with_config(&config_path)
-        .args(["ask", "pinned head first"])
+        .args(["save"])
         .output()?;
     assert!(
         first.status.success(),
@@ -747,7 +735,7 @@ fn test_scheduler_pinned_head_mismatch_waits() -> TestResult {
 
     let second = repo
         .vizier_cmd_background_with_config(&config_path)
-        .args(["ask", "pinned head second"])
+        .args(["save"])
         .output()?;
     assert!(
         second.status.success(),
@@ -820,13 +808,13 @@ fn test_scheduler_pinned_head_mismatch_resolves_after_reset() -> TestResult {
     fs::write(
         &config_path,
         format!(
-            "[agents.ask.agent]\nlabel = \"sleepy-ask\"\ncommand = [\"{ask_agent}\"]\n\n[agents.draft.agent]\nlabel = \"fast-draft\"\ncommand = [\"{draft_agent}\"]\n"
+            "[agents.save.agent]\nlabel = \"sleepy-ask\"\ncommand = [\"{ask_agent}\"]\n\n[agents.draft.agent]\nlabel = \"fast-draft\"\ncommand = [\"{draft_agent}\"]\n"
         ),
     )?;
 
     let first = repo
         .vizier_cmd_background_with_config(&config_path)
-        .args(["ask", "pinned head resolve first"])
+        .args(["save"])
         .output()?;
     assert!(
         first.status.success(),
@@ -839,7 +827,7 @@ fn test_scheduler_pinned_head_mismatch_resolves_after_reset() -> TestResult {
 
     let second = repo
         .vizier_cmd_background_with_config(&config_path)
-        .args(["ask", "pinned head resolve second"])
+        .args(["save"])
         .output()?;
     assert!(
         second.status.success(),
@@ -908,10 +896,7 @@ fn test_scheduler_background_ask_applies_single_commit() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let before = count_commits_from_head(&repo.repo())?;
 
-    let output = repo
-        .vizier_cmd_background()
-        .args(["ask", "background ask single commit"])
-        .output()?;
+    let output = repo.vizier_cmd_background().args(["save"]).output()?;
     assert!(
         output.status.success(),
         "scheduled ask failed: {}",
@@ -964,11 +949,11 @@ fn test_scheduler_background_save_applies_single_commit() -> TestResult {
 fn test_scheduler_background_ask_fails_on_pinned_head_mismatch() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
     let agent_path = write_sleeping_agent(&repo, "sleepy-ask", 5)?;
-    let config_path = write_agent_config(&repo, "config-sleepy-ask.toml", "ask", &agent_path)?;
+    let config_path = write_agent_config(&repo, "config-sleepy-ask.toml", "save", &agent_path)?;
 
     let output = repo
         .vizier_cmd_background_with_config(&config_path)
-        .args(["ask", "pinned mismatch"])
+        .args(["save"])
         .output()?;
     assert!(
         output.status.success(),

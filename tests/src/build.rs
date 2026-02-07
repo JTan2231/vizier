@@ -51,7 +51,7 @@ fn dependency_has_completion_job(job_record: &Value, job_id: &str) -> bool {
         .any(|entry| {
             entry
                 .get("artifact")
-                .and_then(|artifact| artifact.get("ask_save_patch"))
+                .and_then(|artifact| artifact.get("command_patch"))
                 .and_then(|artifact| artifact.get("job_id"))
                 .and_then(Value::as_str)
                 == Some(job_id)

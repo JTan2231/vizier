@@ -5,7 +5,7 @@ fn schedule_record(job_id: &str, status: &str, created_at: &str, schedule: Value
     json!({
         "id": job_id,
         "status": status,
-        "command": ["vizier", "ask", "schedule"],
+        "command": ["vizier", "save", "schedule"],
         "created_at": created_at,
         "started_at": created_at,
         "finished_at": null,
@@ -24,10 +24,7 @@ fn schedule_record(job_id: &str, status: &str, created_at: &str, schedule: Value
 #[test]
 fn test_jobs_tail_follow_uses_global_flag() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    let output = repo
-        .vizier_cmd_background()
-        .args(["ask", "jobs tail follow"])
-        .output()?;
+    let output = repo.vizier_cmd_background().args(["save"]).output()?;
     assert!(
         output.status.success(),
         "background ask failed: {}",
@@ -64,7 +61,7 @@ fn test_jobs_status_output() -> TestResult {
         json!({
             "id": job_id,
             "status": "failed",
-            "command": ["vizier", "ask", "status"],
+            "command": ["vizier", "save", "status"],
             "created_at": "2026-01-30T02:00:00Z",
             "started_at": "2026-01-30T02:00:01Z",
             "finished_at": "2026-01-30T02:00:02Z",
@@ -157,7 +154,7 @@ fn test_jobs_tail_follow_orders_streams() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "follow-order"],
+        &["vizier", "save", "follow-order"],
     )?;
     let job_dir = repo.path().join(".vizier/jobs").join(job_id);
     let stdout_path = job_dir.join("stdout.log");
@@ -226,7 +223,7 @@ fn test_jobs_attach_streams_both_logs() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "attach"],
+        &["vizier", "save", "attach"],
     )?;
     let job_dir = repo.path().join(".vizier/jobs").join(job_id);
     let stdout_path = job_dir.join("stdout.log");
@@ -280,7 +277,7 @@ fn test_jobs_tail_handles_missing_logs() -> TestResult {
         "succeeded",
         "2026-01-30T02:00:00Z",
         Some("2026-01-30T02:00:01Z"),
-        &["vizier", "ask", "missing-logs"],
+        &["vizier", "save", "missing-logs"],
     )?;
     let job_dir = repo.path().join(".vizier/jobs").join(job_id);
     let _ = fs::remove_file(job_dir.join("stdout.log"));
@@ -359,7 +356,7 @@ fn test_jobs_list_hides_succeeded_by_default() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "running"],
+        &["vizier", "save", "running"],
     )?;
     write_job_record_simple(
         &repo,
@@ -367,7 +364,7 @@ fn test_jobs_list_hides_succeeded_by_default() -> TestResult {
         "failed",
         "2026-01-30T03:00:00Z",
         Some("2026-01-30T03:30:00Z"),
-        &["vizier", "ask", "failed"],
+        &["vizier", "save", "failed"],
     )?;
     write_job_record_simple(
         &repo,
@@ -375,7 +372,7 @@ fn test_jobs_list_hides_succeeded_by_default() -> TestResult {
         "succeeded",
         "2026-01-29T23:00:00Z",
         Some("2026-01-29T23:15:00Z"),
-        &["vizier", "ask", "succeeded"],
+        &["vizier", "save", "succeeded"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "list"])?;
@@ -431,7 +428,7 @@ fn test_jobs_list_dismiss_failures_hides_failed() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "running"],
+        &["vizier", "save", "running"],
     )?;
     write_job_record_simple(
         &repo,
@@ -439,7 +436,7 @@ fn test_jobs_list_dismiss_failures_hides_failed() -> TestResult {
         "failed",
         "2026-01-30T03:00:00Z",
         Some("2026-01-30T03:30:00Z"),
-        &["vizier", "ask", "failed"],
+        &["vizier", "save", "failed"],
     )?;
     write_job_record_simple(
         &repo,
@@ -447,7 +444,7 @@ fn test_jobs_list_dismiss_failures_hides_failed() -> TestResult {
         "succeeded",
         "2026-01-29T23:00:00Z",
         Some("2026-01-29T23:15:00Z"),
-        &["vizier", "ask", "succeeded"],
+        &["vizier", "save", "succeeded"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "list", "--dismiss-failures"])?;
@@ -495,7 +492,7 @@ fn test_jobs_list_all_includes_succeeded() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "running"],
+        &["vizier", "save", "running"],
     )?;
     write_job_record_simple(
         &repo,
@@ -503,7 +500,7 @@ fn test_jobs_list_all_includes_succeeded() -> TestResult {
         "failed",
         "2026-01-30T03:00:00Z",
         Some("2026-01-30T03:30:00Z"),
-        &["vizier", "ask", "failed"],
+        &["vizier", "save", "failed"],
     )?;
     write_job_record_simple(
         &repo,
@@ -511,7 +508,7 @@ fn test_jobs_list_all_includes_succeeded() -> TestResult {
         "succeeded",
         "2026-01-29T23:00:00Z",
         Some("2026-01-29T23:15:00Z"),
-        &["vizier", "ask", "succeeded"],
+        &["vizier", "save", "succeeded"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "list", "--all"])?;
@@ -542,7 +539,7 @@ fn test_jobs_list_all_overrides_dismiss_failures() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "running"],
+        &["vizier", "save", "running"],
     )?;
     write_job_record_simple(
         &repo,
@@ -550,7 +547,7 @@ fn test_jobs_list_all_overrides_dismiss_failures() -> TestResult {
         "failed",
         "2026-01-30T03:00:00Z",
         Some("2026-01-30T03:30:00Z"),
-        &["vizier", "ask", "failed"],
+        &["vizier", "save", "failed"],
     )?;
     write_job_record_simple(
         &repo,
@@ -558,7 +555,7 @@ fn test_jobs_list_all_overrides_dismiss_failures() -> TestResult {
         "succeeded",
         "2026-01-29T23:00:00Z",
         Some("2026-01-29T23:15:00Z"),
-        &["vizier", "ask", "succeeded"],
+        &["vizier", "save", "succeeded"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "list", "--dismiss-failures", "--all"])?;
@@ -690,7 +687,7 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
         "expected consumer root line:\n{stdout}"
     );
     assert!(
-        stdout.contains("ask_save_patch:producer-artifact -> job-producer succeeded"),
+        stdout.contains("command_patch:producer-artifact -> job-producer succeeded"),
         "expected producer edge:\n{stdout}"
     );
     assert!(
@@ -738,7 +735,7 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
                 && edge.get("to") == Some(&Value::String("job-producer".to_string()))
                 && edge.get("artifact")
                     == Some(&Value::String(
-                        "ask_save_patch:producer-artifact".to_string(),
+                        "command_patch:producer-artifact".to_string(),
                     ))
         }),
         "expected producer edge in JSON: {payload}"
@@ -839,7 +836,7 @@ fn test_jobs_schedule_filters_terminal_without_all() -> TestResult {
         "queued",
         "2026-02-02T00:00:00Z",
         None,
-        &["vizier", "ask", "active"],
+        &["vizier", "save", "active"],
     )?;
     write_job_record_simple(
         &repo,
@@ -847,7 +844,7 @@ fn test_jobs_schedule_filters_terminal_without_all() -> TestResult {
         "succeeded",
         "2026-02-02T00:10:00Z",
         Some("2026-02-02T00:11:00Z"),
-        &["vizier", "ask", "done"],
+        &["vizier", "save", "done"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "schedule"])?;
@@ -913,7 +910,7 @@ fn test_jobs_schedule_job_focus_includes_neighbors() -> TestResult {
         "queued",
         "2026-02-03T02:00:00Z",
         None,
-        &["vizier", "ask", "unrelated"],
+        &["vizier", "save", "unrelated"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "schedule", "--job", "job-root"])?;
@@ -1013,7 +1010,7 @@ fn test_jobs_list_table_orders_by_created() -> TestResult {
         "running",
         "2026-01-30T01:00:00Z",
         None,
-        &["vizier", "ask", "old"],
+        &["vizier", "save", "old"],
     )?;
     write_job_record_simple(
         &repo,
@@ -1021,7 +1018,7 @@ fn test_jobs_list_table_orders_by_created() -> TestResult {
         "running",
         "2026-01-30T02:00:00Z",
         None,
-        &["vizier", "ask", "mid"],
+        &["vizier", "save", "mid"],
     )?;
     write_job_record_simple(
         &repo,
@@ -1029,7 +1026,7 @@ fn test_jobs_list_table_orders_by_created() -> TestResult {
         "running",
         "2026-01-30T03:00:00Z",
         None,
-        &["vizier", "ask", "new"],
+        &["vizier", "save", "new"],
     )?;
 
     let output = repo
@@ -1080,7 +1077,7 @@ show_succeeded = true
             "succeeded",
             "2026-01-01T00:00:00Z",
             Some("2026-01-01T00:00:01Z"),
-            &["vizier", "ask", "bulk"],
+            &["vizier", "save", "bulk"],
         )?;
     }
 
@@ -1108,7 +1105,7 @@ fn test_jobs_list_format_json() -> TestResult {
     let record = json!({
         "id": job_id,
         "status": "failed",
-        "command": ["vizier", "ask", "json-list"],
+        "command": ["vizier", "save", "json-list"],
         "created_at": "2026-01-31T01:00:00Z",
         "started_at": "2026-01-31T01:00:01Z",
         "finished_at": "2026-01-31T01:05:00Z",
@@ -1205,7 +1202,7 @@ fn test_jobs_list_format_json() -> TestResult {
     );
     assert_eq!(
         job.get("command").and_then(Value::as_str),
-        Some("vizier ask json-list"),
+        Some("vizier save json-list"),
         "command mismatch: {job}"
     );
     Ok(())
@@ -1221,7 +1218,7 @@ fn test_jobs_list_and_show_json_include_after_field_when_configured() -> TestRes
         json!({
             "id": job_id,
             "status": "queued",
-            "command": ["vizier", "ask", "after"],
+            "command": ["vizier", "save", "after"],
             "created_at": "2026-01-31T01:00:00Z",
             "started_at": null,
             "finished_at": null,
@@ -1318,7 +1315,7 @@ fn test_jobs_show_format_json() -> TestResult {
     let record = json!({
         "id": job_id,
         "status": "failed",
-        "command": ["vizier", "ask", "show-json"],
+        "command": ["vizier", "save", "show-json"],
         "created_at": "2026-01-31T02:00:00Z",
         "started_at": "2026-01-31T02:00:05Z",
         "finished_at": "2026-01-31T02:10:00Z",
@@ -1329,7 +1326,7 @@ fn test_jobs_show_format_json() -> TestResult {
         "session_path": ".vizier/sessions/session.json",
         "outcome_path": format!(".vizier/jobs/{job_id}/outcome.json"),
         "metadata": {
-            "scope": "ask",
+            "scope": "save",
             "plan": "alpha",
             "target": "main",
             "branch": "draft/alpha",
@@ -1401,7 +1398,7 @@ fn test_jobs_show_format_json() -> TestResult {
     );
     assert_eq!(
         json.get("scope").and_then(Value::as_str),
-        Some("ask"),
+        Some("save"),
         "scope mismatch: {json}"
     );
     assert_eq!(
@@ -1502,7 +1499,7 @@ fn test_jobs_show_format_json() -> TestResult {
     );
     assert_eq!(
         json.get("command").and_then(Value::as_str),
-        Some("vizier ask show-json"),
+        Some("vizier save show-json"),
         "command mismatch: {json}"
     );
     Ok(())
@@ -1517,7 +1514,7 @@ fn test_jobs_list_status_labels_for_waiting_and_blocked() -> TestResult {
         "waiting_on_deps",
         "2026-01-31T03:00:00Z",
         None,
-        &["vizier", "ask", "wait-deps"],
+        &["vizier", "save", "wait-deps"],
     )?;
     write_job_record_simple(
         &repo,
@@ -1525,7 +1522,7 @@ fn test_jobs_list_status_labels_for_waiting_and_blocked() -> TestResult {
         "waiting_on_locks",
         "2026-01-31T03:01:00Z",
         None,
-        &["vizier", "ask", "wait-locks"],
+        &["vizier", "save", "wait-locks"],
     )?;
     write_job_record_simple(
         &repo,
@@ -1533,7 +1530,7 @@ fn test_jobs_list_status_labels_for_waiting_and_blocked() -> TestResult {
         "blocked_by_dependency",
         "2026-01-31T03:02:00Z",
         None,
-        &["vizier", "ask", "blocked"],
+        &["vizier", "save", "blocked"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "list", "--format", "json"])?;
@@ -1792,7 +1789,7 @@ fn test_jobs_cancel_rejects_non_active_statuses() -> TestResult {
             status,
             "2026-01-31T01:00:00Z",
             Some("2026-01-31T01:00:05Z"),
-            &["vizier", "ask", "done"],
+            &["vizier", "save", "done"],
         )?;
         let output = repo
             .vizier_cmd_background()
@@ -1944,8 +1941,8 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
         json!({
             "id": job_id,
             "status": "failed",
-            "command": ["vizier", "ask", "retry cleanup"],
-            "child_args": ["ask", "retry cleanup"],
+            "command": ["vizier", "save", "retry cleanup"],
+            "child_args": ["save", "retry cleanup"],
             "created_at": "2026-01-30T02:00:00Z",
             "started_at": "2026-01-30T02:00:01Z",
             "finished_at": "2026-01-30T02:00:02Z",
@@ -2053,8 +2050,8 @@ fn test_jobs_retry_json_output() -> TestResult {
         json!({
             "id": job_id,
             "status": "failed",
-            "command": ["vizier", "ask", "retry json"],
-            "child_args": ["ask", "retry json"],
+            "command": ["vizier", "save", "retry json"],
+            "child_args": ["save", "retry json"],
             "created_at": "2026-01-30T02:00:00Z",
             "started_at": "2026-01-30T02:00:01Z",
             "finished_at": "2026-01-30T02:00:02Z",
@@ -2127,7 +2124,7 @@ fn test_jobs_gc_removes_old_jobs() -> TestResult {
         "succeeded",
         "2000-01-01T00:00:00Z",
         Some("2000-01-01T00:00:01Z"),
-        &["vizier", "ask", "old"],
+        &["vizier", "save", "old"],
     )?;
     write_job_record_simple(
         &repo,
@@ -2135,7 +2132,7 @@ fn test_jobs_gc_removes_old_jobs() -> TestResult {
         "succeeded",
         "2099-01-01T00:00:00Z",
         Some("2099-01-01T00:00:01Z"),
-        &["vizier", "ask", "recent"],
+        &["vizier", "save", "recent"],
     )?;
     write_job_record_simple(
         &repo,
@@ -2143,7 +2140,7 @@ fn test_jobs_gc_removes_old_jobs() -> TestResult {
         "running",
         "2000-01-01T00:00:00Z",
         None,
-        &["vizier", "ask", "running"],
+        &["vizier", "save", "running"],
     )?;
 
     let output = repo
@@ -2187,7 +2184,7 @@ fn test_jobs_gc_preserves_terminal_jobs_referenced_by_active_after_dependencies(
         json!({
             "id": "job-old-predecessor",
             "status": "succeeded",
-            "command": ["vizier", "ask", "old"],
+            "command": ["vizier", "save", "old"],
             "created_at": "2000-01-01T00:00:00Z",
             "started_at": "2000-01-01T00:00:00Z",
             "finished_at": "2000-01-01T00:00:01Z",
@@ -2207,7 +2204,7 @@ fn test_jobs_gc_preserves_terminal_jobs_referenced_by_active_after_dependencies(
         json!({
             "id": "job-active-dependent",
             "status": "queued",
-            "command": ["vizier", "ask", "queued"],
+            "command": ["vizier", "save", "queued"],
             "created_at": "2099-01-01T00:00:00Z",
             "started_at": null,
             "finished_at": null,

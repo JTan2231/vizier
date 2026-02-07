@@ -3,10 +3,10 @@ use crate::fixtures::*;
 #[test]
 fn test_no_ansi_suppresses_escape_sequences() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    let output = repo.vizier_output(&["--no-ansi", "ask", "ansi suppression check"])?;
+    let output = repo.vizier_output(&["--no-ansi", "save", "ansi suppression check"])?;
     assert!(
         output.status.success(),
-        "vizier ask failed: {}",
+        "vizier save failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let combined = format!(

@@ -66,3 +66,5 @@ Update (2026-02-06, follow-up)
 - Clarified guardrail parsing: the explicit update instruction is still valid when wrapped in `<task><instruction>...</instruction></task>`, so formatting does not block authorized first-response narrative upkeep.
 Update (2026-02-06, task-envelope follow-up)
 - Clarified no-wait execution posture: when the task envelope contains the explicit update instruction, editorial updates are expected in the first response, and only an explicit no-update signal suppresses narrative edits for that turn.
+Update (2026-02-07)
+- Reaffirmed turn authorization semantics: for task-envelope turns that carry the explicit update instruction, narrative upkeep executes in the first response by default, and explicit no-update signals remain the only suppressor.

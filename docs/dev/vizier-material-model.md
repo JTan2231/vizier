@@ -7,7 +7,7 @@ It describes what exists under `.vizier/`, which flows own it, how state is repr
 
 In scope:
 - Workflow/scheduler/auditor artifacts that Vizier creates, updates, or consumes.
-- User-visible material for `draft/approve/review/merge/build/jobs/save/ask`.
+- User-visible material for `draft/approve/review/merge/build/jobs/save`.
 
 Out of scope:
 - Agent runtime internals (shim protocol details, provider request/response payloads, backend transport mechanics).
@@ -17,7 +17,7 @@ Out of scope:
 ### 1) Narrative material
 - Paths: `.vizier/narrative/**/*.md`, plus legacy `.vizier/.snapshot` compatibility handling.
 - Primary files: `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, and thread docs under `.vizier/narrative/threads/`.
-- Owner flows: ask/save/approve/review/merge refresh flows.
+- Owner flows: save/approve/review/merge refresh flows.
 - Durability: durable repository material.
 
 ### 2) Plan material
@@ -63,7 +63,7 @@ Out of scope:
   - `stdout.log`
   - `stderr.log`
   - `outcome.json` (written on finalization)
-  - optional `ask-save.patch` and `save-input.patch`
+  - optional `command.patch` (legacy `ask-save.patch` still recognized for retries) and `save-input.patch`
 - Schedule metadata in `job.json`:
   - `after`
   - `dependencies`
@@ -101,7 +101,7 @@ Out of scope:
 - `BuildExecutionStep(step_key)` derives `derived_slug` and `derived_branch`, then points at phase jobs.
 - `JobRecord` edges form a DAG through:
   - explicit `after` dependencies (job-id level), and
-  - artifact dependencies (`plan_branch`, `plan_doc`, `plan_commits`, `target_branch`, `merge_sentinel`, `ask_save_patch`).
+  - artifact dependencies (`plan_branch`, `plan_doc`, `plan_commits`, `target_branch`, `merge_sentinel`, `command_patch`).
 - `MergeConflictSentinel(slug)` links pending merge state to plan slug, source branch, target branch, and resume metadata.
 - `SessionLog(session_id)` is attached to audited operations and referenced by outcomes/commits.
 

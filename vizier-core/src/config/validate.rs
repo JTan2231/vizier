@@ -63,7 +63,7 @@ text = "profile documentation prompt"
 
         let _cwd = CwdGuard::enter(temp_dir.path());
         let cfg = load_config_from_toml(config_path).expect("parse config");
-        let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation);
+        let selection = cfg.prompt_for(CommandScope::Save, PromptKind::Documentation);
         assert_eq!(selection.text, "profile documentation prompt");
     }
 
@@ -109,6 +109,26 @@ agent = "codex"
     }
 
     #[test]
+    fn config_rejects_removed_ask_scope() {
+        let toml = r#"
+[agents.ask]
+agent = "codex"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("ask scope should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("unknown [agents.ask] section"),
+            "error message should mention removed ask scope: {err}"
+        );
+    }
+
+    #[test]
     fn documentation_settings_follow_scope_overrides() {
         let toml = r#"
 [agents.default.documentation]
@@ -116,7 +136,7 @@ enabled = false
 include_snapshot = false
 include_narrative_docs = false
 
-[agents.ask.documentation]
+[agents.save.documentation]
 enabled = true
 include_snapshot = true
 include_narrative_docs = true
@@ -131,21 +151,21 @@ include_narrative_docs = true
         cfg.agent_runtime.command = vec!["/bin/echo".to_string()];
         cfg.agent_runtime.label = Some("doc-agent".to_string());
 
-        let ask_settings =
-            resolve_prompt_profile(&cfg, CommandScope::Ask, PromptKind::Documentation, None)
-                .expect("resolve ask settings");
-        assert!(ask_settings.documentation.use_documentation_prompt);
-        assert!(ask_settings.documentation.include_snapshot);
-        assert!(ask_settings.documentation.include_narrative_docs);
-        assert!(ask_settings.prompt_selection().is_some());
-
         let save_settings =
             resolve_prompt_profile(&cfg, CommandScope::Save, PromptKind::Documentation, None)
                 .expect("resolve save settings");
-        assert!(!save_settings.documentation.use_documentation_prompt);
-        assert!(!save_settings.documentation.include_snapshot);
-        assert!(!save_settings.documentation.include_narrative_docs);
-        assert!(save_settings.prompt_selection().is_none());
+        assert!(save_settings.documentation.use_documentation_prompt);
+        assert!(save_settings.documentation.include_snapshot);
+        assert!(save_settings.documentation.include_narrative_docs);
+        assert!(save_settings.prompt_selection().is_some());
+
+        let draft_settings =
+            resolve_prompt_profile(&cfg, CommandScope::Draft, PromptKind::Documentation, None)
+                .expect("resolve draft settings");
+        assert!(!draft_settings.documentation.use_documentation_prompt);
+        assert!(!draft_settings.documentation.include_snapshot);
+        assert!(!draft_settings.documentation.include_narrative_docs);
+        assert!(draft_settings.prompt_selection().is_none());
     }
 
     #[test]
@@ -198,7 +218,7 @@ fallback_backend = "wire"
     #[test]
     fn test_fallback_backend_rejected_in_agent_scope() {
         let toml = r#"
-[agents.ask]
+[agents.save]
 agent = "codex"
 fallback_backend = "codex"
 "#;
@@ -240,7 +260,7 @@ backend = "gemini"
     #[test]
     fn test_backend_key_rejected_in_agent_scope() {
         let toml = r#"
-[agents.ask]
+[agents.save]
 backend = "gemini"
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
@@ -797,12 +817,12 @@ agent = "gemini"
 
         let cfg =
             load_config_from_toml(config_path).expect("should parse config with prompt overrides");
-        let selection = cfg.prompt_for(CommandScope::Ask, PromptKind::Documentation);
+        let selection = cfg.prompt_for(CommandScope::Save, PromptKind::Documentation);
         assert_eq!(selection.text.trim(), "scoped prompt from file");
         assert_eq!(selection.source_path, Some(prompt_path.clone()));
 
         let agent =
-            resolve_prompt_profile(&cfg, CommandScope::Ask, PromptKind::Documentation, None)
+            resolve_prompt_profile(&cfg, CommandScope::Save, PromptKind::Documentation, None)
                 .expect("resolve prompt profile");
         assert_eq!(
             agent
@@ -935,7 +955,7 @@ profile = "deprecated"
     #[test]
     fn default_codex_runtime_wraps_and_sets_progress_filter() {
         let cfg = Config::default();
-        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("default agent settings should resolve");
         assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert!(
@@ -950,7 +970,7 @@ profile = "deprecated"
         cfg.agent_selector = "gemini".to_string();
         cfg.backend = backend_kind_for_selector(&cfg.agent_selector);
 
-        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("default gemini settings should resolve");
         assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert!(
@@ -978,7 +998,7 @@ profile = "deprecated"
         let mut cfg = Config::default();
         cfg.agent_runtime.label = Some("custom".to_string());
 
-        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("custom agent settings should resolve");
 
         match original {
@@ -1008,7 +1028,7 @@ profile = "deprecated"
         cfg.agent_runtime.command = vec!["/opt/custom-agent".to_string()];
         cfg.agent_runtime.progress_filter = Some(vec!["/usr/bin/cat".to_string()]);
 
-        let agent = resolve_agent_settings(&cfg, CommandScope::Ask, None)
+        let agent = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("agent with filter should resolve");
         assert_eq!(agent.agent_runtime.output, AgentOutputHandling::Wrapped);
         assert_eq!(
@@ -1044,25 +1064,25 @@ profile = "deprecated"
             }),
             ..Default::default()
         };
-        cfg.agent_scopes.insert(CommandScope::Ask, scoped);
-
-        let ask = resolve_agent_settings(&cfg, CommandScope::Ask, None)
-            .expect("ask scope should resolve");
-        assert_eq!(
-            ask.agent_runtime.command,
-            vec!["scoped-cmd".to_string()],
-            "scoped command should override defaults and base config"
-        );
-        assert_eq!(ask.agent_runtime.label, "scoped");
+        cfg.agent_scopes.insert(CommandScope::Save, scoped);
 
         let save = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("save scope should resolve");
         assert_eq!(
             save.agent_runtime.command,
+            vec!["scoped-cmd".to_string()],
+            "scoped command should override defaults and base config"
+        );
+        assert_eq!(save.agent_runtime.label, "scoped");
+
+        let draft = resolve_agent_settings(&cfg, CommandScope::Draft, None)
+            .expect("draft scope should resolve");
+        assert_eq!(
+            draft.agent_runtime.command,
             vec!["default-cmd".to_string()],
             "default agent override should replace base command for other scopes"
         );
-        assert_eq!(save.agent_runtime.label, "default");
+        assert_eq!(draft.agent_runtime.label, "default");
 
         let cli_override = AgentOverrides {
             agent_runtime: Some(AgentRuntimeOverride {
@@ -1075,14 +1095,14 @@ profile = "deprecated"
             ..Default::default()
         };
 
-        let ask_with_cli = resolve_agent_settings(&cfg, CommandScope::Ask, Some(&cli_override))
+        let save_with_cli = resolve_agent_settings(&cfg, CommandScope::Save, Some(&cli_override))
             .expect("cli override should resolve");
         assert_eq!(
-            ask_with_cli.agent_runtime.command,
+            save_with_cli.agent_runtime.command,
             vec!["cli-cmd".to_string(), "--flag".to_string()],
             "CLI command should take precedence over scoped/default commands"
         );
-        assert_eq!(ask_with_cli.agent_runtime.label, "cli");
+        assert_eq!(save_with_cli.agent_runtime.label, "cli");
     }
 
     #[test]
@@ -1096,7 +1116,7 @@ profile = "deprecated"
             enable_script_wrapper: None,
         });
         cfg.agent_scopes.insert(
-            CommandScope::Ask,
+            CommandScope::Save,
             AgentOverrides {
                 agent_runtime: Some(AgentRuntimeOverride {
                     label: Some("ask".to_string()),
@@ -1118,9 +1138,9 @@ profile = "deprecated"
             vec!["default-cmd".to_string()]
         );
 
-        let ask = resolve_agent_settings(&cfg, CommandScope::Ask, None).expect("resolve ask");
-        assert_eq!(ask.profile_scope, ProfileScope::Command(CommandScope::Ask));
-        assert_eq!(ask.scope, Some(CommandScope::Ask));
+        let ask = resolve_agent_settings(&cfg, CommandScope::Save, None).expect("resolve ask");
+        assert_eq!(ask.profile_scope, ProfileScope::Command(CommandScope::Save));
+        assert_eq!(ask.scope, Some(CommandScope::Save));
         assert_eq!(ask.agent_runtime.label, "ask");
         assert_eq!(ask.agent_runtime.command, vec!["ask-cmd".to_string()]);
     }
@@ -1137,7 +1157,7 @@ profile = "deprecated"
             },
         );
         cfg.agent_scopes.insert(
-            CommandScope::Ask,
+            CommandScope::Save,
             AgentOverrides {
                 prompt_overrides: {
                     let mut overrides = std::collections::HashMap::new();
@@ -1164,10 +1184,10 @@ profile = "deprecated"
             "default-doc"
         );
 
-        let ask = resolve_prompt_profile(&cfg, CommandScope::Ask, PromptKind::Documentation, None)
+        let ask = resolve_prompt_profile(&cfg, CommandScope::Save, PromptKind::Documentation, None)
             .expect("resolve ask documentation profile");
-        assert_eq!(ask.profile_scope, ProfileScope::Command(CommandScope::Ask));
-        assert_eq!(ask.scope, Some(CommandScope::Ask));
+        assert_eq!(ask.profile_scope, ProfileScope::Command(CommandScope::Save));
+        assert_eq!(ask.scope, Some(CommandScope::Save));
         assert_eq!(
             ask.prompt.as_ref().expect("ask prompt").text.trim(),
             "ask-doc"

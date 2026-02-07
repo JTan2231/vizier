@@ -18,7 +18,7 @@ durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
   - `job.json` is the canonical record.
   - `stdout.log` / `stderr.log` capture the child process streams.
   - `outcome.json` is written on finalization.
-  - `ask-save.patch` stores the ask/save output patch (ask/save jobs only).
+  - `command.patch` stores the scheduled command output patch (save jobs).
   - `save-input.patch` captures the input diff for scheduled save (save jobs only).
 - **Scheduler core** lives in `vizier-cli/src/jobs.rs` (`scheduler_tick` and helpers).
 - **CLI orchestration** enqueues jobs and advances the scheduler (see
@@ -56,7 +56,7 @@ Safety and rewind behavior:
   `session_path`, `outcome_path`, `schedule.wait_reason`, and
   `schedule.waited_on`.
 - Retry truncates `stdout.log`/`stderr.log`, removes stale `outcome.json`,
-  `ask-save.patch`, and `save-input.patch`, and attempts cleanup of owned
+  `command.patch`, legacy `ask-save.patch`, and `save-input.patch`, and attempts cleanup of owned
   temp worktrees when ownership/safety checks pass.
 - Merge-related retry sets also clear scheduler-owned conflict sentinels under
   `.vizier/tmp/merge-conflicts/<slug>.json`. If Git is currently in an
@@ -127,7 +127,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `plan_commits` (draft branch exists)
 - `target_branch` (target branch exists)
 - `merge_sentinel` (merge conflict sentinel exists)
-- `ask_save_patch` (ask/save patch file exists, or the referenced job finished `succeeded`; build-execute pipelines use this as a completion sentinel between phase jobs)
+- `command_patch` (command patch file exists, or the referenced job finished `succeeded`; build-execute pipelines use this as a completion sentinel between phase jobs; legacy `ask_save_patch` records still deserialize)
 
 ## Failure modes and exit codes
 - `failed` is recorded when the background child exits with a non-zero code.
@@ -175,7 +175,7 @@ JSON output (`--format json` or global `--json`) returns an adjacency list:
 ```
 {
   "nodes": [
-    { "id": "job-24", "status": "queued", "command": "vizier ask foo", "wait": "missing plan_doc:foo" }
+    { "id": "job-24", "status": "queued", "command": "vizier save", "wait": "missing plan_doc:foo" }
   ],
   "edges": [
     { "from": "job-24", "to": "job-17", "after": { "policy": "success" } },

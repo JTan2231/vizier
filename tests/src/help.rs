@@ -88,8 +88,33 @@ fn test_help_all_prints_full_reference() -> TestResult {
         "full help should include the command inventory (including test-display): {stdout}"
     );
     assert!(
+        !stdout.contains("\n  ask ") && !stdout.contains("\n  init-snapshot "),
+        "removed commands should not appear in full help inventory: {stdout}"
+    );
+    assert!(
         stdout.contains("--no-ansi") && stdout.contains("--pager"),
         "full help should include global options: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_removed_ask_command_shows_migration_error() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let output = repo.vizier_output(&["ask", "legacy command should fail"])?;
+    assert!(
+        !output.status.success(),
+        "removed `ask` command should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`ask` has been removed")
+            && stderr.contains("save")
+            && stderr.contains("draft")
+            && stderr.contains("merge"),
+        "expected migration guidance for removed ask command, got: {stderr}"
     );
     Ok(())
 }

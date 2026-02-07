@@ -5,8 +5,8 @@ use vizier_core::{config, vcs};
 
 use crate::actions::*;
 use crate::cli::args::{
-    ApproveCmd, AskCmd, CdCmd, CleanCmd, DraftCmd, GlobalOpts, ListCmd, MergeCmd, ResolvedInput,
-    ReviewCmd, TestDisplayCmd,
+    ApproveCmd, CdCmd, CleanCmd, DraftCmd, GlobalOpts, ListCmd, MergeCmd, ResolvedInput, ReviewCmd,
+    TestDisplayCmd,
 };
 use crate::plan;
 
@@ -15,10 +15,6 @@ fn read_all_stdin() -> Result<String, std::io::Error> {
     let mut buf = String::new();
     io::stdin().read_to_string(&mut buf)?;
     Ok(buf)
-}
-
-pub(crate) fn resolve_ask_message(cmd: &AskCmd) -> Result<String, Box<dyn std::error::Error>> {
-    Ok(resolve_prompt_input(cmd.message.as_deref(), cmd.file.as_deref())?.text)
 }
 
 pub(crate) fn resolve_draft_spec(
@@ -437,36 +433,23 @@ fn resolve_cicd_script_path(script: &Path, repo_root: Option<&Path>) -> PathBuf 
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_ask_message;
-    use crate::cli::args::AskCmd;
+    use super::resolve_prompt_input;
     use std::io::Write;
-    use std::path::PathBuf;
 
     #[test]
-    fn resolve_ask_message_reads_file_contents() -> Result<(), Box<dyn std::error::Error>> {
+    fn resolve_prompt_input_reads_file_contents() -> Result<(), Box<dyn std::error::Error>> {
         let mut tmp = tempfile::NamedTempFile::new()?;
         write!(tmp, "File-backed prompt")?;
 
-        let cmd = AskCmd {
-            message: None,
-            file: Some(tmp.path().to_path_buf()),
-            after: Vec::new(),
-        };
-
-        let resolved = resolve_ask_message(&cmd)?;
-        assert_eq!(resolved, "File-backed prompt");
+        let resolved = resolve_prompt_input(None, Some(tmp.path()))?;
+        assert_eq!(resolved.text, "File-backed prompt");
         Ok(())
     }
 
     #[test]
-    fn resolve_ask_message_rejects_both_sources() {
-        let cmd = AskCmd {
-            message: Some("inline".to_string()),
-            file: Some(PathBuf::from("ignored")),
-            after: Vec::new(),
-        };
-
-        let err = resolve_ask_message(&cmd).unwrap_err();
+    fn resolve_prompt_input_rejects_both_sources() {
+        let err = resolve_prompt_input(Some("inline"), Some(std::path::Path::new("ignored")))
+            .unwrap_err();
         assert!(
             err.to_string()
                 .contains("cannot provide both MESSAGE and --file"),
@@ -475,17 +458,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_ask_message_rejects_empty_file() -> Result<(), Box<dyn std::error::Error>> {
+    fn resolve_prompt_input_rejects_empty_file() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::NamedTempFile::new()?;
 
-        let cmd = AskCmd {
-            message: None,
-            file: Some(tmp.path().to_path_buf()),
-            after: Vec::new(),
-        };
-
-        let err = resolve_ask_message(&cmd)
-            .expect_err("empty file should produce an error for ask input");
+        let err = resolve_prompt_input(None, Some(tmp.path()))
+            .expect_err("empty file should produce an error");
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
         Ok(())
     }

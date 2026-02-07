@@ -52,25 +52,25 @@ fn test_save() -> TestResult {
 }
 
 #[test]
-fn test_save_commit_generation_respects_save_scope_when_ask_differs() -> TestResult {
+fn test_save_commit_generation_respects_save_scope_override() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
     let scripts = tempfile::tempdir()?;
-    let ask_script = scripts.path().join("ask-agent.sh");
+    let default_script = scripts.path().join("default-agent.sh");
     let save_script = scripts.path().join("save-agent.sh");
-    write_agent_script(&ask_script, "ask-scope-commit-body")?;
+    write_agent_script(&default_script, "default-scope-commit-body")?;
     write_agent_script(&save_script, "save-scope-commit-body")?;
 
     let config_dir = tempfile::tempdir()?;
     let config_path = config_dir.path().join("scope-config.toml");
-    let ask_cmd = ask_script.to_string_lossy().replace('\\', "\\\\");
+    let default_cmd = default_script.to_string_lossy().replace('\\', "\\\\");
     let save_cmd = save_script.to_string_lossy().replace('\\', "\\\\");
     fs::write(
         &config_path,
         format!(
             r#"
-[agents.ask.agent]
-label = "ask-test"
-command = ["{ask_cmd}"]
+[agents.default.agent]
+label = "default-test"
+command = ["{default_cmd}"]
 
 [agents.save.agent]
 label = "save-test"
@@ -99,13 +99,20 @@ command = ["{save_cmd}"]
         ])
         .output()?;
     let message = String::from_utf8_lossy(&commit.stdout);
+    let mut parts = message.splitn(2, "\nNarrative updates:\n");
+    let commit_section = parts.next().unwrap_or_default();
+    let narrative_section = parts.next().unwrap_or_default();
     assert!(
-        message.contains("save-scope-commit-body"),
+        commit_section.contains("save-scope-commit-body"),
         "save commit should use save-scoped runtime output, got:\n{message}"
     );
     assert!(
-        !message.contains("ask-scope-commit-body"),
-        "save commit should not use ask-scoped runtime output, got:\n{message}"
+        !commit_section.contains("default-scope-commit-body"),
+        "save commit should not use default-scoped runtime output in the main commit body, got:\n{message}"
+    );
+    assert!(
+        narrative_section.contains("default-scope-commit-body"),
+        "narrative update section should still reflect default-scoped runtime output, got:\n{message}"
     );
     Ok(())
 }

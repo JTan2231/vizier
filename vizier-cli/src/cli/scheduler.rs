@@ -6,15 +6,14 @@ use uuid::Uuid;
 use vizier_core::{auditor, config, display, vcs};
 
 use crate::actions::shared::{TempWorktree, push_origin_if_requested};
-use crate::actions::{CommitMode, run_ask_in_worktree, run_save_in_worktree};
-use crate::cli::args::{AskCmd, Commands, ResolvedInput, SaveCmd};
-use crate::cli::resolve::{resolve_ask_message, resolve_prompt_input};
+use crate::actions::{CommitMode, run_save_in_worktree};
+use crate::cli::args::{Commands, ResolvedInput, SaveCmd};
+use crate::cli::resolve::resolve_prompt_input;
 use crate::cli::util::flag_present;
 use crate::jobs;
 
 fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     match command {
-        Commands::Ask(_) => Some(config::CommandScope::Ask),
         Commands::Draft(_) => Some(config::CommandScope::Draft),
         Commands::Approve(_) => Some(config::CommandScope::Approve),
         Commands::Review(_) => Some(config::CommandScope::Review),
@@ -37,8 +36,7 @@ fn job_is_active(status: jobs::JobStatus) -> bool {
 pub(crate) fn scheduler_supported(command: &Commands) -> bool {
     matches!(
         command,
-        Commands::Ask(_)
-            | Commands::Save(_)
+        Commands::Save(_)
             | Commands::Draft(_)
             | Commands::Approve(_)
             | Commands::Review(_)
@@ -115,19 +113,6 @@ fn ensure_branch_matches(
         )
         .into());
     }
-    Ok(())
-}
-
-fn ensure_branch_ready(
-    project_root: &Path,
-    pinned: &jobs::PinnedHead,
-) -> Result<(), Box<dyn std::error::Error>> {
-    ensure_branch_matches(project_root, pinned)?;
-    vcs::ensure_clean_worktree().map_err(|err| {
-        Box::<dyn std::error::Error>::from(format!(
-            "scheduled job requires a clean working tree to apply changes: {err}"
-        ))
-    })?;
     Ok(())
 }
 
@@ -313,68 +298,6 @@ pub(crate) fn has_active_plan_job(
     }))
 }
 
-pub(crate) async fn run_scheduled_ask(
-    job_id: &str,
-    cmd: &AskCmd,
-    push_after: bool,
-    commit_mode: CommitMode,
-    agent: &config::AgentSettings,
-    project_root: &Path,
-    jobs_root: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !commit_mode.should_commit() {
-        return Err("scheduled ask requires auto-commit".into());
-    }
-
-    let pinned = load_job_pinned_head(jobs_root, job_id)?;
-    let repo = Repository::discover(project_root)?;
-    if !pinned_head_matches(&repo, &pinned)? {
-        return Err(format!(
-            "pinned head mismatch for {} (expected {})",
-            pinned.branch, pinned.oid
-        )
-        .into());
-    }
-
-    let temp_branch = format!("vizier-job-{job_id}");
-    if vcs::branch_exists(&temp_branch)? {
-        vcs::delete_branch(&temp_branch)?;
-    }
-    vcs::create_branch_from(&pinned.branch, &temp_branch)?;
-
-    let worktree = TempWorktree::create(job_id, &temp_branch, "ask")?;
-    let worktree_path = worktree.path().to_path_buf();
-    let base_oid = Oid::from_str(&pinned.oid)?;
-
-    let message = resolve_ask_message(cmd)?;
-    let result = run_ask_in_worktree(message, false, agent, commit_mode, &worktree_path).await;
-    if let Err(err) = result {
-        display::warn(format!(
-            "Ask worktree preserved at {}; inspect branch {} for partial changes.",
-            worktree.path().display(),
-            temp_branch
-        ));
-        return Err(err);
-    }
-
-    let head_oid = head_commit_oid(&worktree_path)?;
-    let patch_path = jobs::ask_save_patch_path(jobs_root, job_id);
-    write_patch_from_worktree(&worktree_path, base_oid, Some(head_oid), &patch_path)?;
-    if head_oid != base_oid {
-        ensure_branch_ready(project_root, &pinned)?;
-        cherry_pick_commit(project_root, head_oid)?;
-        if push_after {
-            push_origin_if_requested(true)?;
-        }
-    } else {
-        display::info("Ask produced no commit; nothing to apply.");
-    }
-
-    worktree.cleanup()?;
-    vcs::delete_branch(&temp_branch)?;
-    Ok(())
-}
-
 pub(crate) async fn run_scheduled_save(
     job_id: &str,
     cmd: &SaveCmd,
@@ -430,7 +353,7 @@ pub(crate) async fn run_scheduled_save(
     }
 
     let head_oid = head_commit_oid(&worktree_path)?;
-    let patch_path = jobs::ask_save_patch_path(jobs_root, job_id);
+    let patch_path = jobs::command_patch_path(jobs_root, job_id);
     let patch_head = if commit_mode.should_commit() {
         Some(head_oid)
     } else {
@@ -688,7 +611,7 @@ mod tests {
     fn strip_background_flags_removes_background_controls() {
         let raw_args = vec![
             "vizier".to_string(),
-            "ask".to_string(),
+            "save".to_string(),
             "--background".to_string(),
             "--background-job-id".to_string(),
             "abc123".to_string(),
@@ -705,7 +628,7 @@ mod tests {
         assert_eq!(
             stripped,
             vec![
-                "ask".to_string(),
+                "save".to_string(),
                 "--other".to_string(),
                 "value".to_string()
             ]
@@ -716,7 +639,7 @@ mod tests {
     fn user_friendly_args_keeps_binary_and_strips_background_flags() {
         let raw_args = vec![
             "vizier".to_string(),
-            "ask".to_string(),
+            "save".to_string(),
             "--background".to_string(),
             "--background-job-id".to_string(),
             "abc123".to_string(),
@@ -728,7 +651,7 @@ mod tests {
             args,
             vec![
                 "vizier".to_string(),
-                "ask".to_string(),
+                "save".to_string(),
                 "--flag".to_string()
             ]
         );

@@ -124,11 +124,11 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
     let before = gather_session_logs(&repo)?;
 
     let mut cmd = repo.vizier_cmd();
-    cmd.args(["-q", "ask", "suppress usage event"]);
+    cmd.args(["-q", "save", "suppress usage event"]);
     let output = cmd.output()?;
     assert!(
         output.status.success(),
-        "vizier ask failed: {}",
+        "vizier save failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -232,8 +232,8 @@ fn test_script_runner_session_logs_io_across_commands() -> TestResult {
         );
     };
 
-    let ask = capture_agent_log(&["ask", "script runner smoke"], "ask")?;
-    assert_agent_io(&ask, "ask");
+    let save_first = capture_agent_log(&["save"], "save-first")?;
+    assert_agent_io(&save_first, "save-first");
 
     let save = capture_agent_log(&["save"], "save")?;
     assert_agent_io(&save, "save");

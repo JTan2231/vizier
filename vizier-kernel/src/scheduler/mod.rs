@@ -21,12 +21,28 @@ pub enum JobStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum JobArtifact {
-    PlanBranch { slug: String, branch: String },
-    PlanDoc { slug: String, branch: String },
-    PlanCommits { slug: String, branch: String },
-    TargetBranch { name: String },
-    MergeSentinel { slug: String },
-    AskSavePatch { job_id: String },
+    PlanBranch {
+        slug: String,
+        branch: String,
+    },
+    PlanDoc {
+        slug: String,
+        branch: String,
+    },
+    PlanCommits {
+        slug: String,
+        branch: String,
+    },
+    TargetBranch {
+        name: String,
+    },
+    MergeSentinel {
+        slug: String,
+    },
+    #[serde(rename = "command_patch", alias = "ask_save_patch")]
+    CommandPatch {
+        job_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +138,6 @@ pub fn format_artifact(artifact: &JobArtifact) -> String {
         JobArtifact::PlanCommits { slug, branch } => format!("plan_commits:{slug} ({branch})"),
         JobArtifact::TargetBranch { name } => format!("target_branch:{name}"),
         JobArtifact::MergeSentinel { slug } => format!("merge_sentinel:{slug}"),
-        JobArtifact::AskSavePatch { job_id } => format!("ask_save_patch:{job_id}"),
+        JobArtifact::CommandPatch { job_id } => format!("command_patch:{job_id}"),
     }
 }

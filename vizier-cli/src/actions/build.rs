@@ -1125,7 +1125,7 @@ pub(crate) async fn run_build_execute(
         jobs::update_job_record(&jobs_root, &approve_job.job_id, |record| {
             if let Some(schedule) = record.schedule.as_mut()
                 && !schedule.artifacts.iter().any(|artifact| {
-                    matches!(artifact, jobs::JobArtifact::AskSavePatch { job_id } if job_id == &approve_job.job_id)
+                    matches!(artifact, jobs::JobArtifact::CommandPatch { job_id } if job_id == &approve_job.job_id)
                 })
             {
                 schedule.artifacts.push(approve_completion.clone());
@@ -1220,7 +1220,7 @@ pub(crate) async fn run_build_execute(
             jobs::update_job_record(&jobs_root, &review_job.job_id, |record| {
                 if let Some(schedule) = record.schedule.as_mut()
                     && !schedule.artifacts.iter().any(|artifact| {
-                        matches!(artifact, jobs::JobArtifact::AskSavePatch { job_id } if job_id == &review_job.job_id)
+                        matches!(artifact, jobs::JobArtifact::CommandPatch { job_id } if job_id == &review_job.job_id)
                     })
                 {
                     schedule.artifacts.push(review_completion.clone());
@@ -1312,7 +1312,7 @@ pub(crate) async fn run_build_execute(
             jobs::update_job_record(&jobs_root, &merge_job.job_id, |record| {
                 if let Some(schedule) = record.schedule.as_mut()
                     && !schedule.artifacts.iter().any(|artifact| {
-                        matches!(artifact, jobs::JobArtifact::AskSavePatch { job_id } if job_id == &merge_job.job_id)
+                        matches!(artifact, jobs::JobArtifact::CommandPatch { job_id } if job_id == &merge_job.job_id)
                     })
                 {
                     schedule.artifacts.push(merge_completion.clone());
@@ -2150,7 +2150,7 @@ fn allocate_execution_slug(
 }
 
 fn phase_completion_artifact(job_id: &str) -> jobs::JobArtifact {
-    jobs::JobArtifact::AskSavePatch {
+    jobs::JobArtifact::CommandPatch {
         job_id: job_id.to_string(),
     }
 }

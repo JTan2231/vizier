@@ -8,22 +8,20 @@ A CLI for LLM project management
 Usage: vizier [OPTIONS] <COMMAND>
 
 Commands:
-  help           Show a short, workflow-oriented help page (or the full reference with --all)
-  ask            One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any agent edits) and exits
-  draft          Generate an implementation-plan draft branch from an operator spec in a disposable worktree
-  build          Create build sessions and execute them through queued materialize/approve/review/merge jobs
-  list           List pending implementation-plan branches that are ahead of the target branch
-  cd             Create or reuse a plan workspace and print its path
-  clean          Remove Vizier-managed plan workspaces
-  plan           Print the resolved configuration (global + repo + CLI overrides) and exit
-  jobs           Inspect detached Vizier background jobs
-  completions    Generate shell completion scripts
-  approve        Implement and commit a stored plan on its draft branch using a disposable worktree
-  review         Review a plan branch (runs gate/checks first), stream critique, and optionally apply fixes
-  merge          Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
-  init-snapshot  Bootstrap `.vizier/narrative/snapshot.md` and narrative docs from repo history
-  test-display   Smoke-test the configured agent/display wiring without touching `.vizier`
-  save           Commit tracked changes with an LLM-generated message and update snapshot/narrative docs
+  help          Show a short, workflow-oriented help page (or the full reference with --all)
+  draft         Generate an implementation-plan draft branch from an operator spec in a disposable worktree
+  build         Create build sessions and execute them through queued materialize/approve/review/merge jobs
+  list          List pending implementation-plan branches that are ahead of the target branch
+  cd            Create or reuse a plan workspace and print its path
+  clean         Remove Vizier-managed plan workspaces
+  plan          Print the resolved configuration (global + repo + CLI overrides) and exit
+  jobs          Inspect detached Vizier background jobs
+  completions   Generate shell completion scripts
+  approve       Implement and commit a stored plan on its draft branch using a disposable worktree
+  review        Review a plan branch (runs gate/checks first), stream critique, and optionally apply fixes
+  merge         Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
+  test-display  Smoke-test the configured agent/display wiring without touching `.vizier`
+  save          Commit tracked changes with an LLM-generated message and update snapshot/narrative docs
 
 Options:
   -v, --verbose...

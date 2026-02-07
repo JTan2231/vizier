@@ -42,7 +42,6 @@ impl std::str::FromStr for BackendKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CommandScope {
-    Ask,
     Save,
     Draft,
     Approve,
@@ -87,7 +86,6 @@ impl std::fmt::Display for ProfileScope {
 impl CommandScope {
     pub fn as_str(&self) -> &'static str {
         match self {
-            CommandScope::Ask => "ask",
             CommandScope::Save => "save",
             CommandScope::Draft => "draft",
             CommandScope::Approve => "approve",
@@ -98,7 +96,6 @@ impl CommandScope {
 
     pub fn all() -> &'static [CommandScope] {
         &[
-            CommandScope::Ask,
             CommandScope::Save,
             CommandScope::Draft,
             CommandScope::Approve,
@@ -113,7 +110,6 @@ impl std::str::FromStr for CommandScope {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "ask" => Ok(CommandScope::Ask),
             "save" => Ok(CommandScope::Save),
             "draft" => Ok(CommandScope::Draft),
             "approve" => Ok(CommandScope::Approve),
@@ -1185,14 +1181,14 @@ mod tests {
             },
         );
         cfg.agent_scopes.insert(
-            CommandScope::Ask,
+            CommandScope::Save,
             AgentOverrides {
                 prompt_overrides: {
                     let mut map = HashMap::new();
                     map.insert(
                         PromptKind::Documentation,
                         PromptOverrides {
-                            text: Some("ask documentation prompt".to_string()),
+                            text: Some("save documentation prompt".to_string()),
                             source_path: None,
                             agent: None,
                         },
@@ -1226,14 +1222,14 @@ mod tests {
             },
         );
         cfg.agent_scopes.insert(
-            CommandScope::Ask,
+            CommandScope::Save,
             AgentOverrides {
                 prompt_overrides: {
                     let mut map = HashMap::new();
                     map.insert(
                         PromptKind::Documentation,
                         PromptOverrides {
-                            text: Some("ask documentation prompt".to_string()),
+                            text: Some("save documentation prompt".to_string()),
                             source_path: None,
                             agent: None,
                         },
@@ -1244,16 +1240,16 @@ mod tests {
             },
         );
 
-        let selection = cfg.prompt_for_command(CommandScope::Ask, PromptKind::Documentation);
-        assert_eq!(selection.text, "ask documentation prompt");
+        let selection = cfg.prompt_for_command(CommandScope::Save, PromptKind::Documentation);
+        assert_eq!(selection.text, "save documentation prompt");
         assert_eq!(
             selection.requested_scope,
-            ProfileScope::Command(CommandScope::Ask)
+            ProfileScope::Command(CommandScope::Save)
         );
         assert_eq!(
             selection.origin,
             PromptOrigin::ScopedConfig {
-                scope: ProfileScope::Command(CommandScope::Ask)
+                scope: ProfileScope::Command(CommandScope::Save)
             }
         );
     }

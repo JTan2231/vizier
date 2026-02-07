@@ -499,7 +499,7 @@ mod tests {
             include_narrative_docs: false,
         };
         let selection =
-            config::get_config().prompt_for(CommandScope::Ask, PromptKind::Documentation);
+            config::get_config().prompt_for(CommandScope::Save, PromptKind::Documentation);
         let prompt = build_documentation_prompt(Some(&selection), "do the thing", &settings)
             .expect("prompt builds");
 

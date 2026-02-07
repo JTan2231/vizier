@@ -119,7 +119,6 @@ pub(crate) struct GlobalOpts {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ScopeArg {
-    Ask,
     Save,
     Draft,
     Approve,
@@ -130,7 +129,6 @@ pub(crate) enum ScopeArg {
 impl From<ScopeArg> for config::CommandScope {
     fn from(value: ScopeArg) -> Self {
         match value {
-            ScopeArg::Ask => config::CommandScope::Ask,
             ScopeArg::Save => config::CommandScope::Save,
             ScopeArg::Draft => config::CommandScope::Draft,
             ScopeArg::Approve => config::CommandScope::Approve,
@@ -438,9 +436,6 @@ pub(crate) enum Commands {
     /// Show a short, workflow-oriented help page (or the full reference with --all)
     Help(HelpCmd),
 
-    /// One-shot interaction that applies the default-action posture (snapshot/narrative updates plus any agent edits) and exits
-    Ask(AskCmd),
-
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
 
@@ -478,10 +473,6 @@ pub(crate) enum Commands {
     /// Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
     Merge(MergeCmd),
 
-    /// Bootstrap `.vizier/narrative/snapshot.md` and narrative docs from repo history
-    #[command(name = "init-snapshot")]
-    InitSnapshot(SnapshotInitCmd),
-
     /// Smoke-test the configured agent/display wiring without touching `.vizier`
     #[command(name = "test-display")]
     TestDisplay(TestDisplayCmd),
@@ -510,21 +501,6 @@ pub(crate) struct HelpCmd {
     /// Show help for a specific subcommand (equivalent to `vizier <command> --help`)
     #[arg(value_name = "COMMAND")]
     pub(crate) command: Option<String>,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct AskCmd {
-    /// The user message to process in a single-shot run
-    #[arg(value_name = "MESSAGE")]
-    pub(crate) message: Option<String>,
-
-    /// Read the user message from the specified file instead of an inline argument
-    #[arg(short = 'f', long = "file", value_name = "PATH")]
-    pub(crate) file: Option<PathBuf>,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -955,41 +931,6 @@ impl From<CompletionShell> for Shell {
     }
 }
 
-#[derive(ClapArgs, Debug, Clone)]
-pub(crate) struct SnapshotInitCmd {
-    /// Overwrite existing snapshot/narrative docs without confirmation
-    #[arg(long)]
-    pub(crate) force: bool,
-
-    /// Limit Git history scan depth
-    #[arg(long, value_name = "N")]
-    pub(crate) depth: Option<usize>,
-
-    /// Restrict analysis to matching paths (comma-separated or repeated)
-    #[arg(long, value_name = "GLOB", value_delimiter = ',')]
-    pub(crate) paths: Vec<String>,
-
-    /// Exclude matching paths (comma-separated or repeated)
-    #[arg(long, value_name = "GLOB", value_delimiter = ',')]
-    pub(crate) exclude: Vec<String>,
-
-    /// Enrich snapshot with external issues (e.g., github)
-    #[arg(long, value_name = "PROVIDER")]
-    pub(crate) issues: Option<String>,
-}
-
-impl From<SnapshotInitCmd> for crate::actions::SnapshotInitOptions {
-    fn from(cmd: SnapshotInitCmd) -> Self {
-        crate::actions::SnapshotInitOptions {
-            force: cmd.force,
-            depth: cmd.depth,
-            paths: cmd.paths,
-            exclude: cmd.exclude,
-            issues: cmd.issues,
-        }
-    }
-}
-
 #[derive(ClapArgs, Debug)]
 #[command(
     group = ArgGroup::new("commit_msg_src")
@@ -1042,7 +983,7 @@ impl From<InputOrigin> for SpecSource {
 #[derive(ClapArgs, Debug)]
 pub(crate) struct TestDisplayCmd {
     /// Command scope to resolve agent settings from
-    #[arg(long = "scope", value_enum, default_value_t = ScopeArg::Ask)]
+    #[arg(long = "scope", value_enum, default_value_t = ScopeArg::Save)]
     pub(crate) scope: ScopeArg,
 
     /// Override the default smoke-test prompt

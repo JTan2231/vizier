@@ -20,7 +20,6 @@ Drivers host all side effects and environment-specific behavior. They wire the p
 - `vizier-core/src/agent.rs` (agent execution and progress streaming)
 - `vizier-core/src/vcs/` (git operations and commit/worktree helpers)
 - `vizier-core/src/display.rs`, `vizier-core/src/observer.rs` (TTY rendering, stdout/stderr capture)
-- `vizier-core/src/bootstrap.rs` (repo/bootstrap orchestration)
 - `vizier-core/src/tree.rs`, `vizier-core/src/walker.rs` (filesystem traversal/search)
 
 Drivers should keep kernel purity intact by passing preloaded data into kernel APIs and implementing port traits where needed.

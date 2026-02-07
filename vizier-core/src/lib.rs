@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod agent_prompt;
 pub mod auditor;
-pub mod bootstrap;
 pub mod config;
 pub mod display;
 pub mod file_tracking;

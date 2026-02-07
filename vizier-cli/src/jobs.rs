@@ -241,7 +241,11 @@ pub fn paths_for(jobs_root: &Path, job_id: &str) -> JobPaths {
     }
 }
 
-pub(crate) fn ask_save_patch_path(jobs_root: &Path, job_id: &str) -> PathBuf {
+pub(crate) fn command_patch_path(jobs_root: &Path, job_id: &str) -> PathBuf {
+    jobs_root.join(job_id).join("command.patch")
+}
+
+pub(crate) fn legacy_command_patch_path(jobs_root: &Path, job_id: &str) -> PathBuf {
     jobs_root.join(job_id).join("ask-save.patch")
 }
 
@@ -753,10 +757,12 @@ fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
                 .join(format!("{slug}.json"));
             path.exists()
         }
-        JobArtifact::AskSavePatch { job_id } => {
+        JobArtifact::CommandPatch { job_id } => {
             let repo_root = repo.path().parent().unwrap_or_else(|| Path::new("."));
             let jobs_root = repo_root.join(".vizier/jobs");
-            if ask_save_patch_path(&jobs_root, job_id).exists() {
+            if command_patch_path(&jobs_root, job_id).exists()
+                || legacy_command_patch_path(&jobs_root, job_id).exists()
+            {
                 return true;
             }
 
@@ -1156,7 +1162,7 @@ fn artifact_sort_key(artifact: &JobArtifact) -> (u8, &str, &str) {
         JobArtifact::PlanCommits { slug, branch } => (2, slug, branch),
         JobArtifact::TargetBranch { name } => (3, name, ""),
         JobArtifact::MergeSentinel { slug } => (4, slug, ""),
-        JobArtifact::AskSavePatch { job_id } => (5, job_id, ""),
+        JobArtifact::CommandPatch { job_id } => (5, job_id, ""),
     }
 }
 
@@ -1675,7 +1681,8 @@ fn rewind_job_record_for_retry(
         remove_file_if_exists(&outcome)?;
     }
     remove_file_if_exists(&paths.job_dir.join("outcome.json"))?;
-    remove_file_if_exists(&ask_save_patch_path(jobs_root, &record.id))?;
+    remove_file_if_exists(&command_patch_path(jobs_root, &record.id))?;
+    remove_file_if_exists(&legacy_command_patch_path(jobs_root, &record.id))?;
     remove_file_if_exists(&save_input_patch_path(jobs_root, &record.id))?;
     truncate_log(&paths.stdout_path)?;
     truncate_log(&paths.stderr_path)?;
@@ -2279,8 +2286,8 @@ mod tests {
                 }
                 fs::write(path, "{}")?;
             }
-            JobArtifact::AskSavePatch { job_id } => {
-                let path = ask_save_patch_path(jobs_root, job_id);
+            JobArtifact::CommandPatch { job_id } => {
+                let path = command_patch_path(jobs_root, job_id);
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -2335,7 +2342,7 @@ mod tests {
         PlanCommits,
         TargetBranch,
         MergeSentinel,
-        AskSavePatch,
+        CommandPatch,
     }
 
     fn artifact_for(kind: ArtifactKind, suffix: &str) -> JobArtifact {
@@ -2358,7 +2365,7 @@ mod tests {
             ArtifactKind::MergeSentinel => JobArtifact::MergeSentinel {
                 slug: format!("merge-{suffix}"),
             },
-            ArtifactKind::AskSavePatch => JobArtifact::AskSavePatch {
+            ArtifactKind::CommandPatch => JobArtifact::CommandPatch {
                 job_id: format!("job-{suffix}"),
             },
         }
@@ -2447,7 +2454,7 @@ mod tests {
             &jobs_root,
             "job-a",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -2481,7 +2488,7 @@ mod tests {
             &jobs_root,
             "job-a",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -2495,7 +2502,7 @@ mod tests {
             &jobs_root,
             "job-b",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -2575,8 +2582,8 @@ mod tests {
             project_root,
             &jobs_root,
             "blocked-job",
-            &["ask".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["save".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(schedule),
@@ -2622,7 +2629,7 @@ mod tests {
             &jobs_root,
             "dep-running",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -2638,7 +2645,7 @@ mod tests {
             &jobs_root,
             "dependent",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -2677,7 +2684,7 @@ mod tests {
             &jobs_root,
             "dependent",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -2715,8 +2722,8 @@ mod tests {
             project_root,
             &jobs_root,
             "spawn-failure",
-            &["ask".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["save".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -2773,10 +2780,10 @@ mod tests {
         let jobs_root = project_root.join(".vizier/jobs");
         fs::create_dir_all(&jobs_root).expect("jobs root");
 
-        let artifact_a = JobArtifact::AskSavePatch {
+        let artifact_a = JobArtifact::CommandPatch {
             job_id: "a-artifact".to_string(),
         };
-        let artifact_b = JobArtifact::AskSavePatch {
+        let artifact_b = JobArtifact::CommandPatch {
             job_id: "b-artifact".to_string(),
         };
         write_job_with_status(
@@ -2821,7 +2828,7 @@ mod tests {
         )
         .expect("job c");
 
-        let fan_artifact = JobArtifact::AskSavePatch {
+        let fan_artifact = JobArtifact::CommandPatch {
             job_id: "fan-root".to_string(),
         };
         write_job_with_status(
@@ -2853,10 +2860,10 @@ mod tests {
             .expect("fan job");
         }
 
-        let fan_in_left = JobArtifact::AskSavePatch {
+        let fan_in_left = JobArtifact::CommandPatch {
             job_id: "fanin-left".to_string(),
         };
-        let fan_in_right = JobArtifact::AskSavePatch {
+        let fan_in_right = JobArtifact::CommandPatch {
             job_id: "fanin-right".to_string(),
         };
         write_job_with_status(
@@ -2903,13 +2910,13 @@ mod tests {
         )
         .expect("fanin");
 
-        let diamond_root = JobArtifact::AskSavePatch {
+        let diamond_root = JobArtifact::CommandPatch {
             job_id: "diamond-root".to_string(),
         };
-        let diamond_left = JobArtifact::AskSavePatch {
+        let diamond_left = JobArtifact::CommandPatch {
             job_id: "diamond-left".to_string(),
         };
-        let diamond_right = JobArtifact::AskSavePatch {
+        let diamond_right = JobArtifact::CommandPatch {
             job_id: "diamond-right".to_string(),
         };
         write_job_with_status(
@@ -2974,7 +2981,7 @@ mod tests {
         )
         .expect("diamond leaf");
 
-        let disjoint_artifact = JobArtifact::AskSavePatch {
+        let disjoint_artifact = JobArtifact::CommandPatch {
             job_id: "disjoint-root".to_string(),
         };
         write_job_with_status(
@@ -3016,7 +3023,7 @@ mod tests {
             .and_then(|reason| reason.detail.clone())
             .unwrap_or_default();
         assert!(
-            detail_b.contains("waiting on ask_save_patch:a-artifact"),
+            detail_b.contains("waiting on command_patch:a-artifact"),
             "unexpected wait detail for job-b: {detail_b}"
         );
 
@@ -3028,7 +3035,7 @@ mod tests {
             .and_then(|reason| reason.detail.clone())
             .unwrap_or_default();
         assert!(
-            detail_c.contains("waiting on ask_save_patch:b-artifact"),
+            detail_c.contains("waiting on command_patch:b-artifact"),
             "unexpected wait detail for job-c: {detail_c}"
         );
 
@@ -3045,7 +3052,7 @@ mod tests {
             .and_then(|reason| reason.detail.clone())
             .unwrap_or_default();
         assert!(
-            detail_fanin.contains("waiting on ask_save_patch:fanin-left"),
+            detail_fanin.contains("waiting on command_patch:fanin-left"),
             "unexpected fan-in detail: {detail_fanin}"
         );
 
@@ -3057,7 +3064,7 @@ mod tests {
             .and_then(|reason| reason.detail.clone())
             .unwrap_or_default();
         assert!(
-            detail_diamond.contains("waiting on ask_save_patch:diamond-left"),
+            detail_diamond.contains("waiting on command_patch:diamond-left"),
             "unexpected diamond detail: {detail_diamond}"
         );
 
@@ -3073,7 +3080,7 @@ mod tests {
         let jobs_root = project_root.join(".vizier/jobs");
         fs::create_dir_all(&jobs_root).expect("jobs root");
 
-        let artifact = JobArtifact::AskSavePatch {
+        let artifact = JobArtifact::CommandPatch {
             job_id: "dep-ready".to_string(),
         };
         write_job_with_status(
@@ -3190,7 +3197,7 @@ mod tests {
             &jobs_root,
             "missing-child-args",
             &[],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -3233,7 +3240,7 @@ mod tests {
             &jobs_root,
             "empty-schedule",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -3267,7 +3274,7 @@ mod tests {
             ArtifactKind::PlanCommits,
             ArtifactKind::TargetBranch,
             ArtifactKind::MergeSentinel,
-            ArtifactKind::AskSavePatch,
+            ArtifactKind::CommandPatch,
         ];
 
         for (idx, kind) in kinds.iter().enumerate() {
@@ -3322,7 +3329,7 @@ mod tests {
         let jobs_root = project_root.join(".vizier/jobs");
         fs::create_dir_all(&jobs_root).expect("jobs root");
 
-        let artifact = JobArtifact::AskSavePatch {
+        let artifact = JobArtifact::CommandPatch {
             job_id: "artifact".to_string(),
         };
         write_job_with_status(
@@ -3474,7 +3481,7 @@ mod tests {
                 },
             },
             JobDependency {
-                artifact: JobArtifact::AskSavePatch {
+                artifact: JobArtifact::CommandPatch {
                     job_id: "job-z".to_string(),
                 },
             },
@@ -3506,7 +3513,7 @@ mod tests {
             JobArtifact::TargetBranch {
                 name: "main".to_string(),
             },
-            JobArtifact::AskSavePatch {
+            JobArtifact::CommandPatch {
                 job_id: "job-z".to_string(),
             },
         ];
@@ -3515,7 +3522,7 @@ mod tests {
 
     #[test]
     fn schedule_graph_orders_producers_by_created_at_then_id() {
-        let artifact = JobArtifact::AskSavePatch {
+        let artifact = JobArtifact::CommandPatch {
             job_id: "shared".to_string(),
         };
         let record_a = make_record(
@@ -3638,10 +3645,10 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(&temp).expect("init repo");
 
-        let artifact_b = JobArtifact::AskSavePatch {
+        let artifact_b = JobArtifact::CommandPatch {
             job_id: "b".to_string(),
         };
-        let artifact_c = JobArtifact::AskSavePatch {
+        let artifact_c = JobArtifact::CommandPatch {
             job_id: "c".to_string(),
         };
 
@@ -3711,13 +3718,13 @@ mod tests {
             JobStatus::Succeeded,
             Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             Some(JobSchedule {
-                artifacts: vec![JobArtifact::AskSavePatch {
+                artifacts: vec![JobArtifact::CommandPatch {
                     job_id: "pred-artifact".to_string(),
                 }],
                 ..JobSchedule::default()
             }),
         );
-        let root_artifact = JobArtifact::AskSavePatch {
+        let root_artifact = JobArtifact::CommandPatch {
             job_id: "root-artifact".to_string(),
         };
         let root = make_record(
@@ -3776,7 +3783,7 @@ mod tests {
             &jobs_root,
             "job-retry",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule::default()),
@@ -3791,7 +3798,7 @@ mod tests {
         fs::write(&paths.stderr_path, "stderr").expect("write stderr");
         let outcome_path = paths.job_dir.join("outcome.json");
         fs::write(&outcome_path, "{}").expect("write outcome");
-        let ask_patch = ask_save_patch_path(&jobs_root, "job-retry");
+        let ask_patch = command_patch_path(&jobs_root, "job-retry");
         let save_patch = save_input_patch_path(&jobs_root, "job-retry");
         fs::write(&ask_patch, "ask patch").expect("write ask patch");
         fs::write(&save_patch, "save patch").expect("write save patch");
@@ -3937,7 +3944,7 @@ mod tests {
             &jobs_root,
             "job-root",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -3954,7 +3961,7 @@ mod tests {
             &jobs_root,
             "job-dependent",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -3984,7 +3991,7 @@ mod tests {
         let project_root = temp.path();
         let jobs_root = project_root.join(".vizier/jobs");
 
-        let root_artifact = JobArtifact::AskSavePatch {
+        let root_artifact = JobArtifact::CommandPatch {
             job_id: "job-root".to_string(),
         };
 
@@ -3993,7 +4000,7 @@ mod tests {
             &jobs_root,
             "job-root",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -4025,7 +4032,7 @@ mod tests {
             &jobs_root,
             "job-dependent",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {
@@ -4034,7 +4041,7 @@ mod tests {
                 }],
                 wait_reason: Some(JobWaitReason {
                     kind: JobWaitKind::Dependencies,
-                    detail: Some("waiting on ask_save_patch:job-root".to_string()),
+                    detail: Some("waiting on command_patch:job-root".to_string()),
                 }),
                 waited_on: vec![JobWaitKind::Dependencies],
                 ..JobSchedule::default()
@@ -4071,7 +4078,7 @@ mod tests {
             &jobs_root,
             "job-predecessor",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             None,
@@ -4092,7 +4099,7 @@ mod tests {
             &jobs_root,
             "job-dependent",
             &["--help".to_string()],
-            &["vizier".to_string(), "ask".to_string()],
+            &["vizier".to_string(), "save".to_string()],
             None,
             None,
             Some(JobSchedule {

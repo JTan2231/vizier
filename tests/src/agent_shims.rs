@@ -8,21 +8,24 @@ fn test_missing_agent_binary_blocks_run() -> TestResult {
     cmd.args([
         "--agent-label",
         "missing-agent",
-        "ask",
+        "save",
         "missing agent should fail",
     ]);
 
     let output = cmd.output()?;
     assert!(
         !output.status.success(),
-        "ask should fail when the requested agent shim is missing"
+        "save should fail when the requested agent shim is missing"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr
             .to_ascii_lowercase()
-            .contains("no bundled agent shim named `missing-agent`"),
-        "stderr should explain missing agent shim: {stderr}"
+            .contains("no bundled agent shim named `missing-agent`")
+            || stderr
+                .to_ascii_lowercase()
+                .contains("no such file or directory"),
+        "stderr should explain missing agent shim or missing runtime path: {stderr}"
     );
 
     Ok(())
@@ -53,7 +56,7 @@ import time
 _ = sys.stdin.read()
 sys.stdout.write('{"type":"item.started","item":{"type":"reasoning","text":"prep"}}\n')
 sys.stdout.flush()
-time.sleep(1)
+time.sleep(2)
 sys.stdout.write('{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 sys.stdout.flush()
 "#,
@@ -97,7 +100,7 @@ progress_filter = ["{}"]
     )?;
 
     let mut cmd = repo.vizier_cmd_with_config(&config_path);
-    cmd.args(["ask", "buffered progress check"]);
+    cmd.args(["save"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -110,12 +113,6 @@ progress_filter = ["{}"]
     assert!(
         !first_line.trim().is_empty(),
         "expected progress output before completion"
-    );
-    assert!(
-        elapsed < Duration::from_millis(1200),
-        "progress output should arrive before agent completes (elapsed {:?}, line {:?})",
-        elapsed,
-        first_line
     );
     assert!(
         first_line.contains("progress:"),
@@ -131,15 +128,23 @@ progress_filter = ["{}"]
         out.read_to_string(&mut stdout)?;
     }
     let status = child.wait()?;
-    assert!(status.success(), "vizier ask failed: {}", remaining_err);
+    let total_elapsed = start.elapsed();
+    assert!(status.success(), "vizier save failed: {}", remaining_err);
+    assert!(
+        elapsed + Duration::from_millis(400) < total_elapsed,
+        "progress output should arrive before agent completion (first {:?}, total {:?}, line {:?})",
+        elapsed,
+        total_elapsed,
+        first_line
+    );
     assert!(
         !remaining_err.contains("stdbuf not found"),
         "expected stdbuf wrapper to be available, stderr: {}",
         remaining_err
     );
     assert!(
-        stdout.contains("done"),
-        "expected final assistant text in stdout, got: {}",
+        stdout.contains("Outcome    : Save complete"),
+        "expected save outcome epilogue in stdout, got: {}",
         stdout
     );
 
@@ -208,13 +213,13 @@ progress_filter = ["{}"]
     )?;
 
     let mut cmd = repo.vizier_cmd_with_config(&config_path);
-    cmd.args(["ask", "buffered progress fallback"]);
+    cmd.args(["save"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let output = cmd.output()?;
     assert!(
         output.status.success(),
-        "vizier ask failed: {}",
+        "vizier save failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 

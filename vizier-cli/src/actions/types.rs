@@ -4,15 +4,6 @@ use std::time::Duration;
 use vizier_core::config;
 
 #[derive(Debug, Clone)]
-pub struct SnapshotInitOptions {
-    pub force: bool,
-    pub depth: Option<usize>,
-    pub paths: Vec<String>,
-    pub exclude: Vec<String>,
-    pub issues: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub enum SpecSource {
     Inline,
     File(PathBuf),

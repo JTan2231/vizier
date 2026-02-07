@@ -4,7 +4,6 @@ mod fixtures;
 
 mod agent_shims;
 mod approve;
-mod ask;
 mod background;
 mod build;
 mod cicd;

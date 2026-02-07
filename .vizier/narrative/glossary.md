@@ -32,6 +32,7 @@
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.
 - **Merge queue**: Deprecated; the former serialized merge backlog under `.vizier/jobs/merge-queue.json`, replaced by the DAG scheduler and lock-based serialization.
 - **Narrative state**: The snapshot slice that captures active themes, tensions, and open threads explaining why the code exists and where it’s headed.
+- **No-update signal**: An explicit turn-level instruction like `no-op:`, `discuss-only:`, or “do not update” that suppresses narrative edits even when the task envelope otherwise authorizes snapshot upkeep.
 - **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
 - **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
 - **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches (for example, docs `refactor.md`/`removing-wire.md` while branches are `draft/after`/`draft/retry`), which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.

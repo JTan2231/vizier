@@ -2,7 +2,7 @@
 
 This document is the canonical reference for how Vizier maps CLI commands (“scopes”) to prompt templates (“kinds”), and which configuration levers control each pairing.
 
-- **Scopes** (commands): `ask`, `save`, `draft`, `approve`, `review`, `merge`
+- **Scopes** (commands): `save`, `draft`, `approve`, `review`, `merge`
 - **Prompt kinds**: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict`
 - **Internal fallback profile**: `default` (not a CLI command scope; used for non-command prompt/session fallback paths)
 
@@ -19,7 +19,6 @@ The table below shows which prompt kinds each scope actually uses in the current
 
 | Scope   | `documentation`                                                                                         | `commit`                                                   | `implementation_plan`                                              | `review`                                                          | `merge_conflict`                                               |
 |---------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------|--------------------------------------------------------------------|-------------------------------------------------------------------|----------------------------------------------------------------|
-| `ask`   | System prompt for `vizier ask` and snapshot bootstrap (`vizier init-snapshot`)                          | Commit message template when `vizier ask` produces commits | *Not used*                                                         | *Not used*                                                        | *Not used*                                                     |
 | `save`  | System prompt for `vizier save` (snapshot/narrative updates + optional code edits)                      | Commit message template when `vizier save` produces commits| *Not used*                                                         | *Not used*                                                        | *Not used*                                                     |
 | `draft` | *Not used* (draft flows only use `implementation_plan`)                                                 | *Not used*                                                 | Plan template for `vizier draft` (implementation plan Markdown)    | *Not used*                                                        | *Not used*                                                     |
 | `approve` | System prompt for `vizier approve` when implementing a stored plan on the draft branch                | Commit messages come from Codex summaries, not the commit prompt template | *Defined in config but not used by CLI today*                      | *Not used*                                                        | *Not used*                                                     |
@@ -66,7 +65,7 @@ Prompt text resolution only consults `[agents.<scope>.prompts.<kind>]` and `.viz
 In practice:
 - Treat `[agents.<scope>.prompts.<kind>]` as the **primary surface** for customization.
 - Use `.vizier/*.md` when you want repo-local prompt files without touching config.
-- Non-command fallback resolution uses the internal `default` profile (`[agents.default.prompts.<kind>]` + repo files + built-ins) and does not read command tables like `[agents.ask.*]`.
+- Non-command fallback resolution uses the internal `default` profile (`[agents.default.prompts.<kind>]` + repo files + built-ins) and does not read command tables like `[agents.save.*]`.
 
 ## Documentation prompt toggles
 
@@ -119,7 +118,7 @@ Remember:
 ## Where to look for concrete examples
 
 - `example-config.toml` — end-to-end examples of:
-  - `[agents.default]` and per-scope `[agents.ask|save|draft|approve|review|merge]`
+  - `[agents.default]` and per-scope `[agents.save|draft|approve|review|merge]`
   - `[agents.<scope>.prompts.<kind>]` for documentation, implementation-plan, and review prompts
   - `[agents.<scope>.documentation]` toggles for merge-time conflict resolution
 - `.vizier/config.toml` — repo-local overrides that travel with Git history.

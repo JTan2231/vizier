@@ -199,7 +199,7 @@ keep_branch = true
         "build profile keep_branch should appear in the report"
     );
     assert_eq!(
-        json.pointer("/scopes/ask/agent").and_then(Value::as_str),
+        json.pointer("/scopes/save/agent").and_then(Value::as_str),
         Some("gemini"),
         "per-scope agent selector should reflect CLI overrides"
     );
@@ -242,7 +242,7 @@ fn test_plan_reports_agent_command_override() -> TestResult {
 }
 
 #[test]
-fn test_plan_default_runtime_uses_agents_default_not_ask() -> TestResult {
+fn test_plan_default_runtime_uses_agents_default_not_save_scope_override() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let config_path = repo.path().join("custom-runtime-config.toml");
     fs::write(
@@ -252,9 +252,9 @@ fn test_plan_default_runtime_uses_agents_default_not_ask() -> TestResult {
 label = "default-runtime"
 command = ["./default-runtime.sh"]
 
-[agents.ask.agent]
-label = "ask-runtime"
-command = ["./ask-runtime.sh"]
+[agents.save.agent]
+label = "save-runtime"
+command = ["./save-runtime.sh"]
 "#,
     )?;
 
@@ -273,13 +273,13 @@ command = ["./ask-runtime.sh"]
         json.pointer("/agent_runtime_default/label")
             .and_then(Value::as_str),
         Some("default-runtime"),
-        "default runtime should come from [agents.default], not ask overrides"
+        "default runtime should come from [agents.default], not save overrides"
     );
     assert_eq!(
-        json.pointer("/scopes/ask/agent_runtime/label")
+        json.pointer("/scopes/save/agent_runtime/label")
             .and_then(Value::as_str),
-        Some("ask-runtime"),
-        "ask scope should still report ask-specific runtime"
+        Some("save-runtime"),
+        "save scope should still report save-specific runtime"
     );
     Ok(())
 }

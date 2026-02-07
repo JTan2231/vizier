@@ -114,7 +114,7 @@ fn test_test_display_can_write_session_when_opted_in() -> TestResult {
         json.get("model")
             .and_then(|model| model.get("scope"))
             .and_then(Value::as_str),
-        Some("ask"),
+        Some("save"),
         "session log should record the default scope"
     );
     Ok(())

@@ -542,7 +542,7 @@ mod tests {
         PromptSelection {
             text: "DOCUMENTATION TEMPLATE".to_string(),
             kind: PromptKind::Documentation,
-            requested_scope: ProfileScope::Command(CommandScope::Ask),
+            requested_scope: ProfileScope::Command(CommandScope::Save),
             origin: PromptOrigin::Default,
             source_path: None,
         }

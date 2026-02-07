@@ -30,17 +30,17 @@ agent = "gemini"
     cmd.env("VIZIER_CONFIG_FILE", env_config.as_os_str());
     cmd.env("VIZIER_CONFIG_DIR", isolated_config.path());
     cmd.env("XDG_CONFIG_HOME", isolated_config.path());
-    cmd.args(["ask", "repo config should win over env"]);
+    cmd.args(["save"]);
     let output = cmd.output()?;
     assert!(
         output.status.success(),
-        "vizier ask failed: {}",
+        "vizier save failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let after_logs = gather_session_logs(&repo)?;
     let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or("expected vizier ask to produce a new session log")?;
+        .ok_or("expected vizier save to produce a new session log")?;
     let contents = fs::read_to_string(new_log)?;
     let json: Value = serde_json::from_str(&contents)?;
     assert_eq!(
@@ -48,7 +48,7 @@ agent = "gemini"
             .and_then(|model| model.get("provider"))
             .and_then(Value::as_str),
         Some("agent"),
-        "repo config should force ask onto the configured backend despite env overrides"
+        "repo config should force save onto the configured backend despite env overrides"
     );
     Ok(())
 }
@@ -87,17 +87,17 @@ agent = "codex"
     cmd.env("VIZIER_CONFIG_FILE", env_config.as_os_str());
     cmd.env("VIZIER_CONFIG_DIR", isolated_config.path());
     cmd.env("XDG_CONFIG_HOME", isolated_config.path());
-    cmd.args(["ask", "env config selection"]);
+    cmd.args(["save"]);
     let output = cmd.output()?;
     assert!(
         output.status.success(),
-        "vizier ask failed: {}",
+        "vizier save failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let after_logs = gather_session_logs(&repo)?;
     let new_log = new_session_log(&before_logs, &after_logs)
-        .ok_or("expected vizier ask to create a session log")?;
+        .ok_or("expected vizier save to create a session log")?;
     let contents = fs::read_to_string(new_log)?;
     let json: Value = serde_json::from_str(&contents)?;
     assert_eq!(

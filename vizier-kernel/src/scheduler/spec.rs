@@ -361,7 +361,7 @@ mod tests {
             4 => JobArtifact::MergeSentinel {
                 slug: format!("merge-{suffix}"),
             },
-            _ => JobArtifact::AskSavePatch {
+            _ => JobArtifact::CommandPatch {
                 job_id: format!("job-{suffix}"),
             },
         }
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn after_dependencies_checked_before_artifacts() {
         let job_id = "job";
-        let artifact = JobArtifact::AskSavePatch {
+        let artifact = JobArtifact::CommandPatch {
             job_id: "shared".to_string(),
         };
         let mut facts = base_facts(job_id);
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn dependency_precedence_prefers_active_producer() {
         let job_id = "job";
-        let artifact = JobArtifact::AskSavePatch {
+        let artifact = JobArtifact::CommandPatch {
             job_id: "shared".to_string(),
         };
         let mut facts = base_facts(job_id);
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn pinned_head_checked_after_dependencies() {
         let job_id = "job";
-        let artifact = JobArtifact::AskSavePatch {
+        let artifact = JobArtifact::CommandPatch {
             job_id: "dep".to_string(),
         };
         let mut facts = base_facts(job_id);

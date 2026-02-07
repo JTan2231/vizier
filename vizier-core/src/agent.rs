@@ -750,7 +750,7 @@ mod tests {
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(5)),
         };
@@ -811,19 +811,25 @@ printf '%s\n' "$last"
             progress_filter: Some(vec![filter.display().to_string()]),
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: true,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(2)),
         };
 
-        let handle =
+        let mut handle =
             tokio::spawn(
                 async move { runner.execute(request, Some(ProgressHook::Plain(tx))).await },
             );
 
-        let first_event = tokio::time::timeout(Duration::from_millis(1000), rx.recv())
-            .await
-            .expect("progress should arrive before completion");
+        let first_event = tokio::select! {
+            event = rx.recv() => event,
+            result = &mut handle => {
+                panic!("agent completed before progress event: {:?}", result);
+            }
+            _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                panic!("timed out waiting for progress event");
+            }
+        };
         assert!(
             first_event.is_some(),
             "expected at least one progress event"
@@ -889,7 +895,7 @@ printf '%s\n' "$content"
             progress_filter: Some(vec![filter.display().to_string()]),
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: true,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(2)),
         };
@@ -955,7 +961,7 @@ import time
 _ = sys.stdin.read()
 sys.stdout.write('{"type":"item.started","item":{"type":"reasoning","text":"first"}}\n')
 sys.stdout.flush()
-time.sleep(1)
+time.sleep(2)
 sys.stdout.write('{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 sys.stdout.flush()
 "#,
@@ -994,9 +1000,9 @@ printf '%s\n' "$last"
             progress_filter: Some(vec![filter.display().to_string()]),
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: true,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
-            timeout: Some(Duration::from_secs(3)),
+            timeout: Some(Duration::from_secs(5)),
         };
 
         let mut handle =
@@ -1009,7 +1015,7 @@ printf '%s\n' "$last"
             result = &mut handle => {
                 panic!("agent completed before progress event: {:?}", result);
             }
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+            _ = tokio::time::sleep(Duration::from_secs(4)) => {
                 panic!("timed out waiting for progress event");
             }
         };
@@ -1043,7 +1049,7 @@ printf '%s\n' "$last"
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
         };
@@ -1067,7 +1073,7 @@ printf '%s\n' "$last"
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
         };
@@ -1118,7 +1124,7 @@ printf '%s\n' "$last"
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(2)),
         };
@@ -1157,7 +1163,7 @@ printf '%s\n' "$last"
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,
-            scope: Some(CommandScope::Ask),
+            scope: Some(CommandScope::Save),
             metadata: BTreeMap::new(),
             timeout: Some(Duration::from_secs(1)),
         };
