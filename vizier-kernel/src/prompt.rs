@@ -145,38 +145,47 @@ pub fn build_documentation_prompt(
 
 pub fn build_implementation_plan_prompt(
     prompt_selection: &PromptSelection,
-    plan_slug: &str,
-    branch_name: &str,
-    operator_spec: &str,
-    documentation: &DocumentationSettings,
-    bounds: &str,
-    context: Option<&PromptContext>,
+    input: ImplementationPlanPromptInput<'_>,
 ) -> Result<String, PromptError> {
     let mut prompt = String::new();
     prompt.push_str(&prompt_selection.text);
     prompt.push_str("\n\n");
-    append_bounds_section(&mut prompt, bounds);
+    append_bounds_section(&mut prompt, input.bounds);
 
     prompt.push_str("<planMetadata>\n");
     prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nbranch: {branch_name}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
+        "plan_id: {plan_id}\nplan_slug: {plan_slug}\nbranch: {branch_name}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n"
+        ,
+        plan_id = input.plan_id,
+        plan_slug = input.plan_slug,
+        branch_name = input.branch_name,
     ));
     prompt.push_str("</planMetadata>\n\n");
 
-    if documentation.include_snapshot {
-        append_snapshot_section(&mut prompt, context);
+    if input.documentation.include_snapshot {
+        append_snapshot_section(&mut prompt, input.context);
     }
 
-    if documentation.include_narrative_docs {
-        append_narrative_docs_section(&mut prompt, context);
+    if input.documentation.include_narrative_docs {
+        append_narrative_docs_section(&mut prompt, input.context);
     }
 
     prompt.push_str("<operatorSpec>\n");
-    prompt.push_str(operator_spec.trim());
+    prompt.push_str(input.operator_spec.trim());
     prompt.push('\n');
     prompt.push_str("</operatorSpec>\n");
 
     Ok(prompt)
+}
+
+pub struct ImplementationPlanPromptInput<'a> {
+    pub plan_id: &'a str,
+    pub plan_slug: &'a str,
+    pub branch_name: &'a str,
+    pub operator_spec: &'a str,
+    pub documentation: &'a DocumentationSettings,
+    pub bounds: &'a str,
+    pub context: Option<&'a PromptContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +295,7 @@ pub fn build_build_implementation_plan_prompt(
 }
 
 pub struct ReviewPromptInput<'a> {
+    pub plan_id: Option<&'a str>,
     pub plan_slug: &'a str,
     pub branch_name: &'a str,
     pub target_branch: &'a str,
@@ -308,8 +318,10 @@ pub fn build_review_prompt(
     append_bounds_section(&mut prompt, input.bounds);
 
     prompt.push_str("<planMetadata>\n");
+    let plan_id = input.plan_id.unwrap_or("legacy");
     prompt.push_str(&format!(
-        "plan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n",
+        "plan_id: {plan_id}\nplan_slug: {plan_slug}\nbranch: {branch_name}\ntarget_branch: {target_branch}\nplan_file: .vizier/implementation-plans/{plan_slug}.md\n",
+        plan_id = plan_id,
         plan_slug = input.plan_slug,
         branch_name = input.branch_name,
         target_branch = input.target_branch,
@@ -608,16 +620,20 @@ mod tests {
 
         let prompt = build_implementation_plan_prompt(
             &selection,
-            "kernel",
-            "draft/kernel",
-            "operator spec",
-            &doc_settings(),
-            "bounds text",
-            None,
+            ImplementationPlanPromptInput {
+                plan_id: "pln_kernel",
+                plan_slug: "kernel",
+                branch_name: "draft/kernel",
+                operator_spec: "operator spec",
+                documentation: &doc_settings(),
+                bounds: "bounds text",
+                context: None,
+            },
         )
         .expect("plan prompt");
 
         assert!(prompt.contains("PLAN TEMPLATE"));
+        assert!(prompt.contains("plan_id: pln_kernel"));
         assert!(prompt.contains("plan_slug: kernel"));
         assert!(prompt.contains("branch: draft/kernel"));
         assert!(prompt.contains("plan_file: .vizier/implementation-plans/kernel.md"));

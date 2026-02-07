@@ -828,14 +828,30 @@ pub(crate) async fn run_build(
     Ok(())
 }
 
+pub(crate) struct BuildExecuteArgs<'a> {
+    pub build_id: String,
+    pub pipeline_override: Option<BuildExecutionPipeline>,
+    pub target_override: Option<String>,
+    pub resume: bool,
+    pub assume_yes: bool,
+    pub follow: bool,
+    pub requested_after: &'a [String],
+}
+
 pub(crate) async fn run_build_execute(
-    build_id: String,
-    pipeline_override: Option<BuildExecutionPipeline>,
-    resume: bool,
-    assume_yes: bool,
-    follow: bool,
+    args: BuildExecuteArgs<'_>,
     project_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let BuildExecuteArgs {
+        build_id,
+        pipeline_override,
+        target_override,
+        resume,
+        assume_yes,
+        follow,
+        requested_after,
+    } = args;
+
     let repo_root = std::fs::canonicalize(project_root)?;
     let _repo_guard = WorkdirGuard::enter(&repo_root)?;
 
@@ -881,7 +897,12 @@ pub(crate) async fn run_build_execute(
     }
 
     let policy_steps = load_build_policy_steps(&repo, &session)?;
-    let resolved_policies = resolve_build_policies(&session, &policy_steps, pipeline_override)?;
+    let mut resolved_policies = resolve_build_policies(&session, &policy_steps, pipeline_override)?;
+    if let Some(target) = target_override.as_ref() {
+        for policy in resolved_policies.steps.values_mut() {
+            policy.target_branch = target.clone();
+        }
+    }
     let fallback_pipeline = resolved_policies
         .cli_pipeline_override
         .or_else(|| {
@@ -929,7 +950,10 @@ pub(crate) async fn run_build_execute(
     let mut completion_artifacts: BTreeMap<String, jobs::JobArtifact> = BTreeMap::new();
     let mut queued_job_ids = Vec::new();
     let mut resumed_job_ids = Vec::new();
+    let mut applied_external_after = false;
     let config_snapshot = background_config_snapshot(&config::get_config());
+    let patch_session = is_patch_session(&session, &repo_root);
+    let patch_total = execution.steps.len();
 
     for step_key in step_order {
         let Some(step_idx) = step_index.get(&step_key).copied() else {
@@ -944,6 +968,14 @@ pub(crate) async fn run_build_execute(
             .get_mut(step_idx)
             .ok_or_else(|| format!("missing build execution step {}", step_key))?;
         let policy = step.resolved_policy(fallback_pipeline);
+        let patch_step = patch_step_metadata(
+            patch_session,
+            &session,
+            &step.step_key,
+            step.stage_index,
+            patch_total,
+            &repo_root,
+        );
 
         let plan_doc_artifact = jobs::JobArtifact::PlanDoc {
             slug: step.derived_slug.clone(),
@@ -1001,31 +1033,48 @@ pub(crate) async fn run_build_execute(
             "--target".to_string(),
             policy.target_branch.clone(),
         ];
+        let materialize_after: &[String] = if !applied_external_after
+            && !requested_after.is_empty()
+            && policy.dependencies.is_empty()
+        {
+            requested_after
+        } else {
+            &[]
+        };
         let materialize_job = ensure_phase_job(
             &repo_root,
             &jobs_root,
             &mut step.materialize_job_id,
-            &materialize_args,
-            jobs::JobMetadata {
-                scope: Some("build_materialize".to_string()),
-                plan: Some(step.derived_slug.clone()),
-                branch: Some(step.derived_branch.clone()),
-                target: Some(policy.target_branch.clone()),
-                build_pipeline: Some(policy.pipeline.label().to_string()),
-                build_target: Some(policy.target_branch.clone()),
-                build_review_mode: Some(policy.review_mode.label().to_string()),
-                build_skip_checks: Some(policy.skip_checks),
-                build_keep_branch: Some(policy.keep_branch),
-                build_dependencies: if policy.dependencies.is_empty() {
-                    None
-                } else {
-                    Some(policy.dependencies.clone())
-                },
-                ..Default::default()
-            },
-            materialize_schedule,
             &config_snapshot,
+            EnsurePhaseJobRequest {
+                command_args: &materialize_args,
+                metadata: jobs::JobMetadata {
+                    scope: Some("build_materialize".to_string()),
+                    plan: Some(step.derived_slug.clone()),
+                    branch: Some(step.derived_branch.clone()),
+                    target: Some(policy.target_branch.clone()),
+                    build_pipeline: Some(policy.pipeline.label().to_string()),
+                    build_target: Some(policy.target_branch.clone()),
+                    build_review_mode: Some(policy.review_mode.label().to_string()),
+                    build_skip_checks: Some(policy.skip_checks),
+                    build_keep_branch: Some(policy.keep_branch),
+                    build_dependencies: if policy.dependencies.is_empty() {
+                        None
+                    } else {
+                        Some(policy.dependencies.clone())
+                    },
+                    patch_file: patch_step.as_ref().map(|value| value.file.clone()),
+                    patch_index: patch_step.as_ref().map(|value| value.index),
+                    patch_total: patch_step.as_ref().map(|value| value.total),
+                    ..Default::default()
+                },
+                schedule: materialize_schedule,
+                requested_after: materialize_after,
+            },
         )?;
+        if !materialize_after.is_empty() {
+            applied_external_after = true;
+        }
         if materialize_job.enqueued {
             queued_job_ids.push(materialize_job.job_id.clone());
         } else {
@@ -1095,26 +1144,32 @@ pub(crate) async fn run_build_execute(
             &repo_root,
             &jobs_root,
             &mut step.approve_job_id,
-            &approve_args,
-            jobs::JobMetadata {
-                scope: Some("approve".to_string()),
-                plan: Some(step.derived_slug.clone()),
-                branch: Some(step.derived_branch.clone()),
-                target: Some(policy.target_branch.clone()),
-                build_pipeline: Some(policy.pipeline.label().to_string()),
-                build_target: Some(policy.target_branch.clone()),
-                build_review_mode: Some(policy.review_mode.label().to_string()),
-                build_skip_checks: Some(policy.skip_checks),
-                build_keep_branch: Some(policy.keep_branch),
-                build_dependencies: if policy.dependencies.is_empty() {
-                    None
-                } else {
-                    Some(policy.dependencies.clone())
-                },
-                ..Default::default()
-            },
-            approve_schedule,
             &config_snapshot,
+            EnsurePhaseJobRequest {
+                command_args: &approve_args,
+                metadata: jobs::JobMetadata {
+                    scope: Some("approve".to_string()),
+                    plan: Some(step.derived_slug.clone()),
+                    branch: Some(step.derived_branch.clone()),
+                    target: Some(policy.target_branch.clone()),
+                    build_pipeline: Some(policy.pipeline.label().to_string()),
+                    build_target: Some(policy.target_branch.clone()),
+                    build_review_mode: Some(policy.review_mode.label().to_string()),
+                    build_skip_checks: Some(policy.skip_checks),
+                    build_keep_branch: Some(policy.keep_branch),
+                    build_dependencies: if policy.dependencies.is_empty() {
+                        None
+                    } else {
+                        Some(policy.dependencies.clone())
+                    },
+                    patch_file: patch_step.as_ref().map(|value| value.file.clone()),
+                    patch_index: patch_step.as_ref().map(|value| value.index),
+                    patch_total: patch_step.as_ref().map(|value| value.total),
+                    ..Default::default()
+                },
+                schedule: approve_schedule,
+                requested_after: &[],
+            },
         )?;
         if approve_job.enqueued {
             queued_job_ids.push(approve_job.job_id.clone());
@@ -1190,26 +1245,32 @@ pub(crate) async fn run_build_execute(
                 &repo_root,
                 &jobs_root,
                 &mut step.review_job_id,
-                &review_args,
-                jobs::JobMetadata {
-                    scope: Some("review".to_string()),
-                    plan: Some(step.derived_slug.clone()),
-                    branch: Some(step.derived_branch.clone()),
-                    target: Some(policy.target_branch.clone()),
-                    build_pipeline: Some(policy.pipeline.label().to_string()),
-                    build_target: Some(policy.target_branch.clone()),
-                    build_review_mode: Some(policy.review_mode.label().to_string()),
-                    build_skip_checks: Some(policy.skip_checks),
-                    build_keep_branch: Some(policy.keep_branch),
-                    build_dependencies: if policy.dependencies.is_empty() {
-                        None
-                    } else {
-                        Some(policy.dependencies.clone())
-                    },
-                    ..Default::default()
-                },
-                review_schedule,
                 &config_snapshot,
+                EnsurePhaseJobRequest {
+                    command_args: &review_args,
+                    metadata: jobs::JobMetadata {
+                        scope: Some("review".to_string()),
+                        plan: Some(step.derived_slug.clone()),
+                        branch: Some(step.derived_branch.clone()),
+                        target: Some(policy.target_branch.clone()),
+                        build_pipeline: Some(policy.pipeline.label().to_string()),
+                        build_target: Some(policy.target_branch.clone()),
+                        build_review_mode: Some(policy.review_mode.label().to_string()),
+                        build_skip_checks: Some(policy.skip_checks),
+                        build_keep_branch: Some(policy.keep_branch),
+                        build_dependencies: if policy.dependencies.is_empty() {
+                            None
+                        } else {
+                            Some(policy.dependencies.clone())
+                        },
+                        patch_file: patch_step.as_ref().map(|value| value.file.clone()),
+                        patch_index: patch_step.as_ref().map(|value| value.index),
+                        patch_total: patch_step.as_ref().map(|value| value.total),
+                        ..Default::default()
+                    },
+                    schedule: review_schedule,
+                    requested_after: &[],
+                },
             )?;
             if review_job.enqueued {
                 queued_job_ids.push(review_job.job_id.clone());
@@ -1282,26 +1343,32 @@ pub(crate) async fn run_build_execute(
                 &repo_root,
                 &jobs_root,
                 &mut step.merge_job_id,
-                &merge_args,
-                jobs::JobMetadata {
-                    scope: Some("merge".to_string()),
-                    plan: Some(step.derived_slug.clone()),
-                    branch: Some(step.derived_branch.clone()),
-                    target: Some(policy.target_branch.clone()),
-                    build_pipeline: Some(policy.pipeline.label().to_string()),
-                    build_target: Some(policy.target_branch.clone()),
-                    build_review_mode: Some(policy.review_mode.label().to_string()),
-                    build_skip_checks: Some(policy.skip_checks),
-                    build_keep_branch: Some(policy.keep_branch),
-                    build_dependencies: if policy.dependencies.is_empty() {
-                        None
-                    } else {
-                        Some(policy.dependencies.clone())
-                    },
-                    ..Default::default()
-                },
-                merge_schedule,
                 &config_snapshot,
+                EnsurePhaseJobRequest {
+                    command_args: &merge_args,
+                    metadata: jobs::JobMetadata {
+                        scope: Some("merge".to_string()),
+                        plan: Some(step.derived_slug.clone()),
+                        branch: Some(step.derived_branch.clone()),
+                        target: Some(policy.target_branch.clone()),
+                        build_pipeline: Some(policy.pipeline.label().to_string()),
+                        build_target: Some(policy.target_branch.clone()),
+                        build_review_mode: Some(policy.review_mode.label().to_string()),
+                        build_skip_checks: Some(policy.skip_checks),
+                        build_keep_branch: Some(policy.keep_branch),
+                        build_dependencies: if policy.dependencies.is_empty() {
+                            None
+                        } else {
+                            Some(policy.dependencies.clone())
+                        },
+                        patch_file: patch_step.as_ref().map(|value| value.file.clone()),
+                        patch_index: patch_step.as_ref().map(|value| value.index),
+                        patch_total: patch_step.as_ref().map(|value| value.total),
+                        ..Default::default()
+                    },
+                    schedule: merge_schedule,
+                    requested_after: &[],
+                },
             )?;
             if merge_job.enqueued {
                 queued_job_ids.push(merge_job.job_id.clone());
@@ -1350,6 +1417,13 @@ pub(crate) async fn run_build_execute(
             .map(|value| value.label().to_string())
             .unwrap_or_else(|| "none".to_string()),
     ));
+    rows.push((
+        "Target override".to_string(),
+        target_override.unwrap_or_else(|| "none".to_string()),
+    ));
+    if !requested_after.is_empty() {
+        rows.push(("After".to_string(), requested_after.join(",")));
+    }
     rows.push((
         "Stage barrier".to_string(),
         resolved_policies.stage_barrier.as_str().to_string(),
@@ -1456,7 +1530,8 @@ pub(crate) async fn run_build_materialize(
         &session.build_branch,
         Path::new(&step.output_plan_path),
     )?;
-    let materialized_doc = rewrite_plan_front_matter(&build_plan_text, &slug, &branch);
+    let plan_id = plan::plan_id_from_document(&build_plan_text).unwrap_or_else(plan::new_plan_id);
+    let materialized_doc = rewrite_plan_front_matter(&build_plan_text, &plan_id, &slug, &branch);
 
     if !branch_exists(&branch).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })? {
         create_branch_from(&target, &branch).map_err(|err| -> Box<dyn std::error::Error> {
@@ -1472,13 +1547,40 @@ pub(crate) async fn run_build_materialize(
     let plan_abs = worktree.path().join(&plan_rel);
     let materialize_result = (|| -> Result<bool, Box<dyn std::error::Error>> {
         let existing = std::fs::read_to_string(&plan_abs).ok();
-        if existing.as_deref() == Some(materialized_doc.as_str()) {
+        let plan_state_rel = plan::plan_state_rel_path(&plan_id);
+        let plan_state_abs = worktree.path().join(&plan_state_rel);
+        let doc_changed = existing.as_deref() != Some(materialized_doc.as_str());
+        let record_exists = plan_state_abs.exists();
+        if !doc_changed && record_exists {
             return Ok(false);
         }
-        plan::write_plan_file(&plan_abs, &materialized_doc)?;
+        if doc_changed {
+            plan::write_plan_file(&plan_abs, &materialized_doc)?;
+        }
+        let summary = plan::PlanMetadata::from_document(&materialized_doc)
+            .ok()
+            .map(|meta| plan::summarize_spec(&meta));
+        let now = Utc::now().to_rfc3339();
+        plan::upsert_plan_record(
+            worktree.path(),
+            plan::PlanRecordUpsert {
+                plan_id: plan_id.clone(),
+                slug: Some(slug.clone()),
+                branch: Some(branch.clone()),
+                source: Some("build".to_string()),
+                intent: Some(step.intent_source.clone()),
+                target_branch: Some(target.clone()),
+                work_ref: Some(branch.clone()),
+                status: Some("draft".to_string()),
+                summary,
+                updated_at: now.clone(),
+                created_at: Some(now),
+                job_ids: None,
+            },
+        )?;
         commit_paths_in_repo(
             worktree.path(),
-            &[plan_rel.as_path()],
+            &[plan_rel.as_path(), plan_state_rel.as_path()],
             &format!("docs: materialize build step {} ({})", step_key, slug),
         )
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -1504,6 +1606,7 @@ pub(crate) async fn run_build_materialize(
     ));
     rows.push(("Build".to_string(), build_id));
     rows.push(("Step".to_string(), step_key));
+    rows.push(("Plan ID".to_string(), plan_id));
     rows.push(("Plan".to_string(), to_repo_string(&plan_rel)));
     rows.push(("Branch".to_string(), branch));
     rows.push(("Target".to_string(), target));
@@ -2166,15 +2269,87 @@ fn phase_job_reusable(status: jobs::JobStatus) -> bool {
     )
 }
 
+#[derive(Debug, Clone)]
+struct PatchStepMetadata {
+    file: String,
+    index: usize,
+    total: usize,
+}
+
+fn is_patch_session(session: &BuildSession, repo_root: &Path) -> bool {
+    let original = PathBuf::from(&session.manifest.input_file.original_path);
+    let relative = original
+        .strip_prefix(repo_root)
+        .ok()
+        .map(|value| value.to_path_buf())
+        .or_else(|| {
+            session
+                .manifest
+                .input_file
+                .original_path
+                .strip_prefix("./")
+                .map(PathBuf::from)
+        });
+    relative
+        .as_ref()
+        .map(|value| value.starts_with(".vizier/tmp/patches"))
+        .unwrap_or(false)
+}
+
+fn patch_step_metadata(
+    patch_session: bool,
+    session: &BuildSession,
+    step_key: &str,
+    stage_index: usize,
+    total: usize,
+    repo_root: &Path,
+) -> Option<PatchStepMetadata> {
+    if !patch_session {
+        return None;
+    }
+    let manifest_step = session
+        .manifest
+        .steps
+        .iter()
+        .find(|entry| entry.step_key == step_key)?;
+    let raw_file = manifest_step.intent_source.strip_prefix("file:")?.trim();
+    if raw_file.is_empty() {
+        return None;
+    }
+    let normalized = PathBuf::from(raw_file);
+    let file = normalized
+        .strip_prefix(repo_root)
+        .ok()
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|| normalized.to_string_lossy().replace('\\', "/"));
+    Some(PatchStepMetadata {
+        file,
+        index: stage_index.max(1),
+        total,
+    })
+}
+
+struct EnsurePhaseJobRequest<'a> {
+    command_args: &'a [String],
+    metadata: jobs::JobMetadata,
+    schedule: jobs::JobSchedule,
+    requested_after: &'a [String],
+}
+
 fn ensure_phase_job(
     repo_root: &Path,
     jobs_root: &Path,
     existing_job_id: &mut Option<String>,
-    command_args: &[String],
-    metadata: jobs::JobMetadata,
-    schedule: jobs::JobSchedule,
     config_snapshot: &serde_json::Value,
+    request: EnsurePhaseJobRequest<'_>,
 ) -> Result<PhaseJobOutcome, Box<dyn std::error::Error>> {
+    let EnsurePhaseJobRequest {
+        command_args,
+        metadata,
+        mut schedule,
+        requested_after,
+    } = request;
+
     if let Some(job_id) = existing_job_id.as_ref()
         && let Ok(record) = jobs::read_record(jobs_root, job_id)
         && phase_job_reusable(record.status)
@@ -2195,6 +2370,10 @@ fn ensure_phase_job(
         false,
         &[],
     );
+    if !requested_after.is_empty() {
+        schedule.after =
+            jobs::resolve_after_dependencies_for_enqueue(jobs_root, &job_id, requested_after)?;
+    }
 
     jobs::enqueue_job(
         repo_root,
@@ -2353,9 +2532,10 @@ fn first_failed_step(
     })
 }
 
-fn rewrite_plan_front_matter(source: &str, slug: &str, branch: &str) -> String {
+fn rewrite_plan_front_matter(source: &str, plan_id: &str, slug: &str, branch: &str) -> String {
     let mut out = String::new();
     out.push_str("---\n");
+    out.push_str(&format!("plan_id: {plan_id}\n"));
     out.push_str(&format!("plan: {slug}\n"));
     out.push_str(&format!("branch: {branch}\n"));
     out.push_str("---\n\n");
@@ -2606,7 +2786,14 @@ fn render_build_plan_document(
     plan_body: &str,
 ) -> String {
     let plan_slug = format!("{}-{}", step.step_key, step.slug);
-    plan::render_plan_document(&plan_slug, build_branch, &step.intent.text, plan_body)
+    let plan_id = plan::new_plan_id();
+    plan::render_plan_document(
+        &plan_id,
+        &plan_slug,
+        build_branch,
+        &step.intent.text,
+        plan_body,
+    )
 }
 
 fn render_session_summary(manifest: &BuildManifest) -> String {

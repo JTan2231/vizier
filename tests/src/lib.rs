@@ -15,6 +15,7 @@ mod install;
 mod jobs;
 mod list;
 mod merge;
+mod patch;
 mod plan;
 mod review;
 mod save;

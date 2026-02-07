@@ -380,6 +380,13 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
                 }
             })
         }),
+        JobsShowField::PatchFile => metadata.and_then(|meta| meta.patch_file.clone()),
+        JobsShowField::PatchIndex => {
+            metadata.and_then(|meta| meta.patch_index.map(|value| value.to_string()))
+        }
+        JobsShowField::PatchTotal => {
+            metadata.and_then(|meta| meta.patch_total.map(|value| value.to_string()))
+        }
         JobsShowField::Revision => metadata.and_then(|meta| meta.revision.clone()),
         JobsShowField::After => schedule.map(|sched| format_after_dependencies(&sched.after)),
         JobsShowField::Dependencies => schedule.map(|sched| {

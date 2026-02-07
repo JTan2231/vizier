@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::fs;
 use vizier_core::{
     agent_prompt,
@@ -46,6 +47,7 @@ pub(crate) async fn run_draft(
     };
 
     let slug = plan::ensure_unique_slug(&base_slug, &plan_dir_main, branch_prefix)?;
+    let plan_id = plan::new_plan_id();
     let branch_name = format!("{branch_prefix}{slug}");
     let plan_rel_path = plan::plan_rel_path(&slug);
     let plan_display = plan_rel_path.to_string_lossy().to_string();
@@ -104,10 +106,13 @@ pub(crate) async fn run_draft(
         let selection = prompt_selection(&prompt_agent)?;
         let prompt = agent_prompt::build_implementation_plan_prompt(
             selection,
-            &slug,
-            &branch_name,
-            &spec_text,
-            &prompt_agent.documentation,
+            agent_prompt::ImplementationPlanPromptInput {
+                plan_id: &plan_id,
+                plan_slug: &slug,
+                branch_name: &branch_name,
+                operator_spec: &spec_text,
+                documentation: &prompt_agent.documentation,
+            },
         )
         .map_err(|err| -> Box<dyn std::error::Error> { Box::from(format!("build_prompt: {err}")) })?;
 
@@ -123,6 +128,7 @@ pub(crate) async fn run_draft(
 
         let plan_body = llm_response.content;
         let document = plan::render_plan_document(
+            &plan_id,
             &slug,
             &branch_name,
             &spec_text,
@@ -137,12 +143,35 @@ pub(crate) async fn run_draft(
                 ))
             },
         )?;
+        let plan_state_rel = {
+            let parsed = plan::PlanMetadata::from_document(&document).ok();
+            let summary = parsed.as_ref().map(plan::summarize_spec);
+            let now = Utc::now().to_rfc3339();
+            plan::upsert_plan_record(
+                &worktree_path,
+                plan::PlanRecordUpsert {
+                    plan_id: plan_id.clone(),
+                    slug: Some(slug.clone()),
+                    branch: Some(branch_name.clone()),
+                    source: Some("draft".to_string()),
+                    intent: Some(spec_source_label.to_string()),
+                    target_branch: Some(primary_branch.clone()),
+                    work_ref: Some(branch_name.clone()),
+                    status: Some("draft".to_string()),
+                    summary,
+                    updated_at: now.clone(),
+                    created_at: Some(now),
+                    job_ids: None,
+                },
+            )?
+        };
 
         if commit_mode.should_commit() {
             let plan_rel = plan_rel_path.as_path();
+            let plan_state_path = plan_state_rel.as_path();
             commit_paths_in_repo(
                 &worktree_path,
-                &[plan_rel],
+                &[plan_rel, plan_state_path],
                 &format!("docs: add implementation plan {}", slug),
             )
             .map_err(|err| -> Box<dyn std::error::Error> {

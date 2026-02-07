@@ -368,6 +368,7 @@ async fn perform_review_workflow(
     let prompt = agent_prompt::build_review_prompt(
         selection,
         agent_prompt::ReviewPromptInput {
+            plan_id: Some(&plan_meta.plan_id),
             plan_slug: &spec.slug,
             branch_name: &spec.branch,
             target_branch: &spec.target_branch,

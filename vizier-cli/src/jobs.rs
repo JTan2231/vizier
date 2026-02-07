@@ -90,6 +90,9 @@ pub struct JobMetadata {
     pub build_skip_checks: Option<bool>,
     pub build_keep_branch: Option<bool>,
     pub build_dependencies: Option<Vec<String>>,
+    pub patch_file: Option<String>,
+    pub patch_index: Option<usize>,
+    pub patch_total: Option<usize>,
     pub revision: Option<String>,
     pub worktree_name: Option<String>,
     pub worktree_path: Option<String>,
@@ -305,6 +308,15 @@ fn merge_metadata(
             }
             if is_empty_vec(&base.build_dependencies) {
                 base.build_dependencies = update.build_dependencies;
+            }
+            if base.patch_file.is_none() {
+                base.patch_file = update.patch_file;
+            }
+            if base.patch_index.is_none() {
+                base.patch_index = update.patch_index;
+            }
+            if base.patch_total.is_none() {
+                base.patch_total = update.patch_total;
             }
             if base.revision.is_none() {
                 base.revision = update.revision;

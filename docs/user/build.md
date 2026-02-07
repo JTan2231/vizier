@@ -7,6 +7,27 @@
 
 For the canonical artifact/state contract behind these flows (build manifests, execution state, job/sentinel/session relationships, durability classes), see `docs/dev/vizier-material-model.md`.
 
+## Queue file-backed intents with `vizier patch`
+
+```bash
+vizier patch <file...> [--pipeline approve|approve-review|approve-review-merge] [--target BRANCH] [--resume] --yes [--after JOB_ID ...] [--follow]
+```
+
+`vizier patch` is a low-ceremony wrapper over `vizier build` + `vizier build execute` for operators who already have one or more spec/intent files.
+
+Behavior:
+- Validates every file up front before any queue mutation.
+- Enforces in-repo paths, readable UTF-8 files, and non-empty content.
+- Deduplicates repeated files by default while preserving first-seen order.
+- Builds a deterministic patch session id from ordered files + pipeline/target and writes an internal build file under `.vizier/tmp/patches/`.
+- Uses strict linear ordering (`step N` depends on `step N-1`) so execution follows CLI order exactly.
+- Reuses build pipelines (`approve`, `approve-review`, `approve-review-merge`) and supports `--resume` to reuse queued/running/succeeded phase jobs from the same patch session.
+- Applies `--after <job-id>` to the first queued patch root job.
+
+Patch observability:
+- Output includes a preflight block (`Patch session`, ordered file queue, pipeline/target, execution manifest path).
+- Queued phase jobs carry `patch_file`, `patch_index`, and `patch_total` metadata in job records and `vizier jobs show`.
+
 ## Create a build session
 
 ```bash

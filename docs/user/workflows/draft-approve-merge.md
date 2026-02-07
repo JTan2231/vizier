@@ -22,6 +22,14 @@ Execution mode queues per-step scheduler jobs that materialize canonical `draft/
 
 For the build schema, execute options, and artifact details, see `docs/user/build.md`, `examples/build/todo.toml`, and `examples/build/todo.json`.
 
+If your inputs are already discrete files and you want a thinner wrapper, use:
+
+```bash
+vizier patch BUG1.md BUG2.md --pipeline approve-review-merge --yes
+```
+
+`patch` performs full-file preflight first, queues steps in exact CLI order, deduplicates repeated paths by default, and reuses the same build execution machinery under a deterministic patch session id (`--resume` reuses non-terminal jobs for that session).
+
 ### Agent configuration
 
 The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing stacks as needed (see also `docs/user/prompt-config-matrix.md` for the full scope×prompt-kind matrix and config levers):

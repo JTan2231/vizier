@@ -123,26 +123,34 @@ pub fn build_documentation_prompt(
 
 pub fn build_implementation_plan_prompt(
     prompt_selection: &config::PromptSelection,
-    plan_slug: &str,
-    branch_name: &str,
-    operator_spec: &str,
-    documentation: &config::DocumentationSettings,
+    input: ImplementationPlanPromptInput<'_>,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
-        documentation.include_snapshot,
-        documentation.include_narrative_docs,
+        input.documentation.include_snapshot,
+        input.documentation.include_narrative_docs,
     )?;
     let bounds = load_bounds_prompt()?;
     kernel_prompt::build_implementation_plan_prompt(
         prompt_selection,
-        plan_slug,
-        branch_name,
-        operator_spec,
-        documentation,
-        &bounds,
-        context.as_ref(),
+        kernel_prompt::ImplementationPlanPromptInput {
+            plan_id: input.plan_id,
+            plan_slug: input.plan_slug,
+            branch_name: input.branch_name,
+            operator_spec: input.operator_spec,
+            documentation: input.documentation,
+            bounds: &bounds,
+            context: context.as_ref(),
+        },
     )
     .map_err(map_prompt_error)
+}
+
+pub struct ImplementationPlanPromptInput<'a> {
+    pub plan_id: &'a str,
+    pub plan_slug: &'a str,
+    pub branch_name: &'a str,
+    pub operator_spec: &'a str,
+    pub documentation: &'a config::DocumentationSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +215,7 @@ pub fn build_build_implementation_plan_prompt(
 }
 
 pub struct ReviewPromptInput<'a> {
+    pub plan_id: Option<&'a str>,
     pub plan_slug: &'a str,
     pub branch_name: &'a str,
     pub target_branch: &'a str,
@@ -228,6 +237,7 @@ pub fn build_review_prompt(
     let bounds = load_bounds_prompt()?;
 
     let kernel_input = kernel_prompt::ReviewPromptInput {
+        plan_id: input.plan_id,
         plan_slug: input.plan_slug,
         branch_name: input.branch_name,
         target_branch: input.target_branch,
@@ -332,10 +342,13 @@ mod tests {
             config::get_config().prompt_for(CommandScope::Draft, PromptKind::ImplementationPlan);
         let prompt = build_implementation_plan_prompt(
             &selection,
-            "slug",
-            "draft/slug",
-            "spec",
-            &DocumentationSettings::default(),
+            ImplementationPlanPromptInput {
+                plan_id: "pln_slug",
+                plan_slug: "slug",
+                branch_name: "draft/slug",
+                operator_spec: "spec",
+                documentation: &DocumentationSettings::default(),
+            },
         )
         .unwrap();
 
@@ -401,6 +414,7 @@ mod tests {
         let prompt = build_review_prompt(
             &selection,
             ReviewPromptInput {
+                plan_id: Some("pln_slug"),
                 plan_slug: "slug",
                 branch_name: "draft/slug",
                 target_branch: "main",
@@ -437,6 +451,7 @@ mod tests {
         let prompt = build_review_prompt(
             &selection,
             ReviewPromptInput {
+                plan_id: Some("pln_slug"),
                 plan_slug: "slug",
                 branch_name: "draft/slug",
                 target_branch: "main",

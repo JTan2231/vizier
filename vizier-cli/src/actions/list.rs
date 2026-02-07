@@ -660,6 +660,7 @@ mod tests {
     #[test]
     fn select_inline_job_prefers_active_and_newest() {
         let entry = crate::plan::PlanSlugEntry {
+            plan_id: "pln_alpha".to_string(),
             slug: "alpha".to_string(),
             branch: "draft/alpha".to_string(),
             summary: "Alpha spec".to_string(),

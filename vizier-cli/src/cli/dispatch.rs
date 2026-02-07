@@ -766,11 +766,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         });
                         run_build_execute(
-                            exec.build_id,
-                            pipeline,
-                            exec.resume,
-                            exec.assume_yes,
-                            cli.global.follow,
+                            BuildExecuteArgs {
+                                build_id: exec.build_id,
+                                pipeline_override: pipeline,
+                                target_override: None,
+                                resume: exec.resume,
+                                assume_yes: exec.assume_yes,
+                                follow: cli.global.follow,
+                                requested_after: &[],
+                            },
                             &project_root,
                         )
                         .await
@@ -797,6 +801,39 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         run_build(build_file, name, &project_root, &agent, commit_mode).await
                     }
                 }
+            }
+
+            Commands::Patch(cmd) => {
+                if cli.global.json {
+                    return Err("--json is not supported for vizier patch".into());
+                }
+                let pipeline = cmd.pipeline.map(|value| match value {
+                    BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
+                    BuildPipelineArg::ApproveReview => BuildExecutionPipeline::ApproveReview,
+                    BuildPipelineArg::ApproveReviewMerge => {
+                        BuildExecutionPipeline::ApproveReviewMerge
+                    }
+                });
+                let agent = config::resolve_agent_settings(
+                    &config::get_config(),
+                    config::CommandScope::Draft,
+                    cli_agent_override.as_ref(),
+                )?;
+                run_patch(
+                    PatchArgs {
+                        files: cmd.files,
+                        pipeline,
+                        target: cmd.target,
+                        resume: cmd.resume,
+                        assume_yes: cmd.assume_yes,
+                        follow: cli.global.follow,
+                        after: cmd.after,
+                    },
+                    &project_root,
+                    &agent,
+                    commit_mode,
+                )
+                .await
             }
 
             Commands::List(cmd) => run_list(resolve_list_options(&cmd, cli.global.json)?),

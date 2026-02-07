@@ -743,7 +743,8 @@ steps = [
     let plan_path = format!(".vizier/implementation-plans/{slug}.md");
     let plan_text = read_branch_file(&repo.repo(), branch, &plan_path)?;
     assert!(
-        plan_text.starts_with(&format!("---\nplan: {slug}\nbranch: {branch}\n---\n")),
+        plan_text.starts_with("---\nplan_id: ")
+            && plan_text.contains(&format!("\nplan: {slug}\nbranch: {branch}\n---\n")),
         "materialized front matter mismatch:\n{plan_text}"
     );
     assert!(plan_text.contains("## Operator Spec"));

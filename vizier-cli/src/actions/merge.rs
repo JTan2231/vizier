@@ -2030,6 +2030,7 @@ mod tests {
 
     fn sample_meta(spec: &PlanBranchSpec) -> PlanMetadata {
         PlanMetadata {
+            plan_id: format!("pln_{}", spec.slug),
             slug: spec.slug.clone(),
             branch: spec.branch.clone(),
             spec_excerpt: None,

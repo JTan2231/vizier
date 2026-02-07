@@ -2,7 +2,8 @@
 
 This document is the canonical reference for how Vizier maps CLI commands (“scopes”) to prompt templates (“kinds”), and which configuration levers control each pairing.
 
-- **Scopes** (commands): `save`, `draft`, `approve`, `review`, `merge`
+- **Prompt scopes**: `save`, `draft`, `approve`, `review`, `merge`
+- **Commands using these scopes**: `save`, `draft`, `approve`, `review`, `merge`, and `patch` (which reuses `draft` for plan generation plus queued `approve`/`review`/`merge` phase scopes)
 - **Prompt kinds**: `documentation`, `commit`, `implementation_plan`, `review`, `merge_conflict`
 - **Internal fallback profile**: `default` (not a CLI command scope; used for non-command prompt/session fallback paths)
 
@@ -29,6 +30,7 @@ Notes:
 - “System prompt” means the **documentation-style** wrapper that carries snapshot + narrative doc context (via `<snapshot>`/`<narrativeDocs>` blocks) plus `<task>`/`<instruction>` payloads.
 - “Commit messages from Codex summaries” means commit bodies are synthesized from Codex’s summary output, not from the `commit` prompt template. You still configure the commit template for cases where Vizier asks the model to write a message from a diff.
 - The `implementation_plan` prompt kind is only used by `vizier draft` today; `vizier approve` consumes the rendered plan document instead of re-prompting with the plan template.
+- `vizier patch` does not introduce a new prompt scope in v1; it generates an internal build session via the `draft` scope and then queues existing phase commands (`approve`/`review`/`merge`) so all prompt customization continues to live under those existing scopes.
 
 ## Prompt resolution & override order
 

@@ -1,4 +1,5 @@
 use git2::{BranchType, Oid, Repository};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
@@ -12,10 +13,28 @@ use vizier_core::vcs::{
 };
 
 pub const PLAN_DIR: &str = ".vizier/implementation-plans";
+pub const PLAN_STATE_DIR: &str = ".vizier/state/plans";
 const MAX_SUMMARY_LEN: usize = 160;
 
 pub fn plan_rel_path(slug: &str) -> PathBuf {
     Path::new(PLAN_DIR).join(format!("{slug}.md"))
+}
+
+pub fn plan_state_rel_path(plan_id: &str) -> PathBuf {
+    Path::new(PLAN_STATE_DIR).join(format!("{plan_id}.json"))
+}
+
+pub fn new_plan_id() -> String {
+    format!("pln_{}", Uuid::new_v4().simple())
+}
+
+fn legacy_plan_id_from_slug(slug: &str) -> String {
+    let normalized = normalize_slug(slug);
+    if normalized.is_empty() {
+        "pln_legacy".to_string()
+    } else {
+        format!("pln_legacy_{normalized}")
+    }
 }
 
 pub fn default_branch_for_slug(slug: &str) -> String {
@@ -239,6 +258,7 @@ pub fn trim_trailing_newlines(text: &str) -> &str {
 }
 
 pub fn render_plan_document(
+    plan_id: &str,
     slug: &str,
     branch_name: &str,
     spec_text: &str,
@@ -247,6 +267,7 @@ pub fn render_plan_document(
     let mut doc = String::new();
 
     doc.push_str("---\n");
+    doc.push_str(&format!("plan_id: {plan_id}\n"));
     doc.push_str(&format!("plan: {slug}\n"));
     doc.push_str(&format!("branch: {branch_name}\n"));
     doc.push_str("---\n\n");
@@ -331,6 +352,7 @@ impl From<std::str::Utf8Error> for PlanError {
 
 #[derive(Debug, Clone)]
 pub struct PlanMetadata {
+    pub plan_id: String,
     pub slug: String,
     pub branch: String,
     pub spec_excerpt: Option<String>,
@@ -342,19 +364,30 @@ impl PlanMetadata {
         let (front_matter, body) = split_front_matter(contents)?;
         let fields = parse_front_matter(front_matter);
 
-        let slug = fields
-            .get("plan")
-            .ok_or(PlanError::MissingField("plan"))?
-            .to_string();
+        let slug = if let Some(value) = fields.get("plan") {
+            value.to_string()
+        } else if let Some(branch) = fields.get("branch") {
+            branch
+                .strip_prefix("draft/")
+                .map(|value| value.to_string())
+                .ok_or(PlanError::MissingField("plan"))?
+        } else {
+            return Err(PlanError::MissingField("plan"));
+        };
         let branch = fields
             .get("branch")
-            .ok_or(PlanError::MissingField("branch"))?
-            .to_string();
+            .cloned()
+            .unwrap_or_else(|| default_branch_for_slug(&slug));
+        let plan_id = fields
+            .get("plan_id")
+            .cloned()
+            .unwrap_or_else(|| legacy_plan_id_from_slug(&slug));
 
         let spec_excerpt = extract_section(body, "Operator Spec");
         let spec_summary = spec_excerpt.as_ref().and_then(|text| summarize_line(text));
 
         Ok(Self {
+            plan_id,
             slug,
             branch,
             spec_excerpt,
@@ -363,8 +396,169 @@ impl PlanMetadata {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanRecord {
+    pub plan_id: String,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub target_branch: Option<String>,
+    #[serde(default)]
+    pub work_ref: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub job_ids: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlanRecordUpsert {
+    pub plan_id: String,
+    pub slug: Option<String>,
+    pub branch: Option<String>,
+    pub source: Option<String>,
+    pub intent: Option<String>,
+    pub target_branch: Option<String>,
+    pub work_ref: Option<String>,
+    pub status: Option<String>,
+    pub summary: Option<String>,
+    pub updated_at: String,
+    pub created_at: Option<String>,
+    pub job_ids: Option<HashMap<String, String>>,
+}
+
+pub fn plan_id_from_document(contents: &str) -> Option<String> {
+    let (front_matter, _) = split_front_matter(contents).ok()?;
+    let fields = parse_front_matter(front_matter);
+    fields.get("plan_id").cloned()
+}
+
+pub fn upsert_plan_record(
+    repo_root: &Path,
+    update: PlanRecordUpsert,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if update.plan_id.trim().is_empty() {
+        return Err("plan_id cannot be empty for plan records".into());
+    }
+
+    let rel_path = plan_state_rel_path(&update.plan_id);
+    let abs_path = repo_root.join(&rel_path);
+    if let Some(parent) = abs_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut record = if abs_path.exists() {
+        let raw = fs::read_to_string(&abs_path)?;
+        serde_json::from_str::<PlanRecord>(&raw)?
+    } else {
+        PlanRecord {
+            plan_id: update.plan_id.clone(),
+            slug: None,
+            branch: None,
+            source: None,
+            intent: None,
+            target_branch: None,
+            work_ref: None,
+            status: None,
+            summary: None,
+            created_at: update
+                .created_at
+                .clone()
+                .unwrap_or_else(|| update.updated_at.clone()),
+            updated_at: update.updated_at.clone(),
+            job_ids: HashMap::new(),
+        }
+    };
+
+    if record.created_at.trim().is_empty() {
+        record.created_at = update
+            .created_at
+            .clone()
+            .unwrap_or_else(|| update.updated_at.clone());
+    }
+    record.updated_at = update.updated_at.clone();
+
+    if update.slug.is_some() {
+        record.slug = update.slug;
+    }
+    if update.branch.is_some() {
+        record.branch = update.branch;
+    }
+    if update.source.is_some() {
+        record.source = update.source;
+    }
+    if update.intent.is_some() {
+        record.intent = update.intent;
+    }
+    if update.target_branch.is_some() {
+        record.target_branch = update.target_branch;
+    }
+    if update.work_ref.is_some() {
+        record.work_ref = update.work_ref;
+    }
+    if update.status.is_some() {
+        record.status = update.status;
+    }
+    if update.summary.is_some() {
+        record.summary = update.summary;
+    }
+    if let Some(job_ids) = update.job_ids {
+        for (phase, job_id) in job_ids {
+            if !phase.trim().is_empty() && !job_id.trim().is_empty() {
+                record.job_ids.insert(phase, job_id);
+            }
+        }
+    }
+
+    let contents = serde_json::to_string_pretty(&record)?;
+    fs::write(&abs_path, contents)?;
+    Ok(rel_path)
+}
+
+pub fn load_plan_records(repo_root: &Path) -> Result<Vec<PlanRecord>, Box<dyn std::error::Error>> {
+    let state_dir = repo_root.join(PLAN_STATE_DIR);
+    if !state_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut paths: Vec<PathBuf> = fs::read_dir(&state_dir)?
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let raw = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let record: PlanRecord = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if record.plan_id.trim().is_empty() {
+            continue;
+        }
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
 #[derive(Debug, Clone)]
 pub struct PlanSlugEntry {
+    pub plan_id: String,
     pub slug: String,
     pub branch: String,
     pub summary: String,
@@ -384,7 +578,66 @@ impl PlanSlugInventory {
         let target_oid = Self::target_oid(&repo, &target_branch)?;
 
         let mut entries: Vec<PlanSlugEntry> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen_slugs: HashSet<String> = HashSet::new();
+        let mut seen_plan_ids: HashSet<String> = HashSet::new();
+
+        let mut records = load_plan_records(&repo_root)?;
+        records.sort_by(|a, b| {
+            let left = a.slug.as_deref().unwrap_or(a.plan_id.as_str());
+            let right = b.slug.as_deref().unwrap_or(b.plan_id.as_str());
+            left.cmp(right)
+        });
+        for record in records {
+            let branch = record
+                .branch
+                .as_ref()
+                .or(record.work_ref.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            if branch.is_empty() || !branch.starts_with("draft/") {
+                continue;
+            }
+
+            let slug = record
+                .slug
+                .clone()
+                .or_else(|| branch.strip_prefix("draft/").map(|value| value.to_string()))
+                .unwrap_or_default();
+            if slug.is_empty() {
+                continue;
+            }
+
+            if seen_slugs.contains(&slug) || seen_plan_ids.contains(&record.plan_id) {
+                continue;
+            }
+
+            let branch_ref = match repo.find_branch(&branch, BranchType::Local) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let commit = match branch_ref.get().peel_to_commit() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if target_oid == commit.id() || repo.graph_descendant_of(target_oid, commit.id())? {
+                continue;
+            }
+
+            let summary = record.summary.clone().unwrap_or_else(|| {
+                load_plan_from_branch(&slug, &branch)
+                    .map(|meta| summarize_spec(&meta))
+                    .unwrap_or_else(|_| format!("Plan {} summary unavailable", slug))
+            });
+
+            seen_slugs.insert(slug.clone());
+            seen_plan_ids.insert(record.plan_id.clone());
+            entries.push(PlanSlugEntry {
+                plan_id: record.plan_id,
+                slug,
+                branch,
+                summary,
+            });
+        }
 
         if plan_dir.exists() {
             let mut plan_paths: Vec<PathBuf> = fs::read_dir(&plan_dir)?
@@ -394,7 +647,11 @@ impl PlanSlugInventory {
             plan_paths.sort();
             for path in plan_paths {
                 if let Some(entry) = Self::entry_from_plan_path(&repo, target_oid, &path)? {
-                    seen.insert(entry.slug.clone());
+                    if seen_slugs.contains(&entry.slug) || seen_plan_ids.contains(&entry.plan_id) {
+                        continue;
+                    }
+                    seen_slugs.insert(entry.slug.clone());
+                    seen_plan_ids.insert(entry.plan_id.clone());
                     entries.push(entry);
                 }
             }
@@ -410,7 +667,7 @@ impl PlanSlugInventory {
                 continue;
             }
             let slug = name.trim_start_matches("draft/").to_string();
-            if seen.contains(&slug) {
+            if seen_slugs.contains(&slug) {
                 continue;
             }
 
@@ -421,9 +678,14 @@ impl PlanSlugInventory {
 
             match load_plan_from_branch(&slug, name) {
                 Ok(meta) => {
-                    seen.insert(slug.clone());
+                    if seen_plan_ids.contains(&meta.plan_id) {
+                        continue;
+                    }
+                    seen_slugs.insert(slug.clone());
+                    seen_plan_ids.insert(meta.plan_id.clone());
                     let summary = summarize_spec(&meta);
                     entries.push(PlanSlugEntry {
+                        plan_id: meta.plan_id.clone(),
                         slug: meta.slug.clone(),
                         branch: meta.branch.clone(),
                         summary,
@@ -499,6 +761,7 @@ impl PlanSlugInventory {
         let summary = summarize_spec(&meta);
 
         Ok(Some(PlanSlugEntry {
+            plan_id: meta.plan_id.clone(),
             slug: meta.slug.clone(),
             branch: meta.branch.clone(),
             summary,
@@ -646,11 +909,13 @@ mod tests {
     #[test]
     fn render_plan_document_includes_front_matter() -> Result<(), Box<dyn std::error::Error>> {
         let doc = render_plan_document(
+            "pln_alpha",
             "alpha",
             "draft/alpha",
             "spec body",
             "## Execution Plan\n- step",
         );
+        assert!(doc.contains("plan_id: pln_alpha"));
         assert!(doc.contains("plan: alpha"));
         assert!(doc.contains("branch: draft/alpha"));
         assert!(doc.contains("## Operator Spec"));
@@ -676,6 +941,7 @@ mod tests {
     #[test]
     fn parse_metadata_extracts_summary() -> Result<(), Box<dyn std::error::Error>> {
         let doc = r#"---
+plan_id: pln_alpha
 plan: alpha
 branch: draft/alpha
 status: review-ready
@@ -690,6 +956,7 @@ Add streaming UI with guard rails.
 - Step 2
 "#;
         let meta = PlanMetadata::from_document(doc)?;
+        assert_eq!(meta.plan_id, "pln_alpha");
         assert_eq!(meta.slug, "alpha");
         assert_eq!(meta.branch, "draft/alpha");
         assert_eq!(
@@ -702,6 +969,7 @@ Add streaming UI with guard rails.
     #[test]
     fn summarize_spec_falls_back_to_excerpt() {
         let meta = PlanMetadata {
+            plan_id: "pln_alpha".into(),
             slug: "alpha".into(),
             branch: "draft/alpha".into(),
             spec_excerpt: Some("Line one\nLine two".into()),
@@ -714,6 +982,7 @@ Add streaming UI with guard rails.
     #[test]
     fn from_document_ignores_unknown_front_matter() -> Result<(), Box<dyn std::error::Error>> {
         let doc = r#"---
+plan_id: pln_alpha
 plan: alpha
 branch: draft/alpha
 status: draft
@@ -731,6 +1000,7 @@ Unknown fields should be ignored.
 "#;
 
         let meta = PlanMetadata::from_document(doc)?;
+        assert_eq!(meta.plan_id, "pln_alpha");
         assert_eq!(meta.slug, "alpha");
         assert_eq!(meta.branch, "draft/alpha");
         assert_eq!(
@@ -783,6 +1053,87 @@ Unknown fields should be ignored.
         Ok(())
     }
 
+    #[test]
+    fn parse_metadata_uses_legacy_plan_id_fallback() -> Result<(), Box<dyn std::error::Error>> {
+        let doc = r#"---
+plan: alpha
+branch: draft/alpha
+---
+
+## Operator Spec
+Legacy format
+
+## Implementation Plan
+- step
+"#;
+        let meta = PlanMetadata::from_document(doc)?;
+        assert_eq!(meta.plan_id, "pln_legacy_alpha");
+        Ok(())
+    }
+
+    #[test]
+    fn upsert_plan_record_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let repo_root = dir.path();
+        let rel = upsert_plan_record(
+            repo_root,
+            PlanRecordUpsert {
+                plan_id: "pln_test".to_string(),
+                slug: Some("alpha".to_string()),
+                branch: Some("draft/alpha".to_string()),
+                source: Some("draft".to_string()),
+                intent: Some("inline".to_string()),
+                target_branch: Some("main".to_string()),
+                work_ref: Some("draft/alpha".to_string()),
+                status: Some("draft".to_string()),
+                summary: Some("Alpha summary".to_string()),
+                updated_at: "2026-02-07T00:00:00Z".to_string(),
+                created_at: Some("2026-02-07T00:00:00Z".to_string()),
+                job_ids: None,
+            },
+        )?;
+        assert_eq!(rel, Path::new(PLAN_STATE_DIR).join("pln_test.json"));
+
+        let records = load_plan_records(repo_root)?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].plan_id, "pln_test");
+        assert_eq!(records[0].slug.as_deref(), Some("alpha"));
+        assert_eq!(records[0].summary.as_deref(), Some("Alpha summary"));
+        Ok(())
+    }
+
+    #[test]
+    fn slug_inventory_prefers_plan_records() -> Result<(), Box<dyn std::error::Error>> {
+        let (_tmp, _guard, repo) = initialize_repo()?;
+        checkout_branch(&repo, "master")?;
+        create_plan_branch(&repo, "alpha", "Alpha spec body")?;
+        checkout_branch(&repo, "master")?;
+        let repo_root = std::env::current_dir()?;
+        upsert_plan_record(
+            &repo_root,
+            PlanRecordUpsert {
+                plan_id: "pln_record_alpha".to_string(),
+                slug: Some("alpha".to_string()),
+                branch: Some("draft/alpha".to_string()),
+                source: Some("draft".to_string()),
+                intent: Some("file".to_string()),
+                target_branch: Some("master".to_string()),
+                work_ref: Some("draft/alpha".to_string()),
+                status: Some("review-ready".to_string()),
+                summary: Some("Summary from plan record".to_string()),
+                updated_at: "2026-02-07T00:00:00Z".to_string(),
+                created_at: Some("2026-02-07T00:00:00Z".to_string()),
+                job_ids: None,
+            },
+        )?;
+
+        let entries = PlanSlugInventory::collect(Some("master"))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].plan_id, "pln_record_alpha");
+        assert_eq!(entries[0].summary, "Summary from plan record");
+        Ok(())
+    }
+
     fn initialize_repo()
     -> Result<(tempfile::TempDir, DirGuard, Repository), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
@@ -814,6 +1165,7 @@ Unknown fields should be ignored.
         }
         let contents = format!(
             r#"---
+plan_id: pln_{slug}
 plan: {slug}
 branch: draft/{slug}
 ---

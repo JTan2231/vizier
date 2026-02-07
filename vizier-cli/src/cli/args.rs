@@ -269,6 +269,9 @@ pub(crate) enum JobsShowField {
     BuildSkipChecks,
     BuildKeepBranch,
     BuildDependencies,
+    PatchFile,
+    PatchIndex,
+    PatchTotal,
     Revision,
     After,
     Dependencies,
@@ -312,6 +315,9 @@ impl JobsShowField {
             "build skip checks" => Some(Self::BuildSkipChecks),
             "build keep branch" => Some(Self::BuildKeepBranch),
             "build dependencies" => Some(Self::BuildDependencies),
+            "patch file" => Some(Self::PatchFile),
+            "patch index" => Some(Self::PatchIndex),
+            "patch total" => Some(Self::PatchTotal),
             "revision" => Some(Self::Revision),
             "after" => Some(Self::After),
             "dependencies" => Some(Self::Dependencies),
@@ -356,6 +362,9 @@ impl JobsShowField {
             Self::BuildSkipChecks => "Build skip checks",
             Self::BuildKeepBranch => "Build keep branch",
             Self::BuildDependencies => "Build dependencies",
+            Self::PatchFile => "Patch file",
+            Self::PatchIndex => "Patch index",
+            Self::PatchTotal => "Patch total",
             Self::Revision => "Revision",
             Self::After => "After",
             Self::Dependencies => "Dependencies",
@@ -399,6 +408,9 @@ impl JobsShowField {
             Self::BuildSkipChecks => "build_skip_checks",
             Self::BuildKeepBranch => "build_keep_branch",
             Self::BuildDependencies => "build_dependencies",
+            Self::PatchFile => "patch_file",
+            Self::PatchIndex => "patch_index",
+            Self::PatchTotal => "patch_total",
             Self::Revision => "revision",
             Self::After => "after",
             Self::Dependencies => "dependencies",
@@ -441,6 +453,9 @@ pub(crate) enum Commands {
 
     /// Create build sessions and execute them through queued materialize/approve/review/merge jobs
     Build(BuildCmd),
+
+    /// Execute one or more intent/spec files in deterministic order using build execution pipelines
+    Patch(PatchCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
@@ -544,6 +559,33 @@ pub(crate) struct BuildCmd {
 
     #[command(subcommand)]
     pub(crate) command: Option<BuildActionCmd>,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct PatchCmd {
+    /// One or more intent/spec files to process in the exact CLI order
+    #[arg(value_name = "FILE", required = true)]
+    pub(crate) files: Vec<PathBuf>,
+
+    /// Override the default phase pipeline for each file
+    #[arg(long = "pipeline", value_enum)]
+    pub(crate) pipeline: Option<BuildPipelineArg>,
+
+    /// Override the merge target branch used by downstream phases
+    #[arg(long = "target", value_name = "BRANCH")]
+    pub(crate) target: Option<String>,
+
+    /// Resume from prior execution state by enqueueing only missing/non-terminal phases
+    #[arg(long = "resume", action = ArgAction::SetTrue)]
+    pub(crate) resume: bool,
+
+    /// Skip interactive confirmation prompts
+    #[arg(long = "yes", short = 'y')]
+    pub(crate) assume_yes: bool,
+
+    /// Wait for one or more predecessor jobs before the first queued patch root starts
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -311,9 +311,10 @@ fn test_plan_docs_require_plan_and_branch_front_matter() -> TestResult {
     let contents = std::str::from_utf8(blob.content())?;
 
     assert!(
-        contents
-            .starts_with("---\nplan: plan-front-matter\nbranch: draft/plan-front-matter\n---\n"),
-        "plan front matter should require `plan` and `branch` keys:\n{contents}"
+        contents.starts_with("---\nplan_id: ")
+            && contents
+                .contains("\nplan: plan-front-matter\nbranch: draft/plan-front-matter\n---\n"),
+        "plan front matter should include `plan_id`, `plan`, and `branch` keys:\n{contents}"
     );
     assert!(
         contents.contains("## Operator Spec"),
