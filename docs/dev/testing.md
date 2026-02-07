@@ -15,3 +15,9 @@ This repository keeps scheduler tests in three explicit layers so failures point
 Kernel-only logic (config normalization, prompt assembly) should be covered with unit tests under `vizier-kernel/src/` so it stays pure and reusable across frontends.
 
 Keep overlap minimal: rules should be validated in spec tests, and integration tests should focus on user-visible behavior.
+
+## Fixture temp lifecycle
+- Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.
+- By default, fixture build roots are ephemeral for the current test process and stale Vizier-owned roots are cleaned up opportunistically before new fixture setup.
+- Cleanup is intentionally scoped to Vizier-owned prefixes/markers (`vizier-tests-build-*`, `vizier-tests-repo-*`, and legacy `.tmp*` repos that match Vizier fixture markers) so unrelated temp directories are not touched.
+- Set `VIZIER_TEST_KEEP_TEMP=1` when debugging to preserve fixture build roots across process exit.

@@ -12,23 +12,217 @@ pub(crate) use std::os::unix::fs::PermissionsExt;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::{Command, Output, Stdio};
 pub(crate) use std::sync::{Mutex, MutexGuard, OnceLock};
-pub(crate) use std::time::{Duration, Instant};
+pub(crate) use std::time::{Duration, Instant, SystemTime};
 pub(crate) use tempfile::TempDir;
 
 pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-static BUILD_ROOT: OnceLock<PathBuf> = OnceLock::new();
+const BUILD_ROOT_PREFIX: &str = "vizier-tests-build-";
+const REPO_ROOT_PREFIX: &str = "vizier-tests-repo-";
+const LEGACY_TMP_PREFIX: &str = ".tmp";
+const BUILD_ROOT_MARKER: &str = ".vizier-test-build-root";
+const REPO_ROOT_MARKER: &str = ".vizier-test-integration-repo";
+const ACTIVE_PID_MARKER: &str = ".vizier-test-active-pid";
+const KEEP_TEMP_ENV: &str = "VIZIER_TEST_KEEP_TEMP";
+const STALE_SECS_ENV: &str = "VIZIER_TEST_TEMP_STALE_SECS";
+const DEFAULT_STALE_SECS: u64 = 60 * 30;
+
+static BUILD_ROOT: OnceLock<BuildRoot> = OnceLock::new();
 static BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static INTEGRATION_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static TEMP_CLEANUP_ONCE: OnceLock<()> = OnceLock::new();
+
+#[derive(Debug)]
+struct BuildRoot {
+    path: PathBuf,
+    _temp_dir: Option<TempDir>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct TempCleanupStats {
+    removed_build_roots: usize,
+    removed_repo_roots: usize,
+}
 
 fn build_root() -> &'static PathBuf {
-    BUILD_ROOT.get_or_init(|| {
-        tempfile::Builder::new()
-            .prefix("vizier-tests-build-")
-            .tempdir()
-            .expect("create temp dir for vizier test builds")
-            .keep()
-    })
+    &BUILD_ROOT.get_or_init(create_build_root).path
+}
+
+fn create_build_root() -> BuildRoot {
+    ensure_fixture_temp_hygiene();
+    create_build_root_in(&env::temp_dir(), keep_temp_artifacts())
+        .expect("create temp dir for vizier test builds")
+}
+
+fn create_build_root_in(root: &Path, preserve: bool) -> io::Result<BuildRoot> {
+    let temp_dir = tempfile::Builder::new()
+        .prefix(BUILD_ROOT_PREFIX)
+        .tempdir_in(root)?;
+    mark_fixture_owner(temp_dir.path(), BUILD_ROOT_MARKER)?;
+    write_active_pid_marker(temp_dir.path())?;
+
+    if preserve {
+        let path = temp_dir.keep();
+        Ok(BuildRoot {
+            path,
+            _temp_dir: None,
+        })
+    } else {
+        let path = temp_dir.path().to_path_buf();
+        Ok(BuildRoot {
+            path,
+            _temp_dir: Some(temp_dir),
+        })
+    }
+}
+
+fn ensure_fixture_temp_hygiene() {
+    let _ = TEMP_CLEANUP_ONCE.get_or_init(|| {
+        let _ = cleanup_stale_fixture_temp_dirs();
+    });
+}
+
+fn cleanup_stale_fixture_temp_dirs() -> io::Result<TempCleanupStats> {
+    cleanup_stale_fixture_temp_dirs_in(&env::temp_dir(), SystemTime::now(), stale_temp_window())
+}
+
+fn cleanup_stale_fixture_temp_dirs_in(
+    root: &Path,
+    now: SystemTime,
+    stale_after: Duration,
+) -> io::Result<TempCleanupStats> {
+    let mut stats = TempCleanupStats::default();
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(stats),
+        Err(err) => return Err(err),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if name.starts_with(BUILD_ROOT_PREFIX) {
+            if remove_if_stale(&path, now, stale_after) {
+                stats.removed_build_roots += 1;
+            }
+            continue;
+        }
+
+        if name.starts_with(REPO_ROOT_PREFIX) {
+            if path.join(REPO_ROOT_MARKER).exists() && remove_if_stale(&path, now, stale_after) {
+                stats.removed_repo_roots += 1;
+            }
+            continue;
+        }
+
+        if name.starts_with(LEGACY_TMP_PREFIX) {
+            if is_legacy_vizier_repo(path.as_path()) && remove_if_stale(&path, now, stale_after) {
+                stats.removed_repo_roots += 1;
+            }
+            continue;
+        }
+    }
+
+    Ok(stats)
+}
+
+fn remove_if_stale(path: &Path, now: SystemTime, stale_after: Duration) -> bool {
+    if dir_has_live_owner(path) {
+        return false;
+    }
+
+    let has_pid_marker = path.join(ACTIVE_PID_MARKER).exists();
+    if !has_pid_marker && !is_stale(path, now, stale_after) {
+        return false;
+    }
+
+    fs::remove_dir_all(path).is_ok()
+}
+
+fn is_legacy_vizier_repo(path: &Path) -> bool {
+    path.join(".git").is_dir()
+        && path.join(".vizier").is_dir()
+        && path.join("a").is_file()
+        && path.join("b").is_file()
+        && path.join("c").is_file()
+}
+
+fn is_stale(path: &Path, now: SystemTime, stale_after: Duration) -> bool {
+    if stale_after.is_zero() {
+        return true;
+    }
+    match fs::metadata(path).and_then(|metadata| metadata.modified()) {
+        Ok(modified) => match now.duration_since(modified) {
+            Ok(age) => age >= stale_after,
+            Err(_) => true,
+        },
+        Err(_) => true,
+    }
+}
+
+fn dir_has_live_owner(path: &Path) -> bool {
+    let marker = path.join(ACTIVE_PID_MARKER);
+    let Ok(contents) = fs::read_to_string(marker) else {
+        return false;
+    };
+    let Ok(pid) = contents.trim().parse::<u32>() else {
+        return false;
+    };
+    process_is_running(pid)
+}
+
+#[cfg(unix)]
+fn process_is_running(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn process_is_running(_pid: u32) -> bool {
+    false
+}
+
+fn keep_temp_artifacts() -> bool {
+    env_flag_enabled(env::var(KEEP_TEMP_ENV).ok().as_deref())
+}
+
+fn stale_temp_window() -> Duration {
+    env::var(STALE_SECS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_STALE_SECS))
+}
+
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
+    )
+}
+
+fn mark_fixture_owner(path: &Path, marker: &str) -> io::Result<()> {
+    fs::write(path.join(marker), "vizier test fixture\n")
+}
+
+fn write_active_pid_marker(path: &Path) -> io::Result<()> {
+    fs::write(
+        path.join(ACTIVE_PID_MARKER),
+        format!("{}\n", std::process::id()),
+    )
 }
 
 fn build_lock() -> &'static Mutex<()> {
@@ -123,7 +317,12 @@ impl IntegrationRepo {
         let guard = integration_test_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = TempDir::new()?;
+        ensure_fixture_temp_hygiene();
+        let dir = tempfile::Builder::new()
+            .prefix(REPO_ROOT_PREFIX)
+            .tempdir()?;
+        mark_fixture_owner(dir.path(), REPO_ROOT_MARKER)?;
+        write_active_pid_marker(dir.path())?;
         copy_dir_recursive(&repo_root().join("test-repo"), dir.path())?;
         copy_dir_recursive(&repo_root().join(".vizier"), &dir.path().join(".vizier"))?;
         clear_jobs_dir(dir.path())?;
@@ -751,4 +950,164 @@ pub(crate) fn ensure_gitignore(path: &Path) -> io::Result<()> {
     writeln!(file, ".vizier/jobs/")?;
     writeln!(file, ".vizier/sessions/")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_cleanup_removes_orphaned_fixture_temp_dirs() -> TestResult {
+        let temp_root = tempfile::tempdir()?;
+
+        let stale_build = temp_root.path().join("vizier-tests-build-stale");
+        fs::create_dir_all(&stale_build)?;
+        mark_fixture_owner(&stale_build, BUILD_ROOT_MARKER)?;
+        fs::write(stale_build.join(ACTIVE_PID_MARKER), "999999\n")?;
+
+        let stale_repo = temp_root.path().join("vizier-tests-repo-stale");
+        fs::create_dir_all(stale_repo.join(".vizier"))?;
+        mark_fixture_owner(&stale_repo, REPO_ROOT_MARKER)?;
+        fs::write(stale_repo.join(ACTIVE_PID_MARKER), "999999\n")?;
+
+        let stale_legacy = temp_root.path().join(".tmplegacy");
+        fs::create_dir_all(stale_legacy.join(".git"))?;
+        fs::create_dir_all(stale_legacy.join(".vizier"))?;
+        fs::write(stale_legacy.join("a"), "a")?;
+        fs::write(stale_legacy.join("b"), "b")?;
+        fs::write(stale_legacy.join("c"), "c")?;
+
+        let stats = cleanup_stale_fixture_temp_dirs_in(
+            temp_root.path(),
+            SystemTime::now(),
+            Duration::from_secs(0),
+        )?;
+        assert!(
+            !stale_build.exists(),
+            "stale build root should be cleaned up"
+        );
+        assert!(!stale_repo.exists(), "stale repo root should be cleaned up");
+        assert!(
+            !stale_legacy.exists(),
+            "legacy stale repo root should be cleaned up"
+        );
+        assert_eq!(
+            stats.removed_build_roots, 1,
+            "expected one stale build root to be removed"
+        );
+        assert_eq!(
+            stats.removed_repo_roots, 2,
+            "expected one stale fixture repo and one legacy repo to be removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_cleanup_preserves_active_and_non_owned_dirs() -> TestResult {
+        let temp_root = tempfile::tempdir()?;
+
+        let active_repo = temp_root.path().join("vizier-tests-repo-active");
+        fs::create_dir_all(active_repo.join(".vizier"))?;
+        mark_fixture_owner(&active_repo, REPO_ROOT_MARKER)?;
+        write_active_pid_marker(&active_repo)?;
+
+        let non_owned_tmp = temp_root.path().join(".tmp-other-project");
+        fs::create_dir_all(&non_owned_tmp)?;
+        fs::write(non_owned_tmp.join("README.md"), "not a vizier fixture")?;
+
+        let stats = cleanup_stale_fixture_temp_dirs_in(
+            temp_root.path(),
+            SystemTime::now(),
+            Duration::from_secs(0),
+        )?;
+        assert!(active_repo.exists(), "active repo should not be removed");
+        assert!(
+            non_owned_tmp.exists(),
+            "non-owned .tmp directory should not be removed"
+        );
+        assert_eq!(
+            stats.removed_repo_roots, 0,
+            "expected no repos to be removed"
+        );
+        assert_eq!(
+            stats.removed_build_roots, 0,
+            "expected no build roots to be removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_cleanup_keeps_recent_markerless_dirs_until_window_expires() -> TestResult {
+        let temp_root = tempfile::tempdir()?;
+
+        let markerless_build = temp_root.path().join("vizier-tests-build-recent");
+        fs::create_dir_all(&markerless_build)?;
+
+        let markerless_legacy = temp_root.path().join(".tmprecent");
+        fs::create_dir_all(markerless_legacy.join(".git"))?;
+        fs::create_dir_all(markerless_legacy.join(".vizier"))?;
+        fs::write(markerless_legacy.join("a"), "a")?;
+        fs::write(markerless_legacy.join("b"), "b")?;
+        fs::write(markerless_legacy.join("c"), "c")?;
+
+        let stats = cleanup_stale_fixture_temp_dirs_in(
+            temp_root.path(),
+            SystemTime::now(),
+            Duration::from_secs(60 * 60),
+        )?;
+        assert!(
+            markerless_build.exists(),
+            "recent markerless build root should not be removed"
+        );
+        assert!(
+            markerless_legacy.exists(),
+            "recent markerless legacy root should not be removed"
+        );
+        assert_eq!(
+            stats.removed_build_roots, 0,
+            "expected no build roots to be removed"
+        );
+        assert_eq!(
+            stats.removed_repo_roots, 0,
+            "expected no repo roots to be removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_root_preserve_mode_is_opt_in() -> TestResult {
+        let temp_root = tempfile::tempdir()?;
+
+        let ephemeral = create_build_root_in(temp_root.path(), false)?;
+        let ephemeral_path = ephemeral.path.clone();
+        assert!(ephemeral_path.exists(), "ephemeral build root should exist");
+        drop(ephemeral);
+        assert!(
+            !ephemeral_path.exists(),
+            "default build root should be removed on drop"
+        );
+
+        let preserved = create_build_root_in(temp_root.path(), true)?;
+        let preserved_path = preserved.path.clone();
+        assert!(preserved_path.exists(), "preserved build root should exist");
+        drop(preserved);
+        assert!(
+            preserved_path.exists(),
+            "opt-in preserve mode should keep the build root"
+        );
+        fs::remove_dir_all(&preserved_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn env_flag_enabled_accepts_expected_truthy_values() {
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("true")));
+        assert!(env_flag_enabled(Some("TRUE")));
+        assert!(env_flag_enabled(Some("yes")));
+        assert!(env_flag_enabled(Some("YES")));
+        assert!(!env_flag_enabled(Some("0")));
+        assert!(!env_flag_enabled(Some("false")));
+        assert!(!env_flag_enabled(None));
+    }
 }

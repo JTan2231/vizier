@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_99d8e475505944f7b5cfd430c2c5cbcb",
+  "slug": "patch-740958c5f8bf-02-bug2-temp",
+  "branch": "draft/patch-740958c5f8bf-02-bug2-temp",
+  "source": "build",
+  "intent": "file:/Users/joey/rust/vizier/BUG2.md",
+  "target_branch": "master",
+  "work_ref": "draft/patch-740958c5f8bf-02-bug2-temp",
+  "status": "draft",
+  "summary": "# BUG2: Temp Directory Cleanup Gap (Integration Tests)",
+  "created_at": "2026-02-07T20:33:30.335811+00:00",
+  "updated_at": "2026-02-07T20:33:30.335811+00:00",
+  "job_ids": {}
+}

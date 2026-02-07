@@ -98,6 +98,20 @@ If `CARGO_TARGET_DIR` is unset, the script now defaults to
 `.vizier/tmp/cargo-target` so leftover permission-restricted `target/` folders do
 not block local gate runs. Set `CARGO_TARGET_DIR` explicitly to override.
 
+The integration fixtures now clean up stale Vizier-owned temp roots before each run:
+`vizier-tests-build-*`, `vizier-tests-repo-*`, and legacy `.tmp*` roots that match
+the Vizier fixture markers. Normal test runs should not leave new temp build roots
+behind after process exit.
+
+If you need to inspect integration build artifacts locally, opt into preservation:
+
+```sh
+VIZIER_TEST_KEEP_TEMP=1 cargo test -p tests -- --nocapture
+```
+
+With `VIZIER_TEST_KEEP_TEMP=1`, fixture build roots are intentionally retained for
+debugging and must be removed manually when you are done.
+
 The integration tests isolate their repos and artifacts per test, so default parallel
 `cargo test` runs are supported; only set `RUST_TEST_THREADS=1` if you are debugging
 ordering-specific failures locally.

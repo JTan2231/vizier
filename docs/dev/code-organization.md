@@ -30,6 +30,7 @@ This refactor splits previously oversized Rust sources into focused modules. Beh
 
 ## Integration tests
 - `tests/src/fixtures.rs` hosts shared fixtures/utilities.
+- Fixture temp-root ownership and stale-cleanup policy also live in `tests/src/fixtures.rs` (`vizier-tests-build-*`, `vizier-tests-repo-*`, and legacy Vizier `.tmp*` roots).
 - Per-workflow tests live in dedicated modules (`save.rs`, `draft.rs`, `approve.rs`, `review.rs`, `merge.rs`, `workspace.rs`, etc.).
 - Scheduler/job coverage lives in `tests/src/background.rs` (scheduler flows, failure paths) and `tests/src/jobs.rs` (list/show/status/tail/attach/gc formatting and cleanup).
 - `tests/src/lib.rs` is a thin module list that re-exports fixtures.

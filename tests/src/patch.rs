@@ -15,6 +15,29 @@ fn run_patch(repo: &IntegrationRepo, args: &[&str]) -> io::Result<Output> {
     cmd.output()
 }
 
+fn wait_for_patch_execution_manifest(
+    repo: &IntegrationRepo,
+    patch_session: &str,
+    timeout: Duration,
+) -> TestResult {
+    let build_branch = format!("build/{patch_session}");
+    let execution_rel =
+        format!(".vizier/implementation-plans/builds/{patch_session}/execution.json");
+    let start = Instant::now();
+    loop {
+        if start.elapsed() > timeout {
+            return Err(format!(
+                "timed out waiting for build execution manifest on {build_branch}:{execution_rel}"
+            )
+            .into());
+        }
+        if read_branch_file(&repo.repo(), &build_branch, &execution_rel).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 #[test]
 fn test_patch_preflight_rejects_invalid_inputs_before_enqueue() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -145,6 +168,7 @@ fn test_patch_sets_patch_metadata_on_phase_jobs_and_resume_reuses_jobs() -> Test
     let first_stdout = String::from_utf8_lossy(&first.stdout);
     let patch_session = find_save_field(&first_stdout, "Patch session")
         .ok_or("patch output missing Patch session")?;
+    wait_for_patch_execution_manifest(&repo, &patch_session, Duration::from_secs(30))?;
 
     let jobs_root = repo.path().join(".vizier/jobs");
     let first_job_ids: HashSet<String> = fs::read_dir(&jobs_root)?
