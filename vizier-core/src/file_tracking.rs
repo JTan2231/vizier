@@ -133,8 +133,9 @@ impl FileTracker {
             .include_unmodified(false)
             .include_ignored(false)
             .recurse_untracked_dirs(true)
+            .renames_head_to_index(true)
             .renames_index_to_workdir(true)
-            .show(StatusShow::Workdir)
+            .show(StatusShow::IndexAndWorkdir)
             .pathspec(".vizier/");
 
         let statuses = repo.statuses(Some(&mut opts))?;
@@ -146,7 +147,7 @@ impl FileTracker {
                 continue;
             }
 
-            if let Some(delta) = entry.index_to_workdir()
+            if let Some(delta) = entry.head_to_index().or_else(|| entry.index_to_workdir())
                 && let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path())
             {
                 files.push(Self::normalize_repo_path(path));
@@ -181,7 +182,7 @@ fn is_vizier_path(path: &str) -> bool {
     normalized.starts_with(".vizier/") || normalized.starts_with("./.vizier/")
 }
 
-fn is_canonical_story_path(path: &str) -> bool {
+pub fn is_canonical_story_path(path: &str) -> bool {
     if !is_vizier_path(path) {
         return false;
     }
@@ -212,6 +213,24 @@ fn is_canonical_story_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .expect("run git command");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn snapshot_paths_are_treated_as_canonical_story_paths() {
@@ -225,5 +244,34 @@ mod tests {
         assert!(!is_canonical_story_path(".vizier/config.toml"));
         assert!(!is_canonical_story_path(".vizier/narrative/notes.txt"));
         assert!(!is_canonical_story_path(".vizier/narrative/"));
+    }
+
+    #[test]
+    fn collect_vizier_changes_includes_staged_only_canonical_paths() {
+        let tmp = tempdir().expect("tempdir");
+        run_git(tmp.path(), &["init"]);
+        run_git(tmp.path(), &["config", "user.name", "Test User"]);
+        run_git(tmp.path(), &["config", "user.email", "test@example.com"]);
+
+        fs::write(tmp.path().join("README.md"), "seed\n").expect("write seed");
+        run_git(tmp.path(), &["add", "README.md"]);
+        run_git(tmp.path(), &["commit", "-m", "init"]);
+
+        let staged_path = tmp.path().join(".vizier/narrative/staged-only.md");
+        fs::create_dir_all(
+            staged_path
+                .parent()
+                .expect("staged narrative file should have a parent"),
+        )
+        .expect("create narrative dir");
+        fs::write(&staged_path, "staged narrative update\n").expect("write staged narrative file");
+        run_git(tmp.path(), &["add", ".vizier/narrative/staged-only.md"]);
+
+        let changes =
+            FileTracker::collect_vizier_changes(tmp.path()).expect("collect .vizier changes");
+        assert!(
+            changes.contains(&".vizier/narrative/staged-only.md".to_string()),
+            "expected staged-only canonical narrative path in collected changes: {changes:?}"
+        );
     }
 }

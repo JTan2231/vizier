@@ -142,9 +142,36 @@ fn stage_narrative_paths(paths: &[String]) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+fn canonical_staged_narrative_allowlist(staged: &[vcs::StagedItem]) -> HashSet<String> {
+    let mut allowlist = HashSet::new();
+
+    for item in staged {
+        match &item.kind {
+            vcs::StagedKind::Renamed { from, to } => {
+                if file_tracking::is_canonical_story_path(to) {
+                    allowlist.insert(to.clone());
+                }
+                if file_tracking::is_canonical_story_path(from) {
+                    allowlist.insert(from.clone());
+                }
+            }
+            _ => {
+                if file_tracking::is_canonical_story_path(item.path.as_str()) {
+                    allowlist.insert(item.path.clone());
+                }
+            }
+        }
+    }
+
+    allowlist
+}
+
 fn trim_staged_vizier_paths(allowed: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let allowlist: HashSet<&str> = allowed.iter().map(|p| p.as_str()).collect();
     let staged = vcs::snapshot_staged(".")?;
+    let mut allowlist: HashSet<String> = allowed.iter().cloned().collect();
+    if allowlist.is_empty() {
+        allowlist = canonical_staged_narrative_allowlist(&staged);
+    }
     let mut to_unstage: Vec<String> = Vec::new();
 
     for item in staged {
@@ -470,7 +497,82 @@ pub(super) fn build_save_instruction_for_refresh(note: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::build_save_instruction;
+    use super::{build_save_instruction, trim_staged_vizier_paths_for_commit};
+    use git2::{IndexAddOption, Repository, Signature};
+    use std::collections::HashSet;
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
+    use vizier_core::vcs;
+
+    static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn cwd_lock() -> &'static Mutex<()> {
+        CWD_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CwdGuard {
+        previous: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let previous = env::current_dir().expect("read current dir");
+            env::set_current_dir(path).expect("set current dir");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            env::set_current_dir(&self.previous).expect("restore current dir");
+        }
+    }
+
+    fn init_repo(path: &Path) -> Repository {
+        let repo = Repository::init(path).expect("init repository");
+        {
+            let mut cfg = repo.config().expect("repo config");
+            cfg.set_str("user.name", "Vizier Tests")
+                .expect("set user.name");
+            cfg.set_str("user.email", "vizier-tests@example.com")
+                .expect("set user.email");
+        }
+
+        fs::write(path.join("README.md"), "seed\n").expect("write README");
+        let mut index = repo.index().expect("repo index");
+        index
+            .add_all(["."], IndexAddOption::DEFAULT, None)
+            .expect("stage initial files");
+        index.write().expect("write index");
+        {
+            let tree_oid = index.write_tree().expect("write tree");
+            let tree = repo.find_tree(tree_oid).expect("load tree");
+            let sig =
+                Signature::now("Vizier Tests", "vizier-tests@example.com").expect("signature");
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .expect("initial commit");
+        }
+        repo
+    }
+
+    fn staged_paths(staged: &[vcs::StagedItem]) -> HashSet<String> {
+        let mut paths = HashSet::new();
+        for item in staged {
+            match &item.kind {
+                vcs::StagedKind::Renamed { from, to } => {
+                    paths.insert(from.clone());
+                    paths.insert(to.clone());
+                }
+                _ => {
+                    paths.insert(item.path.clone());
+                }
+            }
+        }
+        paths
+    }
 
     #[test]
     fn build_save_instruction_mentions_snapshot_and_glossary() {
@@ -483,5 +585,58 @@ mod tests {
             instruction.contains("glossary"),
             "instruction should mention glossary: {instruction}"
         );
+    }
+
+    #[test]
+    fn trim_staged_vizier_paths_empty_allowlist_keeps_canonical_narrative_paths() {
+        let _cwd = cwd_lock().lock().expect("lock cwd for test");
+        let tmp = tempdir().expect("tempdir");
+        let repo = init_repo(tmp.path());
+
+        fs::create_dir_all(tmp.path().join(".vizier/narrative/threads"))
+            .expect("create narrative dirs");
+        fs::write(
+            tmp.path().join(".vizier/narrative/snapshot.md"),
+            "staged snapshot change\n",
+        )
+        .expect("write snapshot");
+        fs::write(
+            tmp.path().join(".vizier/narrative/glossary.md"),
+            "staged glossary change\n",
+        )
+        .expect("write glossary");
+        fs::write(
+            tmp.path().join(".vizier/narrative/threads/staged-only.md"),
+            "staged thread change\n",
+        )
+        .expect("write thread doc");
+        fs::write(tmp.path().join(".vizier/config.toml"), "noise = true\n")
+            .expect("write non-canonical .vizier file");
+
+        vcs::stage_in(repo.path(), Some(vec!["."])).expect("stage test files");
+
+        {
+            let _guard = CwdGuard::enter(tmp.path());
+            trim_staged_vizier_paths_for_commit(&[]).expect("trim staged .vizier paths");
+            let staged = vcs::snapshot_staged(".").expect("snapshot staged files");
+            let paths = staged_paths(&staged);
+
+            assert!(
+                paths.contains(".vizier/narrative/snapshot.md"),
+                "trim should retain canonical snapshot path: {paths:?}"
+            );
+            assert!(
+                paths.contains(".vizier/narrative/glossary.md"),
+                "trim should retain canonical glossary path: {paths:?}"
+            );
+            assert!(
+                paths.contains(".vizier/narrative/threads/staged-only.md"),
+                "trim should retain canonical thread docs: {paths:?}"
+            );
+            assert!(
+                !paths.contains(".vizier/config.toml"),
+                "trim should still unstage non-canonical .vizier files: {paths:?}"
+            );
+        }
     }
 }

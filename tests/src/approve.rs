@@ -1,5 +1,22 @@
 use crate::fixtures::*;
 
+fn write_narrative_only_approve_agent(repo: &IntegrationRepo, name: &str) -> TestResult<PathBuf> {
+    let script_dir = repo.path().join(".vizier/tmp/bin");
+    fs::create_dir_all(&script_dir)?;
+    let script_path = script_dir.join(format!("{name}.sh"));
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nset -eu\ncat >/dev/null\nmkdir -p .vizier/narrative/threads\nprintf '%s\\n' 'staged snapshot update' > .vizier/narrative/snapshot.md\nprintf '%s\\n' 'staged glossary update' > .vizier/narrative/glossary.md\nprintf '%s\\n' 'staged thread update' > .vizier/narrative/threads/approve-staged-only.md\nprintf '%s\\n' 'noise = true' > .vizier/config.toml\ngit add .vizier/narrative/snapshot.md .vizier/narrative/glossary.md .vizier/narrative/threads/approve-staged-only.md .vizier/config.toml\nprintf '%s\\n' 'staged narrative-only approve update'\n",
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)?;
+    }
+    Ok(script_path)
+}
+
 #[test]
 fn test_approve_requires_yes() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -223,6 +240,81 @@ fn test_approve_fails_when_codex_errors() -> TestResult {
         after_commit.id(),
         "backend failure should not add commits to the plan branch"
     );
+    Ok(())
+}
+
+#[test]
+fn test_approve_commits_staged_only_narrative_outputs() -> TestResult {
+    let repo = IntegrationRepo::new_without_mock()?;
+    let slug = "approve-staged-only-narrative";
+
+    let mut draft = repo.vizier_cmd();
+    draft.env("VIZIER_IT_SKIP_CODE_CHANGE", "1");
+    draft.env("VIZIER_IT_SKIP_VIZIER_CHANGE", "1");
+    draft.args([
+        "draft",
+        "--name",
+        slug,
+        "staged-only narrative approve test",
+    ]);
+    let draft_output = draft.output()?;
+    assert!(
+        draft_output.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft_output.stderr)
+    );
+
+    clean_workdir(&repo)?;
+
+    let repo_handle = repo.repo();
+    let branch = repo_handle.find_branch(&format!("draft/{slug}"), BranchType::Local)?;
+    let before_commit = branch.get().peel_to_commit()?.id();
+
+    let approve_agent_path = write_narrative_only_approve_agent(&repo, "approve-staged-only")?;
+    let config_path = write_agent_config(
+        &repo,
+        "approve-staged-only.toml",
+        "approve",
+        &approve_agent_path,
+    )?;
+
+    let mut approve = repo.vizier_cmd_with_config(&config_path);
+    approve.env("VIZIER_IT_SKIP_CODE_CHANGE", "1");
+    approve.env("VIZIER_IT_SKIP_VIZIER_CHANGE", "1");
+    approve.args(["approve", slug, "--yes"]);
+    let approve_output = approve.output()?;
+    assert!(
+        approve_output.status.success(),
+        "vizier approve failed: {}",
+        String::from_utf8_lossy(&approve_output.stderr)
+    );
+    let approve_stderr = String::from_utf8_lossy(&approve_output.stderr);
+    assert!(
+        !approve_stderr.contains("nothing to commit"),
+        "approve should not fail with nothing to commit:\n{approve_stderr}"
+    );
+
+    let repo_handle = repo.repo();
+    let branch = repo_handle.find_branch(&format!("draft/{slug}"), BranchType::Local)?;
+    let after_commit = branch.get().peel_to_commit()?;
+    assert_eq!(
+        after_commit.parent(0)?.id(),
+        before_commit,
+        "approve should add exactly one commit for staged-only narrative updates"
+    );
+
+    let files = files_changed_in_commit(&repo_handle, &after_commit.id().to_string())?;
+    assert!(
+        files.contains(".vizier/narrative/snapshot.md")
+            && files.contains(".vizier/narrative/glossary.md")
+            && files.contains(".vizier/narrative/threads/approve-staged-only.md"),
+        "approve commit should include canonical narrative files, got {files:?}"
+    );
+    assert!(
+        !files.contains(".vizier/config.toml"),
+        "approve commit should trim non-canonical .vizier noise, got {files:?}"
+    );
+
     Ok(())
 }
 #[test]

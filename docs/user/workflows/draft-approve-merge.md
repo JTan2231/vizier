@@ -134,6 +134,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Validates that `draft/<slug>` is based on the current target branch; warns if the branch is behind.
 - Creates a temporary worktree `.vizier/tmp-worktrees/<slug>-<suffix>/` checked out to the plan branch and runs the configured implementation agent against the stored plan document.
 - The agent edits `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, narrative docs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
+- Canonical narrative outputs staged directly by the agent (for example snapshot/glossary/thread markdown files) are preserved even when they are staged-only changes, while unrelated `.vizier/*` noise (for example `.vizier/config.toml`) is still trimmed from the commit.
 - Your original checkout stays untouched. On success the temp worktree is removed; on failure it is preserved for debugging and the branch keeps whatever the agent staged.
 - While the agent runs, Vizier prints one `[agent:<scope>] phase — message` line per event (with status, percentage, and file hints) so you get a scrolling history of what the agent is doing. Pass `-q` to suppress them or `-v/-vv` for timestamps/raw JSON.
 

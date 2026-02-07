@@ -9,6 +9,7 @@
 - **Change discipline**: The AGENTS.md contract that code changes must update tests/docs and pass `./cicd.sh` before being treated as done.
 - **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
 - **Commit-style summary**: The only user-facing output for a narrative-maintenance turn: a short, commit-message-like line describing what changed while detailed `snapshotDelta` content stays internal.
+- **Chekhov cue**: Snapshot-entry quality bar where each slice ties a specific tension to a concrete behavior change plus acceptance signal, so the resolution feels necessary rather than speculative.
 - **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests, safety/correctness constraints, or already-chosen blocking technical constraints require specificity.
 - **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings. AGENTS.md/README currently mention `docs/config-reference.md` as a root alias, so treat `docs/user/config-reference.md` as canonical until aliases are reconciled.
 - **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
