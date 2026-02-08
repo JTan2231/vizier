@@ -1,6 +1,7 @@
 mod branches;
 mod commits;
 mod merge;
+mod release;
 mod remotes;
 mod status;
 mod worktrees;
@@ -20,6 +21,12 @@ pub use merge::{
     commit_in_progress_cherry_pick, commit_in_progress_cherry_pick_in, commit_in_progress_merge,
     commit_in_progress_squash, commit_ready_merge, commit_soft_squash, commit_squashed_merge,
     list_conflicted_paths, prepare_merge,
+};
+pub use release::{
+    ReleaseBump, ReleaseCommit, ReleaseNoteEntry, ReleaseNotes, ReleaseSection, ReleaseSectionKind,
+    ReleaseTag, ReleaseVersion, build_release_notes, classify_commit, commits_since_release_tag,
+    create_annotated_release_tag, derive_release_bump, latest_reachable_release_tag,
+    parse_release_version_tag, release_tag_exists,
 };
 pub use remotes::{
     AttemptOutcome, CredentialAttempt, CredentialStrategy, HelperScope, PushError, PushErrorKind,

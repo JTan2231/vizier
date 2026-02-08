@@ -901,6 +901,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
                 run_merge(opts, &agent, commit_mode).await
             }
+            Commands::Release(cmd) => run_release(cmd),
         }
     })
     .await;

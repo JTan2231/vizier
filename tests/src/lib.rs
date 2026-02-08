@@ -17,6 +17,7 @@ mod list;
 mod merge;
 mod patch;
 mod plan;
+mod release;
 mod review;
 mod save;
 mod session;

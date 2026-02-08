@@ -537,6 +537,9 @@ pub(crate) enum Commands {
     /// Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
     Merge(MergeCmd),
 
+    /// Create a local release commit and optional annotated tag from conventional commits
+    Release(ReleaseCmd),
+
     /// Smoke-test the configured agent/display wiring without touching `.vizier`
     #[command(name = "test-display")]
     TestDisplay(TestDisplayCmd),
@@ -1013,6 +1016,43 @@ pub(crate) struct MergeCmd {
     /// Wait for one or more predecessor jobs to succeed before this job can run
     #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
     pub(crate) after: Vec<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+#[command(group(
+    ArgGroup::new("release_bump")
+        .args(["major", "minor", "patch"])
+        .multiple(false)
+        .required(false)
+))]
+pub(crate) struct ReleaseCmd {
+    /// Print the computed release plan and notes without creating a commit or tag
+    #[arg(long = "dry-run", action = ArgAction::SetTrue)]
+    pub(crate) dry_run: bool,
+
+    /// Skip the confirmation prompt before creating release artifacts
+    #[arg(long = "yes", short = 'y')]
+    pub(crate) assume_yes: bool,
+
+    /// Force a major version bump (overrides auto detection)
+    #[arg(long = "major", action = ArgAction::SetTrue)]
+    pub(crate) major: bool,
+
+    /// Force a minor version bump (overrides auto detection)
+    #[arg(long = "minor", action = ArgAction::SetTrue)]
+    pub(crate) minor: bool,
+
+    /// Force a patch version bump (overrides auto detection)
+    #[arg(long = "patch", action = ArgAction::SetTrue)]
+    pub(crate) patch: bool,
+
+    /// Maximum release-note entries per section before summarizing overflow
+    #[arg(long = "max-commits", value_name = "N", default_value_t = 20)]
+    pub(crate) max_commits: usize,
+
+    /// Create only the release commit and skip annotated tag creation
+    #[arg(long = "no-tag", action = ArgAction::SetTrue)]
+    pub(crate) no_tag: bool,
 }
 
 #[derive(ClapArgs, Debug)]

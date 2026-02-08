@@ -285,6 +285,17 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 
 Throughout the process, Outcome lines and Auditor records cite the plan slug, affected files, and any pending commit gates so auditors can trace who approved what. Tie this workflow into the broader agent-orchestration story by referencing this document in `AGENTS.md` or external SOPs when onboarding third-party agents.
 
+## Shipping a local release
+
+Once plan work lands on your target branch, use `vizier release` to create a local release commit and annotated tag from commit history:
+
+```bash
+vizier release --dry-run
+vizier release --yes
+```
+
+`vizier release` is local-history-only in MVP (no GitHub/GitLab publish APIs). See `docs/user/release.md` for bump rules, safety checks, and flags.
+
 ## FAQ
 
 **Can I run `vizier approve` without re-drafting?**  
