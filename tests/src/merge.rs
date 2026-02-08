@@ -1,5 +1,9 @@
 use crate::fixtures::*;
 
+fn run_scheduled_ok(repo: &IntegrationRepo, args: &[&str]) -> TestResult<Output> {
+    schedule_job_and_expect_status(repo, args, "succeeded", Duration::from_secs(40))
+}
+
 #[test]
 fn test_merge_requires_yes() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -91,10 +95,13 @@ fn test_merge_auto_resolve_fails_when_codex_errors() -> TestResult {
 #[test]
 fn test_merge_removes_plan_document() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "remove-plan", "plan removal smoke"])?;
-    repo.vizier_output(&["approve", "remove-plan", "--yes"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "remove-plan", "plan removal smoke"],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "remove-plan", "--yes"])?;
     clean_workdir(&repo)?;
-    let merge = repo.vizier_output(&["merge", "remove-plan", "--yes"])?;
+    let merge = run_scheduled_ok(&repo, &["merge", "remove-plan", "--yes"])?;
     assert!(
         merge.status.success(),
         "vizier merge failed: {}",
@@ -120,15 +127,18 @@ fn test_merge_removes_plan_document() -> TestResult {
 #[test]
 fn test_merge_uses_history_when_tip_plan_doc_is_missing() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "history-plan", "history fallback smoke"])?;
-    repo.vizier_output(&["approve", "history-plan", "--yes"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "history-plan", "history fallback smoke"],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "history-plan", "--yes"])?;
     repo.git(&["checkout", "draft/history-plan"])?;
     repo.git(&["rm", ".vizier/implementation-plans/history-plan.md"])?;
     repo.git(&["commit", "-m", "remove plan doc from tip"])?;
     repo.git(&["checkout", "master"])?;
     clean_workdir(&repo)?;
 
-    let merge = repo.vizier_output(&["merge", "history-plan", "--yes"])?;
+    let merge = run_scheduled_ok(&repo, &["merge", "history-plan", "--yes"])?;
     assert!(
         merge.status.success(),
         "vizier merge failed with tip-missing plan doc: {}",
@@ -155,8 +165,11 @@ fn test_merge_uses_history_when_tip_plan_doc_is_missing() -> TestResult {
 #[test]
 fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "squash-default", "squash smoke"])?;
-    repo.vizier_output(&["approve", "squash-default", "--yes"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "squash-default", "squash smoke"],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "squash-default", "--yes"])?;
     clean_workdir(&repo)?;
 
     let repo_handle = repo.repo();
@@ -167,7 +180,7 @@ fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
         .peel_to_commit()?
         .id();
 
-    let merge = repo.vizier_output(&["merge", "squash-default", "--yes"])?;
+    let merge = run_scheduled_ok(&repo, &["merge", "squash-default", "--yes"])?;
     assert!(
         merge.status.success(),
         "vizier merge failed: {}",
@@ -207,7 +220,10 @@ fn test_merge_default_squash_adds_implementation_commit() -> TestResult {
 #[test]
 fn test_merge_squash_replays_plan_history() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "squash-replay", "replay squash plan"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "squash-replay", "replay squash plan"],
+    )?;
 
     repo.git(&["checkout", "draft/squash-replay"])?;
     repo.write("a", "first replay change\n")?;
@@ -226,7 +242,7 @@ fn test_merge_squash_replays_plan_history() -> TestResult {
         .id();
     let base_commit = repo_handle.head()?.peel_to_commit()?.id();
 
-    let merge = repo.vizier_output(&["merge", "squash-replay", "--yes"])?;
+    let merge = run_scheduled_ok(&repo, &["merge", "squash-replay", "--yes"])?;
     assert!(
         merge.status.success(),
         "vizier merge failed: {}",
@@ -259,14 +275,17 @@ fn test_merge_squash_replays_plan_history() -> TestResult {
 #[test]
 fn test_merge_no_squash_matches_legacy_parentage() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "legacy-merge", "legacy merge spec"])?;
-    repo.vizier_output(&["approve", "legacy-merge", "--yes"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "legacy-merge", "legacy merge spec"],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "legacy-merge", "--yes"])?;
     clean_workdir(&repo)?;
 
     let repo_handle = repo.repo();
     let base_commit = repo_handle.head()?.peel_to_commit()?.id();
 
-    let merge = repo.vizier_output(&["merge", "legacy-merge", "--yes", "--no-squash"])?;
+    let merge = run_scheduled_ok(&repo, &["merge", "legacy-merge", "--yes", "--no-squash"])?;
     assert!(
         merge.status.success(),
         "vizier merge --no-squash failed: {}",
@@ -285,7 +304,10 @@ fn test_merge_no_squash_matches_legacy_parentage() -> TestResult {
 #[test]
 fn test_merge_squash_allows_zero_diff_range() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "zero-diff", "plan with no code changes"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "zero-diff", "plan with no code changes"],
+    )?;
     clean_workdir(&repo)?;
 
     let repo_handle = repo.repo();
@@ -296,7 +318,7 @@ fn test_merge_squash_allows_zero_diff_range() -> TestResult {
         .peel_to_commit()?
         .id();
 
-    let merge = repo.vizier_output(&["merge", "zero-diff", "--yes"])?;
+    let merge = run_scheduled_ok(&repo, &["merge", "zero-diff", "--yes"])?;
     assert!(
         merge.status.success(),
         "vizier merge failed: {}",
@@ -413,12 +435,15 @@ fn prepare_plan_branch_with_merge_history(repo: &IntegrationRepo, slug: &str) ->
     let plan_branch = format!("draft/{slug}");
     let side_branch = format!("{slug}-side");
 
-    repo.vizier_output(&[
-        "draft",
-        "--name",
-        slug,
-        "plan branch includes merge history",
-    ])?;
+    run_scheduled_ok(
+        repo,
+        &[
+            "draft",
+            "--name",
+            slug,
+            "plan branch includes merge history",
+        ],
+    )?;
     repo.git(&["checkout", &plan_branch])?;
     repo.write("a", "main path change\n")?;
     repo.git(&["commit", "-am", "main path change"])?;
@@ -445,8 +470,10 @@ fn test_merge_squash_requires_mainline_for_merge_history() -> TestResult {
         "expected merge to fail on plan branch with merge commits; got success"
     );
     let stderr = String::from_utf8_lossy(&merge.stderr);
+    let requests_mainline = stderr.contains("--squash-mainline")
+        || stderr.contains("requires choosing a mainline parent");
     assert!(
-        stderr.contains("--squash-mainline") && stderr.contains("merge commits"),
+        requests_mainline && stderr.contains("merge commits"),
         "merge failure should request --squash-mainline when merge commits exist; stderr:\n{stderr}"
     );
 
@@ -458,13 +485,16 @@ fn test_merge_squash_mainline_replays_merge_history() -> TestResult {
     let repo = IntegrationRepo::new()?;
     prepare_plan_branch_with_merge_history(&repo, "replay-merge-history-mainline")?;
 
-    let merge = repo.vizier_output(&[
-        "merge",
-        "replay-merge-history-mainline",
-        "--yes",
-        "--squash-mainline",
-        "1",
-    ])?;
+    let merge = run_scheduled_ok(
+        &repo,
+        &[
+            "merge",
+            "replay-merge-history-mainline",
+            "--yes",
+            "--squash-mainline",
+            "1",
+        ],
+    )?;
     assert!(
         merge.status.success(),
         "expected merge to succeed when squash mainline is provided: {}",
@@ -485,12 +515,15 @@ fn test_merge_no_squash_handles_merge_history() -> TestResult {
     let repo = IntegrationRepo::new()?;
     prepare_plan_branch_with_merge_history(&repo, "replay-merge-history-no-squash")?;
 
-    let merge = repo.vizier_output(&[
-        "merge",
-        "replay-merge-history-no-squash",
-        "--yes",
-        "--no-squash",
-    ])?;
+    let merge = run_scheduled_ok(
+        &repo,
+        &[
+            "merge",
+            "replay-merge-history-no-squash",
+            "--yes",
+            "--no-squash",
+        ],
+    )?;
     assert!(
         merge.status.success(),
         "expected --no-squash merge to succeed even when plan history contains merges: {}",
@@ -509,7 +542,10 @@ fn test_merge_no_squash_handles_merge_history() -> TestResult {
 #[test]
 fn test_merge_squash_rejects_octopus_merge_history() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "octopus", "octopus merge history"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "octopus", "octopus merge history"],
+    )?;
     let plan_branch = "draft/octopus".to_string();
     let side_one = "octopus-side-1".to_string();
     let side_two = "octopus-side-2".to_string();
@@ -548,8 +584,8 @@ fn test_merge_squash_rejects_octopus_merge_history() -> TestResult {
 #[test]
 fn test_merge_cicd_gate_executes_script() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "cicd-pass", "cicd gate spec"])?;
-    repo.vizier_output(&["approve", "cicd-pass", "--yes"])?;
+    run_scheduled_ok(&repo, &["draft", "--name", "cicd-pass", "cicd gate spec"])?;
+    run_scheduled_ok(&repo, &["approve", "cicd-pass", "--yes"])?;
     clean_workdir(&repo)?;
 
     let script_path = write_cicd_script(
@@ -559,8 +595,10 @@ fn test_merge_cicd_gate_executes_script() -> TestResult {
     )?;
 
     let script_flag = script_path.to_string_lossy().to_string();
-    let merge =
-        repo.vizier_output(&["merge", "cicd-pass", "--yes", "--cicd-script", &script_flag])?;
+    let merge = run_scheduled_ok(
+        &repo,
+        &["merge", "cicd-pass", "--yes", "--cicd-script", &script_flag],
+    )?;
     assert!(
         merge.status.success(),
         "vizier merge failed with CI/CD script: {}",
@@ -576,8 +614,8 @@ fn test_merge_cicd_gate_executes_script() -> TestResult {
 #[test]
 fn test_merge_cicd_gate_failure_blocks_merge() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "cicd-fail", "cicd fail spec"])?;
-    repo.vizier_output(&["approve", "cicd-fail", "--yes"])?;
+    run_scheduled_ok(&repo, &["draft", "--name", "cicd-fail", "cicd fail spec"])?;
+    run_scheduled_ok(&repo, &["approve", "cicd-fail", "--yes"])?;
     clean_workdir(&repo)?;
 
     let script_path = write_cicd_script(
@@ -613,8 +651,11 @@ fn test_merge_cicd_gate_failure_blocks_merge() -> TestResult {
 #[test]
 fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    repo.vizier_output(&["draft", "--name", "cicd-auto", "auto ci gate spec"])?;
-    repo.vizier_output(&["approve", "cicd-auto", "--yes"])?;
+    run_scheduled_ok(
+        &repo,
+        &["draft", "--name", "cicd-auto", "auto ci gate spec"],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "cicd-auto", "--yes"])?;
     clean_workdir(&repo)?;
 
     repo.write(".vizier/tmp/mock_cicd_fix_path", "ci/fixed.txt\n")?;

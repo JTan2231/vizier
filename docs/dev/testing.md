@@ -18,6 +18,13 @@ Keep overlap minimal: rules should be validated in spec tests, and integration t
 
 ## Fixture temp lifecycle
 - Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.
+- Integration fixtures cache a process-local template repository (seeded `.vizier` runtime surface, default `cicd.sh`, git init, agent shims) and clone from it per test instead of rebuilding repo scaffolding each time.
+- Integration fixture setup seeds only the `.vizier` runtime surface required by tests (`config` + `narrative` plus empty plan/state dirs) and deliberately skips transient payloads like `.vizier/tmp/`, `.vizier/jobs/`, `.vizier/sessions/`, and `.vizier/tmp-worktrees/`.
+- Integration fixtures build `vizier` once into the shared Cargo target directory (`$CARGO_TARGET_DIR` when set, otherwise `.vizier/tmp/cargo-target`) and stage a process-local fixture binary cache under the fixture build root.
+- Per-test repos link (hard link/symlink when possible, copy fallback) to the staged fixture binary instead of copying a full binary payload every time.
+- Integration fixtures prepend local `codex`/`gemini` backend stubs on `PATH` so tests cannot accidentally invoke paid external agent binaries even if a command resolves to the default shims.
 - By default, fixture build roots are ephemeral for the current test process and stale Vizier-owned roots are cleaned up opportunistically before new fixture setup.
 - Cleanup is intentionally scoped to Vizier-owned prefixes/markers (`vizier-tests-build-*`, `vizier-tests-repo-*`, and legacy `.tmp*` repos that match Vizier fixture markers) so unrelated temp directories are not touched.
+- Fixture job polling defaults to 50ms; set `VIZIER_TEST_JOB_POLL_MS` to tune it for debugging noisy/slow environments.
 - Set `VIZIER_TEST_KEEP_TEMP=1` when debugging to preserve fixture build roots across process exit.
+- Set `VIZIER_TEST_SERIAL=1` to force fixture-level serialization when debugging ordering-sensitive integration flakes.

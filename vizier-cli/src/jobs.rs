@@ -331,6 +331,7 @@ impl SchedulerLock {
         fs::create_dir_all(jobs_root)?;
         let path = scheduler_lock_path(jobs_root);
         let mut attempts = 0u32;
+        let mut wait_ms = 10u64;
         loop {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
@@ -339,10 +340,11 @@ impl SchedulerLock {
                 }
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                     attempts += 1;
-                    if attempts > 40 {
+                    if attempts > 32 {
                         return Err("scheduler is busy; retry the command".into());
                     }
-                    thread::sleep(StdDuration::from_millis(50));
+                    thread::sleep(StdDuration::from_millis(wait_ms));
+                    wait_ms = (wait_ms * 2).min(80);
                 }
                 Err(err) => return Err(Box::new(err)),
             }
@@ -2063,6 +2065,22 @@ fn emit_log(path: &Path, offset: u64, label: &str, labeled: bool) -> io::Result<
     Ok(new_offset)
 }
 
+fn follow_poll_delay(advanced: bool, idle_polls: &mut u32) -> StdDuration {
+    if advanced {
+        *idle_polls = 0;
+        return StdDuration::from_millis(15);
+    }
+
+    *idle_polls = idle_polls.saturating_add(1);
+    let millis = match *idle_polls {
+        1 => 40,
+        2 => 80,
+        3 => 160,
+        _ => 240,
+    };
+    StdDuration::from_millis(millis)
+}
+
 pub fn tail_job_logs(
     jobs_root: &Path,
     job_id: &str,
@@ -2072,6 +2090,7 @@ pub fn tail_job_logs(
     let paths = paths_for(jobs_root, job_id);
     let mut stdout_offset = 0u64;
     let mut stderr_offset = 0u64;
+    let mut idle_polls = 0u32;
 
     let label_stdout = matches!(stream, LogStream::Both);
     let label_stderr = matches!(stream, LogStream::Both);
@@ -2104,7 +2123,7 @@ pub fn tail_job_logs(
             break;
         }
 
-        thread::sleep(StdDuration::from_millis(400));
+        thread::sleep(follow_poll_delay(advanced, &mut idle_polls));
     }
 
     Ok(())
@@ -2130,6 +2149,7 @@ pub fn follow_job_logs_raw(
     let paths = paths_for(jobs_root, job_id);
     let mut stdout_offset = 0u64;
     let mut stderr_offset = 0u64;
+    let mut idle_polls = 0u32;
 
     loop {
         let mut advanced = false;
@@ -2156,7 +2176,7 @@ pub fn follow_job_logs_raw(
             return Ok(record.exit_code.unwrap_or(1));
         }
 
-        thread::sleep(StdDuration::from_millis(300));
+        thread::sleep(follow_poll_delay(advanced, &mut idle_polls));
     }
 }
 
@@ -2709,6 +2729,41 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn follow_poll_delay_uses_short_backoff_and_resets_on_activity() {
+        let mut idle_polls = 0u32;
+
+        assert_eq!(
+            follow_poll_delay(false, &mut idle_polls),
+            StdDuration::from_millis(40)
+        );
+        assert_eq!(
+            follow_poll_delay(false, &mut idle_polls),
+            StdDuration::from_millis(80)
+        );
+        assert_eq!(
+            follow_poll_delay(false, &mut idle_polls),
+            StdDuration::from_millis(160)
+        );
+        assert_eq!(
+            follow_poll_delay(false, &mut idle_polls),
+            StdDuration::from_millis(240)
+        );
+        assert_eq!(
+            follow_poll_delay(false, &mut idle_polls),
+            StdDuration::from_millis(240)
+        );
+
+        assert_eq!(
+            follow_poll_delay(true, &mut idle_polls),
+            StdDuration::from_millis(15)
+        );
+        assert_eq!(
+            follow_poll_delay(false, &mut idle_polls),
+            StdDuration::from_millis(40)
+        );
     }
 
     fn write_job_with_status(

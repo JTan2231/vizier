@@ -255,7 +255,8 @@ fn test_scheduler_requires_noninteractive_flags() -> TestResult {
 #[test]
 fn test_scheduler_dependency_waits_and_unblocks() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
-    let draft_agent_path = write_sleeping_agent(&repo, "sleepy-draft", 2)?;
+    let (draft_agent_path, draft_gate_path) =
+        write_gated_agent(&repo, "gated-draft", "dep-wait-draft.ready")?;
     let draft_config = write_agent_config(
         &repo,
         "config-sleepy-draft.toml",
@@ -313,6 +314,7 @@ fn test_scheduler_dependency_waits_and_unblocks() -> TestResult {
         "expected approve to wait on dependencies, got {wait_kind}"
     );
 
+    fs::write(&draft_gate_path, "release\n")?;
     wait_for_job_completion(&repo, &draft_job_id, Duration::from_secs(30))?;
     let draft_record = read_job_record(&repo, &draft_job_id)?;
     let draft_status = draft_record
@@ -370,7 +372,8 @@ fn test_scheduler_dependency_waits_and_unblocks() -> TestResult {
 #[test]
 fn test_scheduler_after_dependency_waits_and_unblocks() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
-    let agent_path = write_sleeping_agent(&repo, "sleepy-draft-after", 2)?;
+    let (agent_path, gate_path) =
+        write_gated_agent(&repo, "gated-draft-after", "after-wait-predecessor.ready")?;
     let config_path = write_agent_config(
         &repo,
         "config-sleepy-draft-after.toml",
@@ -434,6 +437,7 @@ fn test_scheduler_after_dependency_waits_and_unblocks() -> TestResult {
         "expected --after wait reason detail to mention predecessor"
     );
 
+    fs::write(&gate_path, "release\n")?;
     wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(30))?;
     wait_for_job_completion(&repo, &second_job_id, Duration::from_secs(30))?;
     Ok(())
@@ -845,7 +849,8 @@ fn test_scheduler_lock_contention_waits() -> TestResult {
         String::from_utf8_lossy(&draft.stderr)
     );
 
-    let approve_agent_path = write_sleeping_agent(&repo, "sleepy-approve", 2)?;
+    let (approve_agent_path, approve_gate_path) =
+        write_gated_agent(&repo, "gated-approve", "lock-wait-approve.ready")?;
     let approve_config = write_agent_config(
         &repo,
         "config-sleepy-approve.toml",
@@ -903,6 +908,7 @@ fn test_scheduler_lock_contention_waits() -> TestResult {
         "expected review to wait on locks, got {wait_kind}"
     );
 
+    fs::write(&approve_gate_path, "release\n")?;
     wait_for_job_completion(&repo, &approve_job_id, Duration::from_secs(30))?;
     wait_for_job_completion(&repo, &review_job_id, Duration::from_secs(30))?;
     Ok(())
@@ -911,7 +917,8 @@ fn test_scheduler_lock_contention_waits() -> TestResult {
 #[test]
 fn test_scheduler_pinned_head_mismatch_waits() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
-    let agent_path = write_sleeping_agent(&repo, "sleepy-ask", 2)?;
+    let (agent_path, gate_path) =
+        write_gated_agent(&repo, "gated-ask", "pinned-mismatch-first.ready")?;
     let config_path = write_agent_config(&repo, "config-sleepy-ask.toml", "save", &agent_path)?;
 
     let first = repo
@@ -945,6 +952,7 @@ fn test_scheduler_pinned_head_mismatch_waits() -> TestResult {
         Duration::from_secs(5),
     )?;
 
+    fs::write(&gate_path, "release\n")?;
     wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(30))?;
     wait_for_job_status(
         &repo,
@@ -992,7 +1000,8 @@ fn test_scheduler_pinned_head_mismatch_waits() -> TestResult {
 #[test]
 fn test_scheduler_pinned_head_mismatch_resolves_after_reset() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
-    let ask_agent_path = write_sleeping_agent(&repo, "sleepy-ask", 2)?;
+    let (ask_agent_path, ask_gate_path) =
+        write_gated_agent(&repo, "gated-ask", "pinned-resolve-first.ready")?;
     let draft_agent_path = write_sleeping_agent(&repo, "fast-draft", 0)?;
 
     let config_path = repo.path().join(".vizier/tmp/pinned-head-resolve.toml");
@@ -1037,6 +1046,7 @@ fn test_scheduler_pinned_head_mismatch_resolves_after_reset() -> TestResult {
         Duration::from_secs(5),
     )?;
 
+    fs::write(&ask_gate_path, "release\n")?;
     wait_for_job_completion(&repo, &first_job_id, Duration::from_secs(30))?;
     wait_for_job_status(
         &repo,
@@ -1142,7 +1152,8 @@ fn test_scheduler_background_save_applies_single_commit() -> TestResult {
 #[test]
 fn test_scheduler_background_ask_fails_on_pinned_head_mismatch() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
-    let agent_path = write_sleeping_agent(&repo, "sleepy-ask", 5)?;
+    let (agent_path, gate_path) =
+        write_gated_agent(&repo, "gated-ask-mismatch", "pinned-fail.ready")?;
     let config_path = write_agent_config(&repo, "config-sleepy-ask.toml", "save", &agent_path)?;
 
     let output = repo
@@ -1162,6 +1173,7 @@ fn test_scheduler_background_ask_fails_on_pinned_head_mismatch() -> TestResult {
     repo.git(&["add", "a"])?;
     repo.git(&["commit", "-m", "pinned head mismatch"])?;
 
+    fs::write(&gate_path, "release\n")?;
     wait_for_job_completion(&repo, &job_id, Duration::from_secs(30))?;
     let record = read_job_record(&repo, &job_id)?;
     let status = record.get("status").and_then(Value::as_str).unwrap_or("");

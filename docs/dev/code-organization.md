@@ -35,7 +35,7 @@ This refactor splits previously oversized Rust sources into focused modules. Beh
 - Scheduler/job coverage lives in `tests/src/background.rs` (scheduler flows, failure paths) and `tests/src/jobs.rs` (list/show/status/tail/attach/gc formatting and cleanup).
 - `tests/src/lib.rs` is a thin module list that re-exports fixtures.
 - Scheduler spec tests live under `vizier-kernel/src/scheduler/spec.rs` (pure kernel coverage).
-- The global integration-test lock in `tests/src/fixtures.rs` should guard tests that spawn external processes (including install/shim tests) to avoid parallelism flakes.
+- Integration tests run in parallel by default; set `VIZIER_TEST_SERIAL=1` to force the fixture lock in `tests/src/fixtures.rs` when debugging ordering-sensitive flakes.
 
 ## Conditional compilation
 - The agent runner has unix-only execution paths plus a runtime mock path used during integration testing (`VIZIER_MOCK_AGENT=1` when the `integration_testing` feature is enabled).

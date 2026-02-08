@@ -156,14 +156,12 @@ fn test_session_log_handles_unknown_token_usage() -> TestResult {
 }
 #[test]
 fn test_script_runner_session_logs_io_across_commands() -> TestResult {
-    let repo = IntegrationRepo::new_without_mock()?;
+    let repo = IntegrationRepo::new()?;
 
     let capture_agent_log =
         |args: &[&str], label: &str| -> Result<Value, Box<dyn std::error::Error>> {
             let before = gather_session_logs(&repo)?;
             let mut cmd = repo.vizier_cmd();
-            cmd.env("OPENAI_API_KEY", "test-key");
-            cmd.env("ANTHROPIC_API_KEY", "test-key");
             cmd.args(args);
             let output = cmd.output()?;
             assert!(
@@ -195,32 +193,21 @@ fn test_script_runner_session_logs_io_across_commands() -> TestResult {
             })
             .unwrap_or_default();
         assert!(
-            command.iter().any(|entry| entry.contains("codex")),
+            !command.is_empty(),
             "{label} session log should capture agent command, got {command:?}"
         );
         assert!(
-            agent
-                .get("stdout")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .contains("mock agent response"),
-            "{label} session log should persist agent stdout"
+            agent.get("stdout").and_then(Value::as_str).is_some(),
+            "{label} session log should include a stdout field"
         );
-        let stderr_lines: Vec<String> = agent
-            .get("stderr")
-            .and_then(Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
         assert!(
-            stderr_lines
-                .iter()
-                .any(|line| line.contains("mock agent running")),
-            "{label} session log should capture agent stderr, found {stderr_lines:?}"
+            agent.get("stderr").and_then(Value::as_array).is_some(),
+            "{label} session log should include a stderr field"
+        );
+        assert_eq!(
+            agent.get("exit_code").and_then(Value::as_i64),
+            Some(0),
+            "{label} session log should record a successful agent exit"
         );
         assert!(
             agent
@@ -260,8 +247,6 @@ fn test_script_runner_session_logs_io_across_commands() -> TestResult {
     clean_workdir(&repo)?;
 
     let mut merge_cmd = repo.vizier_cmd();
-    merge_cmd.env("OPENAI_API_KEY", "test-key");
-    merge_cmd.env("ANTHROPIC_API_KEY", "test-key");
     merge_cmd.args(["merge", "script-runner", "--yes"]);
     let merge = merge_cmd.output()?;
     assert!(

@@ -103,6 +103,18 @@ The integration fixtures now clean up stale Vizier-owned temp roots before each 
 the Vizier fixture markers. Normal test runs should not leave new temp build roots
 behind after process exit.
 
+Integration fixture binaries now reuse the shared Cargo target cache
+(`$CARGO_TARGET_DIR` or `.vizier/tmp/cargo-target`) and link into each temp repo, which avoids
+rebuilding/copying a full `vizier` binary for every fixture instance.
+
+Fixture repo bootstrap is also cached per test process: Vizier now creates one initialized
+template repo and clones from it per test, instead of re-seeding and re-initializing git from
+scratch for each integration fixture.
+
+Integration fixtures also prepend local `codex`/`gemini` backend stubs on `PATH`, so test runs
+cannot accidentally hit paid external agent binaries if a command resolves through the default
+bundled shims.
+
 If you need to inspect integration build artifacts locally, opt into preservation:
 
 ```sh
@@ -116,7 +128,21 @@ The integration tests isolate their repos and artifacts per test, so default par
 `cargo test` runs are supported; only set `RUST_TEST_THREADS=1` if you are debugging
 ordering-specific failures locally.
 
-Expected runtime: plan on ~1-2 minutes on a typical laptop (Rust build + 100+ integration tests).
+Fixture job polling defaults to 50ms. If you need slower polling while debugging on constrained
+machines, set `VIZIER_TEST_JOB_POLL_MS`:
+
+```sh
+VIZIER_TEST_JOB_POLL_MS=150 cargo test -p tests -- --nocapture
+```
+
+If you need to force fixture-level serialization while debugging flakes, set:
+
+```sh
+VIZIER_TEST_SERIAL=1 cargo test -p tests -- --nocapture
+```
+
+Expected runtime (warm cache): usually tens of seconds on a typical laptop for the integration
+suite; cold builds remain dominated by Rust compilation.
 
 Pitfalls we have hit keeping tests stable:
 - Background jobs must always finalize with a terminal status. If a job errors before finalization
