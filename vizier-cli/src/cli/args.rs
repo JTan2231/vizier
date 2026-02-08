@@ -503,7 +503,7 @@ pub(crate) enum Commands {
     /// Create build sessions and execute them through queued materialize/approve/review/merge jobs
     Build(BuildCmd),
 
-    /// Execute one or more intent/spec files in deterministic order using build execution pipelines
+    /// Queue one or more intent/spec files in deterministic order using build execution pipelines
     Patch(PatchCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch
@@ -616,7 +616,7 @@ pub(crate) struct PatchCmd {
     #[arg(value_name = "FILE", required = true)]
     pub(crate) files: Vec<PathBuf>,
 
-    /// Override the default phase pipeline for each file
+    /// Override the default phase pipeline for each file (default: approve-review-merge)
     #[arg(long = "pipeline", value_enum)]
     pub(crate) pipeline: Option<BuildPipelineArg>,
 

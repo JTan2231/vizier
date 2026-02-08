@@ -7,7 +7,7 @@ use vizier_core::{auditor, config, display, vcs};
 
 use crate::actions::shared::{TempWorktree, push_origin_if_requested};
 use crate::actions::{CommitMode, run_save_in_worktree};
-use crate::cli::args::{Commands, ResolvedInput, SaveCmd};
+use crate::cli::args::{BuildPipelineArg, Commands, ResolvedInput, SaveCmd};
 use crate::cli::resolve::resolve_prompt_input;
 use crate::cli::util::flag_present;
 use crate::jobs;
@@ -15,6 +15,7 @@ use crate::jobs;
 fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
     match command {
         Commands::Draft(_) => Some(config::CommandScope::Draft),
+        Commands::Patch(_) => Some(config::CommandScope::Draft),
         Commands::Approve(_) => Some(config::CommandScope::Approve),
         Commands::Review(_) => Some(config::CommandScope::Review),
         Commands::Merge(_) => Some(config::CommandScope::Merge),
@@ -39,6 +40,7 @@ pub(crate) fn scheduler_supported(command: &Commands) -> bool {
         command,
         Commands::Save(_)
             | Commands::Draft(_)
+            | Commands::Patch(_)
             | Commands::Approve(_)
             | Commands::Review(_)
             | Commands::Merge(_)
@@ -434,6 +436,19 @@ pub(crate) fn build_job_metadata(
     }
 
     match command {
+        Commands::Patch(cmd) => {
+            metadata.scope = Some("patch".to_string());
+            metadata.target = cmd.target.clone();
+            metadata.build_pipeline = Some(
+                match cmd.pipeline {
+                    Some(BuildPipelineArg::Approve) => "approve",
+                    Some(BuildPipelineArg::ApproveReview) => "approve-review",
+                    Some(BuildPipelineArg::ApproveReviewMerge) => "approve-review-merge",
+                    None => "approve-review-merge",
+                }
+                .to_string(),
+            );
+        }
         Commands::Approve(cmd) => {
             metadata.plan = Some(cmd.plan.clone());
             metadata.target = cmd.target.clone();

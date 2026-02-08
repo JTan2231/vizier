@@ -25,10 +25,10 @@ For the build schema, execute options, and artifact details, see `docs/user/buil
 If your inputs are already discrete files and you want a thinner wrapper, use:
 
 ```bash
-vizier patch BUG1.md BUG2.md --pipeline approve-review-merge --yes
+vizier patch BUG1.md BUG2.md --yes
 ```
 
-`patch` performs full-file preflight first, queues steps in exact CLI order, deduplicates repeated paths by default, and reuses the same build execution machinery under a deterministic patch session id (`--resume` reuses non-terminal jobs for that session).
+`patch` now queues a root scheduler job first (`scope=patch`), runs full-file preflight inside that job, then queues per-step phase jobs in exact CLI order. It deduplicates repeated paths by default, defaults to the full `approve-review-merge` pipeline when `--pipeline` is omitted, and reuses the same build execution machinery under a deterministic patch session id (`--resume` reuses non-terminal jobs for that session).
 
 ### Agent configuration
 

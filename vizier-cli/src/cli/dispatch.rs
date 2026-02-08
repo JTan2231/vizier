@@ -333,6 +333,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let requested_after = match &cli.command {
             Commands::Save(cmd) => cmd.after.clone(),
             Commands::Draft(cmd) => cmd.after.clone(),
+            Commands::Patch(cmd) => cmd.after.clone(),
             Commands::Approve(cmd) => cmd.after.clone(),
             Commands::Review(cmd) => cmd.after.clone(),
             Commands::Merge(cmd) => cmd.after.clone(),
@@ -421,6 +422,28 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ];
                 metadata.plan = Some(slug);
                 metadata.branch = Some(branch);
+            }
+            Commands::Patch(cmd) => {
+                if !cmd.assume_yes && !io::stdin().is_terminal() {
+                    return Err("vizier patch requires --yes in scheduler mode".into());
+                }
+                if !cmd.assume_yes {
+                    let pipeline = match cmd.pipeline {
+                        Some(BuildPipelineArg::Approve) => "approve",
+                        Some(BuildPipelineArg::ApproveReview) => "approve-review",
+                        Some(BuildPipelineArg::ApproveReviewMerge) => "approve-review-merge",
+                        None => "approve-review-merge",
+                    };
+                    let confirmed = prompt_yes_no(&format!(
+                        "Queue patch run for {} file(s) with pipeline {}?",
+                        cmd.files.len(),
+                        pipeline
+                    ))?;
+                    if !confirmed {
+                        return Err("aborted by user".into());
+                    }
+                    injected_args.push("--yes".to_string());
+                }
             }
             Commands::Approve(cmd) => {
                 if !cmd.assume_yes && !io::stdin().is_terminal() {

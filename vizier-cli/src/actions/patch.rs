@@ -7,6 +7,7 @@ use vizier_core::{config, vcs::branch_exists};
 use super::build::{BuildExecuteArgs, BuildExecutionPipeline, run_build, run_build_execute};
 use super::shared::{append_agent_rows, current_verbosity, format_block, require_agent_backend};
 use super::types::CommitMode;
+use crate::jobs;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PatchArgs {
@@ -25,12 +26,17 @@ struct PatchInput {
     abs: PathBuf,
 }
 
-fn pipeline_label(pipeline: Option<BuildExecutionPipeline>) -> &'static str {
+const PATCH_DEFAULT_PIPELINE: BuildExecutionPipeline = BuildExecutionPipeline::ApproveReviewMerge;
+
+fn resolve_patch_pipeline(pipeline: Option<BuildExecutionPipeline>) -> BuildExecutionPipeline {
+    pipeline.unwrap_or(PATCH_DEFAULT_PIPELINE)
+}
+
+fn pipeline_label(pipeline: BuildExecutionPipeline) -> &'static str {
     match pipeline {
-        Some(BuildExecutionPipeline::Approve) => "approve",
-        Some(BuildExecutionPipeline::ApproveReview) => "approve-review",
-        Some(BuildExecutionPipeline::ApproveReviewMerge) => "approve-review-merge",
-        None => "default",
+        BuildExecutionPipeline::Approve => "approve",
+        BuildExecutionPipeline::ApproveReview => "approve-review",
+        BuildExecutionPipeline::ApproveReviewMerge => "approve-review-merge",
     }
 }
 
@@ -43,7 +49,7 @@ fn digest_short(input: &str) -> String {
 
 fn patch_session_id(
     inputs: &[PatchInput],
-    pipeline: Option<BuildExecutionPipeline>,
+    pipeline: BuildExecutionPipeline,
     target: Option<&str>,
 ) -> String {
     let mut seed = String::new();
@@ -199,8 +205,9 @@ pub(crate) async fn run_patch(
     )?;
 
     let repo_root = std::fs::canonicalize(project_root)?;
+    let resolved_pipeline = resolve_patch_pipeline(args.pipeline);
     let (inputs, duplicate_count) = preflight_patch_inputs(&args.files, &repo_root)?;
-    let build_id = patch_session_id(&inputs, args.pipeline, args.target.as_deref());
+    let build_id = patch_session_id(&inputs, resolved_pipeline, args.target.as_deref());
     let build_branch = format!("build/{build_id}");
     let build_exists = branch_exists(&build_branch)
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?
@@ -226,7 +233,7 @@ pub(crate) async fn run_patch(
     preflight_rows.push(("Files".to_string(), format!("{}", inputs.len())));
     preflight_rows.push((
         "Pipeline".to_string(),
-        pipeline_label(args.pipeline).to_string(),
+        pipeline_label(resolved_pipeline).to_string(),
     ));
     preflight_rows.push((
         "Target".to_string(),
@@ -261,15 +268,21 @@ pub(crate) async fn run_patch(
         .await?;
     }
 
+    let execute_after = if jobs::current_job_id().is_some() {
+        Vec::new()
+    } else {
+        args.after.clone()
+    };
+
     run_build_execute(
         BuildExecuteArgs {
             build_id,
-            pipeline_override: args.pipeline,
+            pipeline_override: Some(resolved_pipeline),
             target_override: args.target,
             resume: args.resume,
             assume_yes: args.assume_yes,
             follow: args.follow,
-            requested_after: &args.after,
+            requested_after: &execute_after,
         },
         &repo_root,
     )

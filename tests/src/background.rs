@@ -122,6 +122,7 @@ fn test_scheduler_rejects_json_for_additional_commands() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let cases = [
         vec!["--json", "draft", "json draft spec"],
+        vec!["--json", "patch", "README.md", "--yes"],
         vec!["--json", "save"],
     ];
 
@@ -230,6 +231,7 @@ fn test_scheduler_requires_noninteractive_flags() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let cases = [
         (vec!["approve", "plan-a"], "vizier approve requires --yes"),
+        (vec!["patch", "README.md"], "vizier patch requires --yes"),
         (vec!["merge", "plan-b"], "vizier merge requires --yes"),
         (vec!["review", "plan-c"], "vizier review requires --yes"),
     ];

@@ -64,7 +64,7 @@ pub(crate) fn curated_help_text() -> &'static str {
         "\n",
         "Examples:\n",
         "  vizier build --file examples/build/todo.toml\n",
-        "  vizier patch BUG1.md BUG2.md --pipeline approve-review --yes\n",
+        "  vizier patch BUG1.md BUG2.md --yes\n",
         "  vizier draft --name fix-help \"curate root help output\"\n",
         "  vizier merge fix-help --yes\n",
         "\n",

@@ -10,22 +10,26 @@ For the canonical artifact/state contract behind these flows (build manifests, e
 ## Queue file-backed intents with `vizier patch`
 
 ```bash
-vizier patch <file...> [--pipeline approve|approve-review|approve-review-merge] [--target BRANCH] [--resume] --yes [--after JOB_ID ...] [--follow]
+vizier patch <file...> [--pipeline approve|approve-review|approve-review-merge] [--target BRANCH] [--resume] [--yes] [--after JOB_ID ...] [--follow]
 ```
 
 `vizier patch` is a low-ceremony wrapper over `vizier build` + `vizier build execute` for operators who already have one or more spec/intent files.
 
 Behavior:
-- Validates every file up front before any queue mutation.
+- Enqueues a root scheduler job (`scope=patch`) immediately; use `--follow` to stream its logs.
+- Validates every file inside that root job before queueing any build-execute phase jobs.
 - Enforces in-repo paths, readable UTF-8 files, and non-empty content.
 - Deduplicates repeated files by default while preserving first-seen order.
-- Builds a deterministic patch session id from ordered files + pipeline/target and writes an internal build file under `.vizier/tmp/patches/`.
+- Builds a deterministic patch session id from ordered files + effective pipeline/target and writes an internal build file under `.vizier/tmp/patches/`.
 - Uses strict linear ordering (`step N` depends on `step N-1`) so execution follows CLI order exactly.
+- Defaults to `approve-review-merge` when `--pipeline` is omitted (explicit `--pipeline` still wins).
 - Reuses build pipelines (`approve`, `approve-review`, `approve-review-merge`) and supports `--resume` to reuse queued/running/succeeded phase jobs from the same patch session.
 - Applies `--after <job-id>` to the first queued patch root job.
+- Interactive runs prompt unless `--yes` is set; non-interactive runs require `--yes`.
 
 Patch observability:
-- Output includes a preflight block (`Patch session`, ordered file queue, pipeline/target, execution manifest path).
+- Root jobs show `scope=patch` in `vizier jobs show`.
+- `--follow` output includes a preflight block (`Patch session`, ordered file queue, pipeline/target, execution manifest path).
 - Queued phase jobs carry `patch_file`, `patch_index`, and `patch_total` metadata in job records and `vizier jobs show`.
 
 ## Create a build session

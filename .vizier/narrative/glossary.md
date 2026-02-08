@@ -6,6 +6,7 @@
 - **Auditor**: The component that records what happened (session logs), summarizes repo edits (A/M/D/R), and constructs commit/outcome metadata from observed facts.
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
 - **CI gate target-dir fallback**: `./cicd.sh` default that sets `CARGO_TARGET_DIR` to `.vizier/tmp/cargo-target` when unset so permission-restricted repo `target/` directories do not block gate runs.
+- **Patch test helper set**: Local helper functions in `tests/src/patch.rs` (`run_patch_follow`, job-record loading/scope filters) that keep patch integration tests compilable and prevent CI gate failures from dangling helper references.
 - **Change discipline**: The AGENTS.md contract that code changes must update tests/docs and pass `./cicd.sh` before being treated as done.
 - **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
 - **Commit-style summary**: The only user-facing output for a narrative-maintenance turn: a short, commit-message-like line describing what changed while detailed `snapshotDelta` content stays internal.

@@ -35,6 +35,7 @@ This file is the authoritative catalogue of Vizier’s configuration levers, the
 
 ## Build orchestration settings
 - Build defaults: `[build]` controls execute-time orchestration defaults (`default_pipeline`, `default_merge_target`, `default_review_mode`, `default_skip_checks`, `default_keep_draft_branch`).
+- Patch defaults: `vizier patch` uses `approve-review-merge` when `--pipeline` is omitted (independent of `[build].default_pipeline`); pass `vizier patch --pipeline ...` to override per run.
 - Graph controls: `[build].stage_barrier` (`strict|explicit`) and `[build].failure_mode` (`block_downstream|continue_independent`) tune dependency behavior/audit posture for `vizier build execute`.
 - Profile presets: `[build].default_profile` and `[build.profiles.<name>]` let you reuse policy bundles (`pipeline`, `merge_target`, `review_mode`, `skip_checks`, `keep_branch`) across steps.
 - CLI override: `vizier build execute --pipeline ...` overrides per-step/profile/config pipeline selection for that run.
