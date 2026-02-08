@@ -289,6 +289,8 @@ pub(crate) enum JobsShowField {
     AgentExit,
     CancelCleanup,
     CancelCleanupError,
+    RetryCleanup,
+    RetryCleanupError,
     ConfigSnapshot,
     Command,
 }
@@ -335,6 +337,8 @@ impl JobsShowField {
             "agent exit" => Some(Self::AgentExit),
             "cancel cleanup" => Some(Self::CancelCleanup),
             "cancel cleanup error" => Some(Self::CancelCleanupError),
+            "retry cleanup" => Some(Self::RetryCleanup),
+            "retry cleanup error" => Some(Self::RetryCleanupError),
             "config snapshot" => Some(Self::ConfigSnapshot),
             "command" => Some(Self::Command),
             _ => None,
@@ -382,6 +386,8 @@ impl JobsShowField {
             Self::AgentExit => "Agent exit",
             Self::CancelCleanup => "Cancel cleanup",
             Self::CancelCleanupError => "Cancel cleanup error",
+            Self::RetryCleanup => "Retry cleanup",
+            Self::RetryCleanupError => "Retry cleanup error",
             Self::ConfigSnapshot => "Config snapshot",
             Self::Command => "Command",
         }
@@ -428,6 +434,8 @@ impl JobsShowField {
             Self::AgentExit => "agent_exit",
             Self::CancelCleanup => "cancel_cleanup",
             Self::CancelCleanupError => "cancel_cleanup_error",
+            Self::RetryCleanup => "retry_cleanup",
+            Self::RetryCleanupError => "retry_cleanup_error",
             Self::ConfigSnapshot => "config_snapshot",
             Self::Command => "command",
         }

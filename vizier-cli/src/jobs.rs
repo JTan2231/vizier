@@ -109,6 +109,8 @@ pub struct JobMetadata {
     pub agent_exit_code: Option<i32>,
     pub cancel_cleanup_status: Option<CancelCleanupStatus>,
     pub cancel_cleanup_error: Option<String>,
+    pub retry_cleanup_status: Option<RetryCleanupStatus>,
+    pub retry_cleanup_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +171,57 @@ impl CancelCleanupResult {
             status: CancelCleanupStatus::Skipped,
             error: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryCleanupStatus {
+    Skipped,
+    Done,
+    Degraded,
+}
+
+impl RetryCleanupStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            RetryCleanupStatus::Skipped => "skipped",
+            RetryCleanupStatus::Done => "done",
+            RetryCleanupStatus::Degraded => "degraded",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RetryCleanupResult {
+    status: RetryCleanupStatus,
+    detail: Option<String>,
+}
+
+impl RetryCleanupResult {
+    fn skipped() -> Self {
+        Self {
+            status: RetryCleanupStatus::Skipped,
+            detail: None,
+        }
+    }
+
+    fn done() -> Self {
+        Self {
+            status: RetryCleanupStatus::Done,
+            detail: None,
+        }
+    }
+
+    fn degraded(detail: impl Into<String>) -> Self {
+        Self {
+            status: RetryCleanupStatus::Degraded,
+            detail: Some(detail.into()),
+        }
+    }
+
+    fn should_clear_worktree_metadata(&self) -> bool {
+        !matches!(self.status, RetryCleanupStatus::Degraded)
     }
 }
 
@@ -365,6 +418,12 @@ fn merge_metadata(
             }
             if update.cancel_cleanup_error.is_some() {
                 base.cancel_cleanup_error = update.cancel_cleanup_error;
+            }
+            if update.retry_cleanup_status.is_some() {
+                base.retry_cleanup_status = update.retry_cleanup_status;
+            }
+            if update.retry_cleanup_error.is_some() {
+                base.retry_cleanup_error = update.retry_cleanup_error;
             }
             Some(base)
         }
@@ -1650,20 +1709,16 @@ fn rewind_job_record_for_retry(
     jobs_root: &Path,
     record: &mut JobRecord,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(metadata) = record.metadata.as_ref()
-        && metadata.worktree_owned == Some(true)
-        && let Some(recorded_path) = metadata.worktree_path.as_ref()
-    {
-        let worktree_path = resolve_recorded_path(project_root, recorded_path);
-        let worktree_name = metadata.worktree_name.as_deref();
-        if worktree_safe_to_remove(project_root, &worktree_path, worktree_name)
-            && let Err(err) = cleanup_worktree(project_root, &worktree_path, worktree_name)
-        {
-            display::warn(format!(
-                "unable to fully clean retry worktree for {}: {}",
-                record.id, err
-            ));
-        }
+    let retry_cleanup = attempt_retry_cleanup(project_root, record);
+    if retry_cleanup.status == RetryCleanupStatus::Degraded {
+        let detail = retry_cleanup
+            .detail
+            .as_deref()
+            .unwrap_or("retry cleanup degraded");
+        display::warn(format!(
+            "retry cleanup degraded for {}: {}; worktree metadata retained for future cleanup",
+            record.id, detail
+        ));
     }
 
     let paths = paths_for(jobs_root, &record.id);
@@ -1684,12 +1739,16 @@ fn rewind_job_record_for_retry(
     }
 
     if let Some(metadata) = record.metadata.as_mut() {
-        metadata.worktree_name = None;
-        metadata.worktree_path = None;
-        metadata.worktree_owned = None;
+        if retry_cleanup.should_clear_worktree_metadata() {
+            metadata.worktree_name = None;
+            metadata.worktree_path = None;
+            metadata.worktree_owned = None;
+        }
         metadata.agent_exit_code = None;
         metadata.cancel_cleanup_status = None;
         metadata.cancel_cleanup_error = None;
+        metadata.retry_cleanup_status = Some(retry_cleanup.status);
+        metadata.retry_cleanup_error = retry_cleanup.detail.clone();
     }
 
     record.status = JobStatus::Queued;
@@ -2018,6 +2077,36 @@ fn attempt_cancel_cleanup(
     }
 }
 
+fn attempt_retry_cleanup(project_root: &Path, record: &JobRecord) -> RetryCleanupResult {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return RetryCleanupResult::skipped();
+    };
+
+    if metadata.worktree_owned != Some(true) {
+        return RetryCleanupResult::skipped();
+    }
+
+    let Some(recorded_path) = metadata.worktree_path.as_ref() else {
+        return RetryCleanupResult::degraded(
+            "worktree metadata is incomplete (missing worktree_path)",
+        );
+    };
+
+    let worktree_path = resolve_recorded_path(project_root, recorded_path);
+    let worktree_name = metadata.worktree_name.as_deref();
+    if !worktree_safe_to_remove(project_root, &worktree_path, worktree_name) {
+        return RetryCleanupResult::degraded(format!(
+            "refusing to clean unsafe worktree path {}",
+            worktree_path.display()
+        ));
+    }
+
+    match cleanup_worktree(project_root, &worktree_path, worktree_name) {
+        Ok(()) => RetryCleanupResult::done(),
+        Err(err) => RetryCleanupResult::degraded(err),
+    }
+}
+
 fn resolve_recorded_path(project_root: &Path, recorded: &str) -> PathBuf {
     let path = PathBuf::from(recorded);
     if path.is_absolute() {
@@ -2065,7 +2154,20 @@ fn cleanup_worktree(
         .or_else(|| find_worktree_name_by_path(&repo, worktree_path))
         && let Err(err) = prune_worktree(&repo, &name)
     {
-        errors.push(format!("failed to prune worktree {}: {}", name, err));
+        let prune_error = err.to_string();
+        if let Err(fallback_err) = run_git_worktree_cleanup_fallback(project_root, worktree_path) {
+            if prune_error_mentions_missing_shallow(&prune_error) {
+                errors.push(format!(
+                    "libgit2 prune for worktree {} could not stat .git/shallow; fallback cleanup failed: {}",
+                    name, fallback_err
+                ));
+            } else {
+                errors.push(format!(
+                    "failed to prune worktree {}: {}; fallback cleanup failed: {}",
+                    name, prune_error, fallback_err
+                ));
+            }
+        }
     }
 
     if worktree_path.exists()
@@ -2090,6 +2192,94 @@ fn prune_worktree(repo: &Repository, worktree_name: &str) -> Result<(), git2::Er
     let mut opts = WorktreePruneOptions::new();
     opts.valid(true).locked(true).working_tree(true);
     worktree.prune(Some(&mut opts))
+}
+
+fn prune_error_mentions_missing_shallow(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains(".git/shallow")
+        && (lower.contains("could not find")
+            || lower.contains("couldn't find")
+            || lower.contains("no such file")
+            || lower.contains("to stat"))
+}
+
+fn run_git_worktree_cleanup_fallback(
+    project_root: &Path,
+    worktree_path: &Path,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(err) = run_git_cleanup_command(
+        project_root,
+        &["worktree", "remove", "--force"],
+        Some(worktree_path),
+    ) && worktree_path.exists()
+    {
+        errors.push(err);
+    }
+
+    if let Err(err) = run_git_cleanup_command(
+        project_root,
+        &["worktree", "prune", "--expire", "now"],
+        None,
+    ) {
+        errors.push(err);
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn run_git_cleanup_command(
+    project_root: &Path,
+    args: &[&str],
+    path_arg: Option<&Path>,
+) -> Result<(), String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(project_root).args(args);
+    if let Some(path) = path_arg {
+        cmd.arg(path);
+    }
+
+    let output = cmd.output().map_err(|err| {
+        format!(
+            "failed to execute `git {}`: {}",
+            format_git_subcommand(args, path_arg),
+            err
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+    Err(format!(
+        "`git {}` failed: {}",
+        format_git_subcommand(args, path_arg),
+        detail
+    ))
+}
+
+fn format_git_subcommand(args: &[&str], path_arg: Option<&Path>) -> String {
+    let mut parts = args
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    if let Some(path) = path_arg {
+        parts.push(path.display().to_string());
+    }
+    parts.join(" ")
 }
 
 fn find_worktree_name_by_path(repo: &Repository, worktree_path: &Path) -> Option<String> {
@@ -3842,6 +4032,11 @@ mod tests {
         assert!(metadata.agent_exit_code.is_none());
         assert!(metadata.cancel_cleanup_status.is_none());
         assert!(metadata.cancel_cleanup_error.is_none());
+        assert_eq!(
+            metadata.retry_cleanup_status,
+            Some(RetryCleanupStatus::Done)
+        );
+        assert!(metadata.retry_cleanup_error.is_none());
 
         assert!(
             !outcome_path.exists(),
@@ -3863,6 +4058,140 @@ mod tests {
         let stderr = fs::read_to_string(&paths.stderr_path).expect("read stderr");
         assert!(stdout.is_empty(), "expected stdout log truncation");
         assert!(stderr.is_empty(), "expected stderr log truncation");
+    }
+
+    #[test]
+    fn rewind_job_record_for_retry_retains_worktree_metadata_when_cleanup_degrades() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-retry-degraded",
+            &["--help".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+
+        let worktree_rel = ".vizier/tmp-worktrees/retry-degraded";
+        let worktree_path = project_root.join(worktree_rel);
+        fs::create_dir_all(&worktree_path).expect("create worktree path");
+
+        let mut record = update_job_record(&jobs_root, "job-retry-degraded", |record| {
+            record.status = JobStatus::Failed;
+            record.metadata = Some(JobMetadata {
+                worktree_name: Some("missing-retry-worktree".to_string()),
+                worktree_owned: Some(true),
+                worktree_path: Some(worktree_rel.to_string()),
+                ..JobMetadata::default()
+            });
+        })
+        .expect("set runtime fields");
+
+        rewind_job_record_for_retry(project_root, &jobs_root, &mut record).expect("rewind record");
+
+        let metadata = record.metadata.as_ref().expect("metadata");
+        assert_eq!(
+            metadata.worktree_name.as_deref(),
+            Some("missing-retry-worktree")
+        );
+        assert_eq!(metadata.worktree_path.as_deref(), Some(worktree_rel));
+        assert_eq!(metadata.worktree_owned, Some(true));
+        assert_eq!(
+            metadata.retry_cleanup_status,
+            Some(RetryCleanupStatus::Degraded)
+        );
+        let detail = metadata.retry_cleanup_error.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("fallback cleanup failed"),
+            "expected fallback failure detail, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn rewind_job_record_for_retry_clears_worktree_metadata_when_fallback_succeeds() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-retry-fallback",
+            &["--help".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+
+        let worktree_rel = ".vizier/tmp-worktrees/retry-fallback";
+        let worktree_path = project_root.join(worktree_rel);
+        if let Some(parent) = worktree_path.parent() {
+            fs::create_dir_all(parent).expect("create worktree parent");
+        }
+        let add_status = Command::new("git")
+            .arg("-C")
+            .arg(project_root)
+            .arg("worktree")
+            .arg("add")
+            .arg("--detach")
+            .arg(&worktree_path)
+            .status()
+            .expect("run git worktree add");
+        assert!(
+            add_status.success(),
+            "expected git worktree add to succeed (status={add_status})"
+        );
+
+        let mut record = update_job_record(&jobs_root, "job-retry-fallback", |record| {
+            record.status = JobStatus::Failed;
+            record.metadata = Some(JobMetadata {
+                worktree_name: Some("wrong-worktree-name".to_string()),
+                worktree_owned: Some(true),
+                worktree_path: Some(worktree_rel.to_string()),
+                ..JobMetadata::default()
+            });
+        })
+        .expect("set runtime fields");
+
+        rewind_job_record_for_retry(project_root, &jobs_root, &mut record).expect("rewind record");
+
+        let metadata = record.metadata.as_ref().expect("metadata");
+        assert!(metadata.worktree_name.is_none());
+        assert!(metadata.worktree_path.is_none());
+        assert!(metadata.worktree_owned.is_none());
+        assert_eq!(
+            metadata.retry_cleanup_status,
+            Some(RetryCleanupStatus::Done)
+        );
+        assert!(metadata.retry_cleanup_error.is_none());
+        assert!(
+            !worktree_path.exists(),
+            "expected fallback cleanup to remove worktree path"
+        );
+    }
+
+    #[test]
+    fn prune_error_mentions_missing_shallow_detects_known_message() {
+        let sample = "could not find '/tmp/repo/.git/shallow' to stat";
+        assert!(
+            prune_error_mentions_missing_shallow(sample),
+            "expected missing shallow detection"
+        );
+        assert!(
+            !prune_error_mentions_missing_shallow("failed to prune worktree"),
+            "unexpected shallow detection for unrelated error"
+        );
     }
 
     #[test]

@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_73204558a7e84e84bbf2b9f8a7449614",
+  "slug": "patch-740958c5f8bf-04-bug4-retry",
+  "branch": "draft/patch-740958c5f8bf-04-bug4-retry",
+  "source": "build",
+  "intent": "file:/Users/joey/rust/vizier/BUG4.md",
+  "target_branch": "master",
+  "work_ref": "draft/patch-740958c5f8bf-04-bug4-retry",
+  "status": "draft",
+  "summary": "# BUG4: Retry Worktree Cleanup Warns on Missing `.git/shallow`",
+  "created_at": "2026-02-07T21:15:34.002288+00:00",
+  "updated_at": "2026-02-07T21:15:34.002288+00:00",
+  "job_ids": {}
+}

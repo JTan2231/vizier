@@ -56,8 +56,14 @@ Safety and rewind behavior:
   `session_path`, `outcome_path`, `schedule.wait_reason`, and
   `schedule.waited_on`.
 - Retry truncates `stdout.log`/`stderr.log`, removes stale `outcome.json`,
-  `command.patch`, legacy `ask-save.patch`, and `save-input.patch`, and attempts cleanup of owned
-  temp worktrees when ownership/safety checks pass.
+  `command.patch`, legacy `ask-save.patch`, and `save-input.patch`, and performs best-effort
+  cleanup of owned temp worktrees when ownership/safety checks pass.
+- Retry cleanup first attempts libgit2 prune and falls back to `git worktree remove --force <path>`
+  plus `git worktree prune --expire now` when prune fails (including known `.git/shallow` stat
+  failures).
+- Retry clears `worktree_*` metadata only when cleanup is confirmed done/skipped; degraded cleanup
+  retains `worktree_name`/`worktree_path`/`worktree_owned` and records
+  `retry_cleanup_status`/`retry_cleanup_error` for later recovery via retry/cancel.
 - Merge-related retry sets also clear scheduler-owned conflict sentinels under
   `.vizier/tmp/merge-conflicts/<slug>.json`. If Git is currently in an
   in-progress merge/cherry-pick state, retry fails with guidance instead of

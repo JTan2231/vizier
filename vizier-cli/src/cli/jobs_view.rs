@@ -591,6 +591,13 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::CancelCleanupError => {
             metadata.and_then(|meta| meta.cancel_cleanup_error.clone())
         }
+        JobsShowField::RetryCleanup => metadata.and_then(|meta| {
+            meta.retry_cleanup_status
+                .map(|status| status.label().to_string())
+        }),
+        JobsShowField::RetryCleanupError => {
+            metadata.and_then(|meta| meta.retry_cleanup_error.clone())
+        }
         JobsShowField::ConfigSnapshot => record
             .config_snapshot
             .as_ref()

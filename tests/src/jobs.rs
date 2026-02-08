@@ -2216,6 +2216,11 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
     assert_eq!(metadata.get("agent_exit_code"), Some(&Value::Null));
     assert_eq!(metadata.get("cancel_cleanup_status"), Some(&Value::Null));
     assert_eq!(metadata.get("cancel_cleanup_error"), Some(&Value::Null));
+    assert_eq!(
+        metadata.get("retry_cleanup_status"),
+        Some(&Value::String("done".to_string()))
+    );
+    assert_eq!(metadata.get("retry_cleanup_error"), Some(&Value::Null));
 
     assert!(
         !repo.path().join(worktree_rel).exists(),
@@ -2235,6 +2240,174 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
     );
     assert_eq!(fs::read_to_string(job_dir.join("stdout.log"))?, "");
     assert_eq!(fs::read_to_string(job_dir.join("stderr.log"))?, "");
+    Ok(())
+}
+
+#[test]
+fn test_jobs_retry_preserves_worktree_metadata_when_cleanup_degrades() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-retry-degraded";
+    let worktree_rel = ".vizier/tmp-worktrees/retry-degraded";
+    fs::create_dir_all(repo.path().join(worktree_rel))?;
+
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "failed",
+            "command": ["vizier", "save", "retry degraded"],
+            "child_args": ["save", "retry degraded"],
+            "created_at": "2026-01-30T03:00:00Z",
+            "started_at": "2026-01-30T03:00:01Z",
+            "finished_at": "2026-01-30T03:00:02Z",
+            "pid": null,
+            "exit_code": 1,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": {
+                "worktree_name": "missing-retry-worktree",
+                "worktree_owned": true,
+                "worktree_path": worktree_rel
+            },
+            "config_snapshot": null,
+            "schedule": {
+                "dependencies": [
+                    { "artifact": { "target_branch": { "name": "missing-retry-degraded-target" } } }
+                ]
+            }
+        }),
+    )?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "retry", job_id])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs retry (degraded cleanup) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Jobs retried"),
+        "expected retry outcome in stdout:\n{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("retry cleanup degraded") && stderr.contains("worktree metadata retained"),
+        "expected actionable retry cleanup warning in stderr:\n{stderr}"
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("blocked_by_dependency"),
+        "expected retried degraded job to remain blocked by missing dependency: {record}"
+    );
+    let metadata = record
+        .get("metadata")
+        .and_then(Value::as_object)
+        .ok_or("expected metadata object")?;
+    assert_eq!(
+        metadata.get("worktree_name"),
+        Some(&Value::String("missing-retry-worktree".to_string()))
+    );
+    assert_eq!(
+        metadata.get("worktree_path"),
+        Some(&Value::String(worktree_rel.to_string()))
+    );
+    assert_eq!(metadata.get("worktree_owned"), Some(&Value::Bool(true)));
+    assert_eq!(
+        metadata.get("retry_cleanup_status"),
+        Some(&Value::String("degraded".to_string()))
+    );
+    let retry_cleanup_error = metadata
+        .get("retry_cleanup_error")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        retry_cleanup_error.contains("fallback cleanup failed"),
+        "expected fallback cleanup detail in metadata, got: {retry_cleanup_error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_retry_uses_fallback_cleanup_to_clear_worktree_metadata() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-retry-fallback";
+    let worktree_rel = ".vizier/tmp-worktrees/retry-fallback";
+    let worktree_path = repo.path().join(worktree_rel);
+    if let Some(parent) = worktree_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let worktree_arg = worktree_path
+        .to_str()
+        .ok_or("worktree path is not valid utf-8")?
+        .to_string();
+    repo.git(&["worktree", "add", "--detach", &worktree_arg])?;
+
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "failed",
+            "command": ["vizier", "save", "retry fallback"],
+            "child_args": ["save", "retry fallback"],
+            "created_at": "2026-01-30T04:00:00Z",
+            "started_at": "2026-01-30T04:00:01Z",
+            "finished_at": "2026-01-30T04:00:02Z",
+            "pid": null,
+            "exit_code": 1,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": {
+                "worktree_name": "wrong-worktree-name",
+                "worktree_owned": true,
+                "worktree_path": worktree_rel
+            },
+            "config_snapshot": null,
+            "schedule": {
+                "dependencies": [
+                    { "artifact": { "target_branch": { "name": "missing-retry-fallback-target" } } }
+                ]
+            }
+        }),
+    )?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "retry", job_id])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier jobs retry (fallback cleanup) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    let metadata = record
+        .get("metadata")
+        .and_then(Value::as_object)
+        .ok_or("expected metadata object")?;
+    assert_eq!(metadata.get("worktree_name"), Some(&Value::Null));
+    assert_eq!(metadata.get("worktree_path"), Some(&Value::Null));
+    assert_eq!(metadata.get("worktree_owned"), Some(&Value::Null));
+    assert_eq!(
+        metadata.get("retry_cleanup_status"),
+        Some(&Value::String("done".to_string()))
+    );
+    assert_eq!(metadata.get("retry_cleanup_error"), Some(&Value::Null));
+    assert!(
+        !worktree_path.exists(),
+        "expected fallback cleanup to remove retry worktree"
+    );
     Ok(())
 }
 
