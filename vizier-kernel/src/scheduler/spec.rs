@@ -1,6 +1,6 @@
 use super::{
-    AfterPolicy, JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason, LockState,
-    format_artifact,
+    AfterPolicy, JobApprovalFact, JobApprovalState, JobArtifact, JobLock, JobStatus, JobWaitKind,
+    JobWaitReason, LockState, format_artifact,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -13,6 +13,7 @@ pub struct SchedulerFacts {
     pub artifact_exists: HashSet<JobArtifact>,
     pub job_locks: HashMap<String, Vec<JobLock>>,
     pub pinned_heads: HashMap<String, PinnedHeadFact>,
+    pub job_approvals: HashMap<String, JobApprovalFact>,
     pub waited_on: HashMap<String, Vec<JobWaitKind>>,
     pub has_child_args: HashSet<String>,
     pub job_order: Vec<String>,
@@ -171,6 +172,41 @@ fn evaluate_job_with_lock_state(
         };
     }
 
+    if let Some(approval) = facts.job_approvals.get(job_id)
+        && approval.required
+    {
+        match approval.state {
+            JobApprovalState::Pending => {
+                note_waited(&mut waited_on, JobWaitKind::Approval);
+                return SchedulerDecision {
+                    next_status: JobStatus::WaitingOnApproval,
+                    wait_reason: Some(JobWaitReason {
+                        kind: JobWaitKind::Approval,
+                        detail: Some("awaiting human approval".to_string()),
+                    }),
+                    waited_on,
+                    action: SchedulerAction::UpdateStatus,
+                };
+            }
+            JobApprovalState::Approved => {}
+            JobApprovalState::Rejected => {
+                note_waited(&mut waited_on, JobWaitKind::Approval);
+                return SchedulerDecision {
+                    next_status: JobStatus::BlockedByApproval,
+                    wait_reason: Some(JobWaitReason {
+                        kind: JobWaitKind::Approval,
+                        detail: approval
+                            .reason
+                            .clone()
+                            .or(Some("approval rejected".to_string())),
+                    }),
+                    waited_on,
+                    action: SchedulerAction::UpdateStatus,
+                };
+            }
+        }
+    }
+
     let locks = facts.job_locks.get(job_id).cloned().unwrap_or_default();
     if !lock_state.can_acquire_all(&locks) {
         note_waited(&mut waited_on, JobWaitKind::Locks);
@@ -300,6 +336,7 @@ fn job_is_terminal(status: JobStatus) -> bool {
             | JobStatus::Failed
             | JobStatus::Cancelled
             | JobStatus::BlockedByDependency
+            | JobStatus::BlockedByApproval
     )
 }
 
@@ -308,6 +345,7 @@ fn job_is_active(status: JobStatus) -> bool {
         status,
         JobStatus::Queued
             | JobStatus::WaitingOnDeps
+            | JobStatus::WaitingOnApproval
             | JobStatus::WaitingOnLocks
             | JobStatus::Running
     )
@@ -317,12 +355,14 @@ fn status_label(status: JobStatus) -> &'static str {
     match status {
         JobStatus::Queued => "queued",
         JobStatus::WaitingOnDeps => "waiting_on_deps",
+        JobStatus::WaitingOnApproval => "waiting_on_approval",
         JobStatus::WaitingOnLocks => "waiting_on_locks",
         JobStatus::Running => "running",
         JobStatus::Succeeded => "succeeded",
         JobStatus::Failed => "failed",
         JobStatus::Cancelled => "cancelled",
         JobStatus::BlockedByDependency => "blocked_by_dependency",
+        JobStatus::BlockedByApproval => "blocked_by_approval",
     }
 }
 
@@ -486,6 +526,7 @@ mod tests {
             JobStatus::Failed,
             JobStatus::Cancelled,
             JobStatus::BlockedByDependency,
+            JobStatus::BlockedByApproval,
         ] {
             let mut facts = base_facts(job_id);
             facts.job_after_dependencies.insert(
@@ -643,6 +684,79 @@ mod tests {
             mode: LockMode::Exclusive,
         };
         facts.job_locks.insert(job_id.to_string(), vec![lock]);
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
+        let reason = decision.wait_reason.expect("wait reason");
+        assert_eq!(reason.kind, JobWaitKind::PinnedHead);
+    }
+
+    #[test]
+    fn approval_pending_blocks_before_locks() {
+        let job_id = "job";
+        let mut facts = base_facts(job_id);
+        facts.job_approvals.insert(
+            job_id.to_string(),
+            JobApprovalFact {
+                required: true,
+                state: JobApprovalState::Pending,
+                reason: None,
+            },
+        );
+        let lock = JobLock {
+            key: "lock-a".to_string(),
+            mode: LockMode::Exclusive,
+        };
+        facts
+            .job_locks
+            .insert(job_id.to_string(), vec![lock.clone()]);
+        facts.lock_state.acquire(&[lock]);
+
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::WaitingOnApproval);
+        let reason = decision.wait_reason.expect("wait reason");
+        assert_eq!(reason.kind, JobWaitKind::Approval);
+        assert_eq!(reason.detail.as_deref(), Some("awaiting human approval"));
+    }
+
+    #[test]
+    fn approval_rejected_is_terminal_block() {
+        let job_id = "job";
+        let mut facts = base_facts(job_id);
+        facts.job_approvals.insert(
+            job_id.to_string(),
+            JobApprovalFact {
+                required: true,
+                state: JobApprovalState::Rejected,
+                reason: Some("manual rejection".to_string()),
+            },
+        );
+
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::BlockedByApproval);
+        let reason = decision.wait_reason.expect("wait reason");
+        assert_eq!(reason.kind, JobWaitKind::Approval);
+        assert_eq!(reason.detail.as_deref(), Some("manual rejection"));
+    }
+
+    #[test]
+    fn approval_checked_after_pinned_head() {
+        let job_id = "job";
+        let mut facts = base_facts(job_id);
+        facts.pinned_heads.insert(
+            job_id.to_string(),
+            PinnedHeadFact {
+                branch: "main".to_string(),
+                matches: false,
+            },
+        );
+        facts.job_approvals.insert(
+            job_id.to_string(),
+            JobApprovalFact {
+                required: true,
+                state: JobApprovalState::Pending,
+                reason: None,
+            },
+        );
         let decision = evaluate_job(&facts, job_id);
         assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
         let reason = decision.wait_reason.expect("wait reason");

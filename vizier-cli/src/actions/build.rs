@@ -1017,6 +1017,7 @@ pub(crate) async fn run_build_execute(
             ],
             artifacts: Vec::new(),
             pinned_head: None,
+            approval: None,
             wait_reason: None,
             waited_on: Vec::new(),
         };
@@ -1097,6 +1098,7 @@ pub(crate) async fn run_build_execute(
                     locks: Vec::new(),
                     artifacts: materialize_artifacts.clone(),
                     pinned_head: None,
+                    approval: None,
                     wait_reason: None,
                     waited_on: Vec::new(),
                 });
@@ -1128,6 +1130,7 @@ pub(crate) async fn run_build_execute(
                 branch: step.derived_branch.clone(),
             }],
             pinned_head: None,
+            approval: None,
             wait_reason: None,
             waited_on: Vec::new(),
         };
@@ -1218,6 +1221,7 @@ pub(crate) async fn run_build_execute(
                     branch: step.derived_branch.clone(),
                 }],
                 pinned_head: None,
+                approval: None,
                 wait_reason: None,
                 waited_on: Vec::new(),
             };
@@ -1324,6 +1328,7 @@ pub(crate) async fn run_build_execute(
                     name: policy.target_branch.clone(),
                 }],
                 pinned_head: None,
+                approval: None,
                 wait_reason: None,
                 waited_on: Vec::new(),
             };
@@ -2263,6 +2268,7 @@ fn phase_job_reusable(status: jobs::JobStatus) -> bool {
         status,
         jobs::JobStatus::Queued
             | jobs::JobStatus::WaitingOnDeps
+            | jobs::JobStatus::WaitingOnApproval
             | jobs::JobStatus::WaitingOnLocks
             | jobs::JobStatus::Running
             | jobs::JobStatus::Succeeded
@@ -2416,7 +2422,9 @@ fn derive_step_status(
     if statuses.iter().any(|status| {
         matches!(
             status,
-            jobs::JobStatus::Failed | jobs::JobStatus::BlockedByDependency
+            jobs::JobStatus::Failed
+                | jobs::JobStatus::BlockedByDependency
+                | jobs::JobStatus::BlockedByApproval
         )
     }) {
         return BuildExecutionStatus::Failed;
@@ -2440,6 +2448,7 @@ fn derive_step_status(
             status,
             jobs::JobStatus::Queued
                 | jobs::JobStatus::WaitingOnDeps
+                | jobs::JobStatus::WaitingOnApproval
                 | jobs::JobStatus::WaitingOnLocks
                 | jobs::JobStatus::Running
         )

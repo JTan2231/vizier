@@ -10,12 +10,14 @@ pub type JobId = String;
 pub enum JobStatus {
     Queued,
     WaitingOnDeps,
+    WaitingOnApproval,
     WaitingOnLocks,
     Running,
     Succeeded,
     Failed,
     Cancelled,
     BlockedByDependency,
+    BlockedByApproval,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -87,8 +89,26 @@ pub struct PinnedHead {
 #[serde(rename_all = "snake_case")]
 pub enum JobWaitKind {
     Dependencies,
+    Approval,
     Locks,
     PinnedHead,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobApprovalState {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobApprovalFact {
+    #[serde(default)]
+    pub required: bool,
+    pub state: JobApprovalState,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

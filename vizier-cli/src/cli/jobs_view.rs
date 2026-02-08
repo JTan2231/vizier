@@ -73,9 +73,11 @@ fn schedule_status_visible(status: JobStatus) -> bool {
         status,
         JobStatus::Queued
             | JobStatus::WaitingOnDeps
+            | JobStatus::WaitingOnApproval
             | JobStatus::WaitingOnLocks
             | JobStatus::Running
             | JobStatus::BlockedByDependency
+            | JobStatus::BlockedByApproval
     )
 }
 
@@ -471,6 +473,24 @@ fn jobs_list_field_value(field: JobsListField, record: &jobs::JobRecord) -> Opti
             schedule.and_then(|sched| sched.wait_reason.as_ref().map(format_wait_reason))
         }
         JobsListField::WaitedOn => schedule.map(|sched| format_waited_on(&sched.waited_on)),
+        JobsListField::ApprovalRequired => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .map(|approval| approval.required.to_string())
+        }),
+        JobsListField::ApprovalState => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .map(|approval| jobs::approval_state_label(approval.state).to_string())
+        }),
+        JobsListField::ApprovalDecidedBy => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .and_then(|approval| approval.decided_by.clone())
+        }),
         JobsListField::PinnedHead => schedule.and_then(|sched| {
             sched
                 .pinned_head
@@ -566,6 +586,48 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
             schedule.and_then(|sched| sched.wait_reason.as_ref().map(format_wait_reason))
         }
         JobsShowField::WaitedOn => schedule.map(|sched| format_waited_on(&sched.waited_on)),
+        JobsShowField::ApprovalRequired => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .map(|approval| approval.required.to_string())
+        }),
+        JobsShowField::ApprovalState => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .map(|approval| jobs::approval_state_label(approval.state).to_string())
+        }),
+        JobsShowField::ApprovalRequestedAt => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .map(|approval| approval.requested_at.to_rfc3339())
+        }),
+        JobsShowField::ApprovalRequestedBy => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .and_then(|approval| approval.requested_by.clone())
+        }),
+        JobsShowField::ApprovalDecidedAt => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .and_then(|approval| approval.decided_at.as_ref().map(|value| value.to_rfc3339()))
+        }),
+        JobsShowField::ApprovalDecidedBy => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .and_then(|approval| approval.decided_by.clone())
+        }),
+        JobsShowField::ApprovalReason => schedule.and_then(|sched| {
+            sched
+                .approval
+                .as_ref()
+                .and_then(|approval| approval.reason.clone())
+        }),
         JobsShowField::PinnedHead => schedule.and_then(|sched| {
             sched
                 .pinned_head
@@ -954,6 +1016,84 @@ pub(crate) fn run_jobs_command(
                 if !outcome.updated.is_empty() {
                     rows.push(("Updated".to_string(), join_or_none(outcome.updated)));
                 }
+                println!("{}", format_label_value_block(&rows, 0));
+            }
+            Ok(())
+        }
+        JobsAction::Approve { job } => {
+            let binary = std::env::current_exe()?;
+            let outcome = jobs::approve_job(project_root, jobs_root, &binary, &job)?;
+            let approval_state = outcome
+                .record
+                .schedule
+                .as_ref()
+                .and_then(|schedule| schedule.approval.as_ref())
+                .map(|approval| jobs::approval_state_label(approval.state).to_string())
+                .unwrap_or_else(|| "none".to_string());
+            if emit_json {
+                let payload = json!({
+                    "outcome": "Job approval granted",
+                    "job": outcome.record.id,
+                    "status": jobs::status_label(outcome.record.status),
+                    "approval_state": approval_state,
+                    "started": outcome.started,
+                    "updated": outcome.updated,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                let mut rows = vec![
+                    ("Outcome".to_string(), "Job approval granted".to_string()),
+                    ("Job".to_string(), outcome.record.id),
+                    (
+                        "Status".to_string(),
+                        jobs::status_label(outcome.record.status).to_string(),
+                    ),
+                    ("Approval state".to_string(), approval_state),
+                ];
+                if !outcome.started.is_empty() {
+                    rows.push(("Started".to_string(), join_or_none(outcome.started)));
+                }
+                if !outcome.updated.is_empty() {
+                    rows.push(("Updated".to_string(), join_or_none(outcome.updated)));
+                }
+                println!("{}", format_label_value_block(&rows, 0));
+            }
+            Ok(())
+        }
+        JobsAction::Reject { job, reason } => {
+            let record = jobs::reject_job(project_root, jobs_root, &job, reason.as_deref())?;
+            let approval_state = record
+                .schedule
+                .as_ref()
+                .and_then(|schedule| schedule.approval.as_ref())
+                .map(|approval| jobs::approval_state_label(approval.state).to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let rejection_reason = record
+                .schedule
+                .as_ref()
+                .and_then(|schedule| schedule.approval.as_ref())
+                .and_then(|approval| approval.reason.clone())
+                .unwrap_or_else(|| "approval rejected".to_string());
+            if emit_json {
+                let payload = json!({
+                    "outcome": "Job approval rejected",
+                    "job": record.id,
+                    "status": jobs::status_label(record.status),
+                    "approval_state": approval_state,
+                    "reason": rejection_reason,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                let rows = vec![
+                    ("Outcome".to_string(), "Job approval rejected".to_string()),
+                    ("Job".to_string(), record.id),
+                    (
+                        "Status".to_string(),
+                        jobs::status_label(record.status).to_string(),
+                    ),
+                    ("Approval state".to_string(), approval_state),
+                    ("Reason".to_string(), rejection_reason),
+                ];
                 println!("{}", format_label_value_block(&rows, 0));
             }
             Ok(())

@@ -650,7 +650,7 @@ pub(crate) fn wait_for_job_completion(
             .unwrap_or("unknown");
         if !matches!(
             status,
-            "queued" | "waiting_on_deps" | "waiting_on_locks" | "running"
+            "queued" | "waiting_on_deps" | "waiting_on_approval" | "waiting_on_locks" | "running"
         ) {
             return Ok(());
         }

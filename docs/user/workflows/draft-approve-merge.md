@@ -76,9 +76,11 @@ At every stage you can pause, review the artifacts, and hand control back to a h
 
 All assistant-backed commands now enqueue background jobs. Use `--follow` when you want to stream the job’s stdout/stderr to your terminal; otherwise inspect progress with `vizier jobs`. Scheduled commands do not support `--json` output; use `vizier jobs show --format json` instead. On a TTY, `vizier approve`/`vizier merge` prompt for confirmation before the job is queued, and `vizier review` prompts for the review mode unless you pass `--yes`/`--review-only`/`--review-file`; non-TTY runs require explicit flags. For explicit ordering across unrelated jobs, pass repeatable `--after <job-id>` flags when queueing any scheduler-backed command.
 
+`vizier approve` also supports `--require-approval` to queue work immediately but hold execution at `waiting_on_approval` until someone runs `vizier jobs approve <job-id>`. Use `vizier jobs reject <job-id> --reason "..."` to reject the queued run and leave an auditable `blocked_by_approval` terminal record.
+
 Need to see what’s pending before approving or merging? Run `vizier list [--target BRANCH]` at any time to print every `draft/<slug>` branch that is ahead of the chosen target branch (defaults to the detected primary). By default each entry renders as a label/value block with `Plan`, `Branch`, and `Summary`, and when a matching background job exists the block adds inline job details (`Job`, `Job status`, optional `Job scope`, optional `Job started`) plus copy-pastable commands (`Status`, `Logs` with `--follow`, `Attach`). You can switch to table/JSON output or trim the fields via `[display.lists.list]` config or `vizier list --format/--fields`. The empty state returns a single `Outcome: No pending draft branches` block.
 
-Jobs can sit in `waiting_on_deps` or `waiting_on_locks` when upstream artifacts, explicit `--after` predecessors, or locks are not yet available. Use `vizier jobs show <id>` to see `After`, dependency, lock, pinned-head, and wait-reason details when a job is queued, or add `After`, `Wait`, `Dependencies`, `Locks`, and `Pinned head` to `[display.lists.jobs].fields` so `vizier jobs list` surfaces them inline. If a segment ends in `failed`/`blocked_by_dependency` and you want to re-run from that point, use `vizier jobs retry <job-id>` to rewind the job plus downstream dependents and let the scheduler start them again.
+Jobs can sit in `waiting_on_deps`, `waiting_on_approval`, or `waiting_on_locks` when upstream artifacts, explicit `--after` predecessors, human approval, or locks are not yet available. Use `vizier jobs show <id>` to see `After`, dependency, approval, lock, pinned-head, and wait-reason details when a job is queued, or add `After`, `Wait`, `Approval state`, `Dependencies`, `Locks`, and `Pinned head` to `[display.lists.jobs].fields` so `vizier jobs list` surfaces them inline. If a segment ends in `failed`/`blocked_by_dependency`/`blocked_by_approval` and you want to re-run from that point, use `vizier jobs retry <job-id>` to rewind the job plus downstream dependents and let the scheduler start them again.
 
 > 💡 Quality-of-life: `vizier completions <bash|zsh|fish|powershell|elvish>` prints a dynamic completion script. Source it once (for example, `echo "source <(vizier completions zsh)" >> ~/.zshrc`) so Tab completion offers pending plan slugs whenever you run `vizier approve` or `vizier merge`.
 
@@ -144,6 +146,8 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - `vizier approve --target release/1.0` — preview and diff against a branch other than the detected primary.
 - `vizier approve --branch feature/foo` — when your work diverges from `draft/<slug>` naming.
 - `vizier approve -y` — skip the confirmation prompt (non-TTY runs require this).
+- `vizier approve --require-approval` — queue the job but pause at `waiting_on_approval` until someone runs `vizier jobs approve <job-id>`.
+- `vizier approve --no-require-approval` — explicit opt-out when approval gating defaults are introduced later.
 - `vizier approve <slug> --after <job-id>` — enforce explicit job-id ordering when artifact dependencies are not enough.
 
 **Optional stop-condition**

@@ -16,6 +16,7 @@ fn is_active_job(status: jobs::JobStatus) -> bool {
         status,
         jobs::JobStatus::Queued
             | jobs::JobStatus::WaitingOnDeps
+            | jobs::JobStatus::WaitingOnApproval
             | jobs::JobStatus::WaitingOnLocks
             | jobs::JobStatus::Running
     )

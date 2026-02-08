@@ -70,6 +70,7 @@ Out of scope:
   - `locks`
   - `artifacts`
   - `pinned_head`
+  - `approval` (`required`, `state`, request/decision metadata, optional reason)
   - `wait_reason`
   - `waited_on`
 - Owner flows: all scheduler-backed commands.
@@ -112,6 +113,7 @@ Out of scope:
 Active:
 - `queued`
 - `waiting_on_deps`
+- `waiting_on_approval`
 - `waiting_on_locks`
 - `running`
 
@@ -120,6 +122,7 @@ Terminal:
 - `failed`
 - `cancelled`
 - `blocked_by_dependency`
+- `blocked_by_approval`
 
 ### Build execution status (`BuildExecutionStatus`)
 - `queued`

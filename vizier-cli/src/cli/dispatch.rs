@@ -476,6 +476,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     slug: spec.slug.clone(),
                     branch: spec.branch.clone(),
                 }];
+                if cmd.require_approval && !cmd.no_require_approval {
+                    schedule.approval = Some(jobs::pending_job_approval());
+                }
                 metadata.plan = Some(spec.slug.clone());
                 metadata.branch = Some(spec.branch.clone());
                 metadata.target = Some(spec.target_branch.clone());

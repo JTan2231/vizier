@@ -159,6 +159,168 @@ fn test_jobs_status_output() -> TestResult {
 }
 
 #[test]
+fn test_jobs_approve_advances_waiting_approval_job() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-approve-gate";
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "waiting_on_approval",
+            "command": ["vizier", "save", "approval"],
+            "child_args": ["--help"],
+            "created_at": "2026-02-07T12:00:00Z",
+            "started_at": null,
+            "finished_at": null,
+            "pid": null,
+            "exit_code": null,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": { "scope": "approve", "plan": "approval-plan" },
+            "config_snapshot": null,
+            "schedule": {
+                "dependencies": [
+                    { "artifact": { "target_branch": { "name": "missing-approval-target" } } }
+                ],
+                "approval": {
+                    "required": true,
+                    "state": "pending",
+                    "requested_at": "2026-02-07T12:00:00Z",
+                    "requested_by": "tester"
+                }
+            }
+        }),
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "approve", job_id])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs approve failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Job approval granted"),
+        "expected approval outcome block:\n{stdout}"
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    let approval_state = record
+        .pointer("/schedule/approval/state")
+        .and_then(Value::as_str);
+    assert_eq!(
+        approval_state,
+        Some("approved"),
+        "expected approval state to be approved: {record}"
+    );
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("blocked_by_dependency"),
+        "expected approved job to move past approval and settle on dependency status: {record}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_reject_marks_blocked_by_approval_and_records_reason() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let job_id = "job-reject-gate";
+    write_job_record(
+        &repo,
+        job_id,
+        json!({
+            "id": job_id,
+            "status": "waiting_on_approval",
+            "command": ["vizier", "approve", "reject-plan"],
+            "child_args": ["approve", "reject-plan", "--yes"],
+            "created_at": "2026-02-07T12:30:00Z",
+            "started_at": null,
+            "finished_at": null,
+            "pid": null,
+            "exit_code": null,
+            "stdout_path": format!(".vizier/jobs/{job_id}/stdout.log"),
+            "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": { "scope": "approve", "plan": "reject-plan" },
+            "config_snapshot": null,
+            "schedule": {
+                "approval": {
+                    "required": true,
+                    "state": "pending",
+                    "requested_at": "2026-02-07T12:30:00Z",
+                    "requested_by": "tester"
+                }
+            }
+        }),
+    )?;
+
+    let reason = "needs architecture sign-off";
+    let output = repo.vizier_output(&["jobs", "reject", job_id, "--reason", reason])?;
+    assert!(
+        output.status.success(),
+        "vizier jobs reject failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Job approval rejected"),
+        "expected reject outcome block:\n{stdout}"
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("blocked_by_approval"),
+        "expected blocked_by_approval status: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/schedule/approval/state")
+            .and_then(Value::as_str),
+        Some("rejected"),
+        "expected rejected approval state: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/schedule/approval/reason")
+            .and_then(Value::as_str),
+        Some(reason),
+        "expected rejection reason to be recorded: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/schedule/wait_reason/kind")
+            .and_then(Value::as_str),
+        Some("approval"),
+        "expected approval wait reason: {record}"
+    );
+    assert!(
+        record
+            .pointer("/schedule/waited_on")
+            .and_then(Value::as_array)
+            .map(|values| values
+                .iter()
+                .any(|value| value.as_str() == Some("approval")))
+            .unwrap_or(false),
+        "expected waited_on to include approval: {record}"
+    );
+    let outcome_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(job_id)
+        .join("outcome.json");
+    assert!(
+        outcome_path.exists(),
+        "expected reject flow to write outcome.json"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_jobs_tail_follow_orders_streams() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let job_id = "job-tail-order";
@@ -1724,11 +1886,27 @@ fn test_jobs_list_status_labels_for_waiting_and_blocked() -> TestResult {
     )?;
     write_job_record_simple(
         &repo,
+        "job-wait-approval",
+        "waiting_on_approval",
+        "2026-01-31T03:01:30Z",
+        None,
+        &["vizier", "save", "wait-approval"],
+    )?;
+    write_job_record_simple(
+        &repo,
         "job-blocked",
         "blocked_by_dependency",
         "2026-01-31T03:02:00Z",
         None,
         &["vizier", "save", "blocked"],
+    )?;
+    write_job_record_simple(
+        &repo,
+        "job-blocked-approval",
+        "blocked_by_approval",
+        "2026-01-31T03:02:30Z",
+        None,
+        &["vizier", "save", "blocked-approval"],
     )?;
 
     let output = repo.vizier_output(&["jobs", "list", "--format", "json"])?;
@@ -1764,9 +1942,19 @@ fn test_jobs_list_status_labels_for_waiting_and_blocked() -> TestResult {
         "waiting_on_locks label mismatch: {statuses:?}"
     );
     assert_eq!(
+        statuses.get("job-wait-approval").map(String::as_str),
+        Some("waiting_on_approval"),
+        "waiting_on_approval label mismatch: {statuses:?}"
+    );
+    assert_eq!(
         statuses.get("job-blocked").map(String::as_str),
         Some("blocked_by_dependency"),
         "blocked_by_dependency label mismatch: {statuses:?}"
+    );
+    assert_eq!(
+        statuses.get("job-blocked-approval").map(String::as_str),
+        Some("blocked_by_approval"),
+        "blocked_by_approval label mismatch: {statuses:?}"
     );
     Ok(())
 }

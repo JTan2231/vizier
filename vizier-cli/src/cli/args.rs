@@ -188,6 +188,9 @@ pub(crate) enum JobsListField {
     Locks,
     Wait,
     WaitedOn,
+    ApprovalRequired,
+    ApprovalState,
+    ApprovalDecidedBy,
     PinnedHead,
     Artifacts,
     Failed,
@@ -205,6 +208,9 @@ impl JobsListField {
             "locks" => Some(Self::Locks),
             "wait" => Some(Self::Wait),
             "waited on" => Some(Self::WaitedOn),
+            "approval required" => Some(Self::ApprovalRequired),
+            "approval state" => Some(Self::ApprovalState),
+            "approval decided by" => Some(Self::ApprovalDecidedBy),
             "pinned head" => Some(Self::PinnedHead),
             "artifacts" => Some(Self::Artifacts),
             "failed" => Some(Self::Failed),
@@ -223,6 +229,9 @@ impl JobsListField {
             Self::Locks => "Locks",
             Self::Wait => "Wait",
             Self::WaitedOn => "Waited on",
+            Self::ApprovalRequired => "Approval required",
+            Self::ApprovalState => "Approval state",
+            Self::ApprovalDecidedBy => "Approval decided by",
             Self::PinnedHead => "Pinned head",
             Self::Artifacts => "Artifacts",
             Self::Failed => "Failed",
@@ -240,6 +249,9 @@ impl JobsListField {
             Self::Locks => "locks",
             Self::Wait => "wait",
             Self::WaitedOn => "waited_on",
+            Self::ApprovalRequired => "approval_required",
+            Self::ApprovalState => "approval_state",
+            Self::ApprovalDecidedBy => "approval_decided_by",
             Self::PinnedHead => "pinned_head",
             Self::Artifacts => "artifacts",
             Self::Failed => "failed",
@@ -279,6 +291,13 @@ pub(crate) enum JobsShowField {
     Locks,
     Wait,
     WaitedOn,
+    ApprovalRequired,
+    ApprovalState,
+    ApprovalRequestedAt,
+    ApprovalRequestedBy,
+    ApprovalDecidedAt,
+    ApprovalDecidedBy,
+    ApprovalReason,
     PinnedHead,
     Artifacts,
     Worktree,
@@ -327,6 +346,13 @@ impl JobsShowField {
             "locks" => Some(Self::Locks),
             "wait" => Some(Self::Wait),
             "waited on" => Some(Self::WaitedOn),
+            "approval required" => Some(Self::ApprovalRequired),
+            "approval state" => Some(Self::ApprovalState),
+            "approval requested at" => Some(Self::ApprovalRequestedAt),
+            "approval requested by" => Some(Self::ApprovalRequestedBy),
+            "approval decided at" => Some(Self::ApprovalDecidedAt),
+            "approval decided by" => Some(Self::ApprovalDecidedBy),
+            "approval reason" => Some(Self::ApprovalReason),
             "pinned head" => Some(Self::PinnedHead),
             "artifacts" => Some(Self::Artifacts),
             "worktree" => Some(Self::Worktree),
@@ -376,6 +402,13 @@ impl JobsShowField {
             Self::Locks => "Locks",
             Self::Wait => "Wait",
             Self::WaitedOn => "Waited on",
+            Self::ApprovalRequired => "Approval required",
+            Self::ApprovalState => "Approval state",
+            Self::ApprovalRequestedAt => "Approval requested at",
+            Self::ApprovalRequestedBy => "Approval requested by",
+            Self::ApprovalDecidedAt => "Approval decided at",
+            Self::ApprovalDecidedBy => "Approval decided by",
+            Self::ApprovalReason => "Approval reason",
             Self::PinnedHead => "Pinned head",
             Self::Artifacts => "Artifacts",
             Self::Worktree => "Worktree",
@@ -424,6 +457,13 @@ impl JobsShowField {
             Self::Locks => "locks",
             Self::Wait => "wait",
             Self::WaitedOn => "waited_on",
+            Self::ApprovalRequired => "approval_required",
+            Self::ApprovalState => "approval_state",
+            Self::ApprovalRequestedAt => "approval_requested_at",
+            Self::ApprovalRequestedBy => "approval_requested_by",
+            Self::ApprovalDecidedAt => "approval_decided_at",
+            Self::ApprovalDecidedBy => "approval_decided_by",
+            Self::ApprovalReason => "approval_reason",
             Self::PinnedHead => "pinned_head",
             Self::Artifacts => "artifacts",
             Self::Worktree => "worktree",
@@ -718,7 +758,7 @@ pub(crate) enum JobsAction {
 
     /// Show scheduled jobs and dependency relationships
     Schedule {
-        /// Include succeeded/failed/cancelled jobs (default shows active + blocked_by_dependency)
+        /// Include succeeded/failed/cancelled jobs (default shows active + blocked states)
         #[arg(long = "all", short = 'a')]
         all: bool,
 
@@ -755,6 +795,22 @@ pub(crate) enum JobsAction {
     Retry {
         #[arg(value_name = "JOB")]
         job: String,
+    },
+
+    /// Approve a queued job that is waiting on explicit human approval
+    Approve {
+        #[arg(value_name = "JOB")]
+        job: String,
+    },
+
+    /// Reject a queued job that is waiting on explicit human approval
+    Reject {
+        #[arg(value_name = "JOB")]
+        job: String,
+
+        /// Optional reason recorded in job/outcome metadata
+        #[arg(long = "reason", value_name = "TEXT")]
+        reason: Option<String>,
     },
 
     /// Tail logs for a background job (stdout/stderr); add --follow to stream until completion
@@ -823,6 +879,14 @@ pub(crate) struct ApproveCmd {
     /// Wait for one or more predecessor jobs to succeed before this job can run
     #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
     pub(crate) after: Vec<String>,
+
+    /// Queue the job but require explicit `vizier jobs approve <job-id>` before it can start
+    #[arg(long = "require-approval", action = ArgAction::SetTrue, conflicts_with = "no_require_approval")]
+    pub(crate) require_approval: bool,
+
+    /// Explicitly disable scheduler approval gating for this run
+    #[arg(long = "no-require-approval", action = ArgAction::SetTrue, conflicts_with = "require_approval")]
+    pub(crate) no_require_approval: bool,
 }
 
 #[derive(ClapArgs, Debug)]

@@ -18,8 +18,8 @@ use vizier_core::scheduler::spec::{
     SchedulerFacts,
 };
 pub use vizier_core::scheduler::{
-    AfterPolicy, JobAfterDependency, JobArtifact, JobLock, JobStatus, JobWaitKind, JobWaitReason,
-    LockMode, PinnedHead, format_artifact,
+    AfterPolicy, JobAfterDependency, JobApprovalFact, JobApprovalState, JobArtifact, JobLock,
+    JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,10 +39,42 @@ pub struct JobSchedule {
     pub artifacts: Vec<JobArtifact>,
     #[serde(default)]
     pub pinned_head: Option<PinnedHead>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<JobApproval>,
     #[serde(default)]
     pub wait_reason: Option<JobWaitReason>,
     #[serde(default)]
     pub waited_on: Vec<JobWaitKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobApproval {
+    #[serde(default)]
+    pub required: bool,
+    pub state: JobApprovalState,
+    pub requested_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl JobApproval {
+    pub fn pending(requested_by: Option<String>) -> Self {
+        Self {
+            required: true,
+            state: JobApprovalState::Pending,
+            requested_at: Utc::now(),
+            requested_by,
+            decided_at: None,
+            decided_by: None,
+            reason: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +273,43 @@ pub fn current_job_id() -> Option<String> {
         .lock()
         .expect("lock current job id")
         .clone()
+}
+
+fn resolve_approval_actor() -> String {
+    for key in [
+        "VIZIER_APPROVAL_ACTOR",
+        "GIT_AUTHOR_NAME",
+        "GIT_COMMITTER_NAME",
+        "USER",
+        "USERNAME",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
+pub fn pending_job_approval() -> JobApproval {
+    JobApproval::pending(Some(resolve_approval_actor()))
+}
+
+pub fn approval_state_label(state: JobApprovalState) -> &'static str {
+    match state {
+        JobApprovalState::Pending => "pending",
+        JobApprovalState::Approved => "approved",
+        JobApprovalState::Rejected => "rejected",
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApproveJobOutcome {
+    pub record: JobRecord,
+    pub started: Vec<String>,
+    pub updated: Vec<String>,
 }
 
 pub fn ensure_jobs_root(project_root: &Path) -> io::Result<PathBuf> {
@@ -787,6 +856,7 @@ fn job_is_terminal(status: JobStatus) -> bool {
             | JobStatus::Failed
             | JobStatus::Cancelled
             | JobStatus::BlockedByDependency
+            | JobStatus::BlockedByApproval
     )
 }
 
@@ -795,6 +865,7 @@ fn job_is_active(status: JobStatus) -> bool {
         status,
         JobStatus::Queued
             | JobStatus::WaitingOnDeps
+            | JobStatus::WaitingOnApproval
             | JobStatus::WaitingOnLocks
             | JobStatus::Running
     )
@@ -1343,6 +1414,19 @@ fn build_scheduler_facts(
                 );
             }
 
+            if let Some(approval) = schedule.approval.as_ref()
+                && approval.required
+            {
+                facts.job_approvals.insert(
+                    record.id.clone(),
+                    JobApprovalFact {
+                        required: true,
+                        state: approval.state,
+                        reason: approval.reason.clone(),
+                    },
+                );
+            }
+
             if !schedule.waited_on.is_empty() {
                 facts
                     .waited_on
@@ -1454,6 +1538,143 @@ pub fn scheduler_tick(
 ) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
     let _lock = SchedulerLock::acquire(jobs_root)?;
     scheduler_tick_locked(project_root, jobs_root, binary)
+}
+
+fn note_waited(waited_on: &mut Vec<JobWaitKind>, kind: JobWaitKind) {
+    if !waited_on.contains(&kind) {
+        waited_on.push(kind);
+    }
+}
+
+fn require_approval_mut(
+    record: &mut JobRecord,
+) -> Result<&mut JobApproval, Box<dyn std::error::Error>> {
+    let schedule = record
+        .schedule
+        .as_mut()
+        .ok_or_else(|| format!("job {} is not configured for approval gating", record.id))?;
+    let approval = schedule
+        .approval
+        .as_mut()
+        .ok_or_else(|| format!("job {} is not configured for approval gating", record.id))?;
+    if !approval.required {
+        return Err(format!("job {} is not configured for approval gating", record.id).into());
+    }
+    Ok(approval)
+}
+
+fn ensure_approval_transitionable(record: &JobRecord) -> Result<(), Box<dyn std::error::Error>> {
+    if record.status == JobStatus::Running {
+        return Err(format!("job {} is running", record.id).into());
+    }
+    if job_is_terminal(record.status) {
+        return Err(format!(
+            "job {} is terminal ({})",
+            record.id,
+            status_label(record.status)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+pub fn approve_job(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    job_id: &str,
+) -> Result<ApproveJobOutcome, Box<dyn std::error::Error>> {
+    let _lock = SchedulerLock::acquire(jobs_root)?;
+    let paths = paths_for(jobs_root, job_id);
+    if !paths.record_path.exists() {
+        return Err(format!("no background job {}", job_id).into());
+    }
+    let mut record = load_record(&paths)?;
+    ensure_approval_transitionable(&record)?;
+    {
+        let approval = require_approval_mut(&mut record)?;
+        match approval.state {
+            JobApprovalState::Pending => {
+                approval.state = JobApprovalState::Approved;
+                approval.decided_at = Some(Utc::now());
+                approval.decided_by = Some(resolve_approval_actor());
+                approval.reason = None;
+            }
+            JobApprovalState::Approved => {
+                return Err(format!("job {} is already approved", record.id).into());
+            }
+            JobApprovalState::Rejected => {
+                return Err(format!("job {} approval is already rejected", record.id).into());
+            }
+        }
+    }
+    persist_record(&paths, &record)?;
+
+    let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, binary)?;
+    let record = load_record(&paths)?;
+
+    Ok(ApproveJobOutcome {
+        record,
+        started: scheduler_outcome.started,
+        updated: scheduler_outcome.updated,
+    })
+}
+
+pub fn reject_job(
+    project_root: &Path,
+    jobs_root: &Path,
+    job_id: &str,
+    reason: Option<&str>,
+) -> Result<JobRecord, Box<dyn std::error::Error>> {
+    let _lock = SchedulerLock::acquire(jobs_root)?;
+    let paths = paths_for(jobs_root, job_id);
+    if !paths.record_path.exists() {
+        return Err(format!("no background job {}", job_id).into());
+    }
+    let mut record = load_record(&paths)?;
+    ensure_approval_transitionable(&record)?;
+    let reason = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let rejection_detail = reason
+        .clone()
+        .unwrap_or_else(|| "approval rejected".to_string());
+    {
+        let approval = require_approval_mut(&mut record)?;
+        match approval.state {
+            JobApprovalState::Pending => {
+                approval.state = JobApprovalState::Rejected;
+                approval.decided_at = Some(Utc::now());
+                approval.decided_by = Some(resolve_approval_actor());
+                approval.reason = reason.clone();
+            }
+            JobApprovalState::Approved => {
+                return Err(format!("job {} is already approved", record.id).into());
+            }
+            JobApprovalState::Rejected => {
+                return Err(format!("job {} approval is already rejected", record.id).into());
+            }
+        }
+    }
+    if let Some(schedule) = record.schedule.as_mut() {
+        note_waited(&mut schedule.waited_on, JobWaitKind::Approval);
+        schedule.wait_reason = Some(JobWaitReason {
+            kind: JobWaitKind::Approval,
+            detail: Some(rejection_detail),
+        });
+    }
+    persist_record(&paths, &record)?;
+
+    finalize_job(
+        project_root,
+        jobs_root,
+        job_id,
+        JobStatus::BlockedByApproval,
+        10,
+        None,
+        None,
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1736,6 +1957,16 @@ fn rewind_job_record_for_retry(
     if let Some(schedule) = record.schedule.as_mut() {
         schedule.wait_reason = None;
         schedule.waited_on.clear();
+        if let Some(approval) = schedule.approval.as_mut()
+            && approval.required
+        {
+            approval.state = JobApprovalState::Pending;
+            approval.requested_at = Utc::now();
+            approval.requested_by = Some(resolve_approval_actor());
+            approval.decided_at = None;
+            approval.decided_by = None;
+            approval.reason = None;
+        }
     }
 
     if let Some(metadata) = record.metadata.as_mut() {
@@ -1796,12 +2027,14 @@ pub fn status_label(status: JobStatus) -> &'static str {
     match status {
         JobStatus::Queued => "queued",
         JobStatus::WaitingOnDeps => "waiting_on_deps",
+        JobStatus::WaitingOnApproval => "waiting_on_approval",
         JobStatus::WaitingOnLocks => "waiting_on_locks",
         JobStatus::Running => "running",
         JobStatus::Succeeded => "succeeded",
         JobStatus::Failed => "failed",
         JobStatus::Cancelled => "cancelled",
         JobStatus::BlockedByDependency => "blocked_by_dependency",
+        JobStatus::BlockedByApproval => "blocked_by_approval",
     }
 }
 

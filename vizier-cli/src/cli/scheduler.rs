@@ -28,6 +28,7 @@ fn job_is_active(status: jobs::JobStatus) -> bool {
         status,
         jobs::JobStatus::Queued
             | jobs::JobStatus::WaitingOnDeps
+            | jobs::JobStatus::WaitingOnApproval
             | jobs::JobStatus::WaitingOnLocks
             | jobs::JobStatus::Running
     )
@@ -541,8 +542,9 @@ pub(crate) fn emit_job_summary(record: &jobs::JobRecord) {
         jobs::JobStatus::Running => "Job started",
         jobs::JobStatus::Queued
         | jobs::JobStatus::WaitingOnDeps
+        | jobs::JobStatus::WaitingOnApproval
         | jobs::JobStatus::WaitingOnLocks => "Job queued",
-        jobs::JobStatus::BlockedByDependency => "Job blocked",
+        jobs::JobStatus::BlockedByDependency | jobs::JobStatus::BlockedByApproval => "Job blocked",
         jobs::JobStatus::Succeeded => "Job complete",
         jobs::JobStatus::Failed => "Job failed",
         jobs::JobStatus::Cancelled => "Job cancelled",
@@ -558,6 +560,15 @@ pub(crate) fn emit_job_summary(record: &jobs::JobRecord) {
             .clone()
             .unwrap_or_else(|| format!("{:?}", reason.kind).to_lowercase());
         println!("Wait: {detail}");
+    }
+    if let Some(approval) = record
+        .schedule
+        .as_ref()
+        .and_then(|schedule| schedule.approval.as_ref())
+        && approval.required
+        && matches!(approval.state, jobs::JobApprovalState::Pending)
+    {
+        println!("Next: vizier jobs approve {}", record.id);
     }
     println!("Status: vizier jobs status {}", record.id);
     println!("Logs: vizier jobs tail --follow {}", record.id);

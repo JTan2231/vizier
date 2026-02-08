@@ -24,14 +24,14 @@ durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
 - **CLI orchestration** enqueues jobs and advances the scheduler (see
   `vizier-cli/src/cli/dispatch.rs` and `vizier-cli/src/cli/scheduler.rs`).
 - **Schedule metadata** is stored per job: `after`, `dependencies`, `locks`,
-  `artifacts`, `pinned_head`, `wait_reason`, and `waited_on`.
+  `artifacts`, `pinned_head`, `approval`, `wait_reason`, and `waited_on`.
 - **Scheduler lock** lives at `.vizier/jobs/scheduler.lock` and serializes scheduler
   ticks.
 
 ## Job lifecycle
 Statuses:
-- `queued`, `waiting_on_deps`, `waiting_on_locks`, `running` are active.
-- `succeeded`, `failed`, `cancelled`, `blocked_by_dependency` are terminal.
+- `queued`, `waiting_on_deps`, `waiting_on_approval`, `waiting_on_locks`, `running` are active.
+- `succeeded`, `failed`, `cancelled`, `blocked_by_dependency`, `blocked_by_approval` are terminal.
 
 Terminal jobs are never re-run by the scheduler. `blocked_by_dependency` indicates a
 dependency can no longer be satisfied (see below).
@@ -76,8 +76,9 @@ were reset and which were restarted.
 1) `after` dependencies  
 2) Artifact dependencies  
 3) Pinned head  
-4) Locks  
-5) Spawn
+4) Approval  
+5) Locks  
+6) Spawn
 
 ## Explicit `after` dependency resolution
 `after` dependencies are explicit job-id constraints (`--after <job-id>`) and are
@@ -115,6 +116,21 @@ If a job has a `pinned_head` and the repo head no longer matches, the job waits 
 - `wait_reason.kind = pinned_head`
 - `wait_reason.detail = "pinned head mismatch on <branch>"`
 
+## Human approval gate
+`vizier approve <plan> --require-approval` records an approval gate in the job schedule:
+- `schedule.approval.required = true`
+- `schedule.approval.state = pending`
+- `schedule.approval.requested_at/requested_by` capture who queued the gate
+
+Decision commands:
+- `vizier jobs approve <job-id>` transitions `pending -> approved`, stamps `decided_at/decided_by`, then runs one scheduler tick.
+- `vizier jobs reject <job-id> [--reason TEXT]` transitions `pending -> rejected`, records the reason, and finalizes the job as `blocked_by_approval`.
+
+Scheduler behavior:
+- `approval.state = pending` => `status = waiting_on_approval`, `wait_reason.kind = approval`, detail `awaiting human approval`.
+- `approval.state = approved` => job continues to lock checks/spawn.
+- `approval.state = rejected` => terminal `blocked_by_approval` (with reason when provided).
+
 ## Locks
 Locks are shared or exclusive by key. When a lock cannot be acquired the job waits with:
 - `status = waiting_on_locks`
@@ -122,7 +138,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `wait_reason.detail = "waiting on locks"`
 
 ## Wait reasons and waited_on
-- `wait_reason.kind` is one of `dependencies`, `pinned_head`, or `locks` and includes
+- `wait_reason.kind` is one of `dependencies`, `pinned_head`, `approval`, or `locks` and includes
   a detail string describing the blocking condition.
 - `waited_on` is a de-duplicated list of wait kinds the job has encountered over time.
 - When a job becomes eligible to start, `wait_reason` is cleared.
@@ -142,6 +158,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `cancelled` is operator-initiated (`vizier jobs cancel`) and uses exit code `143`.
 - `blocked_by_dependency` is terminal; the scheduler will not retry it automatically
   (use `vizier jobs retry <job-id>` to rewind/requeue manually).
+- `blocked_by_approval` is terminal and indicates a human rejected execution.
 - `scheduler_tick` can return an error (for example, missing binary or record
   persistence failure). In those cases the job record remains queued until retried.
 - `exit_code` is recorded on finalization; active or blocked jobs have no exit code.
@@ -151,6 +168,7 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 - `after`
 - `dependencies`
 - `locks`
+- `approval_required`, `approval_state`, `approval_decided_by`
 - `wait` (wait reason)
 - `waited_on`
 - `pinned_head`

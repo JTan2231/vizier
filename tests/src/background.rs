@@ -438,6 +438,95 @@ fn test_scheduler_after_dependency_waits_and_unblocks() -> TestResult {
 }
 
 #[test]
+fn test_scheduler_require_approval_waits_until_jobs_approve() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let draft = repo.vizier_output(&[
+        "draft",
+        "--name",
+        "approval-gated",
+        "approval gate scheduler spec",
+    ])?;
+    assert!(
+        draft.status.success(),
+        "vizier draft failed: {}",
+        String::from_utf8_lossy(&draft.stderr)
+    );
+
+    let queued = repo
+        .vizier_cmd_background()
+        .args(["approve", "approval-gated", "--yes", "--require-approval"])
+        .output()?;
+    assert!(
+        queued.status.success(),
+        "scheduled approve with --require-approval failed: {}",
+        String::from_utf8_lossy(&queued.stderr)
+    );
+    let queued_stdout = String::from_utf8_lossy(&queued.stdout);
+    assert!(
+        queued_stdout.contains("Status: waiting_on_approval"),
+        "expected queue summary to show waiting_on_approval:\n{queued_stdout}"
+    );
+    assert!(
+        queued_stdout.contains("Next: vizier jobs approve"),
+        "expected queue summary to show next approve action:\n{queued_stdout}"
+    );
+    let job_id = extract_job_id(&queued_stdout).ok_or("expected approve job id")?;
+
+    wait_for_job_status(
+        &repo,
+        &job_id,
+        "waiting_on_approval",
+        Duration::from_secs(10),
+    )?;
+    let pending_record = read_job_record(&repo, &job_id)?;
+    assert_eq!(
+        pending_record
+            .pointer("/schedule/approval/required")
+            .and_then(Value::as_bool),
+        Some(true),
+        "expected approval.required=true on queued job: {pending_record}"
+    );
+    assert_eq!(
+        pending_record
+            .pointer("/schedule/approval/state")
+            .and_then(Value::as_str),
+        Some("pending"),
+        "expected approval.state=pending before decision: {pending_record}"
+    );
+
+    let approval = repo
+        .vizier_cmd_background()
+        .args(["jobs", "approve", &job_id])
+        .output()?;
+    assert!(
+        approval.status.success(),
+        "vizier jobs approve failed: {}",
+        String::from_utf8_lossy(&approval.stderr)
+    );
+    let approval_stdout = String::from_utf8_lossy(&approval.stdout);
+    assert!(
+        approval_stdout.contains("Job approval granted"),
+        "expected approval outcome block:\n{approval_stdout}"
+    );
+
+    wait_for_job_completion(&repo, &job_id, Duration::from_secs(30))?;
+    let final_record = read_job_record(&repo, &job_id)?;
+    assert_ne!(
+        final_record.get("status").and_then(Value::as_str),
+        Some("waiting_on_approval"),
+        "job should leave waiting_on_approval after approval: {final_record}"
+    );
+    assert_eq!(
+        final_record
+            .pointer("/schedule/approval/state")
+            .and_then(Value::as_str),
+        Some("approved"),
+        "approval state should be approved after decision: {final_record}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_scheduler_after_dependency_blocks_on_failed_predecessor() -> TestResult {
     let repo = IntegrationRepo::new_without_mock()?;
 
