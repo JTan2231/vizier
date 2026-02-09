@@ -497,6 +497,9 @@ pub(crate) enum Commands {
     /// Show a short, workflow-oriented help page (or the full reference with --all)
     Help(HelpCmd),
 
+    /// Initialize the repository for Vizier usage (idempotent) or validate init state
+    Init(InitCmd),
+
     /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
     Draft(DraftCmd),
 
@@ -568,6 +571,13 @@ pub(crate) struct HelpCmd {
     /// Show help for a specific subcommand (equivalent to `vizier <command> --help`)
     #[arg(value_name = "COMMAND")]
     pub(crate) command: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct InitCmd {
+    /// Validate initialization state without mutating files
+    #[arg(long = "check", action = ArgAction::SetTrue)]
+    pub(crate) check: bool,
 }
 
 #[derive(ClapArgs, Debug)]

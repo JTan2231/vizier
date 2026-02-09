@@ -2,6 +2,7 @@ mod approve;
 mod build;
 mod draft;
 mod gates;
+mod init;
 mod list;
 mod merge;
 mod patch;
@@ -18,6 +19,7 @@ pub(crate) use build::{
     BuildExecuteArgs, BuildExecutionPipeline, run_build, run_build_execute, run_build_materialize,
 };
 pub(crate) use draft::run_draft;
+pub(crate) use init::run_init;
 pub(crate) use list::{run_cd, run_clean, run_list};
 pub(crate) use merge::run_merge;
 pub(crate) use patch::{PatchArgs, run_patch};

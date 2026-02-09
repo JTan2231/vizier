@@ -11,6 +11,7 @@ mod config;
 mod display;
 mod draft;
 mod help;
+mod init;
 mod install;
 mod jobs;
 mod list;

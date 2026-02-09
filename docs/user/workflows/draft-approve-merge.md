@@ -4,6 +4,10 @@ This guide explains how Vizier’s plan workflow turns a high-level spec into au
 
 For the canonical non-agent `.vizier/*` material model (entities, state vocab, durability, and compatibility/recovery semantics), see `docs/dev/vizier-material-model.md`.
 
+Before starting plan workflows in a repository, run `vizier init` once (or
+`vizier init --check` in CI) so durable narrative markers and required
+`.gitignore` runtime rules are present.
+
 ## Queue Plan Pipelines with `vizier build`
 
 When you want to batch related plan drafts, start with:

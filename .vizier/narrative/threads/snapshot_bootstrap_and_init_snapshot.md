@@ -1,34 +1,43 @@
-# Snapshot bootstrap for existing projects and `vizier init-snapshot`
+# Repository initialization contract and bootstrap (`vizier init`)
 
-Thread: Snapshot bootstrap ergonomics (`vizier init-snapshot`) — cross: Narrative storage, Snapshot-first prompting, Configuration posture + defaults
+Thread: Repository initialization contract (`vizier init`) — cross: Narrative storage, Snapshot-first prompting, Configuration posture + defaults
 
 ## Tension
-- `vizier init-snapshot` is the surviving bootstrap command, but dropping it into an already-active repo can feel like a demand to summarize the entire project history before agents are “allowed” to participate.
-- That expectation makes adoption heavy: operators hesitate to run init-snapshot on mature projects because they don’t have a clear, scoped way to describe what already happened versus what should happen next.
-- The current README positioning uses `vizier init-snapshot` as the Hello World step, which reinforces the sense that existing projects are “behind” if they lack a fully curated snapshot.
+- Bootstrap behavior was implicit and scattered across command setup paths, which made it hard for operators and CI to answer a deterministic question: "is this repo initialized for Vizier?"
+- Earlier bootstrap guidance centered on `vizier init-snapshot`, which mixed narrative framing concerns with initialization mechanics and left room for confusion about required durable files vs ephemeral runtime directories.
+- Pre-dispatch setup mutated `.vizier` in some paths, so a validation-style check could still create directories, undermining read-only expectations.
 
 ## Desired behavior (product-level)
-- Treat `vizier init-snapshot` as a forward-looking framing tool, not a historical audit requirement:
-  - New repositories and fresh features can opt into a richer initial snapshot when it helps clarify intent.
-  - Existing projects are explicitly encouraged to “start where they are” with a minimal snapshot that focuses on current behavior and near-term threads rather than reconstructing the full past.
-- Snapshot bootstrapping feels lightweight:
-  - Operators understand that they can seed the snapshot with just a few key themes and active tensions, and let Default-Action Posture evolve it over time.
-  - There is no implied obligation to backfill all prior context before using `vizier ask/save/draft/approve/review/merge`.
-- Documentation and examples match this posture:
-  - README and workflow docs describe init-snapshot as an optional bootstrap for clarifying today’s story, especially on new projects/features.
-  - Existing-repo examples call out incremental adoption paths (“add a snapshot slice for the feature you’re about to touch”) instead of suggesting a full-project rewrite.
+- `vizier init` is the canonical bootstrap command.
+- Initialization is contract-driven and machine-checkable:
+  - Durable markers: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
+  - Required `.gitignore` runtime coverage: `.vizier/tmp/`, `.vizier/tmp-worktrees/`, `.vizier/jobs/`, `.vizier/sessions/`.
+- Mutating init is idempotent and safe to rerun:
+  - Creates missing durable markers with starter content.
+  - Appends missing ignore rules without reordering unrelated `.gitignore` content or duplicating equivalent patterns.
+  - Never overwrites existing marker file contents by default.
+- `vizier init --check` validates the same contract without mutating files and exits non-zero with an explicit missing-item list when requirements are not met.
 
 ## Acceptance criteria
-- README and any quick-start material:
-  - Emphasize that `vizier init-snapshot` is helpful but optional; existing repos can begin with a small, present-focused snapshot without summarizing all prior work.
-  - Include at least one example where an operator runs init-snapshot specifically for a new feature or subsystem in a larger, pre-existing project.
-- Snapshot guidance (prompts + docs):
-  - Makes clear that the snapshot is a living document that can start shallow and grow; agents are instructed to evolve it forward rather than retroactively re-narrating the entire codebase.
-  - Reinforces that it is acceptable to leave historical gaps as long as current behaviors, tensions, and upcoming work are captured.
-- Operator experience:
-  - Teams adopting Vizier in an existing repo can run a minimal init-snapshot (or rely on Default-Action Posture to grow the snapshot) without feeling blocked by missing history.
-  - Conversations about older, undocumented behavior naturally spawn new snapshot slices for that behavior instead of pressuring operators to rebuild a full historical arc.
+- `vizier init` on an uninitialized repo creates durable marker files and required ignore entries, then reports initialization applied.
+- Re-running `vizier init` on a satisfied repo produces no file-content changes and reports already satisfied.
+- `vizier init --check` exits 0 only when durable markers and required ignore coverage are present.
+- `vizier init --check` exits non-zero with explicit missing markers/ignore entries when requirements are absent.
+- Check mode is non-mutating: it does not create `.vizier`, `.vizier/jobs`, or `.vizier/sessions` as a side effect.
+- Outside a Git repository, `vizier init` fails with an explicit non-git error.
 
 ## Status
-- `vizier init-snapshot` remains the bootstrap command and is positioned as the entrypoint in README quick-start examples.
-- This thread tracks the repositioning of init-snapshot toward a “start where you are” posture for existing projects and a richer-but-optional bootstrap for new repos/features, plus the documentation updates and examples needed to make that behavior obvious.
+- Shipped v1:
+  - New `vizier init` command surface with `--check`.
+  - Shared init-state evaluator used by mutate and check paths.
+  - Idempotent durable scaffolding and equivalence-aware `.gitignore` reconciliation.
+  - Dispatch now bypasses pre-command `.vizier` directory creation for `vizier init` so `vizier init --check` remains read-only.
+  - Integration coverage added for fresh/partial/full/check/outside-git/permission-failure paths.
+- Follow-up:
+  - README/AGENTS are human-authored; align remaining bootstrap wording there via human-authored updates when desired.
+
+## Pointers
+- CLI wiring: `vizier-cli/src/cli/args.rs`, `vizier-cli/src/cli/dispatch.rs`
+- Init action + evaluator: `vizier-cli/src/actions/init.rs`
+- Integration tests: `tests/src/init.rs`
+- Command reference + docs: `docs/man/vizier.1`, `docs/user/installation.md`, `docs/user/workflows/draft-approve-merge.md`

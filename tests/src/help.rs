@@ -84,7 +84,9 @@ fn test_help_all_prints_full_reference() -> TestResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Commands:") && stdout.contains("test-display"),
+        stdout.contains("Commands:")
+            && stdout.contains("test-display")
+            && stdout.contains("\n  init "),
         "full help should include the command inventory (including test-display): {stdout}"
     );
     assert!(

@@ -158,6 +158,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    if let Commands::Init(cmd) = &cli.command {
+        return run_init(&project_root, cmd.check);
+    }
+
     if let Err(e) = std::fs::create_dir_all(project_root.join(".vizier")) {
         display::emit(
             LogLevel::Error,
@@ -697,6 +701,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let result = (async {
         match cli.command {
             Commands::Help(_) => Ok(()),
+            Commands::Init(cmd) => run_init(&project_root, cmd.check),
             Commands::Completions(cmd) => {
                 crate::completions::write_registration(cmd.shell.into(), Cli::command)?;
                 Ok(())

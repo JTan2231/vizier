@@ -20,6 +20,36 @@ This installs:
 - `"$HOME/.local/share/vizier/agents/*"`
 - `"$HOME/.local/share/man/man1/vizier.1"`
 
+## Initialize a repository
+
+Inside a Git repository, run:
+
+```sh
+vizier init
+```
+
+`vizier init` is idempotent. It ensures durable initialization markers exist at:
+
+- `.vizier/narrative/snapshot.md`
+- `.vizier/narrative/glossary.md`
+
+It also ensures `.gitignore` includes Vizier runtime paths that should stay out of
+history:
+
+- `.vizier/tmp/`
+- `.vizier/tmp-worktrees/`
+- `.vizier/jobs/`
+- `.vizier/sessions/`
+
+To validate initialization without mutating files:
+
+```sh
+vizier init --check
+```
+
+`--check` exits non-zero and prints a missing-item list when marker files or
+required ignore rules are absent.
+
 ## Dry run
 
 To preview the install actions without writing files:
