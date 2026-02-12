@@ -1,6 +1,6 @@
 use super::{
-    AfterPolicy, JobApprovalFact, JobApprovalState, JobArtifact, JobLock, JobStatus, JobWaitKind,
-    JobWaitReason, LockState, format_artifact,
+    AfterPolicy, JobApprovalFact, JobApprovalState, JobArtifact, JobLock, JobPrecondition,
+    JobStatus, JobWaitKind, JobWaitReason, LockState, format_artifact,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -13,6 +13,7 @@ pub struct SchedulerFacts {
     pub artifact_exists: HashSet<JobArtifact>,
     pub job_locks: HashMap<String, Vec<JobLock>>,
     pub pinned_heads: HashMap<String, PinnedHeadFact>,
+    pub job_preconditions: HashMap<String, Vec<JobPreconditionFact>>,
     pub job_approvals: HashMap<String, JobApprovalFact>,
     pub waited_on: HashMap<String, Vec<JobWaitKind>>,
     pub has_child_args: HashSet<String>,
@@ -39,6 +40,19 @@ pub struct SchedulerDecision {
 pub struct PinnedHeadFact {
     pub branch: String,
     pub matches: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobPreconditionState {
+    Satisfied,
+    Waiting { detail: String },
+    Blocked { detail: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobPreconditionFact {
+    pub precondition: JobPrecondition,
+    pub state: JobPreconditionState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +184,34 @@ fn evaluate_job_with_lock_state(
             waited_on,
             action: SchedulerAction::UpdateStatus,
         };
+    }
+
+    match precondition_state(facts, job_id) {
+        DependencyState::Blocked { detail } => {
+            note_waited(&mut waited_on, JobWaitKind::Preconditions);
+            return SchedulerDecision {
+                next_status: JobStatus::BlockedByDependency,
+                wait_reason: Some(JobWaitReason {
+                    kind: JobWaitKind::Preconditions,
+                    detail: Some(detail),
+                }),
+                waited_on,
+                action: SchedulerAction::UpdateStatus,
+            };
+        }
+        DependencyState::Waiting { detail } => {
+            note_waited(&mut waited_on, JobWaitKind::Preconditions);
+            return SchedulerDecision {
+                next_status: JobStatus::WaitingOnDeps,
+                wait_reason: Some(JobWaitReason {
+                    kind: JobWaitKind::Preconditions,
+                    detail: Some(detail),
+                }),
+                waited_on,
+                action: SchedulerAction::UpdateStatus,
+            };
+        }
+        DependencyState::Ready => {}
     }
 
     if let Some(approval) = facts.job_approvals.get(job_id)
@@ -320,6 +362,26 @@ fn after_dependency_state(facts: &SchedulerFacts, job_id: &str) -> DependencySta
         }
     }
 
+    DependencyState::Ready
+}
+
+fn precondition_state(facts: &SchedulerFacts, job_id: &str) -> DependencyState {
+    let preconditions = facts
+        .job_preconditions
+        .get(job_id)
+        .cloned()
+        .unwrap_or_default();
+    for precondition in preconditions {
+        match precondition.state {
+            JobPreconditionState::Satisfied => {}
+            JobPreconditionState::Waiting { detail } => {
+                return DependencyState::Waiting { detail };
+            }
+            JobPreconditionState::Blocked { detail } => {
+                return DependencyState::Blocked { detail };
+            }
+        }
+    }
     DependencyState::Ready
 }
 
@@ -688,6 +750,69 @@ mod tests {
         assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
         let reason = decision.wait_reason.expect("wait reason");
         assert_eq!(reason.kind, JobWaitKind::PinnedHead);
+    }
+
+    #[test]
+    fn preconditions_wait_before_approval_and_locks() {
+        let job_id = "job";
+        let mut facts = base_facts(job_id);
+        facts.job_preconditions.insert(
+            job_id.to_string(),
+            vec![JobPreconditionFact {
+                precondition: JobPrecondition::CleanWorktree,
+                state: JobPreconditionState::Waiting {
+                    detail: "working tree has uncommitted changes".to_string(),
+                },
+            }],
+        );
+        facts.job_approvals.insert(
+            job_id.to_string(),
+            JobApprovalFact {
+                required: true,
+                state: JobApprovalState::Pending,
+                reason: None,
+            },
+        );
+        let lock = JobLock {
+            key: "lock-a".to_string(),
+            mode: LockMode::Exclusive,
+        };
+        facts
+            .job_locks
+            .insert(job_id.to_string(), vec![lock.clone()]);
+        facts.lock_state.acquire(&[lock]);
+
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
+        let reason = decision.wait_reason.expect("wait reason");
+        assert_eq!(reason.kind, JobWaitKind::Preconditions);
+        assert_eq!(
+            reason.detail.as_deref(),
+            Some("working tree has uncommitted changes")
+        );
+    }
+
+    #[test]
+    fn precondition_block_is_terminal_dependency_block() {
+        let job_id = "job";
+        let mut facts = base_facts(job_id);
+        facts.job_preconditions.insert(
+            job_id.to_string(),
+            vec![JobPreconditionFact {
+                precondition: JobPrecondition::BranchExists {
+                    branch: Some("draft/missing".to_string()),
+                },
+                state: JobPreconditionState::Blocked {
+                    detail: "missing branch context".to_string(),
+                },
+            }],
+        );
+
+        let decision = evaluate_job(&facts, job_id);
+        assert_eq!(decision.next_status, JobStatus::BlockedByDependency);
+        let reason = decision.wait_reason.expect("wait reason");
+        assert_eq!(reason.kind, JobWaitKind::Preconditions);
+        assert_eq!(reason.detail.as_deref(), Some("missing branch context"));
     }
 
     #[test]

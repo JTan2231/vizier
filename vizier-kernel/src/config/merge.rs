@@ -296,6 +296,32 @@ impl BackgroundConfig {
     }
 }
 
+impl WorkflowTemplateConfig {
+    fn apply_layer(&mut self, layer: &WorkflowTemplateLayer) {
+        if let Some(value) = layer.save.as_ref() {
+            self.save = value.clone();
+        }
+        if let Some(value) = layer.draft.as_ref() {
+            self.draft = value.clone();
+        }
+        if let Some(value) = layer.approve.as_ref() {
+            self.approve = value.clone();
+        }
+        if let Some(value) = layer.review.as_ref() {
+            self.review = value.clone();
+        }
+        if let Some(value) = layer.merge.as_ref() {
+            self.merge = value.clone();
+        }
+        if let Some(value) = layer.build_execute.as_ref() {
+            self.build_execute = value.clone();
+        }
+        if let Some(value) = layer.patch.as_ref() {
+            self.patch = value.clone();
+        }
+    }
+}
+
 impl WorkflowConfig {
     fn apply_layer(&mut self, layer: &WorkflowLayer) {
         if let Some(default_no_commit) = layer.no_commit_default {
@@ -303,6 +329,7 @@ impl WorkflowConfig {
         }
 
         self.background.apply_layer(&layer.background);
+        self.templates.apply_layer(&layer.templates);
     }
 }
 
@@ -354,12 +381,30 @@ impl Config {
         self.jobs.apply_layer(&layer.jobs);
         self.workflow.apply_layer(&layer.workflow);
 
+        for (alias, selector) in layer.commands.iter() {
+            self.commands.insert(alias.clone(), selector.clone());
+        }
+
         if let Some(defaults) = layer.agent_defaults.as_ref() {
             if self.agent_defaults.is_empty() {
                 self.agent_defaults = defaults.clone();
             } else {
                 self.agent_defaults.merge(defaults);
             }
+        }
+
+        for (alias, overrides) in layer.agent_commands.iter() {
+            self.agent_commands
+                .entry(alias.clone())
+                .and_modify(|existing| existing.merge(overrides))
+                .or_insert_with(|| overrides.clone());
+        }
+
+        for (selector, overrides) in layer.agent_templates.iter() {
+            self.agent_templates
+                .entry(selector.clone())
+                .and_modify(|existing| existing.merge(overrides))
+                .or_insert_with(|| overrides.clone());
         }
 
         for (scope, overrides) in layer.agent_scopes.iter() {

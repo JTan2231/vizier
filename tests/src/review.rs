@@ -81,6 +81,100 @@ fn test_review_streams_critique() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn test_scheduled_review_records_workflow_template_metadata() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    schedule_job_and_expect_status(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "review-template-meta",
+            "review template metadata",
+        ],
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+    schedule_job_and_expect_status(
+        &repo,
+        &["approve", "review-template-meta", "--yes"],
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+    clean_workdir(&repo)?;
+
+    let gate_script = write_cicd_script(&repo, "review-template-gate.sh", "#!/bin/sh\nset -eu\n")?;
+    let gate_script_flag = gate_script.to_string_lossy().to_string();
+    let (_output, record) = schedule_job_and_wait(
+        &repo,
+        &[
+            "review",
+            "review-template-meta",
+            "--review-only",
+            "--skip-checks",
+            "--cicd-script",
+            &gate_script_flag,
+        ],
+        Duration::from_secs(40),
+    )?;
+
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "scheduled review should succeed: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_id")
+            .and_then(Value::as_str),
+        Some("template.review"),
+        "review jobs should persist workflow template id"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_version")
+            .and_then(Value::as_str),
+        Some("v1"),
+        "review jobs should persist workflow template version"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_node_id")
+            .and_then(Value::as_str),
+        Some("review_critique"),
+        "review jobs should persist workflow node id"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_capability_id")
+            .and_then(Value::as_str),
+        Some("cap.review.critique_or_fix"),
+        "review jobs should persist workflow capability id"
+    );
+    let hash = record
+        .pointer("/metadata/workflow_policy_snapshot_hash")
+        .and_then(Value::as_str)
+        .ok_or("review workflow policy snapshot hash missing")?;
+    assert_eq!(
+        hash.len(),
+        64,
+        "review workflow hash should be a sha256 hex string: {hash}"
+    );
+    let gate_labels = record
+        .pointer("/metadata/workflow_gates")
+        .and_then(Value::as_array)
+        .ok_or("review workflow gates missing")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        gate_labels.iter().any(|label| label.contains("cicd(")),
+        "review workflow gates should include cicd gate: {gate_labels:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_review_writes_markdown_file() -> TestResult {
     let repo = IntegrationRepo::new()?;

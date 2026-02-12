@@ -202,6 +202,11 @@ impl Default for DisplayJobsShowConfig {
                 "Build skip checks".to_string(),
                 "Build keep branch".to_string(),
                 "Build dependencies".to_string(),
+                "Workflow template".to_string(),
+                "Workflow template version".to_string(),
+                "Workflow node".to_string(),
+                "Workflow policy snapshot".to_string(),
+                "Workflow gates".to_string(),
                 "Patch file".to_string(),
                 "Patch index".to_string(),
                 "Patch total".to_string(),
@@ -245,6 +250,20 @@ impl Default for BackgroundConfig {
     }
 }
 
+impl Default for WorkflowTemplateConfig {
+    fn default() -> Self {
+        Self {
+            save: "template.save.v1".to_string(),
+            draft: "template.draft.v1".to_string(),
+            approve: "template.approve.v1".to_string(),
+            review: "template.review.v1".to_string(),
+            merge: "template.merge.v1".to_string(),
+            build_execute: "template.build_execute.v1".to_string(),
+            patch: "template.patch.v1".to_string(),
+        }
+    }
+}
+
 impl Default for MergeCicdGateConfig {
     fn default() -> Self {
         Self {
@@ -271,7 +290,10 @@ impl Default for Config {
             display: DisplaySettings::default(),
             jobs: JobsConfig::default(),
             workflow: WorkflowConfig::default(),
+            commands: HashMap::new(),
             agent_defaults: AgentOverrides::default(),
+            agent_commands: HashMap::new(),
+            agent_templates: HashMap::new(),
             agent_scopes: HashMap::new(),
             repo_prompts: HashMap::new(),
         }

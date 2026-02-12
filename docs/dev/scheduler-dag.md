@@ -10,8 +10,10 @@ For the full non-agent `.vizier/*` material contract (including jobs/build/sessi
 durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
 
 `vizier build execute` also uses scheduler jobs for build-session pipelines:
-- internal `build_materialize` jobs materialize draft plan docs/branches
-- existing `approve` / `review` / `merge` jobs execute per-step phases
+- every compiled build-execute node enqueues a hidden `__workflow-node` job
+- canonical capabilities (`cap.build.materialize_step`, `cap.plan.apply_once`, `cap.review.critique_or_fix`, `cap.git.integrate_plan_branch`) execute via node-runtime built-in handlers
+- custom/shell/gate nodes execute through the same hidden `__workflow-node` path (the `build __template-node` shim remains compatibility-only)
+- per-step links are fully template-driven from compiled `after` edges (not hand-built fixed phase IDs)
 
 ## Architecture
 - **Job records** live under `.vizier/jobs/<id>/`:
@@ -25,6 +27,20 @@ durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
   `vizier-cli/src/cli/dispatch.rs` and `vizier-cli/src/cli/scheduler.rs`).
 - **Schedule metadata** is stored per job: `after`, `dependencies`, `locks`,
   `artifacts`, `pinned_head`, `approval`, `wait_reason`, and `waited_on`.
+- **Workflow-template compile metadata** is stored per job in `metadata`:
+  `workflow_template_id`, `workflow_template_version`, `workflow_node_id`,
+  `workflow_capability_id`, `workflow_policy_snapshot_hash`, and `workflow_gates`.
+- **Workflow-template compile validation** rejects jobs that reference undeclared
+  artifact contracts, unknown template `after` nodes, or invalid `on.<outcome>`
+  multiplexers before enqueue.
+- **Template runtime gate execution** for `approve` stop-condition retries,
+  `review` CI/CD probes, and `merge` CI/CD remediation retries is driven from
+  compiled node gate/retry policy plus `on` outcome edges (`vizier-cli/src/actions/workflow_runtime.rs`).
+- **Built-in wrapper control nodes** (`approve_gate_stop_condition`,
+  `merge_conflict_resolution`, `merge_gate_cicd`, `merge_cicd_auto_fix`) are
+  now enqueued as explicit `__workflow-node` jobs for audit visibility; for
+  built-in selectors they execute in compatibility/no-op mode while primary
+  nodes preserve existing gate/retry semantics.
 - **Scheduler lock** lives at `.vizier/jobs/scheduler.lock` and serializes scheduler
   ticks.
 
@@ -56,7 +72,7 @@ Safety and rewind behavior:
   `session_path`, `outcome_path`, `schedule.wait_reason`, and
   `schedule.waited_on`.
 - Retry truncates `stdout.log`/`stderr.log`, removes stale `outcome.json`,
-  `command.patch`, legacy `ask-save.patch`, and `save-input.patch`, and performs best-effort
+  `command.patch`, legacy `ask-save.patch`, `save-input.patch`, and custom-artifact markers owned by rewound jobs, and performs best-effort
   cleanup of owned temp worktrees when ownership/safety checks pass.
 - Retry cleanup first attempts libgit2 prune and falls back to `git worktree remove --force <path>`
   plus `git worktree prune --expire now` when prune fails (including known `.git/shallow` stat
@@ -76,9 +92,10 @@ were reset and which were restarted.
 1) `after` dependencies  
 2) Artifact dependencies  
 3) Pinned head  
-4) Approval  
-5) Locks  
-6) Spawn
+4) Preconditions  
+5) Approval  
+6) Locks  
+7) Spawn
 
 ## Explicit `after` dependency resolution
 `after` dependencies are explicit job-id constraints (`--after <job-id>`) and are
@@ -101,6 +118,8 @@ Resolution:
 Dependencies are checked in order. For each dependency:
 - If the artifact already exists, the dependency is satisfied regardless of producer
   status.
+  For built-in artifact kinds this uses repository/job-state probes. Custom artifacts
+  use persisted scheduler markers under `.vizier/jobs/artifacts/custom/...`.
 - If the artifact is missing and any producer is active (queued/waiting/running), the
   consumer waits with `waiting_on_deps` and a wait reason of `waiting on <artifact>`.
 - If the artifact is missing and no producer is active:
@@ -115,6 +134,15 @@ If a job has a `pinned_head` and the repo head no longer matches, the job waits 
 - `status = waiting_on_deps`
 - `wait_reason.kind = pinned_head`
 - `wait_reason.detail = "pinned head mismatch on <branch>"`
+
+## Scheduler preconditions
+`schedule.preconditions` supports additional readiness gates independent of artifact or lock checks.
+- `clean_worktree`: waits until tracked/untracked changes are cleared (ephemeral `.vizier/jobs|sessions|tmp|tmp-worktrees` paths are ignored).
+- `branch_exists`: waits until the required local branch exists (branch may come from explicit precondition args, `pinned_head.branch`, or a single `branch:*` lock key).
+- `custom`: currently supports `clean_worktree` and `branch_exists`; unknown custom preconditions block with a descriptive error detail.
+
+When unsatisfied, jobs stay in `waiting_on_deps` (`wait_reason.kind = preconditions`).
+When a precondition is invalid/unresolvable, jobs are marked `blocked_by_dependency` with `wait_reason.kind = preconditions`.
 
 ## Human approval gate
 `vizier approve <plan> --require-approval` records an approval gate in the job schedule:
@@ -138,7 +166,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `wait_reason.detail = "waiting on locks"`
 
 ## Wait reasons and waited_on
-- `wait_reason.kind` is one of `dependencies`, `pinned_head`, `approval`, or `locks` and includes
+- `wait_reason.kind` is one of `dependencies`, `pinned_head`, `preconditions`, `approval`, or `locks` and includes
   a detail string describing the blocking condition.
 - `waited_on` is a de-duplicated list of wait kinds the job has encountered over time.
 - When a job becomes eligible to start, `wait_reason` is cleared.
@@ -150,6 +178,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `target_branch` (target branch exists)
 - `merge_sentinel` (merge conflict sentinel exists)
 - `command_patch` (command patch file exists, or the referenced job finished `succeeded`; build-execute pipelines use this as a completion sentinel between phase jobs; legacy `ask_save_patch` records still deserialize)
+- `custom` (`custom:<type_id>:<key>`; extension artifact kind for template-defined producer/consumer wiring)
 
 ## Failure modes and exit codes
 - `failed` is recorded when the background child exits with a non-zero code.
@@ -173,6 +202,8 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 - `waited_on`
 - `pinned_head`
 - `artifacts`
+- `workflow template` / `workflow node` / `workflow policy snapshot` / `workflow gates`
+- `workflow capability`
 
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).

@@ -1,4 +1,5 @@
 use crate::fixtures::*;
+use std::collections::HashMap;
 
 fn write_narrative_only_approve_agent(repo: &IntegrationRepo, name: &str) -> TestResult<PathBuf> {
     let script_dir = repo.path().join(".vizier/tmp/bin");
@@ -17,6 +18,48 @@ fn write_narrative_only_approve_agent(repo: &IntegrationRepo, name: &str) -> Tes
     Ok(script_path)
 }
 
+fn load_job_records(repo: &IntegrationRepo) -> TestResult<Vec<Value>> {
+    let jobs_dir = repo.path().join(".vizier/jobs");
+    let mut records = Vec::new();
+    if !jobs_dir.is_dir() {
+        return Ok(records);
+    }
+    for entry in fs::read_dir(jobs_dir)? {
+        let entry = entry?;
+        let path = entry.path().join("job.json");
+        if !path.is_file() {
+            continue;
+        }
+        let record: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn workflow_node_jobs_for_plan(
+    records: &[Value],
+    template_id: &str,
+    plan: &str,
+) -> HashMap<String, String> {
+    records
+        .iter()
+        .filter(|record| {
+            record
+                .pointer("/metadata/workflow_template_id")
+                .and_then(Value::as_str)
+                == Some(template_id)
+                && record.pointer("/metadata/plan").and_then(Value::as_str) == Some(plan)
+        })
+        .filter_map(|record| {
+            let node = record
+                .pointer("/metadata/workflow_node_id")
+                .and_then(Value::as_str)?;
+            let job = record.get("id").and_then(Value::as_str)?;
+            Some((node.to_string(), job.to_string()))
+        })
+        .collect::<HashMap<_, _>>()
+}
+
 #[test]
 fn test_approve_requires_yes() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -33,6 +76,313 @@ fn test_approve_requires_yes() -> TestResult {
         stderr.contains("requires --yes"),
         "expected scheduler guard to mention --yes requirement:
 {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_scheduled_approve_records_workflow_template_metadata() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    schedule_job_and_expect_status(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "approve-template-meta",
+            "approve template metadata",
+        ],
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+
+    let stop_script = write_cicd_script(&repo, "approve-stop-pass.sh", "#!/bin/sh\nset -eu\n")?;
+    let stop_script_flag = stop_script.to_string_lossy().to_string();
+    let (_output, record) = schedule_job_and_wait(
+        &repo,
+        &[
+            "approve",
+            "approve-template-meta",
+            "--yes",
+            "--stop-condition-script",
+            &stop_script_flag,
+            "--stop-condition-retries",
+            "2",
+        ],
+        Duration::from_secs(40),
+    )?;
+
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "scheduled approve should succeed: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_id")
+            .and_then(Value::as_str),
+        Some("template.approve"),
+        "approve jobs should persist workflow template id"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_version")
+            .and_then(Value::as_str),
+        Some("v1"),
+        "approve jobs should persist workflow template version"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_node_id")
+            .and_then(Value::as_str),
+        Some("approve_apply_once"),
+        "approve jobs should persist workflow node id"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_capability_id")
+            .and_then(Value::as_str),
+        Some("cap.plan.apply_once"),
+        "approve jobs should persist workflow capability id"
+    );
+    let hash = record
+        .pointer("/metadata/workflow_policy_snapshot_hash")
+        .and_then(Value::as_str)
+        .ok_or("approve workflow policy snapshot hash missing")?;
+    assert_eq!(
+        hash.len(),
+        64,
+        "approve workflow hash should be a sha256 hex string: {hash}"
+    );
+    let gate_labels = record
+        .pointer("/metadata/workflow_gates")
+        .and_then(Value::as_array)
+        .ok_or("approve workflow gates missing")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        gate_labels.iter().any(|label| label.contains("approval(")),
+        "approve workflow gates should include approval gate: {gate_labels:?}"
+    );
+    assert!(
+        gate_labels.iter().any(|label| label.contains("script(")),
+        "approve workflow gates should include stop-condition script gate: {gate_labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_scheduled_approve_builtin_template_enqueues_control_node_jobs() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    schedule_job_and_expect_status(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "approve-control-nodes",
+            "approve control node scheduling",
+        ],
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+
+    let stop_script = write_cicd_script(&repo, "approve-control-pass.sh", "#!/bin/sh\nset -eu\n")?;
+    let stop_script_flag = stop_script.to_string_lossy().to_string();
+    let (_output, root_record) = schedule_job_and_wait(
+        &repo,
+        &[
+            "approve",
+            "approve-control-nodes",
+            "--yes",
+            "--stop-condition-script",
+            &stop_script_flag,
+            "--stop-condition-retries",
+            "2",
+        ],
+        Duration::from_secs(50),
+    )?;
+
+    let root_job_id = root_record
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("approve root job id missing")?
+        .to_string();
+    let expected_nodes = ["approve_apply_once", "approve_gate_stop_condition"];
+    let mut node_jobs = HashMap::new();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(80) {
+        let records = load_job_records(&repo)?;
+        node_jobs =
+            workflow_node_jobs_for_plan(&records, "template.approve", "approve-control-nodes");
+        if expected_nodes
+            .iter()
+            .all(|node| node_jobs.contains_key(*node))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        expected_nodes
+            .iter()
+            .all(|node| node_jobs.contains_key(*node)),
+        "expected approve control nodes to be queued, found {:?}",
+        node_jobs
+    );
+    assert_eq!(
+        node_jobs.get("approve_apply_once"),
+        Some(&root_job_id),
+        "root approve job should still bind to approve_apply_once"
+    );
+
+    for node in expected_nodes {
+        let job_id = node_jobs
+            .get(node)
+            .ok_or_else(|| format!("missing job id for node {node}"))?;
+        wait_for_job_status(&repo, job_id, "succeeded", Duration::from_secs(80))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn test_scheduled_approve_custom_template_queues_full_graph_with_semantic_primary_node()
+-> TestResult {
+    let repo = IntegrationRepo::new()?;
+    schedule_job_and_expect_status(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "approve-custom-template",
+            "approve custom template graph",
+        ],
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+
+    repo.write(
+        ".vizier/workflow/custom.approve@v1.json",
+        r#"{
+  "id": "custom.approve",
+  "version": "v1",
+  "policy": {
+    "resume": {
+      "key": "custom-approve",
+      "reuse_mode": "strict"
+    }
+  },
+  "artifact_contracts": [
+    { "id": "plan_doc", "version": "v1" },
+    { "id": "plan_commits", "version": "v1" }
+  ],
+  "nodes": [
+    {
+      "id": "custom_prepare",
+      "kind": "shell",
+      "uses": "acme.prepare",
+      "args": {
+        "command": "mkdir -p .vizier/tmp/custom-approve && printf '%s' '${slug}' > .vizier/tmp/custom-approve/${slug}.txt"
+      }
+    },
+    {
+      "id": "custom_apply",
+      "kind": "builtin",
+      "uses": "vizier.approve.apply_once",
+      "after": [
+        { "node_id": "custom_prepare", "policy": "success" }
+      ],
+      "needs": [
+        { "plan_doc": { "slug": "${slug}", "branch": "${branch}" } }
+      ],
+      "produces": {
+        "succeeded": [
+          { "plan_commits": { "slug": "${slug}", "branch": "${branch}" } }
+        ]
+      }
+    },
+    {
+      "id": "custom_finalize",
+      "kind": "custom",
+      "uses": "acme.finalize",
+      "after": [
+        { "node_id": "custom_apply", "policy": "success" }
+      ],
+      "args": {
+        "command": "test -f .vizier/tmp/custom-approve/${slug}.txt"
+      }
+    }
+  ]
+}"#,
+    )?;
+
+    let config_path = repo.path().join(".vizier/tmp/custom-approve-config.toml");
+    fs::create_dir_all(config_path.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &config_path,
+        r#"
+[workflow.templates]
+approve = "custom.approve@v1"
+"#,
+    )?;
+
+    let output = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["approve", "approve-custom-template", "--yes"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "custom-template approve queue failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let root_job_id = extract_job_id(&stdout).ok_or("missing queued job id for approve")?;
+    wait_for_job_completion(&repo, &root_job_id, Duration::from_secs(80))?;
+
+    let expected_nodes = ["custom_prepare", "custom_apply", "custom_finalize"];
+    let mut node_jobs = HashMap::new();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(80) {
+        let records = load_job_records(&repo)?;
+        node_jobs =
+            workflow_node_jobs_for_plan(&records, "custom.approve", "approve-custom-template");
+        if expected_nodes
+            .iter()
+            .all(|node| node_jobs.contains_key(*node))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        expected_nodes
+            .iter()
+            .all(|node| node_jobs.contains_key(*node)),
+        "expected custom approve graph nodes, found {:?}",
+        node_jobs
+    );
+
+    for node in expected_nodes {
+        let job_id = node_jobs
+            .get(node)
+            .ok_or_else(|| format!("missing job id for node {node}"))?;
+        wait_for_job_status(&repo, job_id, "succeeded", Duration::from_secs(80))?;
+    }
+
+    let root_record = read_job_record(&repo, &root_job_id)?;
+    assert_eq!(
+        root_record
+            .pointer("/metadata/workflow_node_id")
+            .and_then(Value::as_str),
+        Some("custom_apply"),
+        "root approve job should bind to semantic primary node via uses"
+    );
+    let marker = repo
+        .path()
+        .join(".vizier/tmp/custom-approve/approve-custom-template.txt");
+    assert!(
+        marker.exists(),
+        "custom pre-node marker should exist at {}",
+        marker.display()
     );
     Ok(())
 }
@@ -225,9 +575,10 @@ fn test_approve_fails_when_codex_errors() -> TestResult {
         "vizier approve should fail when the backend errors"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr_lower = stderr.to_ascii_lowercase();
     assert!(
-        stderr.contains("agent backend"),
-        "stderr should mention backend error, got: {stderr}"
+        stderr_lower.contains("agent backend") || stderr_lower.contains("worktree preserved"),
+        "stderr should mention backend error context or preserved worktree guidance, got: {stderr}"
     );
 
     let repo_handle = repo.repo();

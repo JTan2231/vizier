@@ -17,11 +17,13 @@ struct ConfigReport {
     merge: MergeReport,
     review: ReviewReport,
     agent_runtime_default: Option<AgentRuntimeReport>,
-    scopes: BTreeMap<String, ScopeReport>,
+    commands: BTreeMap<String, CommandReport>,
 }
 
 #[derive(Debug, Serialize)]
-struct ScopeReport {
+struct CommandReport {
+    template_selector: Option<String>,
+    legacy_scope: Option<String>,
     agent: String,
     documentation: DocumentationReport,
     agent_runtime: Option<AgentRuntimeReport>,
@@ -70,6 +72,18 @@ struct MergeGateReport {
 struct WorkflowReport {
     no_commit_default: bool,
     background: BackgroundReport,
+    templates: WorkflowTemplatesReport,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkflowTemplatesReport {
+    save: String,
+    draft: String,
+    approve: String,
+    review: String,
+    merge: String,
+    build_execute: String,
+    patch: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,10 +153,16 @@ fn documentation_report(docs: &config::DocumentationSettings) -> DocumentationRe
     }
 }
 
-fn scope_report(agent: &config::AgentSettings) -> ScopeReport {
+fn command_report(
+    template_selector: Option<String>,
+    legacy_scope: Option<String>,
+    agent: &config::AgentSettings,
+) -> CommandReport {
     let runtime = Some(runtime_report(&agent.agent_runtime));
 
-    ScopeReport {
+    CommandReport {
+        template_selector,
+        legacy_scope,
         agent: agent.selector.clone(),
         documentation: documentation_report(&agent.documentation),
         agent_runtime: runtime,
@@ -222,10 +242,24 @@ fn build_config_report(
     let default_agent = config::resolve_default_agent_settings(cfg, cli_override)?;
     let agent_runtime_default = Some(runtime_report(&default_agent.agent_runtime));
 
-    let mut scopes = BTreeMap::new();
-    for scope in config::CommandScope::all() {
-        let agent = config::resolve_agent_settings(cfg, *scope, cli_override)?;
-        scopes.insert(scope.as_str().to_string(), scope_report(&agent));
+    let mut commands = BTreeMap::new();
+    for alias in cfg.command_aliases() {
+        let template_selector = cfg.template_selector_for_alias(&alias);
+        let agent = config::resolve_agent_settings_for_alias_template(
+            cfg,
+            &alias,
+            template_selector.as_ref(),
+            cli_override,
+        )?;
+        commands.insert(
+            alias.to_string(),
+            command_report(
+                template_selector.map(|value| value.to_string()),
+                config::compatibility_scope_for_alias(&alias)
+                    .map(|scope| scope.as_str().to_string()),
+                &agent,
+            ),
+        );
     }
 
     let mut build_profiles = BTreeMap::new();
@@ -254,6 +288,15 @@ fn build_config_report(
             background: BackgroundReport {
                 enabled: cfg.workflow.background.enabled,
                 quiet: cfg.workflow.background.quiet,
+            },
+            templates: WorkflowTemplatesReport {
+                save: cfg.workflow.templates.save.clone(),
+                draft: cfg.workflow.templates.draft.clone(),
+                approve: cfg.workflow.templates.approve.clone(),
+                review: cfg.workflow.templates.review.clone(),
+                merge: cfg.workflow.templates.merge.clone(),
+                build_execute: cfg.workflow.templates.build_execute.clone(),
+                patch: cfg.workflow.templates.patch.clone(),
             },
         },
         build: BuildReport {
@@ -306,7 +349,7 @@ fn build_config_report(
             },
         },
         agent_runtime_default,
-        scopes,
+        commands,
     })
 }
 
@@ -348,15 +391,31 @@ fn documentation_label(docs: &DocumentationReport) -> String {
     parts.join(" ")
 }
 
-fn format_scope_rows(scope: &ScopeReport) -> Vec<(String, String)> {
-    let mut rows = vec![("Agent".to_string(), scope.agent.clone())];
+fn format_command_rows(command: &CommandReport) -> Vec<(String, String)> {
+    let mut rows = vec![("Agent".to_string(), command.agent.clone())];
+
+    rows.push((
+        "Template selector".to_string(),
+        command
+            .template_selector
+            .clone()
+            .unwrap_or_else(|| "unset".to_string()),
+    ));
+
+    rows.push((
+        "Legacy scope fallback".to_string(),
+        command
+            .legacy_scope
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+    ));
 
     rows.push((
         "Documentation prompt".to_string(),
-        documentation_label(&scope.documentation),
+        documentation_label(&command.documentation),
     ));
 
-    if let Some(runtime) = scope.agent_runtime.as_ref() {
+    if let Some(runtime) = command.agent_runtime.as_ref() {
         rows.extend(runtime_rows(runtime));
     }
 
@@ -431,6 +490,34 @@ fn format_global_rows(report: &ConfigReport) -> Vec<(String, String)> {
             "Background quiet".to_string(),
             report.workflow.background.quiet.to_string(),
         ),
+        (
+            "Template save".to_string(),
+            report.workflow.templates.save.clone(),
+        ),
+        (
+            "Template draft".to_string(),
+            report.workflow.templates.draft.clone(),
+        ),
+        (
+            "Template approve".to_string(),
+            report.workflow.templates.approve.clone(),
+        ),
+        (
+            "Template review".to_string(),
+            report.workflow.templates.review.clone(),
+        ),
+        (
+            "Template merge".to_string(),
+            report.workflow.templates.merge.clone(),
+        ),
+        (
+            "Template build execute".to_string(),
+            report.workflow.templates.build_execute.clone(),
+        ),
+        (
+            "Template patch".to_string(),
+            report.workflow.templates.patch.clone(),
+        ),
     ]
 }
 
@@ -487,14 +574,17 @@ fn print_config_report(report: &ConfigReport) {
         }
     }
 
-    if !report.scopes.is_empty() {
+    if !report.commands.is_empty() {
         if printed {
             println!();
         }
-        println!("Per-scope agents:");
-        for (scope, view) in report.scopes.iter() {
-            println!("  {scope}:");
-            println!("{}", format_label_value_block(&format_scope_rows(view), 4));
+        println!("Per-command agents:");
+        for (alias, view) in report.commands.iter() {
+            println!("  {alias}:");
+            println!(
+                "{}",
+                format_label_value_block(&format_command_rows(view), 4)
+            );
         }
     }
 

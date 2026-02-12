@@ -1193,4 +1193,265 @@ profile = "deprecated"
             "ask-doc"
         );
     }
+
+    #[test]
+    fn config_parses_command_alias_and_template_tables() {
+        let toml = r#"
+[commands]
+patch = "template.patch.custom@v2"
+
+[agents.commands.patch]
+agent = "gemini"
+
+[agents.templates."template.patch.custom@v2".prompts.implementation_plan]
+text = "template scoped prompt"
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse command tables");
+        let patch_alias = "patch".parse::<CommandAlias>().expect("parse patch alias");
+        let selector = cfg
+            .template_selector_for_alias(&patch_alias)
+            .expect("resolve patch selector");
+        assert_eq!(selector.as_str(), "template.patch.custom@v2");
+        assert!(
+            cfg.agent_commands.contains_key(&patch_alias),
+            "expected [agents.commands.patch] to parse"
+        );
+        assert!(
+            cfg.agent_templates.contains_key(
+                &"template.patch.custom@v2"
+                    .parse::<TemplateSelector>()
+                    .unwrap()
+            ),
+            "expected [agents.templates.\"template.patch.custom@v2\"] to parse"
+        );
+    }
+
+    #[test]
+    fn config_rejects_empty_command_selector() {
+        let toml = r#"
+[commands]
+save = "   "
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("empty command selector should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("invalid [commands.save] selector"),
+            "error should explain invalid selector: {err}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_non_table_agents_commands_section() {
+        let toml = r#"
+[agents]
+commands = "save"
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("[agents.commands] must be a table"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("[agents.commands] must be a table"),
+            "error should explain malformed [agents.commands] section: {err}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_invalid_agents_template_selector_key() {
+        let toml = r#"
+[agents.templates."   "]
+agent = "codex"
+"#;
+
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("invalid template key should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("invalid [agents.templates."),
+            "error should explain malformed [agents.templates] key: {err}"
+        );
+    }
+
+    #[test]
+    fn alias_resolution_prefers_template_then_alias_then_legacy_scope() {
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = vec!["/bin/echo".to_string()];
+        cfg.agent_runtime.label = Some("base".to_string());
+
+        cfg.agent_scopes.insert(
+            CommandScope::Save,
+            AgentOverrides {
+                agent_runtime: Some(AgentRuntimeOverride {
+                    label: Some("legacy".to_string()),
+                    command: Some(vec!["legacy-cmd".to_string()]),
+                    progress_filter: None,
+                    output: None,
+                    enable_script_wrapper: None,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let alias = "save".parse::<CommandAlias>().expect("parse alias");
+        cfg.agent_commands.insert(
+            alias.clone(),
+            AgentOverrides {
+                agent_runtime: Some(AgentRuntimeOverride {
+                    label: Some("alias".to_string()),
+                    command: Some(vec!["alias-cmd".to_string()]),
+                    progress_filter: None,
+                    output: None,
+                    enable_script_wrapper: None,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let selector = "template.save.custom@v2"
+            .parse::<TemplateSelector>()
+            .expect("parse selector");
+        cfg.commands.insert(alias.clone(), selector.clone());
+        cfg.agent_templates.insert(
+            selector.clone(),
+            AgentOverrides {
+                agent_runtime: Some(AgentRuntimeOverride {
+                    label: Some("template".to_string()),
+                    command: Some(vec!["template-cmd".to_string()]),
+                    progress_filter: None,
+                    output: None,
+                    enable_script_wrapper: None,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let resolved =
+            resolve_agent_settings_for_alias_template(&cfg, &alias, Some(&selector), None)
+                .expect("resolve alias/template settings");
+        assert_eq!(resolved.agent_runtime.label, "template");
+        assert_eq!(
+            resolved.agent_runtime.command,
+            vec!["template-cmd".to_string()]
+        );
+        assert_eq!(
+            resolved.profile_scope,
+            ProfileScope::Template(selector.clone())
+        );
+
+        let without_template = resolve_agent_settings_for_alias_template(&cfg, &alias, None, None)
+            .expect("resolve alias settings");
+        assert_eq!(without_template.agent_runtime.label, "alias");
+
+        let compatibility = resolve_agent_settings(&cfg, CommandScope::Save, None)
+            .expect("resolve legacy scope settings");
+        assert_eq!(compatibility.agent_runtime.label, "template");
+    }
+
+    #[test]
+    fn alias_prompt_resolution_prefers_template_prompt_over_alias_and_scope() {
+        let mut cfg = Config::default();
+        cfg.agent_runtime.command = vec!["/bin/echo".to_string()];
+        cfg.agent_runtime.label = Some("prompt".to_string());
+        cfg.agent_defaults.prompt_overrides.insert(
+            PromptKind::Documentation,
+            PromptOverrides {
+                text: Some("default".to_string()),
+                source_path: None,
+                agent: None,
+            },
+        );
+        cfg.agent_scopes.insert(
+            CommandScope::Save,
+            AgentOverrides {
+                prompt_overrides: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        PromptKind::Documentation,
+                        PromptOverrides {
+                            text: Some("legacy".to_string()),
+                            source_path: None,
+                            agent: None,
+                        },
+                    );
+                    map
+                },
+                ..Default::default()
+            },
+        );
+
+        let alias = "save".parse::<CommandAlias>().expect("parse alias");
+        cfg.agent_commands.insert(
+            alias.clone(),
+            AgentOverrides {
+                prompt_overrides: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        PromptKind::Documentation,
+                        PromptOverrides {
+                            text: Some("alias".to_string()),
+                            source_path: None,
+                            agent: None,
+                        },
+                    );
+                    map
+                },
+                ..Default::default()
+            },
+        );
+
+        let selector = "template.save.custom@v2"
+            .parse::<TemplateSelector>()
+            .expect("parse selector");
+        cfg.agent_templates.insert(
+            selector.clone(),
+            AgentOverrides {
+                prompt_overrides: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        PromptKind::Documentation,
+                        PromptOverrides {
+                            text: Some("template".to_string()),
+                            source_path: None,
+                            agent: None,
+                        },
+                    );
+                    map
+                },
+                ..Default::default()
+            },
+        );
+
+        let prompt =
+            cfg.prompt_for_alias_template(&alias, Some(&selector), PromptKind::Documentation);
+        assert_eq!(prompt.text, "template");
+        assert_eq!(
+            prompt.origin,
+            PromptOrigin::ScopedConfig {
+                scope: ProfileScope::Template(selector.clone()),
+            }
+        );
+    }
 }

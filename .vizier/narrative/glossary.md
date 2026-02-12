@@ -14,14 +14,14 @@
 - **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests, safety/correctness constraints, or already-chosen blocking technical constraints require specificity.
 - **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings. AGENTS.md/README currently mention `docs/config-reference.md` as a root alias, so treat `docs/user/config-reference.md` as canonical until aliases are reconciled.
 - **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
-- **Docs path alias drift**: Current orientation docs use mixed paths (`docs/*.md` in AGENTS shorthand vs on-disk `docs/user/*.md`), so snapshot guidance treats `docs/user/*` as canonical until docs are flattened.
+- **Docs path alias drift**: Current orientation docs use mixed paths (`docs/*.md` in AGENTS/README shorthand vs on-disk `docs/user/*.md`), and the root alias files are still missing, so snapshot guidance treats `docs/user/*` as canonical until docs are flattened.
 - **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
 - **Background-by-default**: Workflow posture where assistant-backed commands always enqueue scheduler jobs; `--no-background` now errors and `--follow` attaches to job logs.
 - **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
 - **DAG scheduler**: The job scheduler that enqueues every command as a node with dependencies, artifacts, locks, and wait states to control background execution.
 - **Default-Action Posture (DAP)**: Unless explicitly opted out (for example `no-op:`, `discuss-only:`, or “do not update”), every user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
 - **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
-- **Docs-path drift**: The current mismatch where AGENTS.md/README reference root `docs/*.md` paths while the existing user docs are under `docs/user/*`; tracked under the configuration-posture thread until links or aliases are reconciled.
+- **Docs-path drift**: The current mismatch where AGENTS.md/README reference root `docs/*.md` paths while the existing user docs are under `docs/user/*` and root aliases remain absent; tracked under the configuration-posture thread until links or aliases are reconciled.
 - **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; that authorization covers snapshot/glossary plus supporting thread-doc updates, and remains the prerequisite until DAP precedence is codified.
 - **Explicit update instruction**: The task-level phrase "Update the snapshot, glossary, and supporting narrative docs as needed" that satisfies the explicit-instruction guardrail for narrative edits, whether presented as plain text or wrapped in `<task><instruction>...</instruction></task>`; when absent, narrative updates are treated as opt-out until DAP precedence is codified.
 - **Task envelope**: The prompt payload that includes `<task>`, `<snapshot>`, and `<narrativeDocs>` context for a turn; when it contains the explicit update instruction, narrative upkeep is authorized immediately and should execute in that first response.
@@ -33,6 +33,7 @@
 - **Fixture-local Vizier binary**: Integration-harness pattern where each `IntegrationRepo` copies the cached release `vizier` binary into its own temp repo and executes that local path, avoiding shared-temp binary lookup races.
 - **Job artifact**: A named output that jobs produce/consume (plan docs/branches, plan commits, target branches, ask/save patches) for dependency tracking.
 - **Job after dependency**: A scheduler dependency encoded in `schedule.after` that waits on a specific predecessor job/status, separate from artifact-based `schedule.dependencies`.
+- **Build phase after chain**: `vizier build execute` now compiles template node edges into phase-job `schedule.after` links (`approve <- materialize`, `review <- approve`, `merge <- review`) so phase ordering comes from workflow-template compilation instead of hand-built wiring.
 - **Job dependency**: An artifact-based prerequisite that keeps a job waiting or blocked until the required artifact exists.
 - **Job lock**: A named shared/exclusive mutex (for example `repo_serial`, `branch:<name>`, `temp_worktree:<id>`, `merge_sentinel:<slug>`) that gates concurrent job execution.
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.
@@ -52,5 +53,9 @@
 - **snapshotDelta**: Internal, diff-like narrative change output kept inside `.vizier`; it is not emitted in user-facing responses.
 - **Thread doc**: A focused narrative document under `.vizier/narrative/threads/` that expands one tension beyond what fits in the snapshot.
 - **Wait reason**: The recorded explanation for why a job is waiting (dependencies, locks, pinned head) surfaced in job metadata and `vizier jobs` output.
+- **Workflow template**: The declarative orchestration contract for a command run (nodes, edges, gates, retries, artifacts, and policy) compiled into scheduler/job records while preserving wrapper UX (`vizier save/draft/approve/review/merge/patch/build execute`).
+- **Workflow template ref**: Configurable template selector for a scope (for example `template.review.v1`), parsed from shorthand forms like `id@version` or `.vN`, resolved from `[workflow.templates]`, and surfaced in `vizier plan` plus job metadata.
+- **Workflow policy snapshot**: Deterministic, hashable representation of a compiled workflow policy (template identity, node policies, edges, artifact contracts) used by build resume compatibility checks and audit trails.
+- **Workflow drift diagnostics**: Categorized resume mismatch output (`node`, `edge`, `policy`, `artifact`) that explains why a prior execution state cannot be safely reused after template/policy changes.
 - **Worktree**: A separate checkout under `.vizier/tmp-worktrees/` used to isolate agent-backed edits from the operator’s main checkout.
 - **Workspace**: Deprecated; the former manifest-backed “sticky” worktree under `.vizier/tmp-worktrees/workspace-<slug>`, now superseded by scheduler-managed temp worktrees.

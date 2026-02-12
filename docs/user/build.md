@@ -3,7 +3,7 @@
 `vizier build` has two modes:
 
 1. Create a build session from a TOML/JSON build file.
-2. Execute a succeeded build session by queueing scheduler jobs (`materialize -> approve -> review -> merge`, depending on pipeline).
+2. Execute a succeeded build session by queueing scheduler jobs from the compiled build-execute workflow template DAG (built-in default is `materialize -> approve -> review -> merge`, depending on pipeline).
 
 For the canonical artifact/state contract behind these flows (build manifests, execution state, job/sentinel/session relationships, durability classes), see `docs/dev/vizier-material-model.md`.
 
@@ -16,7 +16,7 @@ vizier patch <file...> [--pipeline approve|approve-review|approve-review-merge] 
 `vizier patch` is a low-ceremony wrapper over `vizier build` + `vizier build execute` for operators who already have one or more spec/intent files.
 
 Behavior:
-- Enqueues a root scheduler job (`scope=patch`) immediately; use `--follow` to stream its logs.
+- Enqueues a root scheduler job (`command_alias=patch`, shown in the `Scope` field) immediately; use `--follow` to stream its logs.
 - Validates every file inside that root job before queueing any build-execute phase jobs.
 - Enforces in-repo paths, readable UTF-8 files, and non-empty content.
 - Deduplicates repeated files by default while preserving first-seen order.
@@ -28,7 +28,8 @@ Behavior:
 - Interactive runs prompt unless `--yes` is set; non-interactive runs require `--yes`.
 
 Patch observability:
-- Root jobs show `scope=patch` in `vizier jobs show`.
+- Root jobs show `patch` in `vizier jobs show` (from `command_alias`, with legacy `scope` compatibility fallback).
+- Root jobs also carry workflow-template compile metadata (`Workflow template`, `Workflow node`, `Workflow policy snapshot`) sourced from `[commands].patch` (legacy fallback: `[workflow.templates].patch`).
 - `--follow` output includes a preflight block (`Patch session`, ordered file queue, pipeline/target, execution manifest path).
 - Queued phase jobs carry `patch_file`, `patch_index`, and `patch_total` metadata in job records and `vizier jobs show`.
 
@@ -100,12 +101,15 @@ Execution mode:
 - Loads `build/<build-id>` manifest.
 - Requires manifest `status = succeeded`.
 - Materializes deterministic per-step `draft/<slug>` branches and canonical plan docs.
-- Queues phase jobs through scheduler using existing `approve`/`review`/`merge` commands.
+- Compiles each run against the configured workflow template mapping (`[commands].build_execute`, legacy fallback `[workflow.templates].build_execute`) and queues every compiled node in topological `after` order.
+- All queued build-execute nodes run through hidden `__workflow-node` jobs. Canonical capabilities (`cap.build.materialize_step`, `cap.plan.apply_once`, `cap.review.critique_or_fix`, `cap.git.integrate_plan_branch`) execute via node-runtime built-in handlers; generic custom capability nodes execute through generic node runtime.
 - Persists execution state at:
 
 ```text
-.vizier/implementation-plans/builds/<build_id>/execution.json
+.vizier/implementation-plans/builds/<build_id>/execution.<resume-key>.json
 ```
+
+`resume-key = default` uses `execution.json`.
 
 ### Build policy config (`[build]`)
 
@@ -151,9 +155,11 @@ Effective per-step policy resolves in this order:
 
 ### Pipeline phases
 
-- `approve`: `materialize -> approve`
-- `approve-review`: `materialize -> approve -> review`
-- `approve-review-merge`: `materialize -> approve -> review -> merge`
+- Built-in `template.build_execute@v1`:
+  - `approve`: `materialize -> approve`
+  - `approve-review`: `materialize -> approve -> review`
+  - `approve-review-merge`: `materialize -> approve -> review -> merge`
+- Custom `build_execute` templates may define arbitrary node IDs/kinds/edges; execution follows template `after` edges, not hard-coded phase IDs. Semantic dispatch is capability-first, so label aliases continue to work when they resolve to the same capability.
 
 ### Stage dependencies
 
@@ -163,10 +169,17 @@ Effective per-step policy resolves in this order:
 
 ### Resume semantics
 
-`--resume` reloads `execution.json` and:
+`--resume` reloads `execution.<resume-key>.json` and:
 - Reuses existing queued/running/succeeded phase jobs.
 - Re-enqueues missing or non-reusable failed/cancelled/blocked jobs.
-- Fails if resolved policy drifts from existing execution state (pipeline, target routing, review mode, checks/branch retention, dependencies, or barrier/failure settings).
+- Uses template resume policy (`policy.resume`):
+  - `reuse_mode = strict`: fail on any execution-policy drift.
+  - `reuse_mode = compatible`: allow policy-only drift while still rejecting node/edge/artifact drift.
+- Drift diagnostics are categorized as:
+  - `node mismatch` for template/pipeline/node-set changes,
+  - `edge mismatch` for dependency-graph drift,
+  - `policy mismatch` for stage/failure/review/target behavior drift,
+  - `artifact mismatch` for artifact-contract drift.
 
 Running without `--resume` after execution state exists fails with guidance.
 
@@ -178,6 +191,10 @@ Running without `--resume` after execution state exists fails with guidance.
 - Pipeline override (if any)
 - Stage barrier
 - Failure mode
+- Resume key
+- Reuse mode
+- Workflow template
+- Policy snapshot hash
 - Execution manifest path
 - Optional failed step
 - Step table with `Step`, `Slug`, `Branch`, `Pipeline`, `Target`, `Review mode`, `Deps`, `Jobs`, and `Status`
@@ -191,6 +208,14 @@ vizier build __materialize <build-id> --step <step-key> --slug <slug> --branch <
 ```
 
 This command is hidden from normal operator usage.
+
+Custom/shell/gate nodes (and non-primary wrapper-template nodes) use a hidden scheduler entrypoint:
+
+```bash
+vizier __workflow-node --scope <scope> --node <node-id> --slug <slug> --branch <draft-branch> --target <target-branch> --node-json '<serialized-node>'
+```
+
+`vizier build __template-node ...` remains as a build-specific compatibility shim and forwards into the same generic workflow-node runtime.
 
 ## Failure behavior
 

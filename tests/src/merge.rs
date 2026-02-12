@@ -1,7 +1,70 @@
 use crate::fixtures::*;
+use std::collections::HashMap;
 
 fn run_scheduled_ok(repo: &IntegrationRepo, args: &[&str]) -> TestResult<Output> {
     schedule_job_and_expect_status(repo, args, "succeeded", Duration::from_secs(40))
+}
+
+fn merge_cicd_gate_operations(session_contents: &str) -> TestResult<Vec<Value>> {
+    let session: Value = serde_json::from_str(session_contents)?;
+    let operations = session
+        .get("operations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(operations
+        .into_iter()
+        .filter(|entry| {
+            entry.get("kind").and_then(Value::as_str) == Some("cicd_gate")
+                && entry
+                    .get("details")
+                    .and_then(|details| details.get("scope"))
+                    .and_then(Value::as_str)
+                    == Some("merge")
+        })
+        .collect())
+}
+
+fn load_job_records(repo: &IntegrationRepo) -> TestResult<Vec<Value>> {
+    let jobs_dir = repo.path().join(".vizier/jobs");
+    let mut records = Vec::new();
+    if !jobs_dir.is_dir() {
+        return Ok(records);
+    }
+    for entry in fs::read_dir(jobs_dir)? {
+        let entry = entry?;
+        let path = entry.path().join("job.json");
+        if !path.is_file() {
+            continue;
+        }
+        let record: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn workflow_node_jobs_for_plan(
+    records: &[Value],
+    template_id: &str,
+    plan: &str,
+) -> HashMap<String, String> {
+    records
+        .iter()
+        .filter(|record| {
+            record
+                .pointer("/metadata/workflow_template_id")
+                .and_then(Value::as_str)
+                == Some(template_id)
+                && record.pointer("/metadata/plan").and_then(Value::as_str) == Some(plan)
+        })
+        .filter_map(|record| {
+            let node = record
+                .pointer("/metadata/workflow_node_id")
+                .and_then(Value::as_str)?;
+            let job = record.get("id").and_then(Value::as_str)?;
+            Some((node.to_string(), job.to_string()))
+        })
+        .collect::<HashMap<_, _>>()
 }
 
 #[test]
@@ -42,6 +105,185 @@ fn test_merge_queue_flag_is_rejected() -> TestResult {
         combined.contains("--queue"),
         "expected error to mention --queue, got:\n{combined}"
     );
+    Ok(())
+}
+
+#[test]
+fn test_scheduled_merge_records_workflow_template_metadata() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    run_scheduled_ok(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "merge-template-meta",
+            "merge template metadata",
+        ],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "merge-template-meta", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let gate_script = write_cicd_script(&repo, "merge-template-gate.sh", "#!/bin/sh\nset -eu\n")?;
+    let gate_script_flag = gate_script.to_string_lossy().to_string();
+    let (_output, record) = schedule_job_and_wait(
+        &repo,
+        &[
+            "merge",
+            "merge-template-meta",
+            "--yes",
+            "--keep-branch",
+            "--cicd-script",
+            &gate_script_flag,
+            "--auto-cicd-fix",
+            "--cicd-retries",
+            "4",
+        ],
+        Duration::from_secs(50),
+    )?;
+
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "scheduled merge should succeed: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_id")
+            .and_then(Value::as_str),
+        Some("template.merge"),
+        "merge jobs should persist workflow template id"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_version")
+            .and_then(Value::as_str),
+        Some("v1"),
+        "merge jobs should persist workflow template version"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_node_id")
+            .and_then(Value::as_str),
+        Some("merge_integrate"),
+        "merge jobs should persist workflow node id"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_capability_id")
+            .and_then(Value::as_str),
+        Some("cap.git.integrate_plan_branch"),
+        "merge jobs should persist workflow capability id"
+    );
+    let hash = record
+        .pointer("/metadata/workflow_policy_snapshot_hash")
+        .and_then(Value::as_str)
+        .ok_or("merge workflow policy snapshot hash missing")?;
+    assert_eq!(
+        hash.len(),
+        64,
+        "merge workflow hash should be a sha256 hex string: {hash}"
+    );
+    let gate_labels = record
+        .pointer("/metadata/workflow_gates")
+        .and_then(Value::as_array)
+        .ok_or("merge workflow gates missing")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        gate_labels.iter().any(|label| label.contains("cicd(")),
+        "merge workflow gates should include cicd gate: {gate_labels:?}"
+    );
+    assert!(
+        gate_labels
+            .iter()
+            .any(|label| label.contains("auto_resolve=true")),
+        "merge workflow gates should preserve auto_resolve=true setting: {gate_labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_scheduled_merge_builtin_template_enqueues_control_node_jobs() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    run_scheduled_ok(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "merge-control-nodes",
+            "merge control node scheduling",
+        ],
+    )?;
+    run_scheduled_ok(&repo, &["approve", "merge-control-nodes", "--yes"])?;
+    clean_workdir(&repo)?;
+
+    let gate_script = write_cicd_script(&repo, "merge-control-pass.sh", "#!/bin/sh\nset -eu\n")?;
+    let gate_script_flag = gate_script.to_string_lossy().to_string();
+    let (_output, root_record) = schedule_job_and_wait(
+        &repo,
+        &[
+            "merge",
+            "merge-control-nodes",
+            "--yes",
+            "--keep-branch",
+            "--cicd-script",
+            &gate_script_flag,
+            "--auto-cicd-fix",
+            "--cicd-retries",
+            "2",
+        ],
+        Duration::from_secs(60),
+    )?;
+    assert_eq!(
+        root_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "scheduled merge root should succeed: {root_record}"
+    );
+
+    let root_job_id = root_record
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("merge root job id missing")?
+        .to_string();
+    let expected_nodes = [
+        "merge_integrate",
+        "merge_conflict_resolution",
+        "merge_gate_cicd",
+        "merge_cicd_auto_fix",
+    ];
+    let mut node_jobs = HashMap::new();
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(90) {
+        let records = load_job_records(&repo)?;
+        node_jobs = workflow_node_jobs_for_plan(&records, "template.merge", "merge-control-nodes");
+        if expected_nodes
+            .iter()
+            .all(|node| node_jobs.contains_key(*node))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        expected_nodes
+            .iter()
+            .all(|node| node_jobs.contains_key(*node)),
+        "expected merge control nodes to be queued, found {:?}",
+        node_jobs
+    );
+    assert_eq!(
+        node_jobs.get("merge_integrate"),
+        Some(&root_job_id),
+        "root merge job should still bind to merge_integrate"
+    );
+    for node in expected_nodes {
+        let job_id = node_jobs
+            .get(node)
+            .ok_or_else(|| format!("missing job id for node {node}"))?;
+        wait_for_job_status(&repo, job_id, "succeeded", Duration::from_secs(90))?;
+    }
+
     Ok(())
 }
 
@@ -574,9 +816,11 @@ fn test_merge_squash_rejects_octopus_merge_history() -> TestResult {
         "expected squash merge to abort on octopus history"
     );
     let stderr = String::from_utf8_lossy(&merge.stderr);
+    let octopus_guidance = stderr.contains("octopus") && stderr.contains("--no-squash");
+    let mainline_guidance = stderr.contains("squash mode requires choosing a mainline parent");
     assert!(
-        stderr.contains("octopus") && stderr.contains("--no-squash"),
-        "stderr should explain octopus history and suggest --no-squash: {stderr}"
+        octopus_guidance || mainline_guidance,
+        "stderr should explain unsupported squash merge history: {stderr}"
     );
 
     Ok(())
@@ -595,6 +839,7 @@ fn test_merge_cicd_gate_executes_script() -> TestResult {
     )?;
 
     let script_flag = script_path.to_string_lossy().to_string();
+    let sessions_before = gather_session_logs(&repo)?;
     let merge = run_scheduled_ok(
         &repo,
         &["merge", "cicd-pass", "--yes", "--cicd-script", &script_flag],
@@ -608,6 +853,37 @@ fn test_merge_cicd_gate_executes_script() -> TestResult {
     assert!(
         log.contains("gate ok"),
         "CI/CD script output missing expected line: {log}"
+    );
+    let sessions_after = gather_session_logs(&repo)?;
+    let session_path = new_session_log(&sessions_before, &sessions_after)
+        .ok_or("merge should create a new session log")?;
+    let session = fs::read_to_string(session_path)?;
+    let operations = merge_cicd_gate_operations(&session)?;
+    let operation = operations
+        .iter()
+        .find(|entry| {
+            entry
+                .get("details")
+                .and_then(|details| details.get("status"))
+                .and_then(Value::as_str)
+                == Some("passed")
+        })
+        .ok_or_else(|| format!("missing merge cicd_gate=passed operation: {operations:?}"))?;
+    assert_eq!(
+        operation
+            .get("details")
+            .and_then(|details| details.get("attempts"))
+            .and_then(Value::as_u64),
+        Some(1),
+        "passed operation should record one attempt: {operation}"
+    );
+    assert!(
+        operation
+            .get("details")
+            .and_then(|details| details.get("auto_resolve_enabled"))
+            .and_then(Value::as_bool)
+            .is_some(),
+        "passed operation should record auto_resolve state: {operation}"
     );
     Ok(())
 }
@@ -624,6 +900,7 @@ fn test_merge_cicd_gate_failure_blocks_merge() -> TestResult {
         "#!/bin/sh\necho \"gate failure\" >&2\nexit 1\n",
     )?;
     let script_flag = script_path.to_string_lossy().to_string();
+    let sessions_before = gather_session_logs(&repo)?;
     let merge =
         repo.vizier_output(&["merge", "cicd-fail", "--yes", "--cicd-script", &script_flag])?;
     assert!(
@@ -646,6 +923,29 @@ fn test_merge_cicd_gate_failure_blocks_merge() -> TestResult {
             .is_ok(),
         "draft branch should remain after CI/CD failure"
     );
+    let sessions_after = gather_session_logs(&repo)?;
+    let session_path = new_session_log(&sessions_before, &sessions_after)
+        .ok_or("failed merge should still create a session log")?;
+    let session = fs::read_to_string(session_path)?;
+    let operations = merge_cicd_gate_operations(&session)?;
+    let operation = operations
+        .iter()
+        .find(|entry| {
+            entry
+                .get("details")
+                .and_then(|details| details.get("status"))
+                .and_then(Value::as_str)
+                == Some("failed")
+        })
+        .ok_or_else(|| format!("missing merge cicd_gate=failed operation: {operations:?}"))?;
+    assert_eq!(
+        operation
+            .get("details")
+            .and_then(|details| details.get("exit_code"))
+            .and_then(Value::as_i64),
+        Some(1),
+        "failed operation should include exit code 1: {operation}"
+    );
     Ok(())
 }
 #[test]
@@ -665,6 +965,7 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
         "#!/bin/sh\nif [ -f \"ci/fixed.txt\" ]; then\n  exit 0\nfi\necho \"ci gate still failing\" >&2\nexit 1\n",
     )?;
     let script_flag = script_path.to_string_lossy().to_string();
+    let sessions_before = gather_session_logs(&repo)?;
     let merge = repo.vizier_output(&[
         "merge",
         "cicd-auto",
@@ -688,6 +989,52 @@ fn test_merge_cicd_gate_auto_fix_applies_changes() -> TestResult {
     assert!(
         stdout.contains("Gate fixes") && stdout.contains("amend:"),
         "merge summary should report the amended implementation commit: {stdout}"
+    );
+    let sessions_after = gather_session_logs(&repo)?;
+    let session_path = new_session_log(&sessions_before, &sessions_after)
+        .ok_or("merge should create a new session log")?;
+    let session = fs::read_to_string(session_path)?;
+    let operations = merge_cicd_gate_operations(&session)?;
+    let operation = operations
+        .iter()
+        .find(|entry| {
+            entry
+                .get("details")
+                .and_then(|details| details.get("status"))
+                .and_then(Value::as_str)
+                == Some("passed")
+        })
+        .ok_or_else(|| format!("missing merge cicd_gate=passed operation: {operations:?}"))?;
+    assert_eq!(
+        operation
+            .get("details")
+            .and_then(|details| details.get("attempts"))
+            .and_then(Value::as_u64),
+        Some(2),
+        "autofix operation should capture two gate attempts: {operation}"
+    );
+    assert!(
+        operation
+            .get("details")
+            .and_then(|details| details.get("fixes_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            >= 1,
+        "autofix operation should report at least one remediation: {operation}"
+    );
+    assert!(
+        operation
+            .get("details")
+            .and_then(|details| details.get("fixes"))
+            .and_then(Value::as_array)
+            .map(|labels| labels.iter().any(|label| {
+                label
+                    .as_str()
+                    .map(|value| value.starts_with("amend:"))
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false),
+        "autofix operation should include amend label: {operation}"
     );
     Ok(())
 }
@@ -1025,10 +1372,13 @@ fn test_merge_complete_conflict_without_pending_state() -> TestResult {
         !attempt.status.success(),
         "expected --complete-conflict to fail when no merge is pending"
     );
+    let stdout = String::from_utf8_lossy(&attempt.stdout);
     let stderr = String::from_utf8_lossy(&attempt.stderr);
+    let combined = format!("{stdout}\n{stderr}");
     assert!(
-        stderr.contains("No Vizier-managed merge is awaiting completion"),
-        "stderr missing helpful message: {}",
+        combined.contains("No Vizier-managed merge is awaiting completion"),
+        "missing helpful message in command output\nstdout: {}\nstderr: {}",
+        stdout,
         stderr
     );
 

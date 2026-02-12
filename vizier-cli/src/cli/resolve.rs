@@ -296,8 +296,20 @@ pub(crate) fn resolve_test_display_options(
         return Err(format!("prompt override cannot be empty (got {prompt:?})").into());
     }
 
+    let command_alias = if let Some(scope_arg) = cmd.scope {
+        let scope: config::CommandScope = scope_arg.into();
+        config::CommandAlias::from(scope)
+    } else {
+        cmd.command.parse::<config::CommandAlias>().map_err(|err| {
+            Box::<dyn std::error::Error>::from(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid --command alias `{}`: {err}", cmd.command),
+            ))
+        })?
+    };
+
     Ok(TestDisplayOptions {
-        scope: cmd.scope.into(),
+        command_alias,
         prompt_override: cmd.prompt.as_ref().map(|value| value.trim().to_string()),
         raw_output: cmd.raw,
         timeout: cmd.timeout_secs.map(std::time::Duration::from_secs),

@@ -16,6 +16,24 @@ Kernel-only logic (config normalization, prompt assembly) should be covered with
 
 Keep overlap minimal: rules should be validated in spec tests, and integration tests should focus on user-visible behavior.
 
+## Config migration matrix
+Scope-decoupling work (alias/template identity) should keep integration coverage in three config modes:
+
+- `tests/fixtures/config/legacy-scope-only.toml`: legacy `[agents.<scope>]` compatibility path.
+- `tests/fixtures/config/alias-template-only.toml`: new `[commands]`, `[agents.commands.<alias>]`, and `[agents.templates."<selector>"]` path.
+- `tests/fixtures/config/mixed-precedence.toml`: explicit precedence conflicts and CLI override precedence checks.
+
+When touching config resolution or reporting:
+
+- Update `tests/src/plan.rs` assertions for `vizier plan --json` under `commands.<alias>.*` fields.
+- Ensure precedence checks cover: CLI override -> template override -> alias override -> legacy scope bridge -> default.
+- Keep fallback coverage for aliases that do not have explicit template mappings.
+
+When touching scheduler metadata:
+
+- Keep dual-write assertions for migration windows (`metadata.scope` plus `metadata.command_alias`/`metadata.workflow_template_selector`).
+- Verify retry/status/show flows preserve alias/template metadata while clearing runtime-only fields.
+
 ## Fixture temp lifecycle
 - Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.
 - Integration fixtures cache a process-local template repository (seeded `.vizier` runtime surface, default `cicd.sh`, git init, agent shims) and clone from it per test instead of rebuilding repo scaffolding each time.

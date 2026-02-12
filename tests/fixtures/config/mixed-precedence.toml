@@ -1,0 +1,22 @@
+[commands]
+save = "template.save.mixed@v2"
+
+[agents.default.agent]
+label = "default-runtime"
+command = ["/bin/echo"]
+
+[agents.save.agent]
+label = "legacy-save-runtime"
+command = ["/bin/echo"]
+
+[agents.commands.save.agent]
+label = "alias-save-runtime"
+command = ["/bin/echo"]
+
+[agents.templates."template.save.mixed@v2".agent]
+label = "template-save-runtime"
+command = ["/bin/echo"]
+
+[agents.commands.release_flow.agent]
+label = "alias-release-runtime"
+command = ["/bin/echo"]

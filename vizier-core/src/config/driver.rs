@@ -7,14 +7,17 @@ use crate::agent::{AgentRunner, ScriptRunner};
 
 use super::{
     AgentOutputHandling, AgentOverrides, AgentRuntimeOptions, AgentRuntimeResolution, BackendKind,
-    CommandScope, Config, DocumentationSettings, ProfileScope, PromptKind, PromptOverrides,
-    PromptSelection, ResolvedAgentRuntime, backend_kind_for_selector, default_selector_for_backend,
+    CommandAlias, CommandScope, Config, DocumentationSettings, ProfileScope, PromptKind,
+    PromptOverrides, PromptSelection, ResolvedAgentRuntime, TemplateSelector,
+    backend_kind_for_selector, compatibility_scope_for_alias, default_selector_for_backend,
 };
 
 #[derive(Clone)]
 pub struct AgentSettings {
     pub profile_scope: ProfileScope,
     pub scope: Option<CommandScope>,
+    pub command_alias: Option<CommandAlias>,
+    pub template_selector: Option<TemplateSelector>,
     pub selector: String,
     pub backend: BackendKind,
     pub runner: Option<Arc<dyn AgentRunner>>,
@@ -29,19 +32,30 @@ impl AgentSettings {
         &self,
         kind: PromptKind,
     ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-        match self.scope {
-            Some(scope) => super::resolve_prompt_profile(
+        if let Some(alias) = self.command_alias.as_ref() {
+            return super::resolve_prompt_profile_for_alias_template(
+                &super::get_config(),
+                alias,
+                self.template_selector.as_ref(),
+                kind,
+                self.cli_override.as_ref(),
+            );
+        }
+
+        if let Some(scope) = self.scope {
+            return super::resolve_prompt_profile(
                 &super::get_config(),
                 scope,
                 kind,
                 self.cli_override.as_ref(),
-            ),
-            None => super::resolve_default_prompt_profile(
-                &super::get_config(),
-                kind,
-                self.cli_override.as_ref(),
-            ),
+            );
         }
+
+        super::resolve_default_prompt_profile(
+            &super::get_config(),
+            kind,
+            self.cli_override.as_ref(),
+        )
     }
 
     pub fn prompt_selection(&self) -> Option<&PromptSelection> {
@@ -64,25 +78,46 @@ pub fn resolve_agent_settings(
     scope: CommandScope,
     cli_override: Option<&AgentOverrides>,
 ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-    let mut builder = AgentSettingsBuilder::new(cfg);
-
-    if !cfg.agent_defaults.is_empty() {
-        builder.apply(&cfg.agent_defaults);
-    }
-
-    if let Some(overrides) = cfg.agent_scopes.get(&scope) {
-        builder.apply(overrides);
-    }
-
-    if let Some(overrides) = cli_override
-        && !overrides.is_empty()
-    {
-        builder.apply_cli_override(overrides);
-    }
-
-    builder.build(
+    let alias: CommandAlias = scope.into();
+    let template = cfg.template_selector_for_alias(&alias);
+    resolve_agent_settings_with_context(
+        cfg,
         ProfileScope::Command(scope),
         Some(scope),
+        Some(&alias),
+        template.as_ref(),
+        None,
+        cli_override,
+    )
+}
+
+pub fn resolve_agent_settings_for_alias(
+    cfg: &Config,
+    alias: &CommandAlias,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    let template = cfg.template_selector_for_alias(alias);
+    resolve_agent_settings_for_alias_template(cfg, alias, template.as_ref(), cli_override)
+}
+
+pub fn resolve_agent_settings_for_alias_template(
+    cfg: &Config,
+    alias: &CommandAlias,
+    template_selector: Option<&TemplateSelector>,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    let requested_scope = if let Some(selector) = template_selector {
+        ProfileScope::Template(selector.clone())
+    } else {
+        ProfileScope::Alias(alias.clone())
+    };
+
+    resolve_agent_settings_with_context(
+        cfg,
+        requested_scope,
+        compatibility_scope_for_alias(alias),
+        Some(alias),
+        template_selector,
         None,
         cli_override,
     )
@@ -92,19 +127,15 @@ pub fn resolve_default_agent_settings(
     cfg: &Config,
     cli_override: Option<&AgentOverrides>,
 ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-    let mut builder = AgentSettingsBuilder::new(cfg);
-
-    if !cfg.agent_defaults.is_empty() {
-        builder.apply(&cfg.agent_defaults);
-    }
-
-    if let Some(overrides) = cli_override
-        && !overrides.is_empty()
-    {
-        builder.apply_cli_override(overrides);
-    }
-
-    builder.build(ProfileScope::Default, None, None, cli_override)
+    resolve_agent_settings_with_context(
+        cfg,
+        ProfileScope::Default,
+        None,
+        None,
+        None,
+        None,
+        cli_override,
+    )
 }
 
 pub fn resolve_prompt_profile(
@@ -113,44 +144,49 @@ pub fn resolve_prompt_profile(
     kind: PromptKind,
     cli_override: Option<&AgentOverrides>,
 ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
-    let mut builder = AgentSettingsBuilder::new(cfg);
-
-    if !cfg.agent_defaults.is_empty() {
-        builder.apply(&cfg.agent_defaults);
-    }
-
-    if let Some(scope_overrides) = cfg.agent_scopes.get(&scope) {
-        builder.apply(scope_overrides);
-    }
-
-    if let Some(default_prompt) = cfg.agent_defaults.prompt_overrides.get(&kind) {
-        builder.apply_prompt_overrides(default_prompt);
-    }
-
-    if let Some(scoped_prompt) = cfg
-        .agent_scopes
-        .get(&scope)
-        .and_then(|scope_overrides| scope_overrides.prompt_overrides.get(&kind))
-    {
-        builder.apply_prompt_overrides(scoped_prompt);
-    }
-
-    if let Some(overrides) = cli_override
-        && !overrides.is_empty()
-    {
-        builder.apply_cli_override(overrides);
-    }
-
-    let prompt =
-        if kind == PromptKind::Documentation && !builder.documentation.use_documentation_prompt {
-            None
-        } else {
-            Some(cfg.prompt_for_command(scope, kind))
-        };
-    builder.build(
+    let alias: CommandAlias = scope.into();
+    let template = cfg.template_selector_for_alias(&alias);
+    resolve_agent_settings_with_context(
+        cfg,
         ProfileScope::Command(scope),
         Some(scope),
-        prompt,
+        Some(&alias),
+        template.as_ref(),
+        Some(kind),
+        cli_override,
+    )
+}
+
+pub fn resolve_prompt_profile_for_alias(
+    cfg: &Config,
+    alias: &CommandAlias,
+    kind: PromptKind,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    let template = cfg.template_selector_for_alias(alias);
+    resolve_prompt_profile_for_alias_template(cfg, alias, template.as_ref(), kind, cli_override)
+}
+
+pub fn resolve_prompt_profile_for_alias_template(
+    cfg: &Config,
+    alias: &CommandAlias,
+    template_selector: Option<&TemplateSelector>,
+    kind: PromptKind,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    let requested_scope = if let Some(selector) = template_selector {
+        ProfileScope::Template(selector.clone())
+    } else {
+        ProfileScope::Alias(alias.clone())
+    };
+
+    resolve_agent_settings_with_context(
+        cfg,
+        requested_scope,
+        compatibility_scope_for_alias(alias),
+        Some(alias),
+        template_selector,
+        Some(kind),
         cli_override,
     )
 }
@@ -160,14 +196,81 @@ pub fn resolve_default_prompt_profile(
     kind: PromptKind,
     cli_override: Option<&AgentOverrides>,
 ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
+    resolve_agent_settings_with_context(
+        cfg,
+        ProfileScope::Default,
+        None,
+        None,
+        None,
+        Some(kind),
+        cli_override,
+    )
+}
+
+fn resolve_agent_settings_with_context(
+    cfg: &Config,
+    requested_scope: ProfileScope,
+    legacy_scope: Option<CommandScope>,
+    command_alias: Option<&CommandAlias>,
+    template_selector: Option<&TemplateSelector>,
+    prompt_kind: Option<PromptKind>,
+    cli_override: Option<&AgentOverrides>,
+) -> Result<AgentSettings, Box<dyn std::error::Error>> {
     let mut builder = AgentSettingsBuilder::new(cfg);
 
     if !cfg.agent_defaults.is_empty() {
         builder.apply(&cfg.agent_defaults);
     }
 
-    if let Some(default_prompt) = cfg.agent_defaults.prompt_overrides.get(&kind) {
-        builder.apply_prompt_overrides(default_prompt);
+    if let Some(scope) = legacy_scope
+        && let Some(scope_overrides) = cfg.agent_scopes.get(&scope)
+    {
+        builder.apply(scope_overrides);
+    }
+
+    if let Some(alias) = command_alias
+        && let Some(alias_overrides) = cfg.agent_commands.get(alias)
+    {
+        builder.apply(alias_overrides);
+    }
+
+    if let Some(selector) = template_selector
+        && let Some(template_overrides) = cfg.agent_templates.get(selector)
+    {
+        builder.apply(template_overrides);
+    }
+
+    if let Some(kind) = prompt_kind {
+        if let Some(default_prompt) = cfg.agent_defaults.prompt_overrides.get(&kind) {
+            builder.apply_prompt_overrides(default_prompt);
+        }
+
+        if let Some(scope) = legacy_scope
+            && let Some(scope_prompt) = cfg
+                .agent_scopes
+                .get(&scope)
+                .and_then(|scope_overrides| scope_overrides.prompt_overrides.get(&kind))
+        {
+            builder.apply_prompt_overrides(scope_prompt);
+        }
+
+        if let Some(alias) = command_alias
+            && let Some(alias_prompt) = cfg
+                .agent_commands
+                .get(alias)
+                .and_then(|alias_overrides| alias_overrides.prompt_overrides.get(&kind))
+        {
+            builder.apply_prompt_overrides(alias_prompt);
+        }
+
+        if let Some(selector) = template_selector
+            && let Some(template_prompt) = cfg
+                .agent_templates
+                .get(selector)
+                .and_then(|template_overrides| template_overrides.prompt_overrides.get(&kind))
+        {
+            builder.apply_prompt_overrides(template_prompt);
+        }
     }
 
     if let Some(overrides) = cli_override
@@ -176,13 +279,28 @@ pub fn resolve_default_prompt_profile(
         builder.apply_cli_override(overrides);
     }
 
-    let prompt =
+    let prompt = if let Some(kind) = prompt_kind {
         if kind == PromptKind::Documentation && !builder.documentation.use_documentation_prompt {
             None
+        } else if let Some(alias) = command_alias {
+            Some(cfg.prompt_for_alias_template(alias, template_selector, kind))
+        } else if let Some(scope) = legacy_scope {
+            Some(cfg.prompt_for_command(scope, kind))
         } else {
             Some(cfg.prompt_for_default(kind))
-        };
-    builder.build(ProfileScope::Default, None, prompt, cli_override)
+        }
+    } else {
+        None
+    };
+
+    builder.build(
+        requested_scope,
+        legacy_scope,
+        command_alias.cloned(),
+        template_selector.cloned(),
+        prompt,
+        cli_override,
+    )
 }
 
 #[derive(Clone)]
@@ -279,6 +397,8 @@ impl AgentSettingsBuilder {
         &self,
         profile_scope: ProfileScope,
         scope: Option<CommandScope>,
+        command_alias: Option<CommandAlias>,
+        template_selector: Option<TemplateSelector>,
         prompt: Option<PromptSelection>,
         cli_override: Option<&AgentOverrides>,
     ) -> Result<AgentSettings, Box<dyn std::error::Error>> {
@@ -290,6 +410,8 @@ impl AgentSettingsBuilder {
         Ok(AgentSettings {
             profile_scope,
             scope,
+            command_alias,
+            template_selector,
             selector: self.selector.clone(),
             backend: self.backend,
             runner: resolve_agent_runner(self.backend)?,

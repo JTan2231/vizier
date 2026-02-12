@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub mod spec;
 
@@ -44,6 +44,10 @@ pub enum JobArtifact {
     #[serde(rename = "command_patch", alias = "ask_save_patch")]
     CommandPatch {
         job_id: String,
+    },
+    Custom {
+        type_id: String,
+        key: String,
     },
 }
 
@@ -92,6 +96,7 @@ pub enum JobWaitKind {
     Approval,
     Locks,
     PinnedHead,
+    Preconditions,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,6 +120,21 @@ pub struct JobApprovalFact {
 pub struct JobWaitReason {
     pub kind: JobWaitKind,
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JobPrecondition {
+    CleanWorktree,
+    BranchExists {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    Custom {
+        id: String,
+        #[serde(default)]
+        args: BTreeMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -159,5 +179,6 @@ pub fn format_artifact(artifact: &JobArtifact) -> String {
         JobArtifact::TargetBranch { name } => format!("target_branch:{name}"),
         JobArtifact::MergeSentinel { slug } => format!("merge_sentinel:{slug}"),
         JobArtifact::CommandPatch { job_id } => format!("command_patch:{job_id}"),
+        JobArtifact::Custom { type_id, key } => format!("custom:{type_id}:{key}"),
     }
 }

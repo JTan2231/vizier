@@ -2,6 +2,14 @@ use crate::fixtures::*;
 use git2::BranchType;
 use std::path::Path;
 
+fn config_fixture(name: &str) -> PathBuf {
+    repo_root()
+        .join("tests")
+        .join("fixtures")
+        .join("config")
+        .join(name)
+}
+
 #[test]
 fn test_plan_command_outputs_resolved_config() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -36,8 +44,8 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
         "plan output should describe agent runtime resolution:\n{stdout}"
     );
     assert!(
-        stdout.contains("Per-scope agents:"),
-        "plan output should render per-scope agent settings:\n{stdout}"
+        stdout.contains("Per-command agents:"),
+        "plan output should render per-command agent settings:\n{stdout}"
     );
     assert!(
         stdout.contains("Build:"),
@@ -46,6 +54,10 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
     assert!(
         compact.contains("Defaultpipeline:approve"),
         "plan output should include build.default_pipeline with default value:\n{stdout}"
+    );
+    assert!(
+        compact.contains("Templatesave:template.save.v1"),
+        "plan output should include workflow template defaults:\n{stdout}"
     );
 
     let after_logs = gather_session_logs(&repo)?;
@@ -75,6 +87,10 @@ retries = 5
 commands = ["echo alt-review"]
 [workflow]
 no_commit_default = true
+
+[workflow.templates]
+review = "custom.review.v2"
+build_execute = "custom.build@v7"
 
 [build]
 default_pipeline = "approve-review-merge"
@@ -128,6 +144,24 @@ keep_branch = true
             .and_then(Value::as_bool),
         Some(false),
         "workflow.background.quiet should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/workflow/templates/save")
+            .and_then(Value::as_str),
+        Some("template.save.v1"),
+        "workflow.templates.save should appear in the report"
+    );
+    assert_eq!(
+        json.pointer("/workflow/templates/review")
+            .and_then(Value::as_str),
+        Some("custom.review.v2"),
+        "workflow.templates.review should reflect config overrides"
+    );
+    assert_eq!(
+        json.pointer("/workflow/templates/build_execute")
+            .and_then(Value::as_str),
+        Some("custom.build@v7"),
+        "workflow.templates.build_execute should reflect config overrides"
     );
     assert_eq!(
         json.pointer("/merge/cicd_gate/script")
@@ -199,9 +233,15 @@ keep_branch = true
         "build profile keep_branch should appear in the report"
     );
     assert_eq!(
-        json.pointer("/scopes/save/agent").and_then(Value::as_str),
+        json.pointer("/commands/save/agent").and_then(Value::as_str),
         Some("gemini"),
-        "per-scope agent selector should reflect CLI overrides"
+        "per-command agent selector should reflect CLI overrides"
+    );
+    assert_eq!(
+        json.pointer("/commands/review/template_selector")
+            .and_then(Value::as_str),
+        Some("custom.review.v2"),
+        "per-command template selector should reflect workflow template overrides"
     );
     Ok(())
 }
@@ -276,11 +316,145 @@ command = ["./save-runtime.sh"]
         "default runtime should come from [agents.default], not save overrides"
     );
     assert_eq!(
-        json.pointer("/scopes/save/agent_runtime/label")
+        json.pointer("/commands/save/agent_runtime/label")
             .and_then(Value::as_str),
         Some("save-runtime"),
-        "save scope should still report save-specific runtime"
+        "save command should still report save-specific runtime"
     );
+    Ok(())
+}
+
+#[test]
+fn test_plan_json_legacy_scope_fixture_compatibility() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo
+        .vizier_cmd_with_config(&config_fixture("legacy-scope-only.toml"))
+        .args(["plan", "--json"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier plan --json with legacy fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        json.pointer("/commands/save/legacy_scope")
+            .and_then(Value::as_str),
+        Some("save"),
+        "legacy fixture should expose compatibility scope for save command"
+    );
+    assert_eq!(
+        json.pointer("/commands/save/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("legacy-save-runtime"),
+        "legacy [agents.save] runtime should still apply via compatibility bridge"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_json_alias_template_fixture_resolution() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo
+        .vizier_cmd_with_config(&config_fixture("alias-template-only.toml"))
+        .args(["plan", "--json"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "vizier plan --json with alias/template fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        json.pointer("/commands/patch/template_selector")
+            .and_then(Value::as_str),
+        Some("template.patch.ops@v3"),
+        "patch alias should resolve through [commands] mapping"
+    );
+    assert_eq!(
+        json.pointer("/commands/patch/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("template-patch-runtime"),
+        "template runtime overrides should beat alias runtime overrides"
+    );
+    assert_eq!(
+        json.pointer("/commands/patch/legacy_scope")
+            .and_then(Value::as_str),
+        Some("draft"),
+        "patch alias should preserve legacy fallback scope metadata"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_json_mixed_precedence_fixture_and_cli_override() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let fixture = config_fixture("mixed-precedence.toml");
+
+    let without_cli = repo
+        .vizier_cmd_with_config(&fixture)
+        .args(["plan", "--json"])
+        .output()?;
+    assert!(
+        without_cli.status.success(),
+        "vizier plan --json with mixed fixture failed: {}",
+        String::from_utf8_lossy(&without_cli.stderr)
+    );
+    let without_cli_json: Value = serde_json::from_slice(&without_cli.stdout)?;
+    assert_eq!(
+        without_cli_json
+            .pointer("/commands/save/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("template-save-runtime"),
+        "template override should beat alias + legacy + default runtime labels"
+    );
+    assert_eq!(
+        without_cli_json
+            .pointer("/commands/release_flow/template_selector")
+            .and_then(Value::as_str),
+        None,
+        "unmapped alias should not require a template selector"
+    );
+    assert_eq!(
+        without_cli_json
+            .pointer("/commands/release_flow/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("alias-release-runtime"),
+        "unmapped alias should still resolve alias-level overrides"
+    );
+
+    let with_cli = repo
+        .vizier_cmd_with_config(&fixture)
+        .args([
+            "--agent-label",
+            "cli-runtime",
+            "--agent-command",
+            "/bin/echo",
+            "plan",
+            "--json",
+        ])
+        .output()?;
+    assert!(
+        with_cli.status.success(),
+        "vizier plan --json with mixed fixture + CLI overrides failed: {}",
+        String::from_utf8_lossy(&with_cli.stderr)
+    );
+    let with_cli_json: Value = serde_json::from_slice(&with_cli.stdout)?;
+    assert_eq!(
+        with_cli_json
+            .pointer("/commands/save/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("cli-runtime"),
+        "CLI runtime overrides should beat template/alias/legacy/default"
+    );
+    assert_eq!(
+        with_cli_json
+            .pointer("/commands/release_flow/agent_runtime/label")
+            .and_then(Value::as_str),
+        Some("cli-runtime"),
+        "CLI runtime overrides should apply to custom aliases too"
+    );
+
     Ok(())
 }
 

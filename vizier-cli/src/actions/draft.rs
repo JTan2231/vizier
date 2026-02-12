@@ -27,7 +27,7 @@ pub(crate) async fn run_draft(
     require_agent_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier draft requires an agent-capable selector; update [agents.draft] or pass --agent codex|gemini",
+        "vizier draft requires an agent-capable selector; update [agents.commands.draft] (or legacy [agents.draft]) or pass --agent codex|gemini",
     )?;
 
     let DraftArgs {

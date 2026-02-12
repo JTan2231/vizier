@@ -8,18 +8,21 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
     thread,
-    time::Duration as StdDuration,
+    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 use vizier_core::display;
 use vizier_core::scheduler::spec::{
-    self, AfterDependencyState, JobAfterDependencyStatus, PinnedHeadFact, SchedulerAction,
-    SchedulerFacts,
+    self, AfterDependencyState, JobAfterDependencyStatus, JobPreconditionFact,
+    JobPreconditionState, PinnedHeadFact, SchedulerAction, SchedulerFacts,
 };
 pub use vizier_core::scheduler::{
     AfterPolicy, JobAfterDependency, JobApprovalFact, JobApprovalState, JobArtifact, JobLock,
-    JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,
+    JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +42,8 @@ pub struct JobSchedule {
     pub artifacts: Vec<JobArtifact>,
     #[serde(default)]
     pub pinned_head: Option<PinnedHead>,
+    #[serde(default)]
+    pub preconditions: Vec<JobPrecondition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<JobApproval>,
     #[serde(default)]
@@ -112,10 +117,18 @@ pub struct JobPaths {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobMetadata {
+    pub command_alias: Option<String>,
     pub scope: Option<String>,
     pub target: Option<String>,
     pub plan: Option<String>,
     pub branch: Option<String>,
+    pub workflow_template_selector: Option<String>,
+    pub workflow_template_id: Option<String>,
+    pub workflow_template_version: Option<String>,
+    pub workflow_node_id: Option<String>,
+    pub workflow_capability_id: Option<String>,
+    pub workflow_policy_snapshot_hash: Option<String>,
+    pub workflow_gates: Option<Vec<String>>,
     pub build_pipeline: Option<String>,
     pub build_target: Option<String>,
     pub build_review_mode: Option<String>,
@@ -258,6 +271,7 @@ impl RetryCleanupResult {
 }
 
 static CURRENT_JOB_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static RECORD_TMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
 fn current_job_id_state() -> &'static Mutex<Option<String>> {
     CURRENT_JOB_ID.get_or_init(|| Mutex::new(None))
@@ -380,6 +394,100 @@ pub(crate) fn save_input_patch_path(jobs_root: &Path, job_id: &str) -> PathBuf {
     jobs_root.join(job_id).join("save-input.patch")
 }
 
+fn hex_encode_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        let hi = byte >> 4;
+        let lo = byte & 0x0f;
+        out.push(char::from(if hi < 10 {
+            b'0' + hi
+        } else {
+            b'a' + (hi - 10)
+        }));
+        out.push(char::from(if lo < 10 {
+            b'0' + lo
+        } else {
+            b'a' + (lo - 10)
+        }));
+    }
+    out
+}
+
+fn custom_artifact_marker_dir(project_root: &Path, type_id: &str, key: &str) -> PathBuf {
+    project_root
+        .join(".vizier/jobs/artifacts/custom")
+        .join(hex_encode_component(type_id))
+        .join(hex_encode_component(key))
+}
+
+fn custom_artifact_marker_path(
+    project_root: &Path,
+    job_id: &str,
+    type_id: &str,
+    key: &str,
+) -> PathBuf {
+    custom_artifact_marker_dir(project_root, type_id, key).join(format!("{job_id}.json"))
+}
+
+fn custom_artifact_marker_exists(project_root: &Path, type_id: &str, key: &str) -> bool {
+    let dir = custom_artifact_marker_dir(project_root, type_id, key);
+    if !dir.is_dir() {
+        return false;
+    }
+    fs::read_dir(dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+fn write_custom_artifact_markers(
+    project_root: &Path,
+    job_id: &str,
+    artifacts: &[JobArtifact],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for artifact in artifacts {
+        let JobArtifact::Custom { type_id, key } = artifact else {
+            continue;
+        };
+        let marker = custom_artifact_marker_path(project_root, job_id, type_id, key);
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let payload = serde_json::json!({
+            "job_id": job_id,
+            "type_id": type_id,
+            "key": key,
+            "written_at": Utc::now().to_rfc3339(),
+        });
+        fs::write(marker, serde_json::to_vec_pretty(&payload)?)?;
+    }
+    Ok(())
+}
+
+fn remove_custom_artifact_markers(
+    project_root: &Path,
+    job_id: &str,
+    artifacts: &[JobArtifact],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for artifact in artifacts {
+        let JobArtifact::Custom { type_id, key } = artifact else {
+            continue;
+        };
+        let marker = custom_artifact_marker_path(project_root, job_id, type_id, key);
+        remove_file_if_exists(&marker)?;
+        let key_dir = custom_artifact_marker_dir(project_root, type_id, key);
+        if key_dir.is_dir() && fs::read_dir(&key_dir)?.next().is_none() {
+            let _ = fs::remove_dir(&key_dir);
+        }
+        if let Some(type_dir) = key_dir.parent()
+            && type_dir.is_dir()
+            && fs::read_dir(type_dir)?.next().is_none()
+        {
+            let _ = fs::remove_dir(type_dir);
+        }
+    }
+    Ok(())
+}
+
 fn relative_path(project_root: &Path, path: &Path) -> String {
     path.strip_prefix(project_root)
         .unwrap_or(path)
@@ -403,6 +511,9 @@ fn merge_metadata(
         (Some(meta), None) => Some(meta),
         (None, Some(meta)) => Some(meta),
         (Some(mut base), Some(update)) => {
+            if base.command_alias.is_none() {
+                base.command_alias = update.command_alias;
+            }
             if base.scope.is_none() {
                 base.scope = update.scope;
             }
@@ -414,6 +525,27 @@ fn merge_metadata(
             }
             if base.branch.is_none() {
                 base.branch = update.branch;
+            }
+            if base.workflow_template_selector.is_none() {
+                base.workflow_template_selector = update.workflow_template_selector;
+            }
+            if base.workflow_template_id.is_none() {
+                base.workflow_template_id = update.workflow_template_id;
+            }
+            if base.workflow_template_version.is_none() {
+                base.workflow_template_version = update.workflow_template_version;
+            }
+            if base.workflow_node_id.is_none() {
+                base.workflow_node_id = update.workflow_node_id;
+            }
+            if base.workflow_capability_id.is_none() {
+                base.workflow_capability_id = update.workflow_capability_id;
+            }
+            if base.workflow_policy_snapshot_hash.is_none() {
+                base.workflow_policy_snapshot_hash = update.workflow_policy_snapshot_hash;
+            }
+            if is_empty_vec(&base.workflow_gates) {
+                base.workflow_gates = update.workflow_gates;
             }
             if base.build_pipeline.is_none() {
                 base.build_pipeline = update.build_pipeline;
@@ -506,11 +638,26 @@ fn persist_record(paths: &JobPaths, record: &JobRecord) -> Result<(), Box<dyn st
         fs::create_dir_all(parent)?;
     }
 
-    let tmp = paths.record_path.with_extension("json.tmp");
+    let nonce = RECORD_TMP_NONCE.fetch_add(1, AtomicOrdering::Relaxed);
+    let epoch_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = paths.record_path.with_extension(format!(
+        "json.tmp.{}.{}.{}",
+        std::process::id(),
+        epoch_nanos,
+        nonce
+    ));
     let contents = serde_json::to_vec_pretty(record)?;
     fs::write(&tmp, contents)?;
-    fs::rename(tmp, &paths.record_path)?;
-    Ok(())
+    match fs::rename(&tmp, &paths.record_path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = fs::remove_file(&tmp);
+            Err(Box::new(err))
+        }
+    }
 }
 
 fn load_record(paths: &JobPaths) -> Result<JobRecord, Box<dyn std::error::Error>> {
@@ -792,6 +939,13 @@ pub fn finalize_job(
         persist_record(&paths, &record)?;
     }
 
+    if let Some(schedule) = record.schedule.as_ref() {
+        remove_custom_artifact_markers(project_root, job_id, &schedule.artifacts)?;
+        if record.status == JobStatus::Succeeded {
+            write_custom_artifact_markers(project_root, job_id, &schedule.artifacts)?;
+        }
+    }
+
     Ok(record)
 }
 
@@ -919,6 +1073,10 @@ fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
                 Ok(record) => record.status == JobStatus::Succeeded,
                 Err(_) => false,
             }
+        }
+        JobArtifact::Custom { type_id, key } => {
+            let repo_root = repo.path().parent().unwrap_or_else(|| Path::new("."));
+            custom_artifact_marker_exists(repo_root, type_id, key)
         }
     }
 }
@@ -1286,6 +1444,7 @@ fn artifact_sort_key(artifact: &JobArtifact) -> (u8, &str, &str) {
         JobArtifact::TargetBranch { name } => (3, name, ""),
         JobArtifact::MergeSentinel { slug } => (4, slug, ""),
         JobArtifact::CommandPatch { job_id } => (5, job_id, ""),
+        JobArtifact::Custom { type_id, key } => (6, type_id, key),
     }
 }
 
@@ -1328,6 +1487,139 @@ fn pinned_head_matches(repo: &Repository, pinned: &PinnedHead) -> Result<bool, g
     let commit = branch_ref.into_reference().peel_to_commit()?;
     let expected = Oid::from_str(&pinned.oid).ok();
     Ok(Some(commit.id()) == expected)
+}
+
+fn is_ephemeral_vizier_path(path: &str) -> bool {
+    const EPHEMERAL_PREFIXES: [&str; 4] = [
+        ".vizier/jobs",
+        ".vizier/sessions",
+        ".vizier/tmp",
+        ".vizier/tmp-worktrees",
+    ];
+    EPHEMERAL_PREFIXES
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{}/", prefix)))
+}
+
+fn clean_worktree_matches(repo: &Repository) -> Result<bool, git2::Error> {
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(true);
+    let statuses = repo.statuses(Some(&mut opts))?;
+    let has_relevant_changes = statuses.iter().any(|entry| {
+        let Some(path) = entry.path() else {
+            return true;
+        };
+        !is_ephemeral_vizier_path(path)
+    });
+    Ok(!has_relevant_changes)
+}
+
+fn branch_from_locks(locks: &[JobLock]) -> Option<String> {
+    let mut branches = locks
+        .iter()
+        .filter_map(|lock| lock.key.strip_prefix("branch:"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    branches.sort();
+    branches.dedup();
+    if branches.len() == 1 {
+        branches.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn resolve_branch_precondition_target(
+    repo: &Repository,
+    schedule: &JobSchedule,
+    explicit: Option<&str>,
+) -> Option<String> {
+    explicit
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            schedule
+                .pinned_head
+                .as_ref()
+                .map(|value| value.branch.clone())
+        })
+        .or_else(|| branch_from_locks(&schedule.locks))
+        .or_else(|| {
+            repo.head()
+                .ok()
+                .and_then(|head| head.shorthand().map(ToString::to_string))
+        })
+}
+
+fn evaluate_precondition(
+    repo: &Repository,
+    schedule: &JobSchedule,
+    precondition: &JobPrecondition,
+) -> Result<JobPreconditionState, git2::Error> {
+    match precondition {
+        JobPrecondition::CleanWorktree => {
+            if clean_worktree_matches(repo)? {
+                Ok(JobPreconditionState::Satisfied)
+            } else {
+                Ok(JobPreconditionState::Waiting {
+                    detail: "working tree has uncommitted or untracked changes".to_string(),
+                })
+            }
+        }
+        JobPrecondition::BranchExists { branch } => {
+            let resolved = resolve_branch_precondition_target(repo, schedule, branch.as_deref());
+            let Some(target) = resolved else {
+                return Ok(JobPreconditionState::Blocked {
+                    detail: "branch_exists precondition requires branch context (set precondition.branch, pinned_head, or a single branch lock)".to_string(),
+                });
+            };
+            if repo.find_branch(&target, git2::BranchType::Local).is_ok() {
+                Ok(JobPreconditionState::Satisfied)
+            } else {
+                Ok(JobPreconditionState::Waiting {
+                    detail: format!("required branch `{target}` does not exist"),
+                })
+            }
+        }
+        JobPrecondition::Custom { id, args } => match id.as_str() {
+            "clean_worktree" => {
+                if clean_worktree_matches(repo)? {
+                    Ok(JobPreconditionState::Satisfied)
+                } else {
+                    Ok(JobPreconditionState::Waiting {
+                        detail: "custom precondition clean_worktree failed: working tree has uncommitted or untracked changes".to_string(),
+                    })
+                }
+            }
+            "branch_exists" => {
+                let branch = args.get("branch").map(String::as_str);
+                let resolved = resolve_branch_precondition_target(repo, schedule, branch);
+                let Some(target) = resolved else {
+                    return Ok(JobPreconditionState::Blocked {
+                        detail: "custom precondition branch_exists requires `branch` arg or branch context".to_string(),
+                    });
+                };
+                if repo.find_branch(&target, git2::BranchType::Local).is_ok() {
+                    Ok(JobPreconditionState::Satisfied)
+                } else {
+                    Ok(JobPreconditionState::Waiting {
+                        detail: format!(
+                            "custom precondition branch_exists failed: `{target}` missing"
+                        ),
+                    })
+                }
+            }
+            _ => Ok(JobPreconditionState::Blocked {
+                detail: format!("custom precondition `{id}` is not supported by scheduler runtime"),
+            }),
+        },
+    }
 }
 
 fn resolve_after_dependency_state(
@@ -1414,6 +1706,20 @@ fn build_scheduler_facts(
                         matches,
                     },
                 );
+            }
+
+            if !schedule.preconditions.is_empty() {
+                let mut preconditions = Vec::with_capacity(schedule.preconditions.len());
+                for precondition in &schedule.preconditions {
+                    let state = evaluate_precondition(repo, schedule, precondition)?;
+                    preconditions.push(JobPreconditionFact {
+                        precondition: precondition.clone(),
+                        state,
+                    });
+                }
+                facts
+                    .job_preconditions
+                    .insert(record.id.clone(), preconditions);
             }
 
             if let Some(approval) = schedule.approval.as_ref()
@@ -1870,7 +2176,7 @@ fn collect_merge_retry_slugs(record: &JobRecord) -> HashSet<String> {
     if record
         .metadata
         .as_ref()
-        .and_then(|meta| meta.scope.as_deref())
+        .and_then(|meta| meta.command_alias.as_deref().or(meta.scope.as_deref()))
         == Some("merge")
         && let Some(slug) = record.metadata.as_ref().and_then(|meta| meta.plan.as_ref())
     {
@@ -1953,6 +2259,9 @@ fn rewind_job_record_for_retry(
     remove_file_if_exists(&command_patch_path(jobs_root, &record.id))?;
     remove_file_if_exists(&legacy_command_patch_path(jobs_root, &record.id))?;
     remove_file_if_exists(&save_input_patch_path(jobs_root, &record.id))?;
+    if let Some(schedule) = record.schedule.as_ref() {
+        remove_custom_artifact_markers(project_root, &record.id, &schedule.artifacts)?;
+    }
     truncate_log(&paths.stdout_path)?;
     truncate_log(&paths.stderr_path)?;
 
@@ -2634,6 +2943,7 @@ mod tests {
     use chrono::TimeZone;
     use git2::{BranchType, Signature};
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
 
     fn init_repo(temp: &TempDir) -> Result<Repository, git2::Error> {
@@ -2727,6 +3037,14 @@ mod tests {
                 }
                 fs::write(path, "patch")?;
             }
+            JobArtifact::Custom { .. } => {
+                let project_root = repo.path().parent().ok_or("missing repo root")?;
+                write_custom_artifact_markers(
+                    project_root,
+                    "fixture-artifact-producer",
+                    std::slice::from_ref(artifact),
+                )?;
+            }
         }
         Ok(())
     }
@@ -2764,6 +3082,56 @@ mod tests {
             follow_poll_delay(false, &mut idle_polls),
             StdDuration::from_millis(40)
         );
+    }
+
+    #[test]
+    fn persist_record_handles_concurrent_writers_without_tmp_collisions() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("create jobs root");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "race-job",
+            &["save".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue race job");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut handles = Vec::new();
+
+        for worker in 0..2u32 {
+            let jobs_root = jobs_root.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || -> Result<(), String> {
+                barrier.wait();
+                for attempt in 0..200u32 {
+                    let paths = paths_for(&jobs_root, "race-job");
+                    let mut record = load_record(&paths).map_err(|err| err.to_string())?;
+                    let metadata = record.metadata.get_or_insert_with(JobMetadata::default);
+                    metadata.patch_index = Some((worker * 1000 + attempt) as usize);
+                    persist_record(&paths, &record).map_err(|err| err.to_string())?;
+                }
+                Ok(())
+            }));
+        }
+
+        barrier.wait();
+        for handle in handles {
+            handle
+                .join()
+                .expect("concurrent writer should not panic")
+                .expect("concurrent writer should not fail");
+        }
+
+        let record = read_record(&jobs_root, "race-job").expect("read final race record");
+        assert_eq!(record.id, "race-job");
     }
 
     fn write_job_with_status(
@@ -2812,6 +3180,7 @@ mod tests {
         TargetBranch,
         MergeSentinel,
         CommandPatch,
+        Custom,
     }
 
     fn artifact_for(kind: ArtifactKind, suffix: &str) -> JobArtifact {
@@ -2836,6 +3205,10 @@ mod tests {
             },
             ArtifactKind::CommandPatch => JobArtifact::CommandPatch {
                 job_id: format!("job-{suffix}"),
+            },
+            ArtifactKind::Custom => JobArtifact::Custom {
+                type_id: "acme.execution".to_string(),
+                key: format!("key-{suffix}"),
             },
         }
     }
@@ -3744,6 +4117,7 @@ mod tests {
             ArtifactKind::TargetBranch,
             ArtifactKind::MergeSentinel,
             ArtifactKind::CommandPatch,
+            ArtifactKind::Custom,
         ];
 
         for (idx, kind) in kinds.iter().enumerate() {
@@ -3788,6 +4162,56 @@ mod tests {
                 "expected artifact to be missing: {missing:?}"
             );
         }
+    }
+
+    #[test]
+    fn finalize_job_writes_custom_artifact_markers() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let artifact = JobArtifact::Custom {
+            type_id: "acme.execution".to_string(),
+            key: "final".to_string(),
+        };
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "custom-producer",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue custom producer");
+        finalize_job(
+            project_root,
+            &jobs_root,
+            "custom-producer",
+            JobStatus::Succeeded,
+            0,
+            None,
+            None,
+        )
+        .expect("finalize custom producer");
+
+        let marker =
+            custom_artifact_marker_path(project_root, "custom-producer", "acme.execution", "final");
+        assert!(
+            marker.exists(),
+            "expected custom artifact marker {}",
+            marker.display()
+        );
+        assert!(
+            artifact_exists(&repo, &artifact),
+            "custom artifact should be externally discoverable after finalize"
+        );
     }
 
     #[test]
@@ -4269,6 +4693,18 @@ mod tests {
         let save_patch = save_input_patch_path(&jobs_root, "job-retry");
         fs::write(&ask_patch, "ask patch").expect("write ask patch");
         fs::write(&save_patch, "save patch").expect("write save patch");
+        let custom_artifact = JobArtifact::Custom {
+            type_id: "acme.execution".to_string(),
+            key: "retry-node".to_string(),
+        };
+        write_custom_artifact_markers(
+            project_root,
+            "job-retry",
+            std::slice::from_ref(&custom_artifact),
+        )
+        .expect("write custom marker");
+        let custom_marker =
+            custom_artifact_marker_path(project_root, "job-retry", "acme.execution", "retry-node");
 
         let mut record = update_job_record(&jobs_root, "job-retry", |record| {
             record.status = JobStatus::Failed;
@@ -4285,6 +4721,7 @@ mod tests {
                     detail: Some("waiting on old state".to_string()),
                 }),
                 waited_on: vec![JobWaitKind::Dependencies],
+                artifacts: vec![custom_artifact.clone()],
                 ..record.schedule.clone().unwrap_or_default()
             });
             record.metadata = Some(JobMetadata {
@@ -4337,6 +4774,10 @@ mod tests {
         assert!(
             !save_patch.exists(),
             "expected save-input patch to be removed during rewind"
+        );
+        assert!(
+            !custom_marker.exists(),
+            "expected custom artifact marker to be removed during rewind"
         );
         assert!(
             !worktree_path.exists(),

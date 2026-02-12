@@ -201,7 +201,7 @@ pub(crate) async fn run_patch(
     require_agent_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier patch requires an agent-capable selector; update [agents.draft] or pass --agent codex|gemini",
+        "vizier patch requires an agent-capable selector; update [agents.commands.patch] (or legacy [agents.draft]) or pass --agent codex|gemini",
     )?;
 
     let repo_root = std::fs::canonicalize(project_root)?;

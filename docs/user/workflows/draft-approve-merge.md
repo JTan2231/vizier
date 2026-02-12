@@ -22,7 +22,7 @@ Create mode writes a build session to `build/<id>` with plan artifacts under `.v
 vizier build execute todo-batch --yes
 ```
 
-Execution mode queues per-step scheduler jobs that materialize canonical `draft/<slug>` plan docs, then runs `approve`/`review`/`merge` phases according to resolved build policy. By default, pipeline/target/review behavior comes from `[build]` config and optional step-level overrides in the build file; pass `--pipeline ...` only when you need a one-off global override. Use `--resume` to continue from `execution.json` without duplicating queued/running jobs; resume rejects policy drift if the resolved per-step policy changed.
+Execution mode queues per-step scheduler jobs from the compiled build-execute template (built-in default materializes canonical `draft/<slug>` plan docs, then runs `approve`/`review`/`merge` according to resolved policy). By default, pipeline/target/review behavior comes from `[build]` config and optional step-level overrides in the build file; pass `--pipeline ...` only when you need a one-off global override. Use `--resume` to continue from the template-selected execution lane (`execution.<resume-key>.json`), reusing non-terminal jobs and applying template `policy.resume.reuse_mode` drift rules.
 
 For the build schema, execute options, and artifact details, see `docs/user/build.md`, `examples/build/todo.toml`, and `examples/build/todo.json`.
 
@@ -32,46 +32,46 @@ If your inputs are already discrete files and you want a thinner wrapper, use:
 vizier patch BUG1.md BUG2.md --yes
 ```
 
-`patch` now queues a root scheduler job first (`scope=patch`), runs full-file preflight inside that job, then queues per-step phase jobs in exact CLI order. It deduplicates repeated paths by default, defaults to the full `approve-review-merge` pipeline when `--pipeline` is omitted, and reuses the same build execution machinery under a deterministic patch session id (`--resume` reuses non-terminal jobs for that session).
+`patch` now queues a root scheduler job first (`command_alias=patch`, shown in the `Scope` field for compatibility), runs full-file preflight inside that job, then queues per-step phase jobs in exact CLI order. It deduplicates repeated paths by default, defaults to the full `approve-review-merge` pipeline when `--pipeline` is omitted, and reuses the same build execution machinery under a deterministic patch session id (`--resume` reuses non-terminal jobs for that session).
 
 ### Agent configuration
 
-The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) use the scoped agent config described in the README. Declare defaults under `[agents.default]` and override the workflow-specific scopes to mix editing stacks as needed (see also `docs/user/prompt-config-matrix.md` for the full scope×prompt-kind matrix and config levers):
+The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) resolve agent settings through command aliases + template selectors. Declare defaults under `[agents.default]`, then override per alias with `[agents.commands.<alias>]` (and optionally per template with `[agents.templates."<selector>"]`) to mix editing stacks as needed (see `docs/user/prompt-config-matrix.md` for the full matrix):
 
 ```toml
 [agents.default]
 agent = "codex"
 
-[agents.approve]
+[agents.commands.approve]
 agent = "codex"            # enforce an editing-capable implementation backend
 
-[agents.review]
+[agents.commands.review]
 agent = "codex"
 
-[agents.merge]
+[agents.commands.merge]
 agent = "gemini"           # keep merge cleanup on the gemini stack
 ```
 
-For the full catalogue of knobs and defaults (scope, precedence, CLI overrides), see `docs/user/config-reference.md`. Before kicking off a workflow, `vizier plan --json` prints the resolved agent/prompt settings for your current repo without mutating state.
+For the full catalogue of knobs and defaults (aliases, template selectors, precedence, CLI overrides), see `docs/user/config-reference.md`. Before kicking off a workflow, `vizier plan --json` prints resolved per-command alias settings (including template selector and compatibility scope fallback) without mutating state.
 
 Config precedence: when you skip `--config-file`, Vizier loads the user/global config from `$XDG_CONFIG_HOME`/`$VIZIER_CONFIG_DIR` (if present) as a base and overlays `.vizier/config.toml` so repo settings override while missing keys inherit your defaults. `VIZIER_CONFIG_FILE` is only consulted when neither config file exists.
 
 If the selected agent crashes or rejects the request, the command fails immediately with the shim error. Vizier does not fall back to another agent; rerun the command once the configured selector is healthy.
 
-CLI overrides (`--agent`, `--agent-label`, `--agent-command`) apply only to the command being executed and sit above the `[agents.<scope>]` entries.
+CLI overrides (`--agent`, `--agent-label`, `--agent-command`) apply only to the command being executed and sit above alias/template config tables for that invocation.
 
-Need to sanity-check how those layers resolve before you kick off the workflow? Run `vizier plan` (or `vizier plan --json` for structured output) to print the effective configuration, per-scope agent selector, and resolved runtime without mutating the repo or starting a session.
+Need to sanity-check how those layers resolve before you kick off the workflow? Run `vizier plan` (or `vizier plan --json`) to print the effective configuration, per-command selector, template mapping, and resolved runtime without mutating the repo or starting a session.
 
-Agent runs require either a bundled selector (for example, `agent = "codex"`/`"gemini"`) or an explicit script path via `[agents.<scope>.agent].command = ["/path/to/script.sh"]`. Bundled shims install under `share/vizier/agents/` and follow the runner contract: stdout is the assistant text, stderr is progress/errors, and the exit code sets status. There is no autodiscovery fallback when no script is provided.
+Agent runs require either a bundled selector (for example, `agent = "codex"`/`"gemini"`) or an explicit script path via `[agents.commands.<alias>.agent].command = ["/path/to/script.sh"]` (or `[agents.templates."<selector>".agent]` for template-specific overrides). Bundled shims install under `share/vizier/agents/` and follow the runner contract: stdout is the assistant text, stderr is progress/errors, and the exit code sets status. There is no autodiscovery fallback when no script is provided.
 
-Want to exercise a scoped agent without touching `.vizier` or Git? `vizier test-display [--scope save|draft|approve|review|merge]` streams progress through the normal display stack using a harmless prompt, reports the agent’s exit code/duration/stdout/stderr, and defaults to no session logging (`--session` opts back in).
+Want to exercise an alias-resolved agent without touching `.vizier` or Git? `vizier test-display [--command save|draft|approve|review|merge|patch|build_execute]` streams progress through the normal display stack using a harmless prompt, reports the agent’s exit code/duration/stdout/stderr, and defaults to no session logging (`--session` opts back in). Hidden/deprecated `--scope` is still accepted as compatibility input.
 
 ## High-Level Timeline
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.
 2. **Manual plan edits (optional)** — If the plan needs clarification, edit `.vizier/implementation-plans/<slug>.md` directly on the `draft/<slug>` branch and commit the update.
 3. **`vizier approve <slug>`** — Applies the plan on `draft/<slug>` from within another temporary worktree, staging and committing the resulting edits on that branch only.
-4. **`vizier review <slug>`** — Runs the merge CI/CD gate before prompting (using `[merge.cicd_gate]` or review `--cicd-*` overrides) and feeds the result into the critique prompt/summary/session log, then runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists). The critique streams to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and you can optionally apply fixes on the plan branch without mutating the plan document’s front matter. Auto-remediation for the gate stays disabled during review; merge still owns CI/CD fixes.
+4. **`vizier review <slug>`** — Runs the merge CI/CD gate before prompting (using `[merge.cicd_gate]` or review `--cicd-*` overrides) and feeds the result into the critique prompt/summary/session log, resolving gate behavior from compiled template gate policy (including `on` outcome transitions) at runtime. Then it runs the configured review checks (defaults to `cargo check --all --all-targets` + `cargo test --all --all-targets` when a `Cargo.toml` exists). The critique streams to the terminal (and session log) instead of writing `.vizier/reviews/<slug>.md`, and you can optionally apply fixes on the plan branch without mutating the plan document’s front matter. Auto-remediation for the gate stays disabled during review; merge still owns CI/CD fixes.
 5. **`vizier merge <slug>`** — Refreshes the plan branch, removes the plan document, replays the plan branch commits onto the target, and (by default) soft-squashes that range into a single implementation commit on the target before writing the non–fast-forward merge commit that embeds the stored plan under an `Implementation Plan:` block. Pass `--no-squash` or set `[merge] squash = false` in `.vizier/config.toml` to keep the legacy “merge straight from the draft branch history” behavior. If the plan branch contains merge commits, squash merges now preflight the history and require either `--squash-mainline <parent index>` (or `[merge] squash_mainline = <n>`) to cherry-pick those merges or `--no-squash` to keep the branch graph intact. When retries run after the tip plan doc was already removed, merge recovers the latest matching plan document from `draft/<slug>` history so retries can continue.
 
 Every step commits code and canonical narrative edits together in a single commit; prompts remind you to update `.vizier/narrative/snapshot.md` alongside `.vizier/narrative/glossary.md` (plus notes under `.vizier/narrative/threads/`), but that pairing is not enforced by the CLI. Plan documents under `.vizier/implementation-plans/`, `.vizier/tmp/*`, and session logs remain scratch artifacts and are filtered out of staging automatically.
@@ -100,14 +100,14 @@ Use this when you want to inspect agent output locally before history changes. O
 
 ### Customizing the plan/review/merge prompts
 
-Repositories can tune every agent instruction involved in this workflow without recompiling Vizier. Define `[agents.<scope>.prompts.<kind>]` tables (for example, `[agents.draft.prompts.implementation_plan]`, `[agents.review.prompts.review]`, `[agents.merge.prompts.merge_conflict]`) inside `.vizier/config.toml` to point at custom Markdown templates via `path` or inline text and to pin per-prompt agent/runtime/documentation overrides for that specific scope. Vizier loads those profiles before each run, so prompt updates take effect immediately; `.vizier/DOCUMENTATION_PROMPT.md`, `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is defined. Per-scope documentation toggles live under `[agents.<scope>.documentation]` (`enabled`, `include_snapshot`, `include_narrative_docs`) so scopes like merge/approve/review-fix can opt out of the documentation prompt or drop snapshot/narrative attachments when they need a leaner context. For a complete matrix of scopes, prompt kinds, and fallback order, refer to `docs/user/prompt-config-matrix.md`.
+Repositories can tune every agent instruction involved in this workflow without recompiling Vizier. Define alias tables such as `[agents.commands.draft.prompts.implementation_plan]`, `[agents.commands.review.prompts.review]`, and `[agents.commands.merge.prompts.merge_conflict]` (or template-specific tables under `[agents.templates."<selector>".prompts.<kind>]`) in `.vizier/config.toml` to point at custom Markdown templates via `path` or inline `text` and to pin per-prompt agent/runtime/documentation overrides. Vizier loads those profiles before each run, so prompt updates take effect immediately; `.vizier/DOCUMENTATION_PROMPT.md`, `.vizier/IMPLEMENTATION_PLAN_PROMPT.md`, `.vizier/REVIEW_PROMPT.md`, and `.vizier/MERGE_CONFLICT_PROMPT.md` remain as fallbacks when no profile is defined. Documentation toggles live under `[agents.commands.<alias>.documentation]` / `[agents.templates."<selector>".documentation]` (`enabled`, `include_snapshot`, `include_narrative_docs`), with legacy `[agents.<scope>.documentation]` still supported during migration.
 
-Prompt text resolution is limited to `[agents.<scope>.prompts.<kind>]` -> `.vizier/*_PROMPT.md` -> baked-in defaults; `[prompts]` and `[prompts.<scope>]` tables are ignored, and `.vizier/BASE_SYSTEM_PROMPT.md` is not read. Prompt kinds are limited to `documentation`, `commit`, `implementation_plan`, `review`, and `merge_conflict` (aliases like `base`, `system`, `plan`, `refine`, `merge` are rejected). Documentation context comes only from `.vizier/narrative/` (snapshot, glossary, threads); `.vizier/todo_*.md` is not read.
+Prompt text resolution follows: `[agents.templates."<selector>".prompts.<kind>]` -> `[agents.commands.<alias>.prompts.<kind>]` -> legacy `[agents.<scope>.prompts.<kind>]` -> `[agents.default.prompts.<kind>]` -> `.vizier/*_PROMPT.md` -> baked-in defaults. `[prompts]` and `[prompts.<scope>]` tables are ignored, and `.vizier/BASE_SYSTEM_PROMPT.md` is not read. Prompt kinds are limited to `documentation`, `commit`, `implementation_plan`, `review`, and `merge_conflict` (aliases like `base`, `system`, `plan`, `refine`, `merge` are rejected). Documentation context comes only from `.vizier/narrative/` (snapshot, glossary, threads); `.vizier/todo_*.md` is not read.
 
 ## `vizier draft`: create the plan branch
 
 **Prerequisites**
-- An editing-capable agent is selected for the `draft` scope.
+- An editing-capable agent is selected for the `draft` command alias.
 - Primary branch is up to date (auto-detected via `origin/HEAD`, `main`, or `master`).
 
 **What it does**
@@ -133,7 +133,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 
 **Prerequisites**
 - Clean working tree (enforced by `vcs::ensure_clean_worktree`).
-- An editing-capable agent selected for the `approve` scope.
+- An editing-capable agent selected for the `approve` command alias.
 - Plan branch (`draft/<slug>` or `--branch`) and target branch (`--target`, otherwise detected primary) exist locally.
 
 **What it does**
@@ -142,7 +142,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - The agent edits `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, narrative docs, and code directly inside that worktree; Vizier stages `.` and commits the changes on the plan branch with the Auditor-provided commit message.
 - Canonical narrative outputs staged directly by the agent (for example snapshot/glossary/thread markdown files) are preserved even when they are staged-only changes, while unrelated `.vizier/*` noise (for example `.vizier/config.toml`) is still trimmed from the commit.
 - Your original checkout stays untouched. On success the temp worktree is removed; on failure it is preserved for debugging and the branch keeps whatever the agent staged.
-- While the agent runs, Vizier prints one `[agent:<scope>] phase — message` line per event (with status, percentage, and file hints) so you get a scrolling history of what the agent is doing. Pass `-q` to suppress them or `-v/-vv` for timestamps/raw JSON.
+- While the agent runs, Vizier prints one `[agent:<profile>] phase - message` line per event (with status, percentage, and file hints) so you get a scrolling history of what the agent is doing. Pass `-q` to suppress them or `-v/-vv` for timestamps/raw JSON.
 
 **Flags to remember**
 - `vizier approve <slug>` — default flow.
@@ -157,6 +157,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 **Optional stop-condition**
 - Configure `[approve.stop_condition]` in `.vizier/config.toml` (and optionally override per run with `vizier approve --stop-condition-script <PATH> --stop-condition-retries <COUNT>`) to gate approve on a repo-local shell script.
 - When a stop-condition script is set, Vizier always runs the agent at least once, then executes `sh <script>` from the approve worktree. A zero exit code means “done”; any non-zero exit triggers another agent attempt while retries remain.
+- The built-in approve template models this as explicit nodes: `approve_apply_once --on.succeeded--> approve_gate_stop_condition --on.failed--> approve_apply_once`.
 - `retries` counts extra attempts after the first agent run. With the default `retries = 3`, approve can invoke the agent up to four times before giving up. If the script never exits 0, `vizier approve` fails, preserves the worktree, and prints guidance pointing at the worktree path and script output.
 - Stop-condition scripts are best used for lightweight local checks (idempotence, smoke tests) that can safely run multiple times against the evolving draft branch; they should tolerate being re-run and avoid destructive side effects.
 
@@ -169,11 +170,11 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 
 **Prerequisites**
 - Clean working tree (same guardrail as `approve`/`merge`)
-- An editing-capable agent selected for the `review` scope
+- An editing-capable agent selected for the `review` command alias
 - Plan branch (`draft/<slug>` or `--branch`) is up to date enough that you can run the configured checks locally
 
 **What it does**
-- Runs the merge CI/CD gate before prompting, using `[merge.cicd_gate]` (or review `--cicd-*` overrides) and piping the status/log snippets into both the critique prompt and the review summary/session log. Auto-remediation for the gate is disabled during review; merge still owns CI/CD fixes.
+- Runs the merge CI/CD gate before prompting, using `[merge.cicd_gate]` (or review `--cicd-*` overrides), compiling that into the review template gate policy, and piping the status/log snippets into both the critique prompt and the review summary/session log. Auto-remediation for the gate is disabled during review; merge still owns CI/CD fixes.
 - Creates another disposable worktree on `draft/<slug>`, gathers the diff against the target branch, and runs the configured review checks (defaults to `cargo check --all --all-targets` and `cargo test --all --all-targets` when a `Cargo.toml` is present or the `[review.checks]` commands in your config).
 - Streams each check result to stderr so you see passes/failures before the agent speaks. Failures are captured verbatim and wired into the prompt.
 - Builds an agent prompt that includes the snapshot, narrative docs, plan document, diff summary, and the check logs, then prints the Markdown critique directly to stdout (and into the session log) instead of saving `.vizier/reviews/<slug>.md`.
@@ -231,7 +232,7 @@ Both commands should show the plan commit sitting one commit ahead of the primar
 - Successful merges delete `draft/<slug>` automatically when the finalized merge references the recorded implementation commit; pass `--keep-branch` to retain the branch locally.
 - Merge runs are non-interactive once queued; on a TTY you will be asked to confirm before the job is queued, otherwise pass `--yes`. `--complete-conflict` finalizes *only* an existing Vizier-managed merge (and errors when no sentinel is present), and `--target/--branch` behave like they do for `approve`.
 - `--after <job-id>` is repeatable on merge as well, allowing explicit sequencing behind unrelated background jobs when branch/artifact dependencies alone are insufficient.
-- **CI/CD gate:** When `[merge.cicd_gate]` configures a script, Vizier executes it from the repo root while the implementation commit is staged but before the merge commit is written (squash mode) or immediately after the merge commit (legacy). A zero exit code finalizes the merge; a non-zero exit surfaces the script’s stdout/stderr and aborts so you can investigate (the implementation commit and draft branch are left intact). Set `auto_resolve = true` plus `retries = <n>` to let the agent attempt fixes when the gate fails. In squash mode Vizier amends the implementation commit when the agent applies fixes so the target branch still sees exactly two commits. Override the behavior per run with `--cicd-script PATH`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, and `--cicd-retries N`. Gate checks also run when resuming merges via `--complete-conflict`, so even manual conflict resolutions must pass the script before landing.
+- **CI/CD gate:** When `[merge.cicd_gate]` configures a script, Vizier executes it from the repo root while the implementation commit is staged but before the merge commit is written (squash mode) or immediately after the merge commit (legacy). A zero exit code finalizes the merge; a non-zero exit surfaces the script’s stdout/stderr and aborts so you can investigate (the implementation commit and draft branch are left intact). Set `auto_resolve = true` plus `retries = <n>` to let the agent attempt fixes when the gate fails; built-ins route this through `merge_gate_cicd --on.failed--> merge_cicd_auto_fix --on.succeeded--> merge_gate_cicd` until budget is exhausted. In squash mode Vizier amends the implementation commit when the agent applies fixes so the target branch still sees exactly two commits. Override the behavior per run with `--cicd-script PATH`, `--auto-cicd-fix`, `--no-auto-cicd-fix`, and `--cicd-retries N`. Gate checks also run when resuming merges via `--complete-conflict`, so even manual conflict resolutions must pass the script before landing.
 
 > **Manual completion tip:** After you resolve conflicts yourself, make sure you are checked out to the recorded target branch, stage the fixes, and then run `vizier merge <slug> --complete-conflict`. The flag refuses to run if Git is not in the middle of the stored merge or if no sentinel JSON exists, which protects history from accidental merges.
 

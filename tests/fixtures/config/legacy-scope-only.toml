@@ -1,0 +1,7 @@
+[agents.default.agent]
+label = "legacy-default-runtime"
+command = ["/bin/echo"]
+
+[agents.save.agent]
+label = "legacy-save-runtime"
+command = ["/bin/echo"]

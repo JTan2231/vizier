@@ -15,9 +15,14 @@ use vizier_core::{
     vcs,
 };
 
-use crate::plan;
+use crate::{
+    plan,
+    workflow_templates::{
+        TemplateScope, compile_template_node, resolve_review_template, resolve_template_ref,
+    },
+};
 
-use super::gates::{clip_log, log_cicd_result, run_cicd_script};
+use super::gates::clip_log;
 use super::save::{
     clear_narrative_tracker_for_commit, narrative_change_set_for_commit,
     stage_narrative_paths_for_commit, trim_staged_vizier_paths_for_commit,
@@ -27,6 +32,9 @@ use super::shared::{
     prompt_selection, require_agent_backend, short_hash, spawn_plain_progress_logger,
 };
 use super::types::{CommitMode, ReviewOptions};
+use super::workflow_runtime::{
+    ReviewCicdGatePolicy, review_cicd_gate_policy, run_review_cicd_gate,
+};
 
 pub(crate) async fn run_review(
     opts: ReviewOptions,
@@ -36,7 +44,7 @@ pub(crate) async fn run_review(
     require_agent_backend(
         agent,
         config::PromptKind::Review,
-        "vizier review requires an agent-capable selector; update [agents.review] or pass --agent codex|gemini",
+        "vizier review requires an agent-capable selector; update [agents.commands.review] (or legacy [agents.review]) or pass --agent codex|gemini",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -89,6 +97,26 @@ pub(crate) async fn run_review(
     }
 
     let plan_meta = spec.load_metadata()?;
+    let template_ref = resolve_template_ref(&config::get_config(), TemplateScope::Review);
+    let gate_script = opts
+        .cicd_gate
+        .script
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let review_template = resolve_review_template(
+        &template_ref,
+        &spec.slug,
+        &spec.branch,
+        "runtime-review",
+        gate_script.as_deref(),
+    )?;
+    let compiled_template = compile_template_node(
+        &review_template,
+        "review_critique",
+        &std::collections::BTreeMap::new(),
+        None,
+    )?;
+    let cicd_gate_policy = review_cicd_gate_policy(&compiled_template.gates)?;
     let worktree = plan::PlanWorktree::create(&spec.slug, &spec.branch, "review")?;
     let plan_path = worktree.plan_path(&spec.slug);
     let worktree_path = worktree.path().to_path_buf();
@@ -103,7 +131,7 @@ pub(crate) async fn run_review(
             assume_yes: opts.assume_yes,
             review_only: opts.review_only,
             skip_checks: opts.skip_checks,
-            cicd_gate: opts.cicd_gate.clone(),
+            cicd_gate: cicd_gate_policy,
             auto_resolve_requested: opts.auto_resolve_requested,
             review_file_path,
         },
@@ -196,7 +224,7 @@ struct ReviewExecution {
     assume_yes: bool,
     review_only: bool,
     skip_checks: bool,
-    cicd_gate: super::types::CicdGateOptions,
+    cicd_gate: ReviewCicdGatePolicy,
     auto_resolve_requested: bool,
     review_file_path: Option<PathBuf>,
 }
@@ -611,23 +639,23 @@ fn log_check_result(result: &ReviewCheckResult) {
 }
 
 fn run_cicd_gate_for_review(
-    gate_opts: &super::types::CicdGateOptions,
+    policy: &ReviewCicdGatePolicy,
 ) -> Result<ReviewGateResult, Box<dyn std::error::Error>> {
-    let Some(script) = gate_opts.script.as_ref() else {
+    if policy.script.is_none() {
         display::info("CI/CD gate: not configured for review; skipping.");
         return Ok(ReviewGateResult::skipped());
-    };
+    }
 
-    if gate_opts.auto_resolve {
+    if policy.auto_resolve {
         display::warn(
             "CI/CD gate auto-remediation is disabled during review; reporting status without applying fixes.",
         );
     }
 
-    let repo_root =
-        vcs::repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-    let result = run_cicd_script(script, &repo_root)?;
-    log_cicd_result(script, &result, 1);
+    let gate_outcome = run_review_cicd_gate(policy)?
+        .ok_or("review CI/CD gate policy configured no script unexpectedly")?;
+    let result = gate_outcome.result;
+    let script = gate_outcome.script;
 
     let status = if result.success() {
         ReviewGateStatus::Passed
@@ -636,7 +664,7 @@ fn run_cicd_gate_for_review(
     };
     Ok(ReviewGateResult {
         status,
-        script: Some(script.clone()),
+        script: Some(script),
         attempts: 1,
         exit_code: result.status.code(),
         duration: Some(result.duration),

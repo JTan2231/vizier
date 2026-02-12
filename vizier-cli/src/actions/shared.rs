@@ -267,6 +267,12 @@ pub(crate) fn build_agent_request(
         "agent_output".to_string(),
         agent.agent_runtime.output.as_str().to_string(),
     );
+    if let Some(alias) = agent.command_alias.as_ref() {
+        metadata.insert("command_alias".to_string(), alias.to_string());
+    }
+    if let Some(selector) = agent.template_selector.as_ref() {
+        metadata.insert("template_selector".to_string(), selector.to_string());
+    }
     if let Some(filter) = agent.agent_runtime.progress_filter.as_ref() {
         metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
     }

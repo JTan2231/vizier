@@ -269,16 +269,122 @@ fn parse_command_value(value: &serde_json::Value) -> Option<Vec<String>> {
     }
 }
 
+#[derive(Debug, Default)]
+struct AgentSectionsParseSummary {
+    used_legacy_scope_sections: bool,
+}
+
+fn parse_commands_table(
+    layer: &mut ConfigLayer,
+    commands_value: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = commands_value
+        .as_object()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "[commands] must be a table"))?;
+
+    for (raw_alias, value) in table {
+        let selector = value.as_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("[commands.{raw_alias}] must be a non-empty string"),
+            )
+        })?;
+        let alias = raw_alias.parse::<CommandAlias>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid [commands.{raw_alias}] alias: {err}"),
+            )
+        })?;
+        let selector = selector.parse::<TemplateSelector>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid [commands.{raw_alias}] selector: {err}"),
+            )
+        })?;
+        layer.commands.insert(alias, selector);
+    }
+
+    Ok(())
+}
+
+fn parse_agent_alias_sections_into_layer(
+    layer: &mut ConfigLayer,
+    commands_value: &serde_json::Value,
+    base_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = commands_value.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "[agents.commands] must be a table",
+        )
+    })?;
+
+    for (raw_alias, value) in table {
+        let Some(overrides) = parse_agent_overrides(value, true, base_dir)? else {
+            continue;
+        };
+        let alias = raw_alias.parse::<CommandAlias>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid [agents.commands.{raw_alias}] section: {err}"),
+            )
+        })?;
+        layer.agent_commands.insert(alias, overrides);
+    }
+
+    Ok(())
+}
+
+fn parse_agent_template_sections_into_layer(
+    layer: &mut ConfigLayer,
+    templates_value: &serde_json::Value,
+    base_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = templates_value.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "[agents.templates] must be a table",
+        )
+    })?;
+
+    for (raw_selector, value) in table {
+        let Some(overrides) = parse_agent_overrides(value, true, base_dir)? else {
+            continue;
+        };
+        let selector = raw_selector.parse::<TemplateSelector>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid [agents.templates.{raw_selector}] section: {err}"),
+            )
+        })?;
+        layer.agent_templates.insert(selector, overrides);
+    }
+
+    Ok(())
+}
+
 fn parse_agent_sections_into_layer(
     layer: &mut ConfigLayer,
     agents_value: &serde_json::Value,
     base_dir: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<AgentSectionsParseSummary, Box<dyn std::error::Error>> {
     let table = agents_value
         .as_object()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "[agents] must be a table"))?;
 
+    let mut summary = AgentSectionsParseSummary::default();
+
     for (key, value) in table.iter() {
+        if key.eq_ignore_ascii_case("commands") {
+            parse_agent_alias_sections_into_layer(layer, value, base_dir)?;
+            continue;
+        }
+
+        if key.eq_ignore_ascii_case("templates") {
+            parse_agent_template_sections_into_layer(layer, value, base_dir)?;
+            continue;
+        }
+
         let Some(overrides) = parse_agent_overrides(value, true, base_dir)? else {
             continue;
         };
@@ -295,9 +401,10 @@ fn parse_agent_sections_into_layer(
             )
         })?;
         layer.agent_scopes.insert(scope, overrides);
+        summary.used_legacy_scope_sections = true;
     }
 
-    Ok(())
+    Ok(summary)
 }
 
 pub fn load_config_layer_from_json(
@@ -479,8 +586,21 @@ fn load_config_layer_from_value(
         parse_workflow_table(workflow_table, &mut layer.workflow)?;
     }
 
+    if let Some(commands_value) = value_at_path(&file_config, &["commands"]) {
+        parse_commands_table(&mut layer, commands_value)?;
+    }
+
     if let Some(agents_value) = value_at_path(&file_config, &["agents"]) {
-        parse_agent_sections_into_layer(&mut layer, agents_value, base_dir)?;
+        let summary = parse_agent_sections_into_layer(&mut layer, agents_value, base_dir)?;
+        if summary.used_legacy_scope_sections
+            && layer.commands.is_empty()
+            && layer.agent_commands.is_empty()
+            && layer.agent_templates.is_empty()
+        {
+            display::warn(
+                "legacy [agents.<scope>] tables are deprecated; migrate to [commands], [agents.commands.<alias>], and [agents.templates.\"<template@version>\"]",
+            );
+        }
     }
 
     Ok(layer)
@@ -1495,6 +1615,66 @@ fn parse_workflow_table(
         }
         if let Some(quiet) = parse_bool(background.get("quiet")) {
             layer.background.quiet = Some(quiet);
+        }
+    }
+
+    if let Some(templates) = table.get("templates").and_then(|value| value.as_object()) {
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("save")
+                .or_else(|| templates.get("save_template"))
+                .or_else(|| templates.get("save-template")),
+        ) {
+            layer.templates.save = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("draft")
+                .or_else(|| templates.get("draft_template"))
+                .or_else(|| templates.get("draft-template")),
+        ) {
+            layer.templates.draft = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("approve")
+                .or_else(|| templates.get("approve_template"))
+                .or_else(|| templates.get("approve-template")),
+        ) {
+            layer.templates.approve = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("review")
+                .or_else(|| templates.get("review_template"))
+                .or_else(|| templates.get("review-template")),
+        ) {
+            layer.templates.review = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("merge")
+                .or_else(|| templates.get("merge_template"))
+                .or_else(|| templates.get("merge-template")),
+        ) {
+            layer.templates.merge = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("build_execute")
+                .or_else(|| templates.get("build-execute"))
+                .or_else(|| templates.get("build_execute_template"))
+                .or_else(|| templates.get("build-execute-template")),
+        ) {
+            layer.templates.build_execute = Some(value);
+        }
+        if let Some(value) = parse_nonempty_string(
+            templates
+                .get("patch")
+                .or_else(|| templates.get("patch_template"))
+                .or_else(|| templates.get("patch-template")),
+        ) {
+            layer.templates.patch = Some(value);
         }
     }
 

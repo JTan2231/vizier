@@ -5,8 +5,10 @@ mod load;
 mod validate;
 
 pub use driver::{
-    AgentSettings, resolve_agent_settings, resolve_default_agent_settings,
-    resolve_default_prompt_profile, resolve_prompt_profile,
+    AgentSettings, resolve_agent_settings, resolve_agent_settings_for_alias,
+    resolve_agent_settings_for_alias_template, resolve_default_agent_settings,
+    resolve_default_prompt_profile, resolve_prompt_profile, resolve_prompt_profile_for_alias,
+    resolve_prompt_profile_for_alias_template,
 };
 pub use load::{
     base_config_dir, env_config_path, get_config, get_system_prompt_with_meta, global_config_path,

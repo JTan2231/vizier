@@ -279,12 +279,21 @@ async fn save(
 
     if commit_mode.should_commit() {
         if has_code_changes || has_narrative_changes {
+            let save_alias = "save"
+                .parse::<config::CommandAlias>()
+                .map_err(|err| format!("invalid built-in command alias `save`: {err}"))?;
+            let cfg = config::get_config();
+            let template_selector = cfg.template_selector_for_alias(&save_alias);
             let commit_body = if has_code_changes {
-                Auditor::llm_request_for_command(
-                    config::CommandScope::Save,
-                    config::get_config()
-                        .prompt_for_command(config::CommandScope::Save, config::PromptKind::Commit)
-                        .text,
+                Auditor::llm_request_for_alias_template(
+                    &save_alias,
+                    template_selector.as_ref(),
+                    cfg.prompt_for_alias_template(
+                        &save_alias,
+                        template_selector.as_ref(),
+                        config::PromptKind::Commit,
+                    )
+                    .text,
                     post_tool_diff.clone(),
                 )
                 .await?

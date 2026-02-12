@@ -66,6 +66,43 @@ fn test_jobs_tail_follow_uses_global_flag() -> TestResult {
 }
 
 #[test]
+fn test_background_save_job_dual_writes_scope_alias_and_template_selector() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_cmd_background().args(["save"]).output()?;
+    assert!(
+        output.status.success(),
+        "background save failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let job_id = extract_job_id(&stdout).ok_or("expected job id in background save output")?;
+    wait_for_job_completion(&repo, &job_id, Duration::from_secs(20))?;
+
+    let record = read_job_record(&repo, &job_id)?;
+    assert_eq!(
+        record.pointer("/metadata/scope").and_then(Value::as_str),
+        Some("save"),
+        "save metadata should continue dual-writing legacy scope"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/command_alias")
+            .and_then(Value::as_str),
+        Some("save"),
+        "save metadata should write command_alias"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/workflow_template_selector")
+            .and_then(Value::as_str),
+        Some("template.save@v1"),
+        "save metadata should write resolved workflow_template_selector"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_jobs_status_output() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let job_id = "job-status";
@@ -2339,6 +2376,9 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
             "session_path": ".vizier/sessions/retry/session.json",
             "outcome_path": format!(".vizier/jobs/{job_id}/outcome.json"),
             "metadata": {
+                "scope": "save",
+                "command_alias": "save",
+                "workflow_template_selector": "template.save@v1",
                 "worktree_owned": true,
                 "worktree_path": worktree_rel,
                 "agent_exit_code": 9,
@@ -2404,6 +2444,21 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
     assert_eq!(metadata.get("agent_exit_code"), Some(&Value::Null));
     assert_eq!(metadata.get("cancel_cleanup_status"), Some(&Value::Null));
     assert_eq!(metadata.get("cancel_cleanup_error"), Some(&Value::Null));
+    assert_eq!(
+        metadata.get("scope"),
+        Some(&Value::String("save".to_string())),
+        "retry should preserve legacy scope metadata"
+    );
+    assert_eq!(
+        metadata.get("command_alias"),
+        Some(&Value::String("save".to_string())),
+        "retry should preserve command_alias metadata"
+    );
+    assert_eq!(
+        metadata.get("workflow_template_selector"),
+        Some(&Value::String("template.save@v1".to_string())),
+        "retry should preserve workflow_template_selector metadata"
+    );
     assert_eq!(
         metadata.get("retry_cleanup_status"),
         Some(&Value::String("done".to_string()))

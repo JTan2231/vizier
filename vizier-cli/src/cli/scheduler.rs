@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fs, process::Command};
 
@@ -11,15 +12,16 @@ use crate::cli::args::{BuildPipelineArg, Commands, ResolvedInput, SaveCmd};
 use crate::cli::resolve::resolve_prompt_input;
 use crate::cli::util::flag_present;
 use crate::jobs;
+use crate::workflow_templates::resolve_template_ref_for_alias;
 
-fn command_scope_for(command: &Commands) -> Option<config::CommandScope> {
+fn command_alias_for(command: &Commands) -> Option<config::CommandAlias> {
     match command {
-        Commands::Draft(_) => Some(config::CommandScope::Draft),
-        Commands::Patch(_) => Some(config::CommandScope::Draft),
-        Commands::Approve(_) => Some(config::CommandScope::Approve),
-        Commands::Review(_) => Some(config::CommandScope::Review),
-        Commands::Merge(_) => Some(config::CommandScope::Merge),
-        Commands::Save(_) => Some(config::CommandScope::Save),
+        Commands::Draft(_) => config::CommandAlias::parse("draft"),
+        Commands::Patch(_) => config::CommandAlias::parse("patch"),
+        Commands::Approve(_) => config::CommandAlias::parse("approve"),
+        Commands::Review(_) => config::CommandAlias::parse("review"),
+        Commands::Merge(_) => config::CommandAlias::parse("merge"),
+        Commands::Save(_) => config::CommandAlias::parse("save"),
         _ => None,
     }
 }
@@ -272,32 +274,21 @@ pub(crate) fn prepare_prompt_input(
     Ok((resolved, None))
 }
 
-pub(crate) fn strip_stdin_marker(raw_args: &[String]) -> Vec<String> {
-    raw_args
-        .iter()
-        .filter(|arg| arg.as_str() != "-")
-        .cloned()
-        .collect()
-}
-
 pub(crate) fn has_active_plan_job(
     jobs_root: &Path,
     slug: &str,
-    scope: &str,
+    command_alias: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let records = jobs::list_records(jobs_root)?;
     Ok(records.iter().any(|record| {
+        let metadata = record.metadata.as_ref();
+        let alias_match = metadata
+            .and_then(|meta| meta.command_alias.as_deref())
+            .or_else(|| metadata.and_then(|meta| meta.scope.as_deref()))
+            == Some(command_alias);
         job_is_active(record.status)
-            && record
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.scope.as_deref())
-                == Some(scope)
-            && record
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.plan.as_deref())
-                == Some(slug)
+            && alias_match
+            && metadata.and_then(|meta| meta.plan.as_deref()) == Some(slug)
     }))
 }
 
@@ -391,17 +382,33 @@ pub(crate) async fn run_scheduled_save(
 }
 
 pub(crate) fn background_config_snapshot(cfg: &config::Config) -> serde_json::Value {
+    let command_overrides = cfg
+        .commands
+        .iter()
+        .map(|(alias, selector)| (alias.to_string(), selector.to_string()))
+        .collect::<BTreeMap<_, _>>();
+
     serde_json::json!({
         "agent_selector": cfg.agent_selector,
         "agent": {
             "label": cfg.agent_runtime.label,
             "command": cfg.agent_runtime.command,
         },
+        "commands": command_overrides,
         "workflow": {
             "no_commit_default": cfg.workflow.no_commit_default,
             "background": {
                 "enabled": cfg.workflow.background.enabled,
                 "quiet": cfg.workflow.background.quiet,
+            },
+            "templates": {
+                "save": cfg.workflow.templates.save.clone(),
+                "draft": cfg.workflow.templates.draft.clone(),
+                "approve": cfg.workflow.templates.approve.clone(),
+                "review": cfg.workflow.templates.review.clone(),
+                "merge": cfg.workflow.templates.merge.clone(),
+                "build_execute": cfg.workflow.templates.build_execute.clone(),
+                "patch": cfg.workflow.templates.patch.clone(),
             },
         },
     })
@@ -423,9 +430,17 @@ pub(crate) fn build_job_metadata(
         metadata.config_agent_command = Some(cfg.agent_runtime.command.clone());
     }
 
-    if let Some(scope) = command_scope_for(command) {
-        metadata.scope = Some(scope.as_str().to_string());
-        if let Ok(agent) = config::resolve_agent_settings(cfg, scope, cli_agent_override) {
+    if let Some(alias) = command_alias_for(command) {
+        metadata.command_alias = Some(alias.to_string());
+        if let Some(scope) = config::compatibility_scope_for_alias(&alias) {
+            metadata.scope = Some(scope.as_str().to_string());
+        }
+        if let Some((_scope, template_ref)) = resolve_template_ref_for_alias(cfg, &alias) {
+            metadata.workflow_template_selector =
+                Some(format!("{}@{}", template_ref.id, template_ref.version));
+        }
+        if let Ok(agent) = config::resolve_agent_settings_for_alias(cfg, &alias, cli_agent_override)
+        {
             metadata.agent_selector = Some(agent.selector.clone());
             metadata.agent_backend = Some(agent.backend.to_string());
             metadata.agent_label = Some(agent.agent_runtime.label.clone());
@@ -479,6 +494,15 @@ pub(crate) fn runtime_job_metadata() -> Option<jobs::JobMetadata> {
         metadata.agent_selector = Some(context.selector);
         metadata.agent_backend = Some(context.backend.to_string());
         metadata.agent_label = Some(context.backend_label);
+        metadata.command_alias = context.command_alias.map(|alias| alias.to_string());
+        metadata.workflow_template_selector = context
+            .template_selector
+            .map(|selector| selector.to_string());
+        if metadata.scope.is_none() {
+            metadata.scope = context
+                .command_scope
+                .map(|scope| scope.as_str().to_string());
+        }
     }
 
     if let Some(run) = auditor::Auditor::latest_agent_run() {

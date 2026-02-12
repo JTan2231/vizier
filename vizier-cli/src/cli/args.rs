@@ -282,6 +282,12 @@ pub(crate) enum JobsShowField {
     BuildSkipChecks,
     BuildKeepBranch,
     BuildDependencies,
+    WorkflowTemplate,
+    WorkflowTemplateVersion,
+    WorkflowNode,
+    WorkflowCapability,
+    WorkflowPolicySnapshot,
+    WorkflowGates,
     PatchFile,
     PatchIndex,
     PatchTotal,
@@ -337,6 +343,12 @@ impl JobsShowField {
             "build skip checks" => Some(Self::BuildSkipChecks),
             "build keep branch" => Some(Self::BuildKeepBranch),
             "build dependencies" => Some(Self::BuildDependencies),
+            "workflow template" => Some(Self::WorkflowTemplate),
+            "workflow template version" => Some(Self::WorkflowTemplateVersion),
+            "workflow node" => Some(Self::WorkflowNode),
+            "workflow capability" => Some(Self::WorkflowCapability),
+            "workflow policy snapshot" => Some(Self::WorkflowPolicySnapshot),
+            "workflow gates" => Some(Self::WorkflowGates),
             "patch file" => Some(Self::PatchFile),
             "patch index" => Some(Self::PatchIndex),
             "patch total" => Some(Self::PatchTotal),
@@ -393,6 +405,12 @@ impl JobsShowField {
             Self::BuildSkipChecks => "Build skip checks",
             Self::BuildKeepBranch => "Build keep branch",
             Self::BuildDependencies => "Build dependencies",
+            Self::WorkflowTemplate => "Workflow template",
+            Self::WorkflowTemplateVersion => "Workflow template version",
+            Self::WorkflowNode => "Workflow node",
+            Self::WorkflowCapability => "Workflow capability",
+            Self::WorkflowPolicySnapshot => "Workflow policy snapshot",
+            Self::WorkflowGates => "Workflow gates",
             Self::PatchFile => "Patch file",
             Self::PatchIndex => "Patch index",
             Self::PatchTotal => "Patch total",
@@ -448,6 +466,12 @@ impl JobsShowField {
             Self::BuildSkipChecks => "build_skip_checks",
             Self::BuildKeepBranch => "build_keep_branch",
             Self::BuildDependencies => "build_dependencies",
+            Self::WorkflowTemplate => "workflow_template",
+            Self::WorkflowTemplateVersion => "workflow_template_version",
+            Self::WorkflowNode => "workflow_node",
+            Self::WorkflowCapability => "workflow_capability",
+            Self::WorkflowPolicySnapshot => "workflow_policy_snapshot",
+            Self::WorkflowGates => "workflow_gates",
             Self::PatchFile => "patch_file",
             Self::PatchIndex => "patch_index",
             Self::PatchTotal => "patch_total",
@@ -530,6 +554,10 @@ pub(crate) enum Commands {
     /// Internal completion entry point (invoked by shell integration)
     #[command(name = "__complete", hide = true)]
     Complete(HiddenCompleteCmd),
+
+    /// Internal scheduler hook to execute a workflow-template node payload
+    #[command(name = "__workflow-node", hide = true)]
+    WorkflowNode(HiddenWorkflowNodeCmd),
 
     /// Implement and commit a stored plan on its draft branch using a disposable worktree
     Approve(ApproveCmd),
@@ -658,6 +686,10 @@ pub(crate) enum BuildActionCmd {
     /// Internal scheduler hook to materialize a build step into a draft branch
     #[command(name = "__materialize", hide = true)]
     Materialize(BuildMaterializeCmd),
+
+    /// Internal scheduler hook to execute a generic workflow-template node
+    #[command(name = "__template-node", hide = true)]
+    TemplateNode(BuildTemplateNodeCmd),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -700,6 +732,37 @@ pub(crate) struct BuildMaterializeCmd {
     /// Branch to use when creating the draft branch base
     #[arg(long = "target", value_name = "BRANCH")]
     pub(crate) target: String,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct BuildTemplateNodeCmd {
+    /// Build session id
+    #[arg(value_name = "BUILD")]
+    pub(crate) build_id: String,
+
+    /// Build manifest step key (for example 01, 02a)
+    #[arg(long = "step", value_name = "STEP")]
+    pub(crate) step_key: String,
+
+    /// Workflow template node id to execute
+    #[arg(long = "node", value_name = "NODE")]
+    pub(crate) node_id: String,
+
+    /// Derived plan slug for this step
+    #[arg(long = "slug", value_name = "SLUG")]
+    pub(crate) slug: String,
+
+    /// Derived plan branch for this step
+    #[arg(long = "branch", value_name = "BRANCH")]
+    pub(crate) branch: String,
+
+    /// Effective target branch for this step
+    #[arg(long = "target", value_name = "BRANCH")]
+    pub(crate) target: String,
+
+    /// Serialized workflow node payload (JSON)
+    #[arg(long = "node-json", value_name = "JSON")]
+    pub(crate) node_json: String,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1075,6 +1138,41 @@ pub(crate) struct CompletionsCmd {
 #[derive(ClapArgs, Debug)]
 pub(crate) struct HiddenCompleteCmd {}
 
+#[derive(ClapArgs, Debug)]
+pub(crate) struct HiddenWorkflowNodeCmd {
+    /// Optional command scope label (`save`, `draft`, `approve`, `review`, `merge`, `patch`, `build_execute`)
+    #[arg(long = "scope", value_name = "SCOPE")]
+    pub(crate) scope: Option<String>,
+
+    /// Optional build session id
+    #[arg(long = "build", value_name = "BUILD")]
+    pub(crate) build_id: Option<String>,
+
+    /// Optional build manifest step key
+    #[arg(long = "step", value_name = "STEP")]
+    pub(crate) step_key: Option<String>,
+
+    /// Workflow template node id to execute
+    #[arg(long = "node", value_name = "NODE")]
+    pub(crate) node_id: String,
+
+    /// Optional derived plan slug
+    #[arg(long = "slug", value_name = "SLUG")]
+    pub(crate) slug: Option<String>,
+
+    /// Optional derived plan branch
+    #[arg(long = "branch", value_name = "BRANCH")]
+    pub(crate) branch: Option<String>,
+
+    /// Optional effective target branch
+    #[arg(long = "target", value_name = "BRANCH")]
+    pub(crate) target: Option<String>,
+
+    /// Serialized workflow node payload (JSON)
+    #[arg(long = "node-json", value_name = "JSON")]
+    pub(crate) node_json: String,
+}
+
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub(crate) enum CompletionShell {
     Bash,
@@ -1147,9 +1245,13 @@ impl From<InputOrigin> for SpecSource {
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct TestDisplayCmd {
-    /// Command scope to resolve agent settings from
-    #[arg(long = "scope", value_enum, default_value_t = ScopeArg::Save)]
-    pub(crate) scope: ScopeArg,
+    /// Command alias to resolve agent settings from (for example: save, draft, approve, review, merge, patch)
+    #[arg(long = "command", value_name = "ALIAS", default_value = "save")]
+    pub(crate) command: String,
+
+    /// Legacy scope alias (deprecated; use --command)
+    #[arg(long = "scope", value_enum, hide = true)]
+    pub(crate) scope: Option<ScopeArg>,
 
     /// Override the default smoke-test prompt
     #[arg(long = "prompt", value_name = "TEXT")]

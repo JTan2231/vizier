@@ -6,6 +6,7 @@ use std::sync::Arc;
 use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, RepositoryState};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::mpsc;
 
 use vizier_core::{
@@ -23,9 +24,14 @@ use vizier_core::{
     },
 };
 
-use crate::plan;
+use crate::{
+    plan,
+    workflow_templates::{
+        MergeTemplateGateConfig, TemplateScope, resolve_merge_template, resolve_template_ref,
+    },
+};
 
-use super::gates::{CicdScriptResult, clip_log, log_cicd_result, run_cicd_script};
+use super::gates::{CicdScriptResult, clip_log};
 use super::save::{
     build_save_instruction_for_refresh, clear_narrative_tracker_for_commit,
     narrative_change_set_for_commit, stage_narrative_paths_for_commit,
@@ -36,7 +42,14 @@ use super::shared::{
     prompt_selection, push_origin_if_requested, require_agent_backend, short_hash,
     spawn_plain_progress_logger,
 };
-use super::types::{CommitMode, ConflictAutoResolveSetting, MergeConflictStrategy, MergeOptions};
+use super::types::{
+    CommitMode, ConflictAutoResolveSetting, ConflictAutoResolveSource, MergeConflictStrategy,
+    MergeOptions,
+};
+use super::workflow_runtime::{
+    MergeCicdGatePolicy, MergeCicdGateResult, merge_cicd_gate_policy,
+    merge_conflict_resolution_policy, run_merge_cicd_gate,
+};
 
 #[derive(Debug, Clone)]
 struct CicdGateOutcome {
@@ -82,6 +95,18 @@ struct MergeExecutionResult {
     gate: Option<CicdGateOutcome>,
     squashed: bool,
     implementation_oid: Option<Oid>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConflictExecutionMode {
+    setting: ConflictAutoResolveSetting,
+    strategy: MergeConflictStrategy,
+}
+
+#[derive(Debug)]
+struct SquashExecutionPlan {
+    plan: vcs::SquashPlan,
+    mainline: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -215,20 +240,62 @@ pub(crate) async fn run_merge(
         opts.target.as_deref(),
     )?;
 
-    if matches!(opts.conflict_strategy, MergeConflictStrategy::Agent) {
+    let template_ref = resolve_template_ref(&config::get_config(), TemplateScope::Merge);
+    let template_gate_script = opts
+        .cicd_gate
+        .script
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let merge_template = resolve_merge_template(
+        &template_ref,
+        &spec.slug,
+        &spec.branch,
+        &spec.target_branch,
+        MergeTemplateGateConfig {
+            cicd_script: template_gate_script.as_deref(),
+            cicd_auto_resolve: opts.cicd_gate.auto_resolve,
+            cicd_retries: opts.cicd_gate.retries,
+            conflict_auto_resolve: opts.conflict_auto_resolve.enabled(),
+        },
+    )?;
+    let conflict_policy = merge_conflict_resolution_policy(&merge_template)?;
+    let effective_conflict_auto_resolve =
+        if conflict_policy.auto_resolve == opts.conflict_auto_resolve.enabled() {
+            opts.conflict_auto_resolve
+        } else {
+            ConflictAutoResolveSetting::new(
+                conflict_policy.auto_resolve,
+                ConflictAutoResolveSource::Template,
+            )
+        };
+    let effective_conflict_strategy =
+        if effective_conflict_auto_resolve == opts.conflict_auto_resolve {
+            opts.conflict_strategy
+        } else if effective_conflict_auto_resolve.enabled() {
+            MergeConflictStrategy::Agent
+        } else {
+            MergeConflictStrategy::Manual
+        };
+
+    if matches!(effective_conflict_strategy, MergeConflictStrategy::Agent) {
         require_agent_backend(
             agent,
             config::PromptKind::MergeConflict,
-            "Agent-based conflict resolution requires an agent-capable selector; update [agents.merge] or rerun with --agent codex|gemini",
+            "Agent-based conflict resolution requires an agent-capable selector; update [agents.commands.merge] (or legacy [agents.merge]) or rerun with --agent codex|gemini",
         )?;
     }
-    display::warn(opts.conflict_auto_resolve.status_line());
+    display::warn(effective_conflict_auto_resolve.status_line());
+    if effective_conflict_auto_resolve.enabled() && !conflict_policy.retry_path_enabled {
+        display::warn(
+            "Conflict auto-resolution is enabled but merge_conflict_resolution.on.succeeded is not wired back to merge_integrate.",
+        );
+    }
 
     if opts.cicd_gate.auto_resolve && opts.cicd_gate.script.is_some() {
         let review_agent = agent.for_prompt(config::PromptKind::Review)?;
         if !review_agent.backend.requires_agent_runner() {
             display::warn(
-                "CI/CD auto-remediation requested but [agents.merge] is not set to an agent-style backend; gate failures will abort without auto fixes.",
+                "CI/CD auto-remediation requested but [agents.commands.merge] (or legacy [agents.merge]) is not set to an agent-style backend; gate failures will abort without auto fixes.",
             );
         }
     }
@@ -262,8 +329,8 @@ pub(crate) async fn run_merge(
 
     match try_complete_pending_merge(
         &spec,
-        opts.conflict_strategy,
-        opts.conflict_auto_resolve,
+        effective_conflict_strategy,
+        effective_conflict_auto_resolve,
         agent,
     )
     .await?
@@ -381,19 +448,32 @@ pub(crate) async fn run_merge(
 
     let execution = if opts.squash {
         let (plan, mainline) = squash_plan.expect("missing squash plan despite squash=true");
+        let conflict_mode = ConflictExecutionMode {
+            setting: effective_conflict_auto_resolve,
+            strategy: effective_conflict_strategy,
+        };
         execute_squashed_merge(
             &spec,
             &implementation_message,
             &merge_message,
             &opts,
-            plan,
-            mainline,
+            conflict_mode,
+            SquashExecutionPlan { plan, mainline },
             agent,
         )
         .await?
     } else {
         let preparation = prepare_merge(&spec.branch)?;
-        execute_legacy_merge(&spec, &merge_message, preparation, &opts, agent).await?
+        execute_legacy_merge(
+            &spec,
+            &merge_message,
+            preparation,
+            &opts,
+            effective_conflict_auto_resolve,
+            effective_conflict_strategy,
+            agent,
+        )
+        .await?
     };
 
     finalize_merge(&spec, execution, opts.delete_branch, opts.push_after)?;
@@ -499,6 +579,8 @@ async fn execute_legacy_merge(
     merge_message: &str,
     preparation: MergePreparation,
     opts: &MergeOptions,
+    conflict_auto_resolve: ConflictAutoResolveSetting,
+    conflict_strategy: MergeConflictStrategy,
     agent: &config::AgentSettings,
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
     let (merge_oid, source_oid) = match preparation {
@@ -512,8 +594,8 @@ async fn execute_legacy_merge(
                 spec,
                 merge_message,
                 conflict,
-                setting: opts.conflict_auto_resolve,
-                strategy: opts.conflict_strategy,
+                setting: conflict_auto_resolve,
+                strategy: conflict_strategy,
                 squash: false,
                 implementation_message: None,
                 agent,
@@ -548,24 +630,31 @@ async fn execute_squashed_merge(
     implementation_message: &str,
     merge_message: &str,
     opts: &MergeOptions,
-    plan: vcs::SquashPlan,
-    squash_mainline: Option<u32>,
+    conflict_mode: ConflictExecutionMode,
+    squash: SquashExecutionPlan,
     agent: &config::AgentSettings,
 ) -> Result<MergeExecutionResult, Box<dyn std::error::Error>> {
     match apply_cherry_pick_sequence(
-        plan.target_head,
-        &plan.commits_to_apply,
+        squash.plan.target_head,
+        &squash.plan.commits_to_apply,
         None,
-        squash_mainline,
+        squash.mainline,
     )? {
         CherryPickOutcome::Completed(result) => {
-            let expected_head = result.applied.last().copied().unwrap_or(plan.target_head);
-            let implementation_oid =
-                commit_soft_squash(implementation_message, plan.target_head, expected_head)?;
+            let expected_head = result
+                .applied
+                .last()
+                .copied()
+                .unwrap_or(squash.plan.target_head);
+            let implementation_oid = commit_soft_squash(
+                implementation_message,
+                squash.plan.target_head,
+                expected_head,
+            )?;
             finalize_squashed_merge_from_head(
                 spec,
                 merge_message,
-                plan.source_tip,
+                squash.plan.source_tip,
                 Some(implementation_oid),
                 opts,
                 agent,
@@ -577,11 +666,11 @@ async fn execute_squashed_merge(
                 spec,
                 merge_message,
                 implementation_message,
-                plan: &plan,
-                mainline: squash_mainline,
+                plan: &squash.plan,
+                mainline: squash.mainline,
                 conflict,
-                setting: opts.conflict_auto_resolve,
-                strategy: opts.conflict_strategy,
+                setting: conflict_mode.setting,
+                strategy: conflict_mode.strategy,
                 agent,
             })
             .await?
@@ -739,83 +828,177 @@ async fn run_cicd_gate_for_merge(
     opts: &MergeOptions,
     agent: &config::AgentSettings,
 ) -> Result<Option<CicdGateOutcome>, Box<dyn std::error::Error>> {
-    let Some(script) = opts.cicd_gate.script.as_ref() else {
-        return Ok(None);
-    };
-
-    let repo_root = repo_root().map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
-    let mut attempts: u32 = 0;
-    let mut fix_attempts: u32 = 0;
-    let mut fix_commits: Vec<CicdFixRecord> = Vec::new();
-
-    loop {
-        attempts += 1;
-        let result = run_cicd_script(script, &repo_root)?;
-        log_cicd_result(script, &result, attempts);
-
-        if result.success() {
-            return Ok(Some(CicdGateOutcome {
-                script: script.clone(),
-                attempts,
-                fixes: fix_commits,
-            }));
-        }
-
-        if !opts.cicd_gate.auto_resolve {
-            return Err(cicd_gate_failure_error(script, &result));
-        }
-
-        if !agent.backend.requires_agent_runner() {
-            display::warn(
-                "CI/CD gate auto-remediation requires an agent-style backend; skipping automatic fixes.",
-            );
-            return Err(cicd_gate_failure_error(script, &result));
-        }
-
-        if fix_attempts >= opts.cicd_gate.retries {
-            display::warn(format!(
-                "CI/CD auto-remediation exhausted its retry budget ({} attempt(s)).",
-                opts.cicd_gate.retries
-            ));
-            return Err(cicd_gate_failure_error(script, &result));
-        }
-
-        fix_attempts += 1;
-        display::info(format!(
-            "CI/CD gate failed; attempting backend remediation ({}/{})...",
-            fix_attempts, opts.cicd_gate.retries
-        ));
-        let truncated_stdout = clip_log(result.stdout.as_bytes());
-        let truncated_stderr = clip_log(result.stderr.as_bytes());
-        if let Some(record) = attempt_cicd_auto_fix(CicdAutoFixInput {
-            spec,
-            script,
-            attempt: fix_attempts,
-            max_attempts: opts.cicd_gate.retries,
-            exit_code: result.status.code(),
-            stdout: &truncated_stdout,
-            stderr: &truncated_stderr,
-            agent,
-            amend_head: opts.squash,
-        })
-        .await?
-        {
-            match &record {
-                CicdFixRecord::Commit(oid) => {
-                    display::info(format!("Remediation attempt committed at {}.", oid));
-                }
-                CicdFixRecord::Amend(oid) => {
-                    display::info(format!(
-                        "Remediation attempt amended the implementation commit ({}).",
-                        oid
-                    ));
+    let template_ref = resolve_template_ref(&config::get_config(), TemplateScope::Merge);
+    let gate_script = opts
+        .cicd_gate
+        .script
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let template = resolve_merge_template(
+        &template_ref,
+        &spec.slug,
+        &spec.branch,
+        &spec.target_branch,
+        MergeTemplateGateConfig {
+            cicd_script: gate_script.as_deref(),
+            cicd_auto_resolve: opts.cicd_gate.auto_resolve,
+            cicd_retries: opts.cicd_gate.retries,
+            conflict_auto_resolve: opts.conflict_auto_resolve.enabled(),
+        },
+    )?;
+    let policy = merge_cicd_gate_policy(&template)?;
+    let auto_fix_backend_ready = agent.backend.requires_agent_runner();
+    let gate_outcome =
+        match run_merge_cicd_gate(&policy, auto_fix_backend_ready, |request| async move {
+            let script = request.script;
+            let stdout = request.stdout;
+            let stderr = request.stderr;
+            let record = attempt_cicd_auto_fix(CicdAutoFixInput {
+                spec,
+                script: &script,
+                attempt: request.attempt,
+                max_attempts: request.max_attempts,
+                exit_code: request.exit_code,
+                stdout: &stdout,
+                stderr: &stderr,
+                agent,
+                amend_head: opts.squash,
+            })
+            .await?;
+            if let Some(record_ref) = record.as_ref() {
+                match record_ref {
+                    CicdFixRecord::Commit(oid) => {
+                        display::info(format!("Remediation attempt committed at {}.", oid));
+                    }
+                    CicdFixRecord::Amend(oid) => {
+                        display::info(format!(
+                            "Remediation attempt amended the implementation commit ({}).",
+                            oid
+                        ));
+                    }
                 }
             }
-            fix_commits.push(record);
-        } else {
-            display::info("Backend remediation reported no file changes.");
+            Ok(record)
+        })
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                record_merge_cicd_gate_error(&policy, &err.to_string());
+                return Err(err);
+            }
+        };
+
+    match gate_outcome {
+        MergeCicdGateResult::Skipped => {
+            record_merge_cicd_gate_operation(&policy, "skipped", None, 0, None, &[]);
+            Ok(None)
+        }
+        MergeCicdGateResult::Passed(outcome) => {
+            record_merge_cicd_gate_operation(
+                &policy,
+                "passed",
+                Some(&outcome.script),
+                outcome.attempts,
+                Some(&outcome.result),
+                &outcome.fixes,
+            );
+            Ok(Some(CicdGateOutcome {
+                script: outcome.script,
+                attempts: outcome.attempts,
+                fixes: outcome.fixes,
+            }))
+        }
+        MergeCicdGateResult::Failed(failure) => {
+            record_merge_cicd_gate_operation(
+                &policy,
+                "failed",
+                Some(&failure.script),
+                failure.attempts,
+                Some(&failure.result),
+                &failure.fixes,
+            );
+            Err(format!(
+                "CI/CD gate `{}` failed ({})",
+                failure.script.display(),
+                failure.result.status_label()
+            )
+            .into())
         }
     }
+}
+
+fn merge_gate_script_label(script: &Path) -> String {
+    repo_root()
+        .ok()
+        .and_then(|root| {
+            script
+                .strip_prefix(&root)
+                .ok()
+                .map(|path| path.display().to_string())
+        })
+        .unwrap_or_else(|| script.display().to_string())
+}
+
+fn record_merge_cicd_gate_operation(
+    policy: &MergeCicdGatePolicy,
+    status: &str,
+    script: Option<&Path>,
+    attempts: u32,
+    result: Option<&CicdScriptResult>,
+    fixes: &[CicdFixRecord],
+) {
+    let script_label = script.map(merge_gate_script_label);
+    let fix_labels: Vec<String> = fixes.iter().map(CicdFixRecord::describe).collect();
+    let (exit_code, duration_ms, stdout, stderr) = if let Some(result) = result {
+        (
+            result.status.code(),
+            Some(result.duration.as_millis()),
+            clip_log(result.stdout.as_bytes()),
+            clip_log(result.stderr.as_bytes()),
+        )
+    } else {
+        (None, None, String::new(), String::new())
+    };
+    Auditor::record_operation(
+        "cicd_gate",
+        json!({
+            "scope": "merge",
+            "script": script_label,
+            "status": status,
+            "attempts": attempts,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "stdout": stdout,
+            "stderr": stderr,
+            "auto_resolve_enabled": policy.auto_resolve,
+            "retries": policy.retries,
+            "fixes_count": fix_labels.len(),
+            "fixes": fix_labels,
+        }),
+    );
+}
+
+fn record_merge_cicd_gate_error(policy: &MergeCicdGatePolicy, error: &str) {
+    let script = policy.script.as_deref().map(merge_gate_script_label);
+    Auditor::record_operation(
+        "cicd_gate",
+        json!({
+            "scope": "merge",
+            "script": script,
+            "status": "error",
+            "attempts": 0,
+            "exit_code": serde_json::Value::Null,
+            "duration_ms": serde_json::Value::Null,
+            "stdout": "",
+            "stderr": "",
+            "auto_resolve_enabled": policy.auto_resolve,
+            "retries": policy.retries,
+            "fixes_count": 0,
+            "fixes": Vec::<String>::new(),
+            "error": error,
+        }),
+    );
 }
 
 struct CicdAutoFixInput<'a> {
@@ -1815,14 +1998,6 @@ fn clear_conflict_state(slug: &str) -> Result<(), Box<dyn std::error::Error>> {
         fs::remove_file(path)?;
     }
     Ok(())
-}
-
-fn cicd_gate_failure_error(script: &Path, result: &CicdScriptResult) -> Box<dyn std::error::Error> {
-    Box::<dyn std::error::Error>::from(format!(
-        "CI/CD gate `{}` failed ({})",
-        script.display(),
-        result.status_label()
-    ))
 }
 
 async fn refresh_plan_branch(

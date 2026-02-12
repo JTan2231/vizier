@@ -48,6 +48,8 @@ pub struct AgentInvocationContext {
     pub selector: String,
     pub scope: config::ProfileScope,
     pub command_scope: Option<config::CommandScope>,
+    pub command_alias: Option<config::CommandAlias>,
+    pub template_selector: Option<config::TemplateSelector>,
     pub prompt_kind: SystemPrompt,
     pub command: Vec<String>,
     pub exit_code: Option<i32>,
@@ -157,14 +159,16 @@ impl Auditor {
             let backend_label = settings.agent_runtime.label.clone();
             let scope = settings
                 .prompt_selection()
-                .map(|selection| selection.requested_scope)
-                .unwrap_or(settings.profile_scope);
+                .map(|selection| selection.requested_scope.clone())
+                .unwrap_or_else(|| settings.profile_scope.clone());
             auditor.last_agent = Some(AgentInvocationContext {
                 backend: settings.backend,
                 backend_label,
                 selector: settings.selector.clone(),
                 scope,
                 command_scope: settings.scope,
+                command_alias: settings.command_alias.clone(),
+                template_selector: settings.template_selector.clone(),
                 prompt_kind: prompt_kind.unwrap_or(SystemPrompt::Documentation),
                 command: settings.agent_runtime.command.clone(),
                 exit_code: None,
@@ -484,7 +488,7 @@ impl Auditor {
         context: Option<&AgentInvocationContext>,
     ) -> SessionPromptInfo {
         let scope = context
-            .map(|ctx| ctx.scope)
+            .map(|ctx| ctx.scope.clone())
             .unwrap_or(config::ProfileScope::Default);
         let kind = context
             .map(|ctx| ctx.prompt_kind)
@@ -492,6 +496,15 @@ impl Auditor {
         let selection = match scope {
             config::ProfileScope::Default => cfg.prompt_for_default(kind),
             config::ProfileScope::Command(command) => cfg.prompt_for_command(command, kind),
+            config::ProfileScope::Alias(ref alias) => cfg.prompt_for_alias(alias, kind),
+            config::ProfileScope::Template(ref template) => {
+                let alias = context.and_then(|ctx| ctx.command_alias.clone());
+                if let Some(alias) = alias {
+                    cfg.prompt_for_alias_template(&alias, Some(template), kind)
+                } else {
+                    cfg.prompt_for_default(kind)
+                }
+            }
         };
         let origin = selection.origin.clone();
         let digest = Sha256::digest(selection.text.as_bytes());
@@ -542,15 +555,17 @@ impl Auditor {
         Ok(SessionArtifact::new(&log.id, session_path, project_root))
     }
 
-    /// Basic LLM request without tool usage for an explicit command scope.
-    pub async fn llm_request_for_command(
-        scope: config::CommandScope,
+    /// Basic LLM request without tool usage for an explicit command alias/template context.
+    pub async fn llm_request_for_alias_template(
+        alias: &config::CommandAlias,
+        template_selector: Option<&config::TemplateSelector>,
         #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
         user_message: String,
     ) -> Result<Message, Box<dyn std::error::Error>> {
-        let agent = crate::config::resolve_prompt_profile(
+        let agent = crate::config::resolve_prompt_profile_for_alias_template(
             &crate::config::get_config(),
-            scope,
+            alias,
+            template_selector,
             SystemPrompt::Commit,
             None,
         )?;
@@ -562,6 +577,18 @@ impl Auditor {
             None,
         )
         .await
+    }
+
+    /// Backward-compatible wrapper for legacy scope-based callers.
+    pub async fn llm_request_for_command(
+        scope: config::CommandScope,
+        #[cfg_attr(feature = "integration_testing", allow(unused_variables))] system_prompt: String,
+        user_message: String,
+    ) -> Result<Message, Box<dyn std::error::Error>> {
+        let alias: config::CommandAlias = scope.into();
+        let template = crate::config::get_config().template_selector_for_alias(&alias);
+        Self::llm_request_for_alias_template(&alias, template.as_ref(), system_prompt, user_message)
+            .await
     }
 
     /// Basic LLM request without tool usage for non-command/default contexts.

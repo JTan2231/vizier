@@ -9,12 +9,12 @@ use vizier_core::{
     config, display, vcs,
 };
 
-use crate::plan;
-
-use super::gates::{
-    StopConditionScriptResult, log_stop_condition_result, record_stop_condition_attempt,
-    record_stop_condition_summary, run_stop_condition_script, stop_condition_script_label,
+use crate::{
+    plan,
+    workflow_templates::{TemplateScope, resolve_approve_template, resolve_template_ref},
 };
+
+use super::gates::{record_stop_condition_summary, stop_condition_script_label};
 use super::save::{
     clear_narrative_tracker_for_commit, narrative_change_set_for_commit,
     stage_narrative_paths_for_commit, trim_staged_vizier_paths_for_commit,
@@ -24,6 +24,9 @@ use super::shared::{
     push_origin_if_requested, require_agent_backend, short_hash, spawn_plain_progress_logger,
 };
 use super::types::{ApproveOptions, CommitMode};
+use super::workflow_runtime::{
+    ApproveApplyOutcome, approve_stop_condition_policy, run_approve_apply_with_stop_condition,
+};
 
 struct PlanApplyResult {
     commit_oid: Option<String>,
@@ -37,7 +40,7 @@ pub(crate) async fn run_approve(
     require_agent_backend(
         agent,
         config::PromptKind::Documentation,
-        "vizier approve requires an agent-capable selector; update [agents.approve] or pass --agent codex|gemini",
+        "vizier approve requires an agent-capable selector; update [agents.commands.approve] (or legacy [agents.approve]) or pass --agent codex|gemini",
     )?;
 
     let spec = plan::PlanBranchSpec::resolve(
@@ -96,19 +99,25 @@ pub(crate) async fn run_approve(
     let worktree_path = worktree.path().to_path_buf();
     let plan_path = worktree.plan_path(&spec.slug);
     let mut worktree = Some(worktree);
-    let stop_script = opts.stop_condition.script.clone();
-    let mut stop_attempts: u32 = 0;
-    let mut last_stop_result: Option<StopConditionScriptResult> = None;
-    let mut remaining_retries = opts.stop_condition.retries;
-    let mut stop_status = if stop_script.is_some() {
-        "failed"
-    } else {
-        "none"
-    };
+    let template_ref = resolve_template_ref(&config::get_config(), TemplateScope::Approve);
+    let stop_script_override = opts
+        .stop_condition
+        .script
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let approve_template = resolve_approve_template(
+        &template_ref,
+        &spec.slug,
+        &spec.branch,
+        "runtime-approve",
+        true,
+        stop_script_override.as_deref(),
+        opts.stop_condition.retries,
+    )?;
+    let stop_policy = approve_stop_condition_policy(&approve_template)?;
 
-    let mut last_plan_commit: Option<String> = None;
-    let approval = loop {
-        let result = apply_plan_in_worktree(
+    let approval = run_approve_apply_with_stop_condition(&worktree_path, &stop_policy, || async {
+        apply_plan_in_worktree(
             &spec,
             &plan_meta,
             &worktree_path,
@@ -116,77 +125,33 @@ pub(crate) async fn run_approve(
             commit_mode,
             agent,
         )
-        .await;
+        .await
+    })
+    .await;
 
-        match result {
-            Err(err) => {
-                if stop_script.is_none() {
-                    stop_status = "none";
-                }
-                break Err(err);
-            }
-            Ok(plan_result) => {
-                if commit_mode.should_commit() {
-                    last_plan_commit = plan_result.commit_oid.clone();
-                }
-                let Some(script_path) = stop_script.as_ref() else {
-                    stop_status = "none";
-                    break Ok(plan_result);
-                };
-
-                let stop_result = match run_stop_condition_script(script_path, &worktree_path) {
-                    Ok(result) => result,
-                    Err(err) => {
-                        stop_status = "failed";
-                        break Err(err);
-                    }
-                };
-
-                stop_attempts += 1;
-                log_stop_condition_result(script_path, &stop_result, stop_attempts);
-                record_stop_condition_attempt("approve", script_path, stop_attempts, &stop_result);
-                let success = stop_result.success();
-                last_stop_result = Some(stop_result);
-
-                if success {
-                    stop_status = "passed";
-                    break Ok(plan_result);
-                }
-
-                if remaining_retries == 0 {
-                    stop_status = "failed";
-                    let message = format!(
-                        "Approve stop-condition script `{}` did not succeed after {} attempt(s); inspect {} for partial changes and script logs.",
-                        script_path.display(),
-                        stop_attempts,
-                        worktree_path.display()
-                    );
-                    break Err(Box::<dyn std::error::Error>::from(message));
-                }
-
-                remaining_retries -= 1;
-                display::info(format!(
-                    "Approve stop-condition not yet satisfied; retrying plan application ({} retries remaining).",
-                    remaining_retries
-                ));
-            }
-        }
+    let (approval, stop_report) = match approval {
+        ApproveApplyOutcome::Succeeded { value, report } => (Ok(value), report),
+        ApproveApplyOutcome::Failed { error, report } => (Err(error), report),
     };
 
-    if stop_script.is_some() {
-        record_stop_condition_summary(
-            "approve",
-            stop_script.as_deref(),
-            stop_status,
-            stop_attempts,
-            last_stop_result.as_ref(),
-        );
-    } else {
-        record_stop_condition_summary("approve", None, "none", 0, None);
-    }
+    record_stop_condition_summary(
+        "approve",
+        stop_report.script.as_deref(),
+        stop_report.status,
+        stop_report.attempts,
+        stop_report.last_result.as_ref(),
+    );
+    let stop_script = stop_report.script;
+    let stop_status = stop_report.status;
+    let stop_attempts = stop_report.attempts;
+    let last_stop_result = stop_report.last_result;
+    let mut last_plan_commit: Option<String> = None;
 
     match approval {
         Ok(result) => {
+            if commit_mode.should_commit() {
+                last_plan_commit = result.commit_oid.clone();
+            }
             if opts.push_after {
                 if commit_mode.should_commit() {
                     if last_plan_commit.is_some() {

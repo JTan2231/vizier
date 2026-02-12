@@ -116,7 +116,7 @@ pub struct MergeOptions {
 
 #[derive(Debug, Clone)]
 pub struct TestDisplayOptions {
-    pub scope: config::CommandScope,
+    pub command_alias: config::CommandAlias,
     pub prompt_override: Option<String>,
     pub raw_output: bool,
     pub timeout: Option<Duration>,
@@ -136,6 +136,7 @@ pub enum ConflictAutoResolveSource {
     Config,
     FlagEnable,
     FlagDisable,
+    Template,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +160,7 @@ impl ConflictAutoResolveSetting {
             ConflictAutoResolveSource::Config => "merge.conflicts.auto_resolve",
             ConflictAutoResolveSource::FlagEnable => "--auto-resolve-conflicts",
             ConflictAutoResolveSource::FlagDisable => "--no-auto-resolve-conflicts",
+            ConflictAutoResolveSource::Template => "workflow template",
         }
     }
 

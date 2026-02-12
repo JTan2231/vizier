@@ -5,27 +5,27 @@ agent = "codex"
 # Supported selectors: bundled `codex`/`gemini` or any custom shim name present under share/vizier/agents/.
 # Agent runs default to wrapped JSON handling: the exec command should stream JSON to stdout, Vizier tees it through an optional progress filter for stderr, and the final assistant text is extracted for stdout. Set output="passthrough" for legacy scripts that already split stdout/stderr. Bundled shims install under `share/vizier/agents/`; pick them via the selector above or override the runtime command per scope.
 
-# Example: route every scope through your own script. Update the `[agents.default]` entry below (or
-# whichever scopes you care about) so `agent = "custom"` and then uncomment this block to point
+# Example: route every command alias through your own script. Update the `[agents.default]` entry below (or
+# whichever aliases/templates you care about) so `agent = "custom"` and then uncomment this block to point
 # Vizier at your script.
 # [agents.default.agent]
 # command = ["/usr/local/share/vizier/agents/codex/agent.sh"] # Or point directly at your script
 # output = "auto"                    # auto|wrapped-json; auto wraps bundled shims
 # progress_filter = ["./examples/agents/codex/filter.sh"] # Optional progress-to-stderr filter; defaults when selector=codex
-# Agent scopes inherit this runner; swap to another script by updating these fields (or a scoped `[agents.<scope>.agent]` table).
+# Command aliases inherit this runner; swap to another script by updating these fields (or an alias table like `[agents.commands.review.agent]`).
 
-# Prompt profiles live under [agents.<scope>.prompts.<kind>]; each entry ties prompt text (inline or via `path`)
+# Prompt profiles live under [agents.commands.<alias>.prompts.<kind>] (or [agents.templates."<selector>".prompts.<kind>]); each entry ties prompt text (inline or via `path`)
 # together with agent overrides for that scope+prompt pairing. Available kinds: documentation, commit,
 # implementation_plan, review, merge_conflict. See `docs/user/prompt-config-matrix.md` for the full scope×prompt-kind
 # matrix, fallback order, and documentation toggles.
 [agents.default.prompts.documentation]
 path = "./prompts/documentation.md"
 
-[agents.draft.prompts.implementation_plan]
+[agents.commands.draft.prompts.implementation_plan]
 path = "./prompts/plan.md"
 agent = "codex"
 
-[agents.review.prompts.review]
+[agents.commands.review.prompts.review]
 path = "./prompts/review.md"
 agent = "codex"
 
@@ -152,6 +152,11 @@ fields = [
   "Build skip checks",
   "Build keep branch",
   "Build dependencies",
+  "Workflow template",
+  "Workflow template version",
+  "Workflow node",
+  "Workflow policy snapshot",
+  "Workflow gates",
   "Patch file",
   "Patch index",
   "Patch total",
@@ -191,6 +196,26 @@ enabled = true
 # Silence progress chatter for detached jobs unless the caller set verbosity
 quiet = true
 
+# Optional workflow-template mapping used when scheduler jobs are compiled from wrapper commands.
+# `[commands]` is the new primary surface; `[workflow.templates]` remains as compatibility fallback.
+[commands]
+save = "template.save.v1"
+draft = "template.draft.v1"
+approve = "template.approve.v1"
+review = "template.review.v1"
+merge = "template.merge.v1"
+build_execute = "template.build_execute.v1"
+patch = "template.patch.v1"
+
+[workflow.templates]
+save = "template.save.v1"
+draft = "template.draft.v1"
+approve = "template.approve.v1"
+review = "template.review.v1"
+merge = "template.merge.v1"
+build_execute = "template.build_execute.v1"
+patch = "template.patch.v1"
+
 # Optional cleanup for cancelled background jobs (never runs on failures)
 [jobs.cancel]
 cleanup_worktree = false
@@ -200,30 +225,30 @@ cleanup_worktree = false
 agent = "codex"
 
 # Example: route review through Gemini instead of Codex via a script shim
-# [agents.review]
+# [agents.commands.review]
 # agent = "gemini"
-# [agents.review.agent]
+# [agents.commands.review.agent]
 # command = ["./examples/agents/gemini/agent.sh"]
 
 # Keep save flows on the codex stack so narrative edits always use the same selector
-[agents.save]
+[agents.commands.save]
 agent = "codex"
 
 # The remaining plan workflow commands stay on the codex stack and inherit the defaults
-[agents.draft]
+[agents.commands.draft]
 agent = "codex"
 
-[agents.approve]
+[agents.commands.approve]
 agent = "codex"
 
-[agents.review]
+[agents.commands.review]
 agent = "codex"
 
 # Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts
-[agents.merge.documentation]
+[agents.commands.merge.documentation]
 enabled = false
 include_snapshot = false
 include_narrative_docs = false
 
-[agents.merge]
+[agents.commands.merge]
 agent = "codex"

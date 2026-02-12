@@ -1,0 +1,15 @@
+[commands]
+save = "template.save.alias-only@v9"
+patch = "template.patch.ops@v3"
+
+[agents.commands.patch.agent]
+label = "alias-patch-runtime"
+command = ["/bin/echo"]
+
+[agents.templates."template.patch.ops@v3".agent]
+label = "template-patch-runtime"
+command = ["/bin/echo"]
+
+[agents.templates."template.save.alias-only@v9".agent]
+label = "template-save-runtime"
+command = ["/bin/echo"]

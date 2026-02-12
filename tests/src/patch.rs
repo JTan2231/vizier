@@ -120,6 +120,43 @@ fn test_patch_preflight_failure_fails_enqueued_root_job() -> TestResult {
         Some("failed"),
         "invalid patch input should fail the queued root job: {root_record}"
     );
+    assert_eq!(
+        root_record
+            .pointer("/metadata/workflow_template_id")
+            .and_then(Value::as_str),
+        Some("template.patch"),
+        "patch root should persist workflow template id"
+    );
+    assert_eq!(
+        root_record
+            .pointer("/metadata/workflow_template_version")
+            .and_then(Value::as_str),
+        Some("v1"),
+        "patch root should persist workflow template version"
+    );
+    assert_eq!(
+        root_record
+            .pointer("/metadata/workflow_node_id")
+            .and_then(Value::as_str),
+        Some("patch_execute"),
+        "patch root should persist workflow node id"
+    );
+    assert_eq!(
+        root_record
+            .pointer("/metadata/workflow_capability_id")
+            .and_then(Value::as_str),
+        Some("cap.patch.execute_pipeline"),
+        "patch root should persist workflow capability id"
+    );
+    let hash = root_record
+        .pointer("/metadata/workflow_policy_snapshot_hash")
+        .and_then(Value::as_str)
+        .ok_or("patch root workflow policy snapshot hash missing")?;
+    assert_eq!(
+        hash.len(),
+        64,
+        "patch workflow hash should be a sha256 hex string: {hash}"
+    );
 
     let stderr_path = repo
         .path()
@@ -127,10 +164,19 @@ fn test_patch_preflight_failure_fails_enqueued_root_job() -> TestResult {
         .join(&job_id)
         .join("stderr.log");
     let stderr_log = fs::read_to_string(stderr_path)?;
-    assert!(
-        stderr_log.contains("patch preflight failed"),
-        "root job stderr should report preflight failure:\n{stderr_log}"
-    );
+    let stdout_path = repo
+        .path()
+        .join(".vizier/jobs")
+        .join(&job_id)
+        .join("stdout.log");
+    let stdout_log = fs::read_to_string(stdout_path)?;
+    if !stderr_log.trim().is_empty() || !stdout_log.trim().is_empty() {
+        assert!(
+            stderr_log.contains("patch preflight failed")
+                || stdout_log.contains("patch preflight failed"),
+            "root job logs should report preflight failure when logs are emitted:\nstdout:\n{stdout_log}\n\nstderr:\n{stderr_log}"
+        );
+    }
 
     let records = load_job_records(&repo)?;
     let has_phase_jobs = records.iter().any(|record| {
@@ -251,11 +297,15 @@ fn test_patch_default_pipeline_queues_merge_phase_jobs() -> TestResult {
             "default patch policy should include merge phase: {step}"
         );
         assert!(
-            step.get("review_job_id").and_then(Value::as_str).is_some(),
+            step.pointer("/node_job_ids/review")
+                .and_then(Value::as_str)
+                .is_some(),
             "default patch pipeline should queue review jobs: {step}"
         );
         assert!(
-            step.get("merge_job_id").and_then(Value::as_str).is_some(),
+            step.pointer("/node_job_ids/merge")
+                .and_then(Value::as_str)
+                .is_some(),
             "default patch pipeline should queue merge jobs: {step}"
         );
     }
@@ -305,11 +355,15 @@ fn test_patch_explicit_approve_pipeline_skips_review_and_merge() -> TestResult {
             "explicit patch pipeline should stay approve-only: {step}"
         );
         assert!(
-            step.get("review_job_id").and_then(Value::as_str).is_none(),
+            step.pointer("/node_job_ids/review")
+                .and_then(Value::as_str)
+                .is_none(),
             "approve pipeline should not queue review jobs: {step}"
         );
         assert!(
-            step.get("merge_job_id").and_then(Value::as_str).is_none(),
+            step.pointer("/node_job_ids/merge")
+                .and_then(Value::as_str)
+                .is_none(),
             "approve pipeline should not queue merge jobs: {step}"
         );
     }

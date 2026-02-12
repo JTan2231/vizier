@@ -44,15 +44,19 @@ Out of scope:
 - Durability: durable workflow artifact.
 
 ### 4) Build execution material
-- Path: `.vizier/implementation-plans/builds/<build_id>/execution.json`.
+- Path: `.vizier/implementation-plans/builds/<build_id>/execution.<resume-key>.json` (`resume-key=default` uses `execution.json`).
 - Fields (contract-critical):
   - `build_id`
   - `pipeline_override`
   - `stage_barrier`
   - `failure_mode`
+  - `template_id` / `template_version`
+  - `resume_key` / `resume_reuse_mode`
+  - `policy_snapshot_hash`
+  - `policy_snapshot` (normalized template/policy snapshot used for resume drift checks)
   - `created_at`
   - `status`
-  - per-step `derived_slug`, `derived_branch`, policy snapshot, and phase job ids.
+  - per-step `derived_slug`, `derived_branch`, policy snapshot, and node/phase job ids.
 - Owner flows: `vizier build execute`.
 - Durability: durable workflow state used for resume/reuse/mismatch detection.
 
@@ -73,6 +77,13 @@ Out of scope:
   - `approval` (`required`, `state`, request/decision metadata, optional reason)
   - `wait_reason`
   - `waited_on`
+- Workflow compile metadata in `job.json.metadata`:
+  - `workflow_template_id`
+  - `workflow_template_version`
+  - `workflow_node_id`
+  - `workflow_capability_id`
+  - `workflow_policy_snapshot_hash`
+  - `workflow_gates`
 - Owner flows: all scheduler-backed commands.
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
 
@@ -102,7 +113,8 @@ Out of scope:
 - `BuildExecutionStep(step_key)` derives `derived_slug` and `derived_branch`, then points at phase jobs.
 - `JobRecord` edges form a DAG through:
   - explicit `after` dependencies (job-id level), and
-  - artifact dependencies (`plan_branch`, `plan_doc`, `plan_commits`, `target_branch`, `merge_sentinel`, `command_patch`).
+  - artifact dependencies (`plan_branch`, `plan_doc`, `plan_commits`, `target_branch`, `merge_sentinel`, `command_patch`, plus `custom:<type_id>:<key>` extension artifacts).
+  Readiness is additionally gated by optional `pinned_head`, declarative `preconditions`, approval facts, and lock acquisition.
 - `MergeConflictSentinel(slug)` links pending merge state to plan slug, source branch, target branch, and resume metadata.
 - `SessionLog(session_id)` is attached to audited operations and referenced by outcomes/commits.
 
@@ -157,7 +169,7 @@ Ephemeral operational artifacts:
 - Plan slug normalization is lowercase, dash-separated.
 - Default plan branch naming is `draft/<slug>`.
 - Workflow-consumed plan docs must include front matter keys `plan` and `branch`.
-- Build execute resume rejects execution policy mismatch against existing `execution.json`.
+- Build execute resume reuses the execution state lane selected by template `policy.resume.key` and enforces drift according to `policy.resume.reuse_mode` (`strict` rejects all drift; `compatible` still rejects node/edge/artifact drift but allows policy-only drift).
 - Scheduler retry refuses to mutate running jobs; it rewinds queued/waiting descendants and preserves predecessor success boundaries.
 - `vizier merge --complete-conflict` only operates on existing Vizier-managed sentinel state.
 - Clean-worktree checks ignore ephemeral Vizier paths:

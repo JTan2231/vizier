@@ -49,17 +49,107 @@ pub enum CommandScope {
     Merge,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CommandAlias(String);
+
+impl CommandAlias {
+    pub fn parse(value: &str) -> Option<Self> {
+        let mut normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        while normalized.contains("__") {
+            normalized = normalized.replace("__", "_");
+        }
+        let normalized = normalized.trim_matches('_');
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(Self(normalized.to_string()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn all_builtin() -> &'static [&'static str] {
+        &[
+            "save",
+            "draft",
+            "approve",
+            "review",
+            "merge",
+            "patch",
+            "build_execute",
+        ]
+    }
+}
+
+impl std::str::FromStr for CommandAlias {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or_else(|| format!("invalid command alias `{value}`"))
+    }
+}
+
+impl std::fmt::Display for CommandAlias {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<CommandScope> for CommandAlias {
+    fn from(value: CommandScope) -> Self {
+        Self(value.as_str().to_string())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TemplateSelector(String);
+
+impl TemplateSelector {
+    pub fn parse(value: &str) -> Option<Self> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(Self(trimmed.to_string()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for TemplateSelector {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or_else(|| format!("invalid template selector `{value}`"))
+    }
+}
+
+impl std::fmt::Display for TemplateSelector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ProfileScope {
     Default,
     Command(CommandScope),
+    Alias(CommandAlias),
+    Template(TemplateSelector),
 }
 
 impl ProfileScope {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             ProfileScope::Default => "default",
             ProfileScope::Command(scope) => scope.as_str(),
+            ProfileScope::Alias(alias) => alias.as_str(),
+            ProfileScope::Template(selector) => selector.as_str(),
         }
     }
 
@@ -67,6 +157,22 @@ impl ProfileScope {
         match self {
             ProfileScope::Default => None,
             ProfileScope::Command(scope) => Some(*scope),
+            ProfileScope::Alias(alias) => compatibility_scope_for_alias(alias),
+            ProfileScope::Template(_) => None,
+        }
+    }
+
+    pub fn command_alias(&self) -> Option<&CommandAlias> {
+        match self {
+            ProfileScope::Alias(alias) => Some(alias),
+            _ => None,
+        }
+    }
+
+    pub fn template_selector(&self) -> Option<&TemplateSelector> {
+        match self {
+            ProfileScope::Template(selector) => Some(selector),
+            _ => None,
         }
     }
 }
@@ -74,6 +180,18 @@ impl ProfileScope {
 impl From<CommandScope> for ProfileScope {
     fn from(value: CommandScope) -> Self {
         Self::Command(value)
+    }
+}
+
+impl From<CommandAlias> for ProfileScope {
+    fn from(value: CommandAlias) -> Self {
+        Self::Alias(value)
+    }
+}
+
+impl From<TemplateSelector> for ProfileScope {
+    fn from(value: TemplateSelector) -> Self {
+        Self::Template(value)
     }
 }
 
@@ -123,6 +241,19 @@ impl std::str::FromStr for CommandScope {
 impl std::fmt::Display for CommandScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+pub fn compatibility_scope_for_alias(alias: &CommandAlias) -> Option<CommandScope> {
+    match alias.as_str() {
+        "save" => Some(CommandScope::Save),
+        "draft" => Some(CommandScope::Draft),
+        "approve" => Some(CommandScope::Approve),
+        "review" => Some(CommandScope::Review),
+        "merge" => Some(CommandScope::Merge),
+        "patch" => Some(CommandScope::Draft),
+        "build_execute" => Some(CommandScope::Draft),
+        _ => None,
     }
 }
 
@@ -184,9 +315,10 @@ pub struct AgentOverrides {
     pub prompt_overrides: HashMap<PromptKind, PromptOverrides>,
 }
 
-/// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]` so the same
-/// table controls the template, agent overrides, and runtime options for a specific
-/// command/prompt pairing.
+/// Prompt-level overrides live under `[agents.<scope>.prompts.<kind>]`,
+/// `[agents.commands.<alias>.prompts.<kind>]`, or
+/// `[agents.templates."<selector>".prompts.<kind>]` so the same table controls the
+/// template, agent overrides, and runtime options for a specific command/prompt pairing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PromptOverrides {
     pub text: Option<String>,
@@ -366,7 +498,10 @@ pub struct Config {
     pub display: DisplaySettings,
     pub jobs: JobsConfig,
     pub workflow: WorkflowConfig,
+    pub commands: HashMap<CommandAlias, TemplateSelector>,
     pub agent_defaults: AgentOverrides,
+    pub agent_commands: HashMap<CommandAlias, AgentOverrides>,
+    pub agent_templates: HashMap<TemplateSelector, AgentOverrides>,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
     pub(crate) repo_prompts: HashMap<SystemPrompt, PromptTemplate>,
 }
@@ -638,10 +773,22 @@ pub struct BackgroundConfig {
     pub quiet: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkflowTemplateConfig {
+    pub save: String,
+    pub draft: String,
+    pub approve: String,
+    pub review: String,
+    pub merge: String,
+    pub build_execute: String,
+    pub patch: String,
+}
+
 #[derive(Clone, Default)]
 pub struct WorkflowConfig {
     pub no_commit_default: bool,
     pub background: BackgroundConfig,
+    pub templates: WorkflowTemplateConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -959,9 +1106,21 @@ pub struct BackgroundLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkflowTemplateLayer {
+    pub save: Option<String>,
+    pub draft: Option<String>,
+    pub approve: Option<String>,
+    pub review: Option<String>,
+    pub merge: Option<String>,
+    pub build_execute: Option<String>,
+    pub patch: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkflowLayer {
     pub no_commit_default: Option<bool>,
     pub background: BackgroundLayer,
+    pub templates: WorkflowTemplateLayer,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -987,29 +1146,113 @@ pub struct ConfigLayer {
     pub display: DisplayLayer,
     pub jobs: JobsLayer,
     pub workflow: WorkflowLayer,
+    pub commands: HashMap<CommandAlias, TemplateSelector>,
     pub agent_defaults: Option<AgentOverrides>,
+    pub agent_commands: HashMap<CommandAlias, AgentOverrides>,
+    pub agent_templates: HashMap<TemplateSelector, AgentOverrides>,
     pub agent_scopes: HashMap<CommandScope, AgentOverrides>,
 }
 
 impl Config {
     pub fn prompt_for_command(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
-        self.prompt_for_profile(ProfileScope::Command(scope), kind)
+        let alias: CommandAlias = scope.into();
+        let template = self.template_selector_for_alias(&alias);
+        self.prompt_for_identity(
+            ProfileScope::Command(scope),
+            Some(scope),
+            Some(&alias),
+            template.as_ref(),
+            kind,
+        )
+    }
+
+    pub fn prompt_for_alias(&self, alias: &CommandAlias, kind: PromptKind) -> PromptSelection {
+        let template = self.template_selector_for_alias(alias);
+        self.prompt_for_identity(
+            ProfileScope::Alias(alias.clone()),
+            compatibility_scope_for_alias(alias),
+            Some(alias),
+            template.as_ref(),
+            kind,
+        )
+    }
+
+    pub fn prompt_for_alias_template(
+        &self,
+        alias: &CommandAlias,
+        template_selector: Option<&TemplateSelector>,
+        kind: PromptKind,
+    ) -> PromptSelection {
+        let requested_scope = if let Some(selector) = template_selector {
+            ProfileScope::Template(selector.clone())
+        } else {
+            ProfileScope::Alias(alias.clone())
+        };
+        self.prompt_for_identity(
+            requested_scope,
+            compatibility_scope_for_alias(alias),
+            Some(alias),
+            template_selector,
+            kind,
+        )
     }
 
     pub fn prompt_for_default(&self, kind: PromptKind) -> PromptSelection {
-        self.prompt_for_profile(ProfileScope::Default, kind)
+        self.prompt_for_identity(ProfileScope::Default, None, None, None, kind)
     }
 
     pub fn prompt_for(&self, scope: CommandScope, kind: PromptKind) -> PromptSelection {
         self.prompt_for_command(scope, kind)
     }
 
-    fn prompt_for_profile(
+    pub fn command_aliases(&self) -> Vec<CommandAlias> {
+        let mut aliases = Vec::new();
+        for alias in CommandAlias::all_builtin() {
+            if let Some(parsed) = CommandAlias::parse(alias) {
+                aliases.push(parsed);
+            }
+        }
+        aliases.extend(self.commands.keys().cloned());
+        aliases.extend(self.agent_commands.keys().cloned());
+        aliases.sort();
+        aliases.dedup();
+        aliases
+    }
+
+    pub fn template_selector_for_alias(&self, alias: &CommandAlias) -> Option<TemplateSelector> {
+        if let Some(selector) = self.commands.get(alias) {
+            return Some(selector.clone());
+        }
+
+        let legacy = match alias.as_str() {
+            "save" => Some(self.workflow.templates.save.as_str()),
+            "draft" => Some(self.workflow.templates.draft.as_str()),
+            "approve" => Some(self.workflow.templates.approve.as_str()),
+            "review" => Some(self.workflow.templates.review.as_str()),
+            "merge" => Some(self.workflow.templates.merge.as_str()),
+            "build_execute" => Some(self.workflow.templates.build_execute.as_str()),
+            "patch" => Some(self.workflow.templates.patch.as_str()),
+            _ => None,
+        }?;
+
+        TemplateSelector::parse(legacy)
+    }
+
+    fn prompt_for_identity(
         &self,
         requested_scope: ProfileScope,
+        legacy_scope: Option<CommandScope>,
+        alias: Option<&CommandAlias>,
+        template_selector: Option<&TemplateSelector>,
         kind: PromptKind,
     ) -> PromptSelection {
-        if let Some(selection) = self.prompt_from_agent_override(requested_scope, kind) {
+        if let Some(selection) = self.prompt_from_agent_override(
+            &requested_scope,
+            legacy_scope,
+            alias,
+            template_selector,
+            kind,
+        ) {
             return selection;
         }
 
@@ -1017,7 +1260,7 @@ impl Config {
             return PromptSelection {
                 text: repo.contents.clone(),
                 kind,
-                requested_scope,
+                requested_scope: requested_scope.clone(),
                 origin: PromptOrigin::RepoFile {
                     path: repo.path.clone(),
                 },
@@ -1036,10 +1279,43 @@ impl Config {
 
     fn prompt_from_agent_override(
         &self,
-        requested_scope: ProfileScope,
+        requested_scope: &ProfileScope,
+        legacy_scope: Option<CommandScope>,
+        alias: Option<&CommandAlias>,
+        template_selector: Option<&TemplateSelector>,
         kind: PromptKind,
     ) -> Option<PromptSelection> {
-        if let Some(scope) = requested_scope.command_scope()
+        if let Some(selector) = template_selector
+            && let Some(template_overrides) = self
+                .agent_templates
+                .get(selector)
+                .and_then(|value| value.prompt_overrides.get(&kind))
+            && let Some(selection) = Self::selection_from_override(
+                requested_scope,
+                kind,
+                template_overrides,
+                ProfileScope::Template(selector.clone()),
+            )
+        {
+            return Some(selection);
+        }
+
+        if let Some(alias) = alias
+            && let Some(alias_overrides) = self
+                .agent_commands
+                .get(alias)
+                .and_then(|value| value.prompt_overrides.get(&kind))
+            && let Some(selection) = Self::selection_from_override(
+                requested_scope,
+                kind,
+                alias_overrides,
+                ProfileScope::Alias(alias.clone()),
+            )
+        {
+            return Some(selection);
+        }
+
+        if let Some(scope) = legacy_scope
             && let Some(scoped) = self
                 .agent_scopes
                 .get(&scope)
@@ -1067,7 +1343,7 @@ impl Config {
     }
 
     fn selection_from_override(
-        requested_scope: ProfileScope,
+        requested_scope: &ProfileScope,
         kind: PromptKind,
         overrides: &PromptOverrides,
         origin_scope: ProfileScope,
@@ -1075,7 +1351,7 @@ impl Config {
         overrides.text.as_ref().map(|text| PromptSelection {
             text: text.clone(),
             kind,
-            requested_scope,
+            requested_scope: requested_scope.clone(),
             origin: PromptOrigin::ScopedConfig {
                 scope: origin_scope,
             },

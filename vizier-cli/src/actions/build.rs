@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::Utc;
 use git2::{BranchType, Repository};
@@ -15,21 +16,71 @@ use vizier_core::{
         add_worktree_for_branch, branch_exists, commit_paths_in_repo, create_branch_from,
         detect_primary_branch, remove_worktree,
     },
+    workflow_template::{
+        WorkflowCapability, WorkflowGate, WorkflowNode, WorkflowNodeKind, WorkflowResumeReuseMode,
+        WorkflowTemplate, workflow_node_capability,
+    },
 };
 
 use crate::actions::shared::{
     WorkdirGuard, append_agent_rows, copy_session_log_to_repo_root, current_verbosity,
     format_block, format_table, prompt_selection, require_agent_backend,
 };
-use crate::actions::types::CommitMode;
+use crate::actions::types::{
+    ApproveOptions, ApproveStopCondition, CicdGateOptions, CommitMode, ConflictAutoResolveSetting,
+    ConflictAutoResolveSource, DraftArgs, MergeConflictStrategy, MergeOptions, ReviewOptions,
+    SpecSource,
+};
+use crate::actions::{PatchArgs, run_approve, run_draft, run_merge, run_patch, run_review};
+use crate::cli::args::SaveCmd;
 use crate::cli::prompt::prompt_yes_no;
 use crate::cli::scheduler::{
-    background_config_snapshot, build_background_child_args, generate_job_id,
+    background_config_snapshot, build_background_child_args, generate_job_id, run_scheduled_save,
+};
+use crate::workflow_templates::{
+    BuildExecuteGateConfig, TemplateScope, WorkflowTemplateRef, compile_template_node,
+    compile_template_node_schedule, resolve_build_execute_template, resolve_template_ref,
 };
 use crate::{jobs, plan};
 
 const BUILD_PLAN_ROOT: &str = ".vizier/implementation-plans/builds";
 const BUILD_EXECUTION_FILE: &str = "execution.json";
+
+fn normalize_resume_key_for_path(key: &str) -> String {
+    let mut normalized = key
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while normalized.contains("__") {
+        normalized = normalized.replace("__", "_");
+    }
+    normalized.trim_matches('_').to_string()
+}
+
+fn execution_rel_path_for_resume_key(build_id: &str, key: &str) -> PathBuf {
+    let normalized = normalize_resume_key_for_path(key);
+    let file = if normalized.is_empty() || normalized == "default" {
+        BUILD_EXECUTION_FILE.to_string()
+    } else {
+        format!("execution.{normalized}.json")
+    };
+    Path::new(BUILD_PLAN_ROOT).join(build_id).join(file)
+}
+
+fn default_resume_key() -> String {
+    "default".to_string()
+}
+
+fn default_resume_reuse_mode() -> String {
+    "strict".to_string()
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -350,6 +401,18 @@ struct BuildExecutionState {
     stage_barrier: Option<String>,
     #[serde(default)]
     failure_mode: Option<String>,
+    #[serde(default)]
+    template_id: Option<String>,
+    #[serde(default)]
+    template_version: Option<String>,
+    #[serde(default)]
+    resume_key: Option<String>,
+    #[serde(default)]
+    resume_reuse_mode: Option<String>,
+    #[serde(default)]
+    policy_snapshot_hash: Option<String>,
+    #[serde(default)]
+    policy_snapshot: Option<BuildExecutionPolicySnapshot>,
     created_at: String,
     status: BuildExecutionStatus,
     steps: Vec<BuildExecutionStep>,
@@ -364,12 +427,56 @@ struct BuildExecutionStep {
     derived_branch: String,
     #[serde(default)]
     policy: Option<BuildExecutionStepPolicy>,
-    materialize_job_id: Option<String>,
-    approve_job_id: Option<String>,
-    review_job_id: Option<String>,
-    merge_job_id: Option<String>,
+    #[serde(default)]
+    node_job_ids: BTreeMap<String, String>,
+    #[serde(default)]
+    terminal_node_ids: Vec<String>,
+    #[serde(default, rename = "materialize_job_id", skip_serializing)]
+    legacy_materialize_job_id: Option<String>,
+    #[serde(default, rename = "approve_job_id", skip_serializing)]
+    legacy_approve_job_id: Option<String>,
+    #[serde(default, rename = "review_job_id", skip_serializing)]
+    legacy_review_job_id: Option<String>,
+    #[serde(default, rename = "merge_job_id", skip_serializing)]
+    legacy_merge_job_id: Option<String>,
     status: BuildExecutionStatus,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct BuildExecutionPolicySnapshot {
+    template_id: String,
+    template_version: String,
+    #[serde(default = "default_resume_key")]
+    resume_key: String,
+    #[serde(default = "default_resume_reuse_mode")]
+    resume_reuse_mode: String,
+    stage_barrier: String,
+    failure_mode: String,
+    artifact_contracts: Vec<String>,
+    steps: Vec<BuildExecutionPolicyStepSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct BuildExecutionPolicyStepSnapshot {
+    step_key: String,
+    #[serde(default)]
+    policy_snapshot_hash: String,
+    node_ids: Vec<String>,
+    dependencies: Vec<String>,
+    pipeline: String,
+    target_branch: String,
+    review_mode: String,
+    skip_checks: bool,
+    keep_branch: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BuildExecutionResumePolicy {
+    key: String,
+    reuse_mode: WorkflowResumeReuseMode,
+}
+
+type StepNodeSchedule = crate::workflow_templates::WorkflowTemplateNodeSchedule;
 
 impl BuildExecutionStep {
     fn resolved_policy(
@@ -392,11 +499,60 @@ impl BuildExecutionStep {
             })
     }
 
-    fn terminal_job_id(&self, fallback_pipeline: BuildExecutionPipeline) -> Option<&str> {
+    fn all_job_ids(&self) -> Vec<&str> {
+        if !self.node_job_ids.is_empty() {
+            let mut values = self
+                .node_job_ids
+                .values()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            values.sort();
+            values.dedup();
+            return values;
+        }
+
+        [
+            self.legacy_materialize_job_id.as_deref(),
+            self.legacy_approve_job_id.as_deref(),
+            self.legacy_review_job_id.as_deref(),
+            self.legacy_merge_job_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+    }
+
+    fn terminal_job_ids(&self, fallback_pipeline: BuildExecutionPipeline) -> Vec<&str> {
+        if !self.terminal_node_ids.is_empty() {
+            let mut values = self
+                .terminal_node_ids
+                .iter()
+                .filter_map(|node_id| self.node_job_ids.get(node_id))
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            values.sort();
+            values.dedup();
+            if !values.is_empty() {
+                return values;
+            }
+        }
+
         match self.resolved_policy(fallback_pipeline).pipeline {
-            BuildExecutionPipeline::Approve => self.approve_job_id.as_deref(),
-            BuildExecutionPipeline::ApproveReview => self.review_job_id.as_deref(),
-            BuildExecutionPipeline::ApproveReviewMerge => self.merge_job_id.as_deref(),
+            BuildExecutionPipeline::Approve => self
+                .legacy_approve_job_id
+                .as_deref()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            BuildExecutionPipeline::ApproveReview => self
+                .legacy_review_job_id
+                .as_deref()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            BuildExecutionPipeline::ApproveReviewMerge => self
+                .legacy_merge_job_id
+                .as_deref()
+                .into_iter()
+                .collect::<Vec<_>>(),
         }
     }
 }
@@ -405,7 +561,6 @@ impl BuildExecutionStep {
 struct BuildSession {
     build_id: String,
     build_branch: String,
-    execution_rel: PathBuf,
     manifest: BuildManifest,
 }
 
@@ -419,7 +574,7 @@ pub(crate) async fn run_build(
     require_agent_backend(
         agent,
         config::PromptKind::ImplementationPlan,
-        "vizier build requires an agent-capable selector; update [agents.draft] or pass --agent codex|gemini",
+        "vizier build requires an agent-capable selector; update [agents.commands.build_execute] (or legacy [agents.draft]) or pass --agent codex|gemini",
     )?;
 
     let build_path = std::fs::canonicalize(&build_file)
@@ -838,6 +993,28 @@ pub(crate) struct BuildExecuteArgs<'a> {
     pub requested_after: &'a [String],
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowNodeArgs {
+    pub scope: Option<String>,
+    pub build_id: Option<String>,
+    pub step_key: Option<String>,
+    pub node_id: String,
+    pub slug: Option<String>,
+    pub branch: Option<String>,
+    pub target: Option<String>,
+    pub node_json: String,
+}
+
+pub(crate) struct BuildTemplateNodeArgs {
+    pub build_id: String,
+    pub step_key: String,
+    pub node_id: String,
+    pub slug: String,
+    pub branch: String,
+    pub target: String,
+    pub node_json: String,
+}
+
 pub(crate) async fn run_build_execute(
     args: BuildExecuteArgs<'_>,
     project_root: &Path,
@@ -915,7 +1092,18 @@ pub(crate) async fn run_build_execute(
         })
         .unwrap_or(BuildExecutionPipeline::Approve);
 
-    let existing_state = load_execution_state(&repo_root, &session)?;
+    let build_template_ref =
+        resolve_template_ref(&config::get_config(), TemplateScope::BuildExecute);
+    let gate_config =
+        BuildExecuteGateConfig::from_merge_config(&config::get_config().merge.cicd_gate);
+    let resume_policy = resolve_build_execute_resume_policy(
+        &session,
+        &resolved_policies,
+        &build_template_ref,
+        &gate_config,
+    )?;
+    let execution_rel = execution_rel_path_for_resume_key(&build_id, &resume_policy.key);
+    let existing_state = load_execution_state(&repo_root, &session, &execution_rel)?;
     if resume && existing_state.is_none() {
         return Err(format!(
             "build execution state not found for {}; run without --resume first",
@@ -936,6 +1124,8 @@ pub(crate) async fn run_build_execute(
         &session,
         &resolved_policies,
         &repo_root,
+        &build_template_ref,
+        &resume_policy,
         Utc::now().to_rfc3339(),
     )?;
 
@@ -947,13 +1137,22 @@ pub(crate) async fn run_build_execute(
         .enumerate()
         .map(|(idx, step)| (step.step_key.clone(), idx))
         .collect::<BTreeMap<_, _>>();
-    let mut completion_artifacts: BTreeMap<String, jobs::JobArtifact> = BTreeMap::new();
+    let mut completion_artifacts: BTreeMap<String, Vec<jobs::JobArtifact>> = BTreeMap::new();
     let mut queued_job_ids = Vec::new();
     let mut resumed_job_ids = Vec::new();
     let mut applied_external_after = false;
     let config_snapshot = background_config_snapshot(&config::get_config());
     let patch_session = is_patch_session(&session, &repo_root);
     let patch_total = execution.steps.len();
+    let workflow_template_id = execution
+        .template_id
+        .clone()
+        .unwrap_or_else(|| build_template_ref.id.clone());
+    let workflow_template_version = execution
+        .template_version
+        .clone()
+        .unwrap_or_else(|| build_template_ref.version.clone());
+    let workflow_policy_snapshot_hash = execution.policy_snapshot_hash.clone();
 
     for step_key in step_order {
         let Some(step_idx) = step_index.get(&step_key).copied() else {
@@ -977,423 +1176,136 @@ pub(crate) async fn run_build_execute(
             &repo_root,
         );
 
-        let plan_doc_artifact = jobs::JobArtifact::PlanDoc {
-            slug: step.derived_slug.clone(),
-            branch: step.derived_branch.clone(),
-        };
-        let plan_branch_artifact = jobs::JobArtifact::PlanBranch {
-            slug: step.derived_slug.clone(),
-            branch: step.derived_branch.clone(),
-        };
-
         let mut policy_dependencies = Vec::new();
         for dependency in &policy.dependencies {
-            let Some(artifact) = completion_artifacts.get(dependency) else {
+            let Some(artifacts) = completion_artifacts.get(dependency) else {
                 return Err(format!(
                     "build step {} depends on {} before that step has a completion artifact",
                     step.step_key, dependency
                 )
                 .into());
             };
-            policy_dependencies.push(artifact.clone());
+            policy_dependencies.extend(artifacts.iter().cloned());
         }
 
-        let materialize_schedule = jobs::JobSchedule {
-            after: Vec::new(),
-            dependencies: policy_dependencies
-                .iter()
-                .cloned()
-                .map(|artifact| jobs::JobDependency { artifact })
-                .collect(),
-            locks: vec![
-                jobs::JobLock {
-                    key: format!("branch:{}", step.derived_branch),
-                    mode: jobs::LockMode::Exclusive,
-                },
-                jobs::JobLock {
-                    key: format!("temp_worktree:build-materialize-{}", step.step_key),
-                    mode: jobs::LockMode::Exclusive,
-                },
-            ],
-            artifacts: Vec::new(),
-            pinned_head: None,
-            approval: None,
-            wait_reason: None,
-            waited_on: Vec::new(),
-        };
-        let materialize_args = vec![
-            "build".to_string(),
-            "__materialize".to_string(),
-            build_id.clone(),
-            "--step".to_string(),
-            step.step_key.clone(),
-            "--slug".to_string(),
-            step.derived_slug.clone(),
-            "--branch".to_string(),
-            step.derived_branch.clone(),
-            "--target".to_string(),
-            policy.target_branch.clone(),
-        ];
-        let materialize_after: &[String] = if !applied_external_after
-            && !requested_after.is_empty()
-            && policy.dependencies.is_empty()
-        {
-            requested_after
-        } else {
-            &[]
-        };
-        let materialize_job = ensure_phase_job(
-            &repo_root,
-            &jobs_root,
-            &mut step.materialize_job_id,
-            &config_snapshot,
-            EnsurePhaseJobRequest {
-                command_args: &materialize_args,
-                metadata: jobs::JobMetadata {
-                    scope: Some("build_materialize".to_string()),
-                    plan: Some(step.derived_slug.clone()),
-                    branch: Some(step.derived_branch.clone()),
-                    target: Some(policy.target_branch.clone()),
-                    build_pipeline: Some(policy.pipeline.label().to_string()),
-                    build_target: Some(policy.target_branch.clone()),
-                    build_review_mode: Some(policy.review_mode.label().to_string()),
-                    build_skip_checks: Some(policy.skip_checks),
-                    build_keep_branch: Some(policy.keep_branch),
-                    build_dependencies: if policy.dependencies.is_empty() {
-                        None
-                    } else {
-                        Some(policy.dependencies.clone())
-                    },
-                    patch_file: patch_step.as_ref().map(|value| value.file.clone()),
-                    patch_index: patch_step.as_ref().map(|value| value.index),
-                    patch_total: patch_step.as_ref().map(|value| value.total),
-                    ..Default::default()
-                },
-                schedule: materialize_schedule,
-                requested_after: materialize_after,
-            },
+        let step_template = resolve_build_execute_template(
+            &build_template_ref,
+            &step.derived_slug,
+            &step.derived_branch,
+            &policy.target_branch,
+            policy.pipeline.includes_review(),
+            policy.pipeline.includes_merge(),
+            &gate_config,
         )?;
-        if !materialize_after.is_empty() {
+        let node_schedule = workflow_step_node_schedule(&step_template)?;
+        step.terminal_node_ids = node_schedule.terminal_nodes.clone();
+        hydrate_node_job_ids_from_legacy_fields(step, &step_template);
+
+        let apply_external_after_to_roots = !applied_external_after
+            && !requested_after.is_empty()
+            && policy.dependencies.is_empty();
+        let mut resolved_after = BTreeMap::new();
+
+        for node_id in &node_schedule.order {
+            let node = step_template
+                .nodes
+                .iter()
+                .find(|entry| entry.id == *node_id)
+                .ok_or_else(|| format!("workflow template missing node {node_id}"))?;
+            let mut existing_job_id = step.node_job_ids.get(&node.id).cloned();
+            let compiled = compile_template_node(&step_template, &node.id, &resolved_after, None)?;
+            let mut schedule = compiled.schedule;
+            if node.after.is_empty() {
+                schedule.dependencies.extend(
+                    policy_dependencies
+                        .iter()
+                        .cloned()
+                        .map(|artifact| jobs::JobDependency { artifact }),
+                );
+            }
+            let command_args = build_template_node_command(&build_id, step, &policy, node)?;
+            let requested_after_for_node: &[String] =
+                if apply_external_after_to_roots && node.after.is_empty() {
+                    requested_after
+                } else {
+                    &[]
+                };
+            let node_job = ensure_phase_job(
+                &repo_root,
+                &jobs_root,
+                &mut existing_job_id,
+                &config_snapshot,
+                EnsurePhaseJobRequest {
+                    command_args: &command_args,
+                    metadata: jobs::JobMetadata {
+                        command_alias: template_node_command_alias(node),
+                        scope: Some(template_node_scope(node)),
+                        plan: Some(step.derived_slug.clone()),
+                        branch: Some(step.derived_branch.clone()),
+                        target: Some(policy.target_branch.clone()),
+                        workflow_template_selector: Some(format!(
+                            "{}@{}",
+                            workflow_template_id, workflow_template_version
+                        )),
+                        workflow_template_id: Some(workflow_template_id.clone()),
+                        workflow_template_version: Some(workflow_template_version.clone()),
+                        workflow_node_id: Some(compiled.node_id.clone()),
+                        workflow_capability_id: compiled.capability_id.clone(),
+                        workflow_policy_snapshot_hash: workflow_policy_snapshot_hash.clone(),
+                        workflow_gates: if compiled.gate_labels.is_empty() {
+                            None
+                        } else {
+                            Some(compiled.gate_labels.clone())
+                        },
+                        build_pipeline: Some(policy.pipeline.label().to_string()),
+                        build_target: Some(policy.target_branch.clone()),
+                        build_review_mode: Some(policy.review_mode.label().to_string()),
+                        build_skip_checks: Some(policy.skip_checks),
+                        build_keep_branch: Some(policy.keep_branch),
+                        build_dependencies: if policy.dependencies.is_empty() {
+                            None
+                        } else {
+                            Some(policy.dependencies.clone())
+                        },
+                        patch_file: patch_step.as_ref().map(|value| value.file.clone()),
+                        patch_index: patch_step.as_ref().map(|value| value.index),
+                        patch_total: patch_step.as_ref().map(|value| value.total),
+                        ..Default::default()
+                    },
+                    schedule,
+                    requested_after: requested_after_for_node,
+                },
+            )?;
+            let job_id = existing_job_id.unwrap_or_else(|| node_job.job_id.clone());
+            step.node_job_ids.insert(node.id.clone(), job_id.clone());
+            resolved_after.insert(node.id.clone(), job_id.clone());
+            if node_job.enqueued {
+                queued_job_ids.push(job_id.clone());
+            } else {
+                resumed_job_ids.push(job_id.clone());
+            }
+            update_template_node_artifacts(&jobs_root, &job_id, node, step)?;
+        }
+
+        if apply_external_after_to_roots {
             applied_external_after = true;
         }
-        if materialize_job.enqueued {
-            queued_job_ids.push(materialize_job.job_id.clone());
-        } else {
-            resumed_job_ids.push(materialize_job.job_id.clone());
-        }
-        let materialize_completion = phase_completion_artifact(&materialize_job.job_id);
 
-        let materialize_artifacts = vec![
-            plan_branch_artifact.clone(),
-            plan_doc_artifact.clone(),
-            materialize_completion.clone(),
-        ];
-        jobs::update_job_record(&jobs_root, &materialize_job.job_id, |record| {
-            if let Some(schedule) = record.schedule.as_mut() {
-                schedule.artifacts = materialize_artifacts.clone();
-            } else {
-                record.schedule = Some(jobs::JobSchedule {
-                    after: Vec::new(),
-                    dependencies: Vec::new(),
-                    locks: Vec::new(),
-                    artifacts: materialize_artifacts.clone(),
-                    pinned_head: None,
-                    approval: None,
-                    wait_reason: None,
-                    waited_on: Vec::new(),
-                });
-            }
-        })?;
-
-        let approve_schedule = jobs::JobSchedule {
-            after: Vec::new(),
-            dependencies: vec![
-                jobs::JobDependency {
-                    artifact: materialize_completion.clone(),
-                },
-                jobs::JobDependency {
-                    artifact: plan_doc_artifact.clone(),
-                },
-            ],
-            locks: vec![
-                jobs::JobLock {
-                    key: format!("branch:{}", step.derived_branch),
-                    mode: jobs::LockMode::Exclusive,
-                },
-                jobs::JobLock {
-                    key: format!("temp_worktree:build-approve-{}", step.step_key),
-                    mode: jobs::LockMode::Exclusive,
-                },
-            ],
-            artifacts: vec![jobs::JobArtifact::PlanCommits {
-                slug: step.derived_slug.clone(),
-                branch: step.derived_branch.clone(),
-            }],
-            pinned_head: None,
-            approval: None,
-            wait_reason: None,
-            waited_on: Vec::new(),
-        };
-        let approve_args = vec![
-            "approve".to_string(),
-            step.derived_slug.clone(),
-            "--branch".to_string(),
-            step.derived_branch.clone(),
-            "--target".to_string(),
-            policy.target_branch.clone(),
-            "--yes".to_string(),
-        ];
-        let approve_job = ensure_phase_job(
-            &repo_root,
-            &jobs_root,
-            &mut step.approve_job_id,
-            &config_snapshot,
-            EnsurePhaseJobRequest {
-                command_args: &approve_args,
-                metadata: jobs::JobMetadata {
-                    scope: Some("approve".to_string()),
-                    plan: Some(step.derived_slug.clone()),
-                    branch: Some(step.derived_branch.clone()),
-                    target: Some(policy.target_branch.clone()),
-                    build_pipeline: Some(policy.pipeline.label().to_string()),
-                    build_target: Some(policy.target_branch.clone()),
-                    build_review_mode: Some(policy.review_mode.label().to_string()),
-                    build_skip_checks: Some(policy.skip_checks),
-                    build_keep_branch: Some(policy.keep_branch),
-                    build_dependencies: if policy.dependencies.is_empty() {
-                        None
-                    } else {
-                        Some(policy.dependencies.clone())
-                    },
-                    patch_file: patch_step.as_ref().map(|value| value.file.clone()),
-                    patch_index: patch_step.as_ref().map(|value| value.index),
-                    patch_total: patch_step.as_ref().map(|value| value.total),
-                    ..Default::default()
-                },
-                schedule: approve_schedule,
-                requested_after: &[],
-            },
-        )?;
-        if approve_job.enqueued {
-            queued_job_ids.push(approve_job.job_id.clone());
-        } else {
-            resumed_job_ids.push(approve_job.job_id.clone());
-        }
-        let approve_completion = phase_completion_artifact(&approve_job.job_id);
-        jobs::update_job_record(&jobs_root, &approve_job.job_id, |record| {
-            if let Some(schedule) = record.schedule.as_mut()
-                && !schedule.artifacts.iter().any(|artifact| {
-                    matches!(artifact, jobs::JobArtifact::CommandPatch { job_id } if job_id == &approve_job.job_id)
-                })
-            {
-                schedule.artifacts.push(approve_completion.clone());
-            }
-        })?;
-
-        let mut terminal_artifact = approve_completion.clone();
-
-        if policy.pipeline.includes_review() {
-            let review_schedule = jobs::JobSchedule {
-                after: Vec::new(),
-                dependencies: vec![
-                    jobs::JobDependency {
-                        artifact: approve_completion.clone(),
-                    },
-                    jobs::JobDependency {
-                        artifact: plan_branch_artifact.clone(),
-                    },
-                    jobs::JobDependency {
-                        artifact: plan_doc_artifact.clone(),
-                    },
-                ],
-                locks: vec![
-                    jobs::JobLock {
-                        key: format!("branch:{}", step.derived_branch),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                    jobs::JobLock {
-                        key: format!("temp_worktree:build-review-{}", step.step_key),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                ],
-                artifacts: vec![jobs::JobArtifact::PlanCommits {
-                    slug: step.derived_slug.clone(),
-                    branch: step.derived_branch.clone(),
-                }],
-                pinned_head: None,
-                approval: None,
-                wait_reason: None,
-                waited_on: Vec::new(),
-            };
-            let mut review_args = vec![
-                "review".to_string(),
-                step.derived_slug.clone(),
-                "--branch".to_string(),
-                step.derived_branch.clone(),
-                "--target".to_string(),
-                policy.target_branch.clone(),
-            ];
-            match policy.review_mode {
-                BuildExecutionReviewMode::ApplyFixes => review_args.push("--yes".to_string()),
-                BuildExecutionReviewMode::ReviewOnly => {
-                    review_args.push("--review-only".to_string())
-                }
-                BuildExecutionReviewMode::ReviewFile => {
-                    review_args.push("--review-file".to_string())
-                }
-            }
-            if policy.skip_checks {
-                review_args.push("--skip-checks".to_string());
-            }
-            let review_job = ensure_phase_job(
-                &repo_root,
-                &jobs_root,
-                &mut step.review_job_id,
-                &config_snapshot,
-                EnsurePhaseJobRequest {
-                    command_args: &review_args,
-                    metadata: jobs::JobMetadata {
-                        scope: Some("review".to_string()),
-                        plan: Some(step.derived_slug.clone()),
-                        branch: Some(step.derived_branch.clone()),
-                        target: Some(policy.target_branch.clone()),
-                        build_pipeline: Some(policy.pipeline.label().to_string()),
-                        build_target: Some(policy.target_branch.clone()),
-                        build_review_mode: Some(policy.review_mode.label().to_string()),
-                        build_skip_checks: Some(policy.skip_checks),
-                        build_keep_branch: Some(policy.keep_branch),
-                        build_dependencies: if policy.dependencies.is_empty() {
-                            None
-                        } else {
-                            Some(policy.dependencies.clone())
-                        },
-                        patch_file: patch_step.as_ref().map(|value| value.file.clone()),
-                        patch_index: patch_step.as_ref().map(|value| value.index),
-                        patch_total: patch_step.as_ref().map(|value| value.total),
-                        ..Default::default()
-                    },
-                    schedule: review_schedule,
-                    requested_after: &[],
-                },
-            )?;
-            if review_job.enqueued {
-                queued_job_ids.push(review_job.job_id.clone());
-            } else {
-                resumed_job_ids.push(review_job.job_id.clone());
-            }
-            let review_completion = phase_completion_artifact(&review_job.job_id);
-            jobs::update_job_record(&jobs_root, &review_job.job_id, |record| {
-                if let Some(schedule) = record.schedule.as_mut()
-                    && !schedule.artifacts.iter().any(|artifact| {
-                        matches!(artifact, jobs::JobArtifact::CommandPatch { job_id } if job_id == &review_job.job_id)
-                    })
-                {
-                    schedule.artifacts.push(review_completion.clone());
-                }
-            })?;
-            terminal_artifact = review_completion.clone();
+        let terminal_artifacts = step
+            .terminal_node_ids
+            .iter()
+            .filter_map(|node_id| step.node_job_ids.get(node_id))
+            .map(|job_id| phase_completion_artifact(job_id))
+            .collect::<Vec<_>>();
+        if terminal_artifacts.is_empty() {
+            return Err(format!(
+                "workflow template {}@{} has no terminal node jobs for build step {}",
+                step_template.id, step_template.version, step.step_key
+            )
+            .into());
         }
 
-        if policy.pipeline.includes_merge() {
-            let review_id = step
-                .review_job_id
-                .as_deref()
-                .ok_or_else(|| format!("missing review job id for step {}", step.step_key))?;
-            let merge_dependencies = vec![
-                jobs::JobDependency {
-                    artifact: phase_completion_artifact(review_id),
-                },
-                jobs::JobDependency {
-                    artifact: plan_branch_artifact.clone(),
-                },
-            ];
-            let merge_schedule = jobs::JobSchedule {
-                after: Vec::new(),
-                dependencies: merge_dependencies,
-                locks: vec![
-                    jobs::JobLock {
-                        key: format!("branch:{}", policy.target_branch),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                    jobs::JobLock {
-                        key: format!("branch:{}", step.derived_branch),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                    jobs::JobLock {
-                        key: format!("merge_sentinel:{}", step.derived_slug),
-                        mode: jobs::LockMode::Exclusive,
-                    },
-                ],
-                artifacts: vec![jobs::JobArtifact::TargetBranch {
-                    name: policy.target_branch.clone(),
-                }],
-                pinned_head: None,
-                approval: None,
-                wait_reason: None,
-                waited_on: Vec::new(),
-            };
-            let mut merge_args = vec![
-                "merge".to_string(),
-                step.derived_slug.clone(),
-                "--branch".to_string(),
-                step.derived_branch.clone(),
-                "--target".to_string(),
-                policy.target_branch.clone(),
-                "--yes".to_string(),
-            ];
-            if policy.keep_branch {
-                merge_args.push("--keep-branch".to_string());
-            }
-            let merge_job = ensure_phase_job(
-                &repo_root,
-                &jobs_root,
-                &mut step.merge_job_id,
-                &config_snapshot,
-                EnsurePhaseJobRequest {
-                    command_args: &merge_args,
-                    metadata: jobs::JobMetadata {
-                        scope: Some("merge".to_string()),
-                        plan: Some(step.derived_slug.clone()),
-                        branch: Some(step.derived_branch.clone()),
-                        target: Some(policy.target_branch.clone()),
-                        build_pipeline: Some(policy.pipeline.label().to_string()),
-                        build_target: Some(policy.target_branch.clone()),
-                        build_review_mode: Some(policy.review_mode.label().to_string()),
-                        build_skip_checks: Some(policy.skip_checks),
-                        build_keep_branch: Some(policy.keep_branch),
-                        build_dependencies: if policy.dependencies.is_empty() {
-                            None
-                        } else {
-                            Some(policy.dependencies.clone())
-                        },
-                        patch_file: patch_step.as_ref().map(|value| value.file.clone()),
-                        patch_index: patch_step.as_ref().map(|value| value.index),
-                        patch_total: patch_step.as_ref().map(|value| value.total),
-                        ..Default::default()
-                    },
-                    schedule: merge_schedule,
-                    requested_after: &[],
-                },
-            )?;
-            if merge_job.enqueued {
-                queued_job_ids.push(merge_job.job_id.clone());
-            } else {
-                resumed_job_ids.push(merge_job.job_id.clone());
-            }
-            let merge_completion = phase_completion_artifact(&merge_job.job_id);
-            jobs::update_job_record(&jobs_root, &merge_job.job_id, |record| {
-                if let Some(schedule) = record.schedule.as_mut()
-                    && !schedule.artifacts.iter().any(|artifact| {
-                        matches!(artifact, jobs::JobArtifact::CommandPatch { job_id } if job_id == &merge_job.job_id)
-                    })
-                {
-                    schedule.artifacts.push(merge_completion.clone());
-                }
-            })?;
-            terminal_artifact = merge_completion;
-        }
-
-        completion_artifacts.insert(step.step_key.clone(), terminal_artifact);
+        completion_artifacts.insert(step.step_key.clone(), terminal_artifacts);
     }
 
     let binary = std::env::current_exe()?;
@@ -1404,7 +1316,7 @@ pub(crate) async fn run_build_execute(
     for step in &mut execution.steps {
         step.status = derive_step_status(step, fallback_pipeline, &jobs_root);
     }
-    persist_execution_state(&repo_root, &session, &execution)?;
+    persist_execution_state(&repo_root, &session, &execution_rel, &execution)?;
 
     let mut rows = Vec::new();
     rows.push((
@@ -1437,9 +1349,24 @@ pub(crate) async fn run_build_execute(
         "Failure mode".to_string(),
         resolved_policies.failure_mode.as_str().to_string(),
     ));
+    rows.push(("Resume key".to_string(), resume_policy.key.clone()));
+    rows.push((
+        "Reuse mode".to_string(),
+        format!("{:?}", resume_policy.reuse_mode).to_ascii_lowercase(),
+    ));
+    if let Some(template_id) = execution.template_id.as_ref() {
+        let template_version = execution.template_version.as_deref().unwrap_or("v1");
+        rows.push((
+            "Workflow template".to_string(),
+            format!("{template_id}@{template_version}"),
+        ));
+    }
+    if let Some(hash) = execution.policy_snapshot_hash.as_ref() {
+        rows.push(("Policy snapshot".to_string(), hash.clone()));
+    }
     rows.push((
         "Execution manifest".to_string(),
-        to_repo_string(&session.execution_rel),
+        to_repo_string(&execution_rel),
     ));
     rows.push(("Status".to_string(), execution.status.label().to_string()));
     if !queued_job_ids.is_empty() {
@@ -1501,6 +1428,116 @@ pub(crate) async fn run_build_execute(
             }
         }
     }
+
+    Ok(())
+}
+
+pub(crate) async fn run_build_template_node(
+    args: BuildTemplateNodeArgs,
+    project_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let BuildTemplateNodeArgs {
+        build_id,
+        step_key,
+        node_id,
+        slug,
+        branch,
+        target,
+        node_json,
+    } = args;
+
+    let repo_root = std::fs::canonicalize(project_root)?;
+    let session = load_build_session(&repo_root, &build_id)?;
+    if !session
+        .manifest
+        .steps
+        .iter()
+        .any(|entry| entry.step_key == step_key)
+    {
+        return Err(format!(
+            "build session {} missing step {} in manifest",
+            build_id, step_key
+        )
+        .into());
+    }
+
+    run_workflow_node(
+        WorkflowNodeArgs {
+            scope: Some("build_execute".to_string()),
+            build_id: Some(build_id),
+            step_key: Some(step_key),
+            node_id,
+            slug: Some(slug),
+            branch: Some(branch),
+            target: Some(target),
+            node_json,
+        },
+        project_root,
+    )
+    .await
+}
+
+pub(crate) async fn run_workflow_node(
+    args: WorkflowNodeArgs,
+    project_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let WorkflowNodeArgs {
+        scope,
+        build_id,
+        step_key,
+        node_id,
+        slug,
+        branch,
+        target,
+        node_json,
+    } = args;
+
+    let repo_root = std::fs::canonicalize(project_root)?;
+    let _repo_guard = WorkdirGuard::enter(&repo_root)?;
+
+    let node: WorkflowNode = serde_json::from_str(&node_json)
+        .map_err(|err| format!("parse --node-json for workflow node {}: {}", node_id, err))?;
+    if node.id != node_id {
+        return Err(format!(
+            "workflow node payload id mismatch: expected {}, found {}",
+            node_id, node.id
+        )
+        .into());
+    }
+
+    let context = WorkflowNodeRuntimeContext {
+        scope,
+        build_id,
+        step_key,
+        slug,
+        branch,
+        target,
+    };
+    execute_generic_template_node(&node, &context, &repo_root).await?;
+
+    let mut rows = vec![
+        ("Outcome".to_string(), "Workflow node executed".to_string()),
+        ("Node".to_string(), node_id),
+    ];
+    if let Some(scope) = context.scope.as_ref() {
+        rows.push(("Scope".to_string(), scope.clone()));
+    }
+    if let Some(build_id) = context.build_id.as_ref() {
+        rows.push(("Build".to_string(), build_id.clone()));
+    }
+    if let Some(step_key) = context.step_key.as_ref() {
+        rows.push(("Step".to_string(), step_key.clone()));
+    }
+    if let Some(slug) = context.slug.as_ref() {
+        rows.push(("Plan".to_string(), slug.clone()));
+    }
+    if let Some(branch) = context.branch.as_ref() {
+        rows.push(("Branch".to_string(), branch.clone()));
+    }
+    if let Some(target) = context.target.as_ref() {
+        rows.push(("Target".to_string(), target.clone()));
+    }
+    println!("{}", format_block(rows));
 
     Ok(())
 }
@@ -1637,7 +1674,6 @@ fn load_build_session(
 
     let session_rel = Path::new(BUILD_PLAN_ROOT).join(build_id);
     let manifest_rel = session_rel.join("manifest.json");
-    let execution_rel = session_rel.join(BUILD_EXECUTION_FILE);
     let manifest_text = read_branch_file(&repo, &build_branch, &manifest_rel)?;
     let manifest: BuildManifest = serde_json::from_str(&manifest_text).map_err(|err| {
         format!(
@@ -1651,7 +1687,6 @@ fn load_build_session(
     Ok(BuildSession {
         build_id: build_id.to_string(),
         build_branch,
-        execution_rel,
         manifest,
     })
 }
@@ -1659,9 +1694,10 @@ fn load_build_session(
 fn load_execution_state(
     repo_root: &Path,
     session: &BuildSession,
+    execution_rel: &Path,
 ) -> Result<Option<BuildExecutionState>, Box<dyn std::error::Error>> {
     let repo = Repository::discover(repo_root)?;
-    let maybe_text = try_read_branch_file(&repo, &session.build_branch, &session.execution_rel)?;
+    let maybe_text = try_read_branch_file(&repo, &session.build_branch, execution_rel)?;
     let Some(text) = maybe_text else {
         return Ok(None);
     };
@@ -1669,7 +1705,7 @@ fn load_execution_state(
     let state: BuildExecutionState = serde_json::from_str(&text).map_err(|err| {
         format!(
             "unable to parse execution state {} on {}: {}",
-            session.execution_rel.display(),
+            execution_rel.display(),
             session.build_branch,
             err
         )
@@ -2041,13 +2077,336 @@ fn topological_step_order(
     Ok(order)
 }
 
+fn build_execution_policy_snapshot(
+    template_ref: &WorkflowTemplateRef,
+    session: &BuildSession,
+    resolved_policies: &ResolvedBuildPolicies,
+) -> Result<BuildExecutionPolicySnapshot, Box<dyn std::error::Error>> {
+    let gate_config =
+        BuildExecuteGateConfig::from_merge_config(&config::get_config().merge.cicd_gate);
+    let mut steps = Vec::with_capacity(session.manifest.steps.len());
+    let mut artifact_contracts = BTreeSet::new();
+    let mut resume_key = None::<String>;
+    let mut resume_reuse_mode = None::<WorkflowResumeReuseMode>;
+    for manifest_step in &session.manifest.steps {
+        let policy = resolved_policies
+            .steps
+            .get(&manifest_step.step_key)
+            .ok_or_else(|| {
+                format!(
+                    "resolved build policy missing step {}",
+                    manifest_step.step_key
+                )
+            })?
+            .clone();
+
+        let snapshot_slug = manifest_step_slug(manifest_step);
+        let snapshot_branch = plan::default_branch_for_slug(&snapshot_slug);
+        let step_template = resolve_build_execute_template(
+            template_ref,
+            &snapshot_slug,
+            &snapshot_branch,
+            &policy.target_branch,
+            policy.pipeline.includes_review(),
+            policy.pipeline.includes_merge(),
+            &gate_config,
+        )?;
+        let step_resume_key = {
+            let raw = step_template.policy.resume.key.trim();
+            if raw.is_empty() {
+                "default".to_string()
+            } else {
+                raw.to_string()
+            }
+        };
+        if let Some(existing_key) = resume_key.as_ref()
+            && existing_key != &step_resume_key
+        {
+            return Err(format!(
+                "build execute template renders inconsistent resume.key values across steps ({} vs {})",
+                existing_key, step_resume_key
+            )
+            .into());
+        }
+        if let Some(existing_mode) = resume_reuse_mode
+            && existing_mode != step_template.policy.resume.reuse_mode
+        {
+            return Err(
+                "build execute template renders inconsistent resume.reuse_mode values across steps"
+                    .into(),
+            );
+        }
+        resume_key = Some(step_resume_key);
+        resume_reuse_mode = Some(step_template.policy.resume.reuse_mode);
+
+        let policy_snapshot_hash =
+            step_template
+                .policy_snapshot()
+                .stable_hash_hex()
+                .map_err(|err| {
+                    format!(
+                        "serialize workflow policy snapshot for build step {}: {}",
+                        manifest_step.step_key, err
+                    )
+                })?;
+        for contract in &step_template.artifact_contracts {
+            artifact_contracts.insert(format!("{}:{}", contract.id, contract.version));
+        }
+        let mut node_ids = step_template
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        node_ids.sort();
+        node_ids.dedup();
+
+        steps.push(BuildExecutionPolicyStepSnapshot {
+            step_key: manifest_step.step_key.clone(),
+            policy_snapshot_hash,
+            node_ids,
+            dependencies: normalized_step_dependencies(&policy.dependencies),
+            pipeline: policy.pipeline.label().to_string(),
+            target_branch: policy.target_branch.clone(),
+            review_mode: policy.review_mode.label().to_string(),
+            skip_checks: policy.skip_checks,
+            keep_branch: policy.keep_branch,
+        });
+    }
+    steps.sort_by(|left, right| left.step_key.cmp(&right.step_key));
+
+    Ok(BuildExecutionPolicySnapshot {
+        template_id: template_ref.id.clone(),
+        template_version: template_ref.version.clone(),
+        resume_key: resume_key.unwrap_or_else(|| "default".to_string()),
+        resume_reuse_mode: format!(
+            "{:?}",
+            resume_reuse_mode.unwrap_or(WorkflowResumeReuseMode::Strict)
+        )
+        .to_ascii_lowercase(),
+        stage_barrier: resolved_policies.stage_barrier.as_str().to_string(),
+        failure_mode: resolved_policies.failure_mode.as_str().to_string(),
+        artifact_contracts: artifact_contracts.into_iter().collect(),
+        steps,
+    })
+}
+
+fn hash_build_execution_policy_snapshot(
+    snapshot: &BuildExecutionPolicySnapshot,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let bytes = serde_json::to_vec(snapshot)?;
+    let digest = Sha256::digest(bytes);
+    Ok(format!("{digest:x}"))
+}
+
+fn normalized_step_dependencies(dependencies: &[String]) -> Vec<String> {
+    let mut values = dependencies
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn classify_policy_snapshot_drift(
+    existing: &BuildExecutionPolicySnapshot,
+    requested: &BuildExecutionPolicySnapshot,
+) -> Option<(&'static str, String)> {
+    if existing.template_id != requested.template_id
+        || existing.template_version != requested.template_version
+    {
+        return Some((
+            "node",
+            format!(
+                "template changed from {}@{} to {}@{}",
+                existing.template_id,
+                existing.template_version,
+                requested.template_id,
+                requested.template_version
+            ),
+        ));
+    }
+
+    if existing.resume_key != requested.resume_key
+        || existing.resume_reuse_mode != requested.resume_reuse_mode
+    {
+        return Some((
+            "policy",
+            format!(
+                "resume policy changed (key {} -> {}, reuse_mode {} -> {})",
+                existing.resume_key,
+                requested.resume_key,
+                existing.resume_reuse_mode,
+                requested.resume_reuse_mode
+            ),
+        ));
+    }
+
+    if existing.stage_barrier != requested.stage_barrier {
+        return Some((
+            "edge",
+            format!(
+                "stage barrier changed ({} -> {})",
+                existing.stage_barrier, requested.stage_barrier
+            ),
+        ));
+    }
+
+    if existing.failure_mode != requested.failure_mode {
+        return Some((
+            "policy",
+            format!(
+                "failure mode changed ({} -> {})",
+                existing.failure_mode, requested.failure_mode
+            ),
+        ));
+    }
+
+    if existing.artifact_contracts != requested.artifact_contracts {
+        return Some((
+            "artifact",
+            format!(
+                "artifact contracts changed (existing={}, requested={})",
+                existing.artifact_contracts.join(","),
+                requested.artifact_contracts.join(",")
+            ),
+        ));
+    }
+
+    let existing_by_key = existing
+        .steps
+        .iter()
+        .map(|step| (step.step_key.clone(), step))
+        .collect::<BTreeMap<_, _>>();
+    let requested_by_key = requested
+        .steps
+        .iter()
+        .map(|step| (step.step_key.clone(), step))
+        .collect::<BTreeMap<_, _>>();
+
+    if existing_by_key.len() != requested_by_key.len() {
+        return Some((
+            "node",
+            format!(
+                "step count changed (existing={}, requested={})",
+                existing_by_key.len(),
+                requested_by_key.len()
+            ),
+        ));
+    }
+
+    for key in existing_by_key.keys() {
+        if !requested_by_key.contains_key(key) {
+            return Some((
+                "node",
+                format!("step {} is missing in requested policy", key),
+            ));
+        }
+    }
+    for key in requested_by_key.keys() {
+        if !existing_by_key.contains_key(key) {
+            return Some(("node", format!("step {} is new in requested policy", key)));
+        }
+    }
+
+    for (key, existing_step) in existing_by_key {
+        let requested_step = requested_by_key
+            .get(&key)
+            .expect("keys already validated for snapshot drift");
+
+        if existing_step.node_ids != requested_step.node_ids {
+            return Some((
+                "node",
+                format!(
+                    "step {} node set changed (existing={}, requested={})",
+                    key,
+                    existing_step.node_ids.join("->"),
+                    requested_step.node_ids.join("->")
+                ),
+            ));
+        }
+
+        if existing_step.dependencies != requested_step.dependencies {
+            return Some((
+                "edge",
+                format!(
+                    "step {} dependencies changed (existing={}, requested={})",
+                    key,
+                    existing_step.dependencies.join(","),
+                    requested_step.dependencies.join(",")
+                ),
+            ));
+        }
+
+        if existing_step.pipeline != requested_step.pipeline
+            || existing_step.target_branch != requested_step.target_branch
+            || existing_step.review_mode != requested_step.review_mode
+            || existing_step.skip_checks != requested_step.skip_checks
+            || existing_step.keep_branch != requested_step.keep_branch
+        {
+            return Some(("policy", format!("step {} execution policy changed", key)));
+        }
+
+        if !existing_step.policy_snapshot_hash.is_empty()
+            && !requested_step.policy_snapshot_hash.is_empty()
+            && existing_step.policy_snapshot_hash != requested_step.policy_snapshot_hash
+        {
+            return Some((
+                "policy",
+                format!(
+                    "step {} workflow policy snapshot changed (existing={}, requested={})",
+                    key, existing_step.policy_snapshot_hash, requested_step.policy_snapshot_hash
+                ),
+            ));
+        }
+    }
+
+    None
+}
+
+fn classify_step_policy_drift(
+    existing: &BuildExecutionStepPolicy,
+    requested: &BuildExecutionStepPolicy,
+    step_key: &str,
+) -> (&'static str, String) {
+    if existing.pipeline != requested.pipeline {
+        return (
+            "node",
+            format!(
+                "step {} pipeline changed ({} -> {})",
+                step_key,
+                existing.pipeline.label(),
+                requested.pipeline.label()
+            ),
+        );
+    }
+
+    if normalized_step_dependencies(&existing.dependencies)
+        != normalized_step_dependencies(&requested.dependencies)
+    {
+        return ("edge", format!("step {} dependencies changed", step_key));
+    }
+
+    (
+        "policy",
+        format!("step {} execution policy changed", step_key),
+    )
+}
+
 fn reconcile_execution_state(
     existing: Option<BuildExecutionState>,
     session: &BuildSession,
     resolved_policies: &ResolvedBuildPolicies,
     repo_root: &Path,
+    template_ref: &WorkflowTemplateRef,
+    resume_policy: &BuildExecutionResumePolicy,
     created_at: String,
 ) -> Result<BuildExecutionState, Box<dyn std::error::Error>> {
+    let requested_snapshot =
+        build_execution_policy_snapshot(template_ref, session, resolved_policies)?;
+    let requested_snapshot_hash = hash_build_execution_policy_snapshot(&requested_snapshot)?;
+
     let mut used_slugs = BTreeSet::new();
     if let Some(state) = existing.as_ref() {
         for step in &state.steps {
@@ -2063,6 +2422,36 @@ fn reconcile_execution_state(
                 session.build_id, state.build_id
             )
             .into());
+        }
+
+        if let Some(existing_snapshot) = state.policy_snapshot.as_ref()
+            && existing_snapshot != &requested_snapshot
+        {
+            let existing_hash = state
+                .policy_snapshot_hash
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            let drift = classify_policy_snapshot_drift(existing_snapshot, &requested_snapshot)
+                .unwrap_or_else(|| {
+                    (
+                        "policy",
+                        "resolved execution policy changed without a classified drift".to_string(),
+                    )
+                });
+            let compatible = matches!(
+                resume_policy.reuse_mode,
+                WorkflowResumeReuseMode::Compatible
+            );
+            let allow_reuse = compatible && drift.0 == "policy";
+            if !allow_reuse {
+                return Err(format!(
+                    "execution policy mismatch ({category} mismatch): {detail} (existing_hash={existing_hash}, requested_hash={requested_hash})",
+                    category = drift.0,
+                    detail = drift.1,
+                    requested_hash = requested_snapshot_hash
+                )
+                .into());
+            }
         }
 
         let mut by_key = BTreeMap::new();
@@ -2086,13 +2475,28 @@ fn reconcile_execution_state(
                 if let Some(previous_policy) = existing_step.policy.as_ref()
                     && previous_policy != &policy
                 {
-                    return Err(format!(
-                        "execution policy mismatch for step {} (existing={}, requested={})",
-                        manifest_step.step_key,
-                        serde_json::to_string(previous_policy)?,
-                        serde_json::to_string(&policy)?
-                    )
-                    .into());
+                    let drift = classify_step_policy_drift(
+                        previous_policy,
+                        &policy,
+                        &manifest_step.step_key,
+                    );
+                    let compatible = matches!(
+                        resume_policy.reuse_mode,
+                        WorkflowResumeReuseMode::Compatible
+                    );
+                    let allow_reuse = compatible && drift.0 == "policy";
+                    if !allow_reuse {
+                        let existing_json = serde_json::to_string(previous_policy)?;
+                        let requested_json = serde_json::to_string(&policy)?;
+                        return Err(format!(
+                            "execution policy mismatch ({category} mismatch): {detail} (existing={}, requested={})",
+                            existing_json,
+                            requested_json,
+                            category = drift.0,
+                            detail = drift.1,
+                        )
+                        .into());
+                    }
                 }
                 existing_step.stage_index = manifest_step.stage_index;
                 existing_step.build_plan_path = manifest_step.output_plan_path.clone();
@@ -2125,6 +2529,12 @@ fn reconcile_execution_state(
             pipeline_override: resolved_policies.cli_pipeline_override,
             stage_barrier: Some(resolved_policies.stage_barrier.as_str().to_string()),
             failure_mode: Some(resolved_policies.failure_mode.as_str().to_string()),
+            template_id: Some(template_ref.id.clone()),
+            template_version: Some(template_ref.version.clone()),
+            resume_key: Some(resume_policy.key.clone()),
+            resume_reuse_mode: Some(format!("{:?}", resume_policy.reuse_mode).to_ascii_lowercase()),
+            policy_snapshot_hash: Some(requested_snapshot_hash.clone()),
+            policy_snapshot: Some(requested_snapshot.clone()),
             created_at: state.created_at,
             status: state.status,
             steps,
@@ -2155,6 +2565,12 @@ fn reconcile_execution_state(
             pipeline_override: resolved_policies.cli_pipeline_override,
             stage_barrier: Some(resolved_policies.stage_barrier.as_str().to_string()),
             failure_mode: Some(resolved_policies.failure_mode.as_str().to_string()),
+            template_id: Some(template_ref.id.clone()),
+            template_version: Some(template_ref.version.clone()),
+            resume_key: Some(resume_policy.key.clone()),
+            resume_reuse_mode: Some(format!("{:?}", resume_policy.reuse_mode).to_ascii_lowercase()),
+            policy_snapshot_hash: Some(requested_snapshot_hash),
+            policy_snapshot: Some(requested_snapshot),
             created_at,
             status: BuildExecutionStatus::Queued,
             steps,
@@ -2185,10 +2601,12 @@ fn build_execution_step_from_manifest(
         derived_slug,
         derived_branch,
         policy: Some(policy.clone()),
-        materialize_job_id: None,
-        approve_job_id: None,
-        review_job_id: None,
-        merge_job_id: None,
+        node_job_ids: BTreeMap::new(),
+        terminal_node_ids: Vec::new(),
+        legacy_materialize_job_id: None,
+        legacy_approve_job_id: None,
+        legacy_review_job_id: None,
+        legacy_merge_job_id: None,
         status: BuildExecutionStatus::Queued,
     })
 }
@@ -2335,6 +2753,921 @@ fn patch_step_metadata(
     })
 }
 
+fn workflow_step_node_schedule(
+    template: &WorkflowTemplate,
+) -> Result<StepNodeSchedule, Box<dyn std::error::Error>> {
+    compile_template_node_schedule(template)
+}
+
+fn resolve_build_execute_resume_policy(
+    session: &BuildSession,
+    resolved_policies: &ResolvedBuildPolicies,
+    template_ref: &WorkflowTemplateRef,
+    gate_config: &BuildExecuteGateConfig,
+) -> Result<BuildExecutionResumePolicy, Box<dyn std::error::Error>> {
+    let mut resolved_key = None::<String>;
+    let mut resolved_reuse_mode = None::<WorkflowResumeReuseMode>;
+
+    for manifest_step in &session.manifest.steps {
+        let policy = resolved_policies
+            .steps
+            .get(&manifest_step.step_key)
+            .ok_or_else(|| {
+                format!(
+                    "resolved build policy missing step {}",
+                    manifest_step.step_key
+                )
+            })?;
+        let slug = manifest_step_slug(manifest_step);
+        let branch = plan::default_branch_for_slug(&slug);
+        let template = resolve_build_execute_template(
+            template_ref,
+            &slug,
+            &branch,
+            &policy.target_branch,
+            policy.pipeline.includes_review(),
+            policy.pipeline.includes_merge(),
+            gate_config,
+        )?;
+        let key = {
+            let raw = template.policy.resume.key.trim();
+            if raw.is_empty() {
+                "default".to_string()
+            } else {
+                raw.to_string()
+            }
+        };
+        let reuse_mode = template.policy.resume.reuse_mode;
+
+        if let Some(existing) = resolved_key.as_ref()
+            && existing != &key
+        {
+            return Err(format!(
+                "build execute template renders inconsistent resume.key values across steps ({} vs {})",
+                existing, key
+            )
+            .into());
+        }
+        if let Some(existing) = resolved_reuse_mode
+            && existing != reuse_mode
+        {
+            return Err(
+                "build execute template renders inconsistent resume.reuse_mode values across steps"
+                    .into(),
+            );
+        }
+        resolved_key = Some(key);
+        resolved_reuse_mode = Some(reuse_mode);
+    }
+
+    Ok(BuildExecutionResumePolicy {
+        key: resolved_key.unwrap_or_else(|| "default".to_string()),
+        reuse_mode: resolved_reuse_mode.unwrap_or(WorkflowResumeReuseMode::Strict),
+    })
+}
+
+fn build_template_node_command(
+    build_id: &str,
+    step: &BuildExecutionStep,
+    policy: &BuildExecutionStepPolicy,
+    node: &WorkflowNode,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut runtime_node = node.clone();
+    runtime_node
+        .args
+        .insert("commit_mode".to_string(), "auto".to_string());
+    if workflow_node_capability(node) == Some(WorkflowCapability::PlanApplyOnce) {
+        runtime_node
+            .args
+            .insert("assume_yes".to_string(), "true".to_string());
+    }
+    if workflow_node_capability(node) == Some(WorkflowCapability::ReviewCritiqueOrFix) {
+        runtime_node
+            .args
+            .insert("assume_yes".to_string(), "true".to_string());
+        runtime_node
+            .args
+            .insert("skip_checks".to_string(), policy.skip_checks.to_string());
+        match policy.review_mode {
+            BuildExecutionReviewMode::ApplyFixes => {
+                runtime_node
+                    .args
+                    .insert("review_only".to_string(), "false".to_string());
+                runtime_node
+                    .args
+                    .insert("review_file".to_string(), "false".to_string());
+            }
+            BuildExecutionReviewMode::ReviewOnly => {
+                runtime_node
+                    .args
+                    .insert("review_only".to_string(), "true".to_string());
+                runtime_node
+                    .args
+                    .insert("review_file".to_string(), "false".to_string());
+            }
+            BuildExecutionReviewMode::ReviewFile => {
+                runtime_node
+                    .args
+                    .insert("review_only".to_string(), "false".to_string());
+                runtime_node
+                    .args
+                    .insert("review_file".to_string(), "true".to_string());
+            }
+        }
+    }
+    if workflow_node_capability(node) == Some(WorkflowCapability::GitIntegratePlanBranch) {
+        runtime_node
+            .args
+            .insert("assume_yes".to_string(), "true".to_string());
+        runtime_node.args.insert(
+            "delete_branch".to_string(),
+            (!policy.keep_branch).to_string(),
+        );
+    }
+
+    Ok(vec![
+        "__workflow-node".to_string(),
+        "--scope".to_string(),
+        "build_execute".to_string(),
+        "--build".to_string(),
+        build_id.to_string(),
+        "--step".to_string(),
+        step.step_key.clone(),
+        "--node".to_string(),
+        node.id.clone(),
+        "--slug".to_string(),
+        step.derived_slug.clone(),
+        "--branch".to_string(),
+        step.derived_branch.clone(),
+        "--target".to_string(),
+        policy.target_branch.clone(),
+        "--node-json".to_string(),
+        serde_json::to_string(&runtime_node)?,
+    ])
+}
+
+fn template_node_scope(node: &WorkflowNode) -> String {
+    match workflow_node_capability(node) {
+        Some(WorkflowCapability::BuildMaterializeStep) => "build_materialize".to_string(),
+        Some(WorkflowCapability::PlanApplyOnce) => "approve".to_string(),
+        Some(WorkflowCapability::ReviewCritiqueOrFix) => "review".to_string(),
+        Some(WorkflowCapability::GitIntegratePlanBranch) => "merge".to_string(),
+        _ => format!("build_template_{:?}", node.kind).to_ascii_lowercase(),
+    }
+}
+
+fn template_node_command_alias(node: &WorkflowNode) -> Option<String> {
+    match workflow_node_capability(node) {
+        Some(WorkflowCapability::BuildMaterializeStep) => Some("build_execute".to_string()),
+        Some(WorkflowCapability::PlanApplyOnce) => Some("approve".to_string()),
+        Some(WorkflowCapability::ReviewCritiqueOrFix)
+        | Some(WorkflowCapability::ReviewApplyFixesOnly) => Some("review".to_string()),
+        Some(WorkflowCapability::GitIntegratePlanBranch) => Some("merge".to_string()),
+        Some(WorkflowCapability::PatchExecutePipeline) => Some("patch".to_string()),
+        _ => None,
+    }
+}
+
+fn hydrate_node_job_ids_from_legacy_fields(
+    step: &mut BuildExecutionStep,
+    template: &WorkflowTemplate,
+) {
+    if !step.node_job_ids.is_empty() {
+        return;
+    }
+    for node in &template.nodes {
+        let legacy = match workflow_node_capability(node) {
+            Some(WorkflowCapability::BuildMaterializeStep) => {
+                step.legacy_materialize_job_id.clone()
+            }
+            Some(WorkflowCapability::PlanApplyOnce) => step.legacy_approve_job_id.clone(),
+            Some(WorkflowCapability::ReviewCritiqueOrFix) => step.legacy_review_job_id.clone(),
+            Some(WorkflowCapability::GitIntegratePlanBranch) => step.legacy_merge_job_id.clone(),
+            _ => None,
+        };
+        if let Some(job_id) = legacy {
+            step.node_job_ids.insert(node.id.clone(), job_id);
+        }
+    }
+}
+
+fn update_template_node_artifacts(
+    jobs_root: &Path,
+    job_id: &str,
+    node: &WorkflowNode,
+    step: &BuildExecutionStep,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let completion = phase_completion_artifact(job_id);
+    jobs::update_job_record(jobs_root, job_id, |record| {
+        let schedule = record
+            .schedule
+            .get_or_insert_with(jobs::JobSchedule::default);
+        if workflow_node_capability(node) == Some(WorkflowCapability::BuildMaterializeStep) {
+            let plan_branch = jobs::JobArtifact::PlanBranch {
+                slug: step.derived_slug.clone(),
+                branch: step.derived_branch.clone(),
+            };
+            if !schedule
+                .artifacts
+                .iter()
+                .any(|artifact| artifact == &plan_branch)
+            {
+                schedule.artifacts.push(plan_branch);
+            }
+            let plan_doc = jobs::JobArtifact::PlanDoc {
+                slug: step.derived_slug.clone(),
+                branch: step.derived_branch.clone(),
+            };
+            if !schedule
+                .artifacts
+                .iter()
+                .any(|artifact| artifact == &plan_doc)
+            {
+                schedule.artifacts.push(plan_doc);
+            }
+        }
+        if !schedule.artifacts.iter().any(
+            |artifact| matches!(artifact, jobs::JobArtifact::CommandPatch { job_id: value } if value == job_id),
+        ) {
+            schedule.artifacts.push(completion.clone());
+        }
+    })?;
+    Ok(())
+}
+
+fn normalize_env_key(value: &str) -> String {
+    let mut normalized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while normalized.contains("__") {
+        normalized = normalized.replace("__", "_");
+    }
+    normalized.trim_matches('_').to_string()
+}
+
+#[derive(Debug, Clone, Default)]
+struct WorkflowNodeRuntimeContext {
+    scope: Option<String>,
+    build_id: Option<String>,
+    step_key: Option<String>,
+    slug: Option<String>,
+    branch: Option<String>,
+    target: Option<String>,
+}
+
+fn template_node_env_pairs(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+) -> Vec<(String, String)> {
+    let mut pairs = vec![
+        ("VIZIER_WORKFLOW_NODE_ID".to_string(), node.id.clone()),
+        (
+            "VIZIER_WORKFLOW_NODE_KIND".to_string(),
+            format!("{:?}", node.kind).to_ascii_lowercase(),
+        ),
+        ("VIZIER_WORKFLOW_NODE_USES".to_string(), node.uses.clone()),
+    ];
+    if let Some(capability) = workflow_node_capability(node) {
+        pairs.push((
+            "VIZIER_WORKFLOW_CAPABILITY".to_string(),
+            capability.id().to_string(),
+        ));
+    }
+    if let Some(scope) = context.scope.as_ref() {
+        pairs.push(("VIZIER_WORKFLOW_SCOPE".to_string(), scope.clone()));
+    }
+    if let Some(build_id) = context.build_id.as_ref() {
+        pairs.push(("VIZIER_BUILD_ID".to_string(), build_id.clone()));
+    }
+    if let Some(step_key) = context.step_key.as_ref() {
+        pairs.push(("VIZIER_BUILD_STEP".to_string(), step_key.clone()));
+    }
+    if let Some(slug) = context.slug.as_ref() {
+        pairs.push(("VIZIER_PLAN_SLUG".to_string(), slug.clone()));
+    }
+    if let Some(branch) = context.branch.as_ref() {
+        pairs.push(("VIZIER_PLAN_BRANCH".to_string(), branch.clone()));
+    }
+    if let Some(target) = context.target.as_ref() {
+        pairs.push(("VIZIER_TARGET_BRANCH".to_string(), target.clone()));
+    }
+    for (key, value) in &node.args {
+        let normalized = normalize_env_key(key);
+        if normalized.is_empty() {
+            continue;
+        }
+        pairs.push((format!("VIZIER_NODE_ARG_{normalized}"), value.clone()));
+    }
+    pairs
+}
+
+fn run_template_shell_command(
+    command: &str,
+    repo_root: &Path,
+    env_pairs: &[(String, String)],
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(repo_root)
+        .envs(env_pairs.iter().map(|(k, v)| (k, v)))
+        .status()
+        .map_err(|err| format!("failed to execute {context}: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "{context} failed with {}",
+            status
+                .code()
+                .map(|code| format!("exit code {code}"))
+                .unwrap_or_else(|| "termination signal".to_string())
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn run_template_script_file(
+    script: &str,
+    repo_root: &Path,
+    env_pairs: &[(String, String)],
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new("sh")
+        .arg(script)
+        .current_dir(repo_root)
+        .envs(env_pairs.iter().map(|(k, v)| (k, v)))
+        .status()
+        .map_err(|err| format!("failed to execute {context} script `{script}`: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "{context} script `{script}` failed with {}",
+            status
+                .code()
+                .map(|code| format!("exit code {code}"))
+                .unwrap_or_else(|| "termination signal".to_string())
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn parse_bool_node_arg(
+    node: &WorkflowNode,
+    key: &str,
+    default: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(raw) = node.args.get(key) else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!(
+            "workflow node `{}` has invalid boolean arg `{}`={:?}",
+            node.id, key, raw
+        )
+        .into()),
+    }
+}
+
+fn parse_u32_node_arg(
+    node: &WorkflowNode,
+    key: &str,
+    default: u32,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    let Some(raw) = node.args.get(key) else {
+        return Ok(default);
+    };
+    raw.trim().parse::<u32>().map_err(|err| {
+        format!(
+            "workflow node `{}` has invalid u32 arg `{}`={:?}: {}",
+            node.id, key, raw, err
+        )
+        .into()
+    })
+}
+
+fn parse_optional_u32_node_arg(
+    node: &WorkflowNode,
+    key: &str,
+) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let Some(raw) = node.args.get(key) else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let parsed = value.parse::<u32>().map_err(|err| {
+        format!(
+            "workflow node `{}` has invalid u32 arg `{}`={:?}: {}",
+            node.id, key, raw, err
+        )
+    })?;
+    Ok(Some(parsed))
+}
+
+fn parse_commit_mode_node_arg(
+    node: &WorkflowNode,
+) -> Result<CommitMode, Box<dyn std::error::Error>> {
+    let fallback = if config::get_config().workflow.no_commit_default {
+        CommitMode::HoldForReview
+    } else {
+        CommitMode::AutoCommit
+    };
+    let Some(raw) = node.args.get("commit_mode") else {
+        return Ok(fallback);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" | "autocommit" | "auto_commit" | "true" => Ok(CommitMode::AutoCommit),
+        "manual" | "holdforreview" | "hold_for_review" | "false" => Ok(CommitMode::HoldForReview),
+        _ => Err(format!(
+            "workflow node `{}` has invalid commit_mode {:?}; expected auto|manual",
+            node.id, raw
+        )
+        .into()),
+    }
+}
+
+fn parse_build_pipeline_arg(
+    node: &WorkflowNode,
+    key: &str,
+    default: BuildExecutionPipeline,
+) -> Result<BuildExecutionPipeline, Box<dyn std::error::Error>> {
+    let Some(raw) = node.args.get(key) else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "approve" => Ok(BuildExecutionPipeline::Approve),
+        "approve-review" | "approve_review" => Ok(BuildExecutionPipeline::ApproveReview),
+        "approve-review-merge" | "approve_review_merge" => {
+            Ok(BuildExecutionPipeline::ApproveReviewMerge)
+        }
+        _ => Err(format!("workflow node `{}` has invalid pipeline {:?}", node.id, raw).into()),
+    }
+}
+
+fn required_context_or_arg(
+    context_value: Option<&String>,
+    node: &WorkflowNode,
+    arg: &str,
+    label: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(value) = context_value
+        && !value.trim().is_empty()
+    {
+        return Ok(value.clone());
+    }
+    if let Some(value) = node.args.get(arg)
+        && !value.trim().is_empty()
+    {
+        return Ok(value.clone());
+    }
+    Err(format!(
+        "workflow node `{}` is missing required {} (context `{}` or arg `{}`)",
+        node.id, label, label, arg
+    )
+    .into())
+}
+
+fn resolve_alias_agent(alias: &str) -> Result<config::AgentSettings, Box<dyn std::error::Error>> {
+    let parsed = alias
+        .parse::<config::CommandAlias>()
+        .map_err(|err| format!("invalid workflow command alias `{alias}`: {err}"))?;
+    config::resolve_agent_settings_for_alias(&config::get_config(), &parsed, None)
+}
+
+async fn execute_builtin_save_node(
+    node: &WorkflowNode,
+    repo_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let job_id = jobs::current_job_id()
+        .ok_or("vizier.save.apply requires background job context (missing --background-job-id)")?;
+    let jobs_root = jobs::ensure_jobs_root(repo_root)?;
+    let rev_or_range = node
+        .args
+        .get("rev_or_range")
+        .cloned()
+        .unwrap_or_else(|| "HEAD".to_string());
+    let commit_message = node.args.get("commit_message").cloned();
+    let push_after = parse_bool_node_arg(node, "push_after", false)?;
+    let commit_mode = parse_commit_mode_node_arg(node)?;
+    let agent = resolve_alias_agent("save")?;
+    let cmd = SaveCmd {
+        rev_or_range,
+        commit_message,
+        commit_message_editor: false,
+        after: Vec::new(),
+    };
+    run_scheduled_save(
+        &job_id,
+        &cmd,
+        push_after,
+        commit_mode,
+        &agent,
+        repo_root,
+        &jobs_root,
+    )
+    .await
+}
+
+async fn execute_builtin_draft_node(node: &WorkflowNode) -> Result<(), Box<dyn std::error::Error>> {
+    let commit_mode = parse_commit_mode_node_arg(node)?;
+    let spec_source = node
+        .args
+        .get("spec_source")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "inline".to_string());
+    let spec_file = node.args.get("spec_file").map(PathBuf::from);
+    let spec_text = if let Some(text) = node.args.get("spec_text") {
+        text.clone()
+    } else if let Some(path) = spec_file.as_ref() {
+        std::fs::read_to_string(path).map_err(|err| {
+            format!(
+                "workflow node `{}` could not read spec file {}: {}",
+                node.id,
+                path.display(),
+                err
+            )
+        })?
+    } else {
+        return Err(format!(
+            "workflow node `{}` requires spec_text or spec_file",
+            node.id
+        )
+        .into());
+    };
+    let resolved_source = match spec_source.as_str() {
+        "inline" => SpecSource::Inline,
+        "stdin" => SpecSource::Stdin,
+        "file" => {
+            let Some(path) = spec_file else {
+                return Err(format!(
+                    "workflow node `{}` has spec_source=file but no spec_file arg",
+                    node.id
+                )
+                .into());
+            };
+            SpecSource::File(path)
+        }
+        other => {
+            return Err(format!(
+                "workflow node `{}` has unsupported spec_source {:?}",
+                node.id, other
+            )
+            .into());
+        }
+    };
+    let name_override = node.args.get("name_override").cloned();
+    let agent = resolve_alias_agent("draft")?;
+    run_draft(
+        DraftArgs {
+            spec_text,
+            spec_source: resolved_source,
+            name_override,
+        },
+        &agent,
+        commit_mode,
+    )
+    .await
+}
+
+async fn execute_builtin_approve_node(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let commit_mode = parse_commit_mode_node_arg(node)?;
+    let plan = required_context_or_arg(context.slug.as_ref(), node, "plan", "plan slug")?;
+    let target = context
+        .target
+        .clone()
+        .or_else(|| node.args.get("target").cloned());
+    let branch_override = context
+        .branch
+        .clone()
+        .or_else(|| node.args.get("branch").cloned());
+    let stop_condition_script = node.args.get("stop_condition_script").map(PathBuf::from);
+    let stop_condition_retries = parse_u32_node_arg(
+        node,
+        "stop_condition_retries",
+        config::get_config().approve.stop_condition.retries,
+    )?;
+    let opts = ApproveOptions {
+        plan,
+        target,
+        branch_override,
+        assume_yes: parse_bool_node_arg(node, "assume_yes", true)?,
+        stop_condition: ApproveStopCondition {
+            script: stop_condition_script,
+            retries: stop_condition_retries,
+        },
+        push_after: parse_bool_node_arg(node, "push_after", false)?,
+    };
+    let agent = resolve_alias_agent("approve")?;
+    run_approve(opts, &agent, commit_mode).await
+}
+
+async fn execute_builtin_review_node(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let commit_mode = parse_commit_mode_node_arg(node)?;
+    let plan = required_context_or_arg(context.slug.as_ref(), node, "plan", "plan slug")?;
+    let target = context
+        .target
+        .clone()
+        .or_else(|| node.args.get("target").cloned());
+    let branch_override = context
+        .branch
+        .clone()
+        .or_else(|| node.args.get("branch").cloned());
+    let retries = parse_u32_node_arg(
+        node,
+        "cicd_retries",
+        config::get_config().merge.cicd_gate.retries,
+    )?;
+    let opts = ReviewOptions {
+        plan,
+        target,
+        branch_override,
+        assume_yes: parse_bool_node_arg(node, "assume_yes", true)?,
+        review_only: parse_bool_node_arg(node, "review_only", false)?,
+        review_file: parse_bool_node_arg(node, "review_file", false)?,
+        skip_checks: parse_bool_node_arg(node, "skip_checks", false)?,
+        cicd_gate: CicdGateOptions {
+            script: node.args.get("cicd_script").map(PathBuf::from),
+            auto_resolve: parse_bool_node_arg(node, "cicd_auto_resolve", false)?,
+            retries,
+        },
+        auto_resolve_requested: parse_bool_node_arg(node, "auto_resolve_requested", false)?,
+        push_after: parse_bool_node_arg(node, "push_after", false)?,
+    };
+    let agent = resolve_alias_agent("review")?;
+    run_review(opts, &agent, commit_mode).await
+}
+
+async fn execute_builtin_merge_node(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let commit_mode = parse_commit_mode_node_arg(node)?;
+    let plan = required_context_or_arg(context.slug.as_ref(), node, "plan", "plan slug")?;
+    let target = context
+        .target
+        .clone()
+        .or_else(|| node.args.get("target").cloned());
+    let branch_override = context
+        .branch
+        .clone()
+        .or_else(|| node.args.get("branch").cloned());
+    let conflict_auto_resolve = parse_bool_node_arg(node, "conflict_auto_resolve", false)?;
+    let conflict_source = match node
+        .args
+        .get("conflict_auto_resolve_source")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("default") => ConflictAutoResolveSource::Default,
+        Some("merge.conflicts.auto_resolve") => ConflictAutoResolveSource::Config,
+        Some("--auto-resolve-conflicts") => ConflictAutoResolveSource::FlagEnable,
+        Some("--no-auto-resolve-conflicts") => ConflictAutoResolveSource::FlagDisable,
+        Some("workflow template") => ConflictAutoResolveSource::Template,
+        Some(_) => ConflictAutoResolveSource::Template,
+        None => ConflictAutoResolveSource::Template,
+    };
+    let conflict_auto_resolve =
+        ConflictAutoResolveSetting::new(conflict_auto_resolve, conflict_source);
+    let conflict_strategy = if conflict_auto_resolve.enabled() {
+        MergeConflictStrategy::Agent
+    } else {
+        MergeConflictStrategy::Manual
+    };
+    let retries = parse_u32_node_arg(
+        node,
+        "cicd_retries",
+        config::get_config().merge.cicd_gate.retries,
+    )?;
+    let opts = MergeOptions {
+        plan,
+        target,
+        branch_override,
+        assume_yes: parse_bool_node_arg(node, "assume_yes", true)?,
+        delete_branch: parse_bool_node_arg(node, "delete_branch", true)?,
+        note: node.args.get("note").cloned(),
+        push_after: parse_bool_node_arg(node, "push_after", false)?,
+        conflict_auto_resolve,
+        conflict_strategy,
+        complete_conflict: parse_bool_node_arg(node, "complete_conflict", false)?,
+        cicd_gate: CicdGateOptions {
+            script: node.args.get("cicd_script").map(PathBuf::from),
+            auto_resolve: parse_bool_node_arg(node, "cicd_auto_resolve", false)?,
+            retries,
+        },
+        squash: parse_bool_node_arg(node, "squash", config::get_config().merge.squash_default)?,
+        squash_mainline: parse_optional_u32_node_arg(node, "squash_mainline")?,
+    };
+    let agent = resolve_alias_agent("merge")?;
+    run_merge(opts, &agent, commit_mode).await
+}
+
+async fn execute_builtin_patch_node(
+    node: &WorkflowNode,
+    repo_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let commit_mode = parse_commit_mode_node_arg(node)?;
+    let files_json = node
+        .args
+        .get("files_json")
+        .ok_or_else(|| format!("workflow node `{}` requires files_json", node.id))?;
+    let raw_files: Vec<String> = serde_json::from_str(files_json).map_err(|err| {
+        format!(
+            "workflow node `{}` has invalid files_json payload: {}",
+            node.id, err
+        )
+    })?;
+    if raw_files.is_empty() {
+        return Err(format!(
+            "workflow node `{}` requires at least one patch file",
+            node.id
+        )
+        .into());
+    }
+    let files = raw_files.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let pipeline =
+        parse_build_pipeline_arg(node, "pipeline", BuildExecutionPipeline::ApproveReviewMerge)?;
+    let agent = resolve_alias_agent("patch")?;
+    run_patch(
+        PatchArgs {
+            files,
+            pipeline: Some(pipeline),
+            target: node.args.get("target").cloned(),
+            resume: parse_bool_node_arg(node, "resume", false)?,
+            assume_yes: parse_bool_node_arg(node, "assume_yes", true)?,
+            follow: parse_bool_node_arg(node, "follow", false)?,
+            after: Vec::new(),
+        },
+        repo_root,
+        &agent,
+        commit_mode,
+    )
+    .await
+}
+
+async fn execute_builtin_build_materialize_node(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+    repo_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let build_id =
+        required_context_or_arg(context.build_id.as_ref(), node, "build_id", "build id")?;
+    let step_key =
+        required_context_or_arg(context.step_key.as_ref(), node, "step_key", "step key")?;
+    let slug = required_context_or_arg(context.slug.as_ref(), node, "slug", "plan slug")?;
+    let branch = required_context_or_arg(context.branch.as_ref(), node, "branch", "plan branch")?;
+    let target = required_context_or_arg(context.target.as_ref(), node, "target", "target branch")?;
+    run_build_materialize(build_id, step_key, slug, branch, target, repo_root).await
+}
+
+async fn execute_builtin_template_node(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+    repo_root: &Path,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let compat_noop = parse_bool_node_arg(node, "__compat_noop", false)?;
+    match workflow_node_capability(node) {
+        Some(WorkflowCapability::GitSaveWorktreePatch) => {
+            execute_builtin_save_node(node, repo_root).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::PlanGenerateDraftPlan) => {
+            execute_builtin_draft_node(node).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::PlanApplyOnce) => {
+            execute_builtin_approve_node(node, context).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::ReviewCritiqueOrFix)
+        | Some(WorkflowCapability::ReviewApplyFixesOnly) => {
+            execute_builtin_review_node(node, context).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::GitIntegratePlanBranch) => {
+            execute_builtin_merge_node(node, context).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::PatchExecutePipeline) => {
+            execute_builtin_patch_node(node, repo_root).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::BuildMaterializeStep) => {
+            execute_builtin_build_materialize_node(node, context, repo_root).await?;
+            Ok(true)
+        }
+        Some(WorkflowCapability::GateStopCondition)
+        | Some(WorkflowCapability::GateConflictResolution)
+        | Some(WorkflowCapability::GateCicd)
+        | Some(WorkflowCapability::RemediationCicdAutoFix)
+        | Some(WorkflowCapability::InternalTerminalSink) => {
+            if compat_noop {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        _ => Ok(false),
+    }
+}
+
+async fn execute_generic_template_node(
+    node: &WorkflowNode,
+    context: &WorkflowNodeRuntimeContext,
+    repo_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if parse_bool_node_arg(node, "__compat_noop", false)? {
+        return Ok(());
+    }
+    let env_pairs = template_node_env_pairs(node, context);
+    match node.kind {
+        WorkflowNodeKind::Builtin
+        | WorkflowNodeKind::Agent
+        | WorkflowNodeKind::Shell
+        | WorkflowNodeKind::Custom => {
+            if execute_builtin_template_node(node, context, repo_root).await? {
+                return Ok(());
+            }
+            let command = node
+                .args
+                .get("command")
+                .or_else(|| node.args.get("script"))
+                .map(String::as_str)
+                .or_else(|| {
+                    if matches!(node.kind, WorkflowNodeKind::Shell | WorkflowNodeKind::Custom)
+                        && workflow_node_capability(node)
+                            == Some(WorkflowCapability::ExecCustomCommand)
+                    {
+                        Some(node.uses.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "workflow node `{}` requires args.command or args.script for {:?} execution",
+                        node.id, node.kind
+                    )
+                })?;
+            run_template_shell_command(
+                command,
+                repo_root,
+                &env_pairs,
+                &format!("node `{}`", node.id),
+            )
+        }
+        WorkflowNodeKind::Gate => {
+            for gate in &node.gates {
+                match gate {
+                    WorkflowGate::Approval { .. } => {}
+                    WorkflowGate::Script { script, .. } | WorkflowGate::Cicd { script, .. } => {
+                        run_template_script_file(
+                            script,
+                            repo_root,
+                            &env_pairs,
+                            &format!("workflow gate on node `{}`", node.id),
+                        )?;
+                    }
+                    WorkflowGate::Custom { id, args, .. } => {
+                        let command = args
+                            .get("command")
+                            .or_else(|| args.get("script"))
+                            .ok_or_else(|| {
+                                format!(
+                                    "workflow node `{}` custom gate `{}` requires args.command or args.script",
+                                    node.id, id
+                                )
+                            })?;
+                        run_template_shell_command(
+                            command,
+                            repo_root,
+                            &env_pairs,
+                            &format!("workflow custom gate `{}` on node `{}`", id, node.id),
+                        )?;
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 struct EnsurePhaseJobRequest<'a> {
     command_args: &'a [String],
     metadata: jobs::JobMetadata,
@@ -2405,15 +3738,7 @@ fn derive_step_status(
     jobs_root: &Path,
 ) -> BuildExecutionStatus {
     let mut statuses = Vec::new();
-    for job_id in [
-        step.materialize_job_id.as_deref(),
-        step.approve_job_id.as_deref(),
-        step.review_job_id.as_deref(),
-        step.merge_job_id.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for job_id in step.all_job_ids() {
         if let Ok(record) = jobs::read_record(jobs_root, job_id) {
             statuses.push(record.status);
         }
@@ -2436,9 +3761,13 @@ fn derive_step_status(
         return BuildExecutionStatus::Cancelled;
     }
 
-    if let Some(job_id) = step.terminal_job_id(pipeline)
-        && let Ok(record) = jobs::read_record(jobs_root, job_id)
-        && record.status == jobs::JobStatus::Succeeded
+    let terminal_job_ids = step.terminal_job_ids(pipeline);
+    if !terminal_job_ids.is_empty()
+        && terminal_job_ids.iter().all(|job_id| {
+            jobs::read_record(jobs_root, job_id)
+                .map(|record| record.status == jobs::JobStatus::Succeeded)
+                .unwrap_or(false)
+        })
     {
         return BuildExecutionStatus::Succeeded;
     }
@@ -2498,21 +3827,31 @@ fn derive_execution_status(
 }
 
 fn render_phase_jobs(step: &BuildExecutionStep, pipeline: BuildExecutionPipeline) -> String {
+    if !step.node_job_ids.is_empty() {
+        let mut entries = step
+            .node_job_ids
+            .iter()
+            .map(|(node_id, job_id)| format!("{node_id}={job_id}"))
+            .collect::<Vec<_>>();
+        entries.sort();
+        return entries.join(",");
+    }
+
     let resolved = step.resolved_policy(pipeline);
     let mut parts = Vec::new();
-    if let Some(job_id) = step.materialize_job_id.as_ref() {
+    if let Some(job_id) = step.legacy_materialize_job_id.as_ref() {
         parts.push(format!("materialize={job_id}"));
     }
-    if let Some(job_id) = step.approve_job_id.as_ref() {
+    if let Some(job_id) = step.legacy_approve_job_id.as_ref() {
         parts.push(format!("approve={job_id}"));
     }
     if resolved.pipeline.includes_review()
-        && let Some(job_id) = step.review_job_id.as_ref()
+        && let Some(job_id) = step.legacy_review_job_id.as_ref()
     {
         parts.push(format!("review={job_id}"));
     }
     if resolved.pipeline.includes_merge()
-        && let Some(job_id) = step.merge_job_id.as_ref()
+        && let Some(job_id) = step.legacy_merge_job_id.as_ref()
     {
         parts.push(format!("merge={job_id}"));
     }
@@ -2571,6 +3910,7 @@ fn strip_front_matter(source: &str) -> Option<&str> {
 fn persist_execution_state(
     repo_root: &Path,
     session: &BuildSession,
+    execution_rel: &Path,
     state: &BuildExecutionState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tmp_root = repo_root.join(".vizier/tmp-worktrees");
@@ -2593,7 +3933,7 @@ fn persist_execution_state(
 
     let persist_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let _guard = WorkdirGuard::enter(&worktree_path)?;
-        let execution_abs = worktree_path.join(&session.execution_rel);
+        let execution_abs = worktree_path.join(execution_rel);
         if let Some(parent) = execution_abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -2607,7 +3947,7 @@ fn persist_execution_state(
         std::fs::write(&execution_abs, contents)?;
         commit_paths_in_repo(
             &worktree_path,
-            &[session.execution_rel.as_path()],
+            &[execution_rel],
             &format!("docs: update build execution {}", session.build_id),
         )
         .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;

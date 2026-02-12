@@ -24,11 +24,19 @@ fn step_reads(step: &Value) -> Vec<String> {
         .collect()
 }
 
-fn execution_state(repo: &Repository, build_id: &str) -> TestResult<Value> {
+fn execution_state_with_file(
+    repo: &Repository,
+    build_id: &str,
+    file_name: &str,
+) -> TestResult<Value> {
     let branch = format!("build/{build_id}");
-    let path = format!(".vizier/implementation-plans/builds/{build_id}/execution.json");
+    let path = format!(".vizier/implementation-plans/builds/{build_id}/{file_name}");
     let text = read_branch_file(repo, &branch, &path)?;
     Ok(serde_json::from_str(&text)?)
+}
+
+fn execution_state(repo: &Repository, build_id: &str) -> TestResult<Value> {
+    execution_state_with_file(repo, build_id, "execution.json")
 }
 
 fn run_build_execute(
@@ -71,6 +79,35 @@ fn assert_schedule_after_empty(job_record: &Value, job_label: &str) -> TestResul
     Ok(())
 }
 
+fn assert_schedule_after_success(
+    job_record: &Value,
+    job_label: &str,
+    predecessor_job_id: &str,
+) -> TestResult {
+    let after = job_record
+        .get("schedule")
+        .and_then(|value| value.get("after"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{job_label} schedule.after missing"))?;
+    assert_eq!(
+        after.len(),
+        1,
+        "{job_label} should have exactly one template after edge: {after:?}"
+    );
+    let edge = &after[0];
+    assert_eq!(
+        edge.get("job_id").and_then(Value::as_str),
+        Some(predecessor_job_id),
+        "{job_label} after edge should point to predecessor job {predecessor_job_id}: {edge:?}"
+    );
+    assert_eq!(
+        edge.get("policy").and_then(Value::as_str),
+        Some("success"),
+        "{job_label} after edge policy should be success: {edge:?}"
+    );
+    Ok(())
+}
+
 fn job_command_tokens(job_record: &Value) -> Vec<String> {
     job_record
         .get("command")
@@ -80,6 +117,30 @@ fn job_command_tokens(job_record: &Value) -> Vec<String> {
         .into_iter()
         .filter_map(|value| value.as_str().map(|text| text.to_string()))
         .collect()
+}
+
+fn step_node_job_id<'a>(step: &'a Value, node_id: &str) -> Option<&'a str> {
+    step.get("node_job_ids")
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(node_id))
+        .and_then(Value::as_str)
+}
+
+fn require_step_node_job_id(
+    step: &Value,
+    node_id: &str,
+    message: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    step_node_job_id(step, node_id)
+        .map(|value| value.to_string())
+        .ok_or_else(|| message.to_string().into())
+}
+
+fn command_node_payload(job_record: &Value) -> Option<Value> {
+    let tokens = job_command_tokens(job_record);
+    let idx = tokens.iter().position(|token| token == "--node-json")?;
+    let payload = tokens.get(idx + 1)?;
+    serde_json::from_str(payload).ok()
 }
 
 #[test]
@@ -514,6 +575,28 @@ steps = [
         );
 
         let state = execution_state(&repo.repo(), build_id)?;
+        assert_eq!(
+            state.pointer("/template_id").and_then(Value::as_str),
+            Some("template.build_execute"),
+            "execution state should persist the workflow template id"
+        );
+        assert_eq!(
+            state.pointer("/template_version").and_then(Value::as_str),
+            Some("v1"),
+            "execution state should persist the workflow template version"
+        );
+        let policy_hash = state
+            .pointer("/policy_snapshot_hash")
+            .and_then(Value::as_str)
+            .ok_or("policy snapshot hash missing")?;
+        assert!(
+            policy_hash.len() == 64,
+            "policy snapshot hash should be a sha256 hex string: {policy_hash}"
+        );
+        assert!(
+            state.pointer("/policy_snapshot").is_some(),
+            "execution state should persist the policy snapshot"
+        );
         let steps = state
             .get("steps")
             .and_then(Value::as_array)
@@ -521,16 +604,15 @@ steps = [
         assert_eq!(steps.len(), 1);
         let step = &steps[0];
 
-        let materialize_job_id = step
-            .get("materialize_job_id")
-            .and_then(Value::as_str)
-            .ok_or("materialize job id missing")?;
-        let approve_job_id = step
-            .get("approve_job_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("approve job id missing for pipeline {pipeline}"))?;
-        let review_job_id = step.get("review_job_id").and_then(Value::as_str);
-        let merge_job_id = step.get("merge_job_id").and_then(Value::as_str);
+        let materialize_job_id =
+            require_step_node_job_id(step, "materialize", "materialize job id missing")?;
+        let approve_job_id = require_step_node_job_id(
+            step,
+            "approve",
+            &format!("approve job id missing for pipeline {pipeline}"),
+        )?;
+        let review_job_id = step_node_job_id(step, "review");
+        let merge_job_id = step_node_job_id(step, "merge");
 
         assert_eq!(
             review_job_id.is_some(),
@@ -543,19 +625,21 @@ steps = [
             "merge job presence mismatch for pipeline {pipeline}"
         );
 
-        let materialize_record = read_job_record(&repo, materialize_job_id)?;
+        let materialize_record = read_job_record(&repo, &materialize_job_id)?;
         assert_schedule_after_empty(&materialize_record, "materialize job")?;
 
-        let approve_record = read_job_record(&repo, approve_job_id)?;
-        assert_schedule_after_empty(&approve_record, "approve job")?;
+        let approve_record = read_job_record(&repo, &approve_job_id)?;
+        assert_schedule_after_success(&approve_record, "approve job", &materialize_job_id)?;
 
         if let Some(job_id) = review_job_id {
             let review_record = read_job_record(&repo, job_id)?;
-            assert_schedule_after_empty(&review_record, "review job")?;
+            assert_schedule_after_success(&review_record, "review job", &approve_job_id)?;
         }
         if let Some(job_id) = merge_job_id {
             let merge_record = read_job_record(&repo, job_id)?;
-            assert_schedule_after_empty(&merge_record, "merge job")?;
+            let review_job_id = review_job_id
+                .ok_or_else(|| format!("merge job missing review job for {pipeline}"))?;
+            assert_schedule_after_success(&merge_record, "merge job", review_job_id)?;
         }
     }
 
@@ -622,34 +706,28 @@ steps = [
 
     let s01_approve = by_key
         .get("01")
-        .and_then(|step| step.get("approve_job_id"))
-        .and_then(Value::as_str)
+        .and_then(|step| step_node_job_id(step, "approve"))
         .ok_or("step 01 approve job missing")?;
     let s02a_approve = by_key
         .get("02a")
-        .and_then(|step| step.get("approve_job_id"))
-        .and_then(Value::as_str)
+        .and_then(|step| step_node_job_id(step, "approve"))
         .ok_or("step 02a approve job missing")?;
     let s02b_approve = by_key
         .get("02b")
-        .and_then(|step| step.get("approve_job_id"))
-        .and_then(Value::as_str)
+        .and_then(|step| step_node_job_id(step, "approve"))
         .ok_or("step 02b approve job missing")?;
 
     let s02a_materialize = by_key
         .get("02a")
-        .and_then(|step| step.get("materialize_job_id"))
-        .and_then(Value::as_str)
+        .and_then(|step| step_node_job_id(step, "materialize"))
         .ok_or("step 02a materialize job missing")?;
     let s02b_materialize = by_key
         .get("02b")
-        .and_then(|step| step.get("materialize_job_id"))
-        .and_then(Value::as_str)
+        .and_then(|step| step_node_job_id(step, "materialize"))
         .ok_or("step 02b materialize job missing")?;
     let s03_materialize = by_key
         .get("03")
-        .and_then(|step| step.get("materialize_job_id"))
-        .and_then(Value::as_str)
+        .and_then(|step| step_node_job_id(step, "materialize"))
         .ok_or("step 03 materialize job missing")?;
 
     let s02a_record = read_job_record(&repo, s02a_materialize)?;
@@ -733,10 +811,8 @@ steps = [
         .get("derived_branch")
         .and_then(Value::as_str)
         .ok_or("derived_branch missing")?;
-    let materialize_job = first_step
-        .get("materialize_job_id")
-        .and_then(Value::as_str)
-        .ok_or("materialize job missing")?;
+    let materialize_job =
+        step_node_job_id(first_step, "materialize").ok_or("materialize job missing")?;
 
     wait_for_job_status(&repo, materialize_job, "succeeded", Duration::from_secs(60))?;
 
@@ -796,14 +872,10 @@ steps = [
         .and_then(Value::as_array)
         .and_then(|steps| steps.first())
         .ok_or("execution step missing")?;
-    let before_materialize = before_step
-        .get("materialize_job_id")
-        .and_then(Value::as_str)
+    let before_materialize = step_node_job_id(before_step, "materialize")
         .ok_or("materialize job missing before resume")?
         .to_string();
-    let before_approve = before_step
-        .get("approve_job_id")
-        .and_then(Value::as_str)
+    let before_approve = step_node_job_id(before_step, "approve")
         .ok_or("approve job missing before resume")?
         .to_string();
 
@@ -849,17 +921,11 @@ steps = [
         "step status should derive from terminal phase jobs after resume"
     );
     assert_eq!(
-        after_step
-            .get("materialize_job_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
+        step_node_job_id(after_step, "materialize").unwrap_or_default(),
         before_materialize
     );
     assert_eq!(
-        after_step
-            .get("approve_job_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
+        step_node_job_id(after_step, "approve").unwrap_or_default(),
         before_approve
     );
 
@@ -883,6 +949,10 @@ steps = [
     assert!(
         mismatch_stderr.contains("execution policy mismatch"),
         "policy mismatch reason missing: {mismatch_stderr}"
+    );
+    assert!(
+        mismatch_stderr.contains("(node mismatch)"),
+        "pipeline changes should be classified as node mismatch: {mismatch_stderr}"
     );
 
     let missing_resume = run_build_execute(
@@ -962,14 +1032,9 @@ steps = [
         .find(|step| step.get("step_key").and_then(Value::as_str) == Some("02"))
         .ok_or("step 02 missing")?;
 
-    let approve_job = step_one
-        .get("approve_job_id")
-        .and_then(Value::as_str)
-        .ok_or("step 01 approve job missing")?;
-    let step_two_materialize = step_two
-        .get("materialize_job_id")
-        .and_then(Value::as_str)
-        .ok_or("step 02 materialize job missing")?;
+    let approve_job = step_node_job_id(step_one, "approve").ok_or("step 01 approve job missing")?;
+    let step_two_materialize =
+        step_node_job_id(step_two, "materialize").ok_or("step 02 materialize job missing")?;
 
     wait_for_job_status(&repo, approve_job, "failed", Duration::from_secs(60))?;
     wait_for_job_status(
@@ -1040,11 +1105,11 @@ default_pipeline = "approve-review-merge"
         "expected policy pipeline from [build] default when --pipeline is omitted: {step}"
     );
     assert!(
-        step.get("review_job_id").and_then(Value::as_str).is_some(),
+        step_node_job_id(step, "review").is_some(),
         "review job should be queued by default pipeline override"
     );
     assert!(
-        step.get("merge_job_id").and_then(Value::as_str).is_some(),
+        step_node_job_id(step, "merge").is_some(),
         "merge job should be queued by default pipeline override"
     );
 
@@ -1113,41 +1178,52 @@ steps = [
         "keep_branch should be persisted in policy"
     );
 
-    let review_job = step
-        .get("review_job_id")
-        .and_then(Value::as_str)
-        .ok_or("review job missing")?;
-    let merge_job = step
-        .get("merge_job_id")
-        .and_then(Value::as_str)
-        .ok_or("merge job missing")?;
+    let review_job = step_node_job_id(step, "review").ok_or("review job missing")?;
+    let merge_job = step_node_job_id(step, "merge").ok_or("merge job missing")?;
 
     let review_record = read_job_record(&repo, review_job)?;
     let review_command = job_command_tokens(&review_record);
     assert!(
-        review_command.iter().any(|token| token == "--review-only"),
-        "review command missing --review-only: {review_command:?}"
+        review_command
+            .iter()
+            .any(|token| token == "__workflow-node"),
+        "review command should route via __workflow-node: {review_command:?}"
     );
-    assert!(
-        review_command.iter().any(|token| token == "--skip-checks"),
-        "review command missing --skip-checks: {review_command:?}"
+    let review_node = command_node_payload(&review_record).ok_or("review node payload missing")?;
+    assert_eq!(
+        review_node
+            .pointer("/args/review_only")
+            .and_then(Value::as_str),
+        Some("true"),
+        "review node args should enable review_only mode: {review_node}"
     );
-    assert!(
-        !review_command.iter().any(|token| token == "--yes"),
-        "review command should not include --yes in review_only mode: {review_command:?}"
+    assert_eq!(
+        review_node
+            .pointer("/args/skip_checks")
+            .and_then(Value::as_str),
+        Some("true"),
+        "review node args should enable skip_checks: {review_node}"
     );
 
     let merge_record = read_job_record(&repo, merge_job)?;
     let merge_command = job_command_tokens(&merge_record);
     assert!(
-        merge_command.iter().any(|token| token == "--keep-branch"),
-        "merge command missing --keep-branch: {merge_command:?}"
+        merge_command.iter().any(|token| token == "__workflow-node"),
+        "merge command should route via __workflow-node: {merge_command:?}"
     );
     assert!(
         merge_command
             .windows(2)
             .any(|pair| pair == ["--target", build_branch]),
         "merge command should target the build branch: {merge_command:?}"
+    );
+    let merge_node = command_node_payload(&merge_record).ok_or("merge node payload missing")?;
+    assert_eq!(
+        merge_node
+            .pointer("/args/delete_branch")
+            .and_then(Value::as_str),
+        Some("false"),
+        "merge node args should preserve keep_branch=true policy: {merge_node}"
     );
 
     assert_eq!(
@@ -1396,10 +1472,8 @@ default_pipeline = "approve"
         "failure mode policy should be continue_independent"
     );
 
-    let step_two_materialize = step_two
-        .get("materialize_job_id")
-        .and_then(Value::as_str)
-        .ok_or("step 02 materialize job missing")?;
+    let step_two_materialize =
+        step_node_job_id(step_two, "materialize").ok_or("step 02 materialize job missing")?;
     let step_two_record = read_job_record(&repo, step_two_materialize)?;
     let deps = step_two_record
         .pointer("/schedule/dependencies")
@@ -1409,6 +1483,87 @@ default_pipeline = "approve"
     assert!(
         deps.is_empty(),
         "explicit barrier should not add implicit prior-stage dependencies: {deps:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_resume_rejects_edge_drift_from_stage_barrier_changes() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        "resume-edge.toml",
+        r#"
+steps = [
+  { text = "Edge drift stage one" },
+  { text = "Edge drift stage two" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "resume-edge.toml",
+        "--name",
+        "resume-edge-drift",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let cfg_strict = repo
+        .path()
+        .join(".vizier/tmp/build-resume-edge-strict.toml");
+    fs::create_dir_all(cfg_strict.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &cfg_strict,
+        r#"
+[build]
+default_pipeline = "approve"
+stage_barrier = "strict"
+"#,
+    )?;
+    let first = repo
+        .vizier_cmd_background_with_config(&cfg_strict)
+        .args(["build", "execute", "resume-edge-drift", "--yes"])
+        .output()?;
+    assert!(
+        first.status.success(),
+        "initial execute failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let cfg_explicit = repo
+        .path()
+        .join(".vizier/tmp/build-resume-edge-explicit.toml");
+    fs::write(
+        &cfg_explicit,
+        r#"
+[build]
+default_pipeline = "approve"
+stage_barrier = "explicit"
+"#,
+    )?;
+    let resumed = repo
+        .vizier_cmd_background_with_config(&cfg_explicit)
+        .args(["build", "execute", "resume-edge-drift", "--resume", "--yes"])
+        .output()?;
+    assert!(
+        !resumed.status.success(),
+        "resume should fail when stage-barrier dependencies drift"
+    );
+    let resumed_stderr = String::from_utf8_lossy(&resumed.stderr);
+    assert!(
+        resumed_stderr.contains("execution policy mismatch"),
+        "missing policy drift diagnostic: {resumed_stderr}"
+    );
+    assert!(
+        resumed_stderr.contains("(edge mismatch)"),
+        "stage barrier drift should be classified as edge mismatch: {resumed_stderr}"
     );
 
     Ok(())
@@ -1489,6 +1644,353 @@ default_review_mode = "review_only"
     assert!(
         resumed_stderr.contains("execution policy mismatch"),
         "missing policy drift diagnostic: {resumed_stderr}"
+    );
+    assert!(
+        resumed_stderr.contains("(policy mismatch)"),
+        "review mode drift should be classified as policy mismatch: {resumed_stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_runs_custom_selector_template_graph_end_to_end() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/custom.graph@v1.json",
+        r#"{
+  "id": "custom.graph",
+  "version": "v1",
+  "policy": {
+    "resume": {
+      "key": "custom-graph",
+      "reuse_mode": "strict"
+    }
+  },
+  "artifact_contracts": [
+    { "id": "plan_branch", "version": "v1" },
+    { "id": "plan_doc", "version": "v1" },
+    { "id": "plan_commits", "version": "v1" },
+    { "id": "command_patch", "version": "v1" },
+    {
+      "id": "acme.execution",
+      "version": "v1",
+      "schema": {
+        "type": "object",
+        "required": ["type_id", "key"],
+        "properties": {
+          "type_id": { "const": "acme.execution" },
+          "key": { "const": "final" }
+        }
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "materialize_doc",
+      "kind": "builtin",
+      "uses": "vizier.build.materialize",
+      "produces": {
+        "succeeded": [
+          { "plan_branch": { "slug": "${slug}", "branch": "${branch}" } },
+          { "plan_doc": { "slug": "${slug}", "branch": "${branch}" } }
+        ]
+      }
+    },
+    {
+      "id": "shell_note",
+      "kind": "shell",
+      "uses": "acme.shell.note",
+      "args": {
+        "command": "mkdir -p .vizier/tmp/custom && printf '%s' '${slug}' > .vizier/tmp/custom/${slug}.txt"
+      },
+      "after": [
+        { "node_id": "materialize_doc", "policy": "success" }
+      ]
+    },
+    {
+      "id": "approve_apply",
+      "kind": "builtin",
+      "uses": "vizier.approve.apply_once",
+      "after": [
+        { "node_id": "shell_note", "policy": "success" }
+      ],
+      "needs": [
+        { "plan_doc": { "slug": "${slug}", "branch": "${branch}" } }
+      ],
+      "produces": {
+        "succeeded": [
+          { "plan_commits": { "slug": "${slug}", "branch": "${branch}" } }
+        ]
+      }
+    },
+    {
+      "id": "custom_finalize",
+      "kind": "custom",
+      "uses": "acme.finalize",
+      "args": {
+        "command": "test -f .vizier/tmp/custom/${slug}.txt"
+      },
+      "after": [
+        { "node_id": "approve_apply", "policy": "success" }
+      ],
+      "produces": {
+        "succeeded": [
+          { "custom": { "type_id": "acme.execution", "key": "final" } }
+        ]
+      }
+    }
+  ]
+}"#,
+    )?;
+
+    let config_path = repo.path().join(".vizier/tmp/custom-graph-config.toml");
+    fs::create_dir_all(config_path.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &config_path,
+        r#"
+[workflow.templates]
+build_execute = "custom.graph@v1"
+
+[build]
+default_pipeline = "approve"
+"#,
+    )?;
+
+    repo.write(
+        "custom-graph.toml",
+        r#"
+steps = [
+  { text = "Custom workflow graph execution" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "custom-graph.toml",
+        "--name",
+        "custom-graph",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let execute = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["build", "execute", "custom-graph", "--yes"])
+        .output()?;
+    assert!(
+        execute.status.success(),
+        "custom template execute failed: {}",
+        String::from_utf8_lossy(&execute.stderr)
+    );
+
+    let state =
+        execution_state_with_file(&repo.repo(), "custom-graph", "execution.custom-graph.json")?;
+    let step = state
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .ok_or("execution step missing")?;
+    let node_jobs = step
+        .get("node_job_ids")
+        .and_then(Value::as_object)
+        .ok_or("node_job_ids missing")?;
+    for node in [
+        "materialize_doc",
+        "shell_note",
+        "approve_apply",
+        "custom_finalize",
+    ] {
+        assert!(
+            node_jobs.get(node).and_then(Value::as_str).is_some(),
+            "missing node job id for {node}: {node_jobs:?}"
+        );
+    }
+
+    for node in [
+        "materialize_doc",
+        "shell_note",
+        "approve_apply",
+        "custom_finalize",
+    ] {
+        let job_id = node_jobs
+            .get(node)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("missing job id for node {node}"))?;
+        wait_for_job_status(&repo, job_id, "succeeded", Duration::from_secs(60))?;
+    }
+
+    let slug = step
+        .get("derived_slug")
+        .and_then(Value::as_str)
+        .ok_or("derived_slug missing")?;
+    let custom_marker = repo
+        .path()
+        .join(".vizier/tmp/custom")
+        .join(format!("{slug}.txt"));
+    assert!(
+        custom_marker.exists(),
+        "custom shell/custom nodes should create marker {}",
+        custom_marker.display()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_build_execute_resume_compatible_allows_policy_drift_and_uses_keyed_state() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/custom.compat@v1.json",
+        r#"{
+  "id": "custom.compat",
+  "version": "v1",
+  "policy": {
+    "resume": {
+      "key": "compatible-lane",
+      "reuse_mode": "compatible"
+    }
+  },
+  "artifact_contracts": [
+    { "id": "plan_branch", "version": "v1" },
+    { "id": "plan_doc", "version": "v1" },
+    { "id": "plan_commits", "version": "v1" },
+    { "id": "command_patch", "version": "v1" }
+  ],
+  "nodes": [
+    {
+      "id": "materialize_custom",
+      "kind": "builtin",
+      "uses": "vizier.build.materialize",
+      "produces": {
+        "succeeded": [
+          { "plan_branch": { "slug": "${slug}", "branch": "${branch}" } },
+          { "plan_doc": { "slug": "${slug}", "branch": "${branch}" } }
+        ]
+      }
+    },
+    {
+      "id": "review_custom",
+      "kind": "agent",
+      "uses": "vizier.review.critique",
+      "after": [
+        { "node_id": "materialize_custom", "policy": "success" }
+      ],
+      "needs": [
+        { "plan_branch": { "slug": "${slug}", "branch": "${branch}" } },
+        { "plan_doc": { "slug": "${slug}", "branch": "${branch}" } }
+      ],
+      "produces": {
+        "succeeded": [
+          { "plan_commits": { "slug": "${slug}", "branch": "${branch}" } }
+        ]
+      }
+    }
+  ]
+}"#,
+    )?;
+
+    repo.write(
+        "compatible.toml",
+        r#"
+steps = [
+  { text = "Compatible resume policy drift" },
+]
+"#,
+    )?;
+    let built = repo.vizier_output(&[
+        "build",
+        "--file",
+        "compatible.toml",
+        "--name",
+        "compatible-resume",
+    ])?;
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let cfg_apply = repo.path().join(".vizier/tmp/compatible-apply.toml");
+    fs::create_dir_all(cfg_apply.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &cfg_apply,
+        r#"
+[workflow.templates]
+build_execute = "custom.compat@v1"
+
+[build]
+default_pipeline = "approve-review"
+default_review_mode = "apply_fixes"
+"#,
+    )?;
+    let first = repo
+        .vizier_cmd_background_with_config(&cfg_apply)
+        .args(["build", "execute", "compatible-resume", "--yes"])
+        .output()?;
+    assert!(
+        first.status.success(),
+        "initial execute failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let state = execution_state_with_file(
+        &repo.repo(),
+        "compatible-resume",
+        "execution.compatible-lane.json",
+    )?;
+    let review_job = state
+        .pointer("/steps/0/node_job_ids/review_custom")
+        .and_then(Value::as_str)
+        .ok_or("review job id missing")?;
+    wait_for_job_status(&repo, review_job, "succeeded", Duration::from_secs(60))?;
+
+    let cfg_review_only = repo.path().join(".vizier/tmp/compatible-review-only.toml");
+    fs::write(
+        &cfg_review_only,
+        r#"
+[workflow.templates]
+build_execute = "custom.compat@v1"
+
+[build]
+default_pipeline = "approve-review"
+default_review_mode = "review_only"
+"#,
+    )?;
+    let resumed = repo
+        .vizier_cmd_background_with_config(&cfg_review_only)
+        .args(["build", "execute", "compatible-resume", "--resume", "--yes"])
+        .output()?;
+    assert!(
+        resumed.status.success(),
+        "compatible resume should allow policy drift: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+
+    let resumed_state = execution_state_with_file(
+        &repo.repo(),
+        "compatible-resume",
+        "execution.compatible-lane.json",
+    )?;
+    assert_eq!(
+        resumed_state.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "compatible resume should keep succeeded execution state"
+    );
+
+    let legacy_state =
+        execution_state_with_file(&repo.repo(), "compatible-resume", "execution.json");
+    assert!(
+        legacy_state.is_err(),
+        "resume key should route state to execution.compatible-lane.json"
     );
 
     Ok(())
