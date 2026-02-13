@@ -17,7 +17,7 @@ Desired behavior (Product-level)
   - Non-TTY: never emit ANSI; stderr carries only errors/warnings per verbosity; stdout carries a single, stable Outcome (human or JSON).
   - TTY: progress history remains line-based per verbosity (no spinner), and the final Outcome always lands on stdout.
 - Provide levers: -q suppresses non-error output; -v/-vv increase detail on stderr; --no-ansi disables ANSI even on TTY.
-- Standardize Outcome: every action (ask, chat step, save, init, draft/approve) emits the same compact epilogue; with --json emit outcome.v1 on stdout.
+- Standardize Outcome: every action (ask, chat step, save, init, draft/approve) emits the same compact epilogue; structured output should come from protocol mode and command-local JSON selectors (not a global JSON toggle).
 
 Acceptance criteria
 1) Verbosity levers:
@@ -26,7 +26,7 @@ Acceptance criteria
 2) TTY gating:
    - Non-TTY never writes ANSI sequences; progress stays line-oriented; Outcome still appears on stdout.
 3) Outcome standardization:
-   - ask/save/init/draft/approve/merge all print a one-line human Outcome on stdout by default; with --json print outcome.v1 JSON only (no human text).
+   - ask/save/init/draft/approve/merge all print a one-line human Outcome on stdout by default; structured mode emits outcome.v1 JSON only (no human text).
    - Fields cover {action, elapsed_ms, changes:{A,M,D,R,lines}, commits:{conversation,.vizier,code}, gates:{state,reason}, token_usage?, session.path?}.
 4) Tests: matrix across (TTY vs non-TTY) × (quiet/default/-v/-vv) asserting no ANSI in non-TTY, stable presence/shape of Outcome, and correct gating of the line-based progress history.
 
@@ -38,6 +38,8 @@ Update (2026-01-27)
 - Background-by-default now prints a multi-line `Outcome: Background job started` block for detached runs; treat this as a temporary stdout contract exception until the unified Outcome epilogue/JSON lands.
 Update (2026-01-30)
 - Background job finalization now flushes stdout/stderr before marking jobs complete so `vizier jobs tail --follow` reliably captures the final assistant output.
+Update (2026-02-13)
+- Root global `--json` and `--pager` were removed from the CLI surface; machine-readable output is now command-local (`plan --json`, `--format json` on list/jobs surfaces), and help paging is TTY-auto with `$VIZIER_PAGER` plus hidden internal `--no-pager` injection for child jobs.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)

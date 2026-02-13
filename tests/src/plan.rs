@@ -246,37 +246,20 @@ keep_branch = true
     Ok(())
 }
 #[test]
-fn test_plan_reports_agent_command_override() -> TestResult {
+fn test_plan_rejects_removed_agent_command_override() -> TestResult {
     let repo = IntegrationRepo::new()?;
-    let bin_dir = repo.path().join("bin");
-    fs::create_dir_all(&bin_dir)?;
-    let custom_bin = bin_dir.join("codex-custom");
-    fs::write(&custom_bin, "#!/bin/sh\nexit 0\n")?;
-    #[cfg(unix)]
-    {
-        let mut perms = fs::metadata(&custom_bin)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&custom_bin, perms)?;
-    }
-
     let output = repo
         .vizier_cmd()
-        .args(["--agent-command", custom_bin.to_str().unwrap(), "plan"])
+        .args(["--agent-command", "mock-agent.sh", "plan"])
         .output()?;
     assert!(
-        output.status.success(),
-        "vizier plan with agent command override failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "removed --agent-command should fail with migration guidance"
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let compact = stdout.replace(' ', "");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        compact.contains(&format!("Command:{}", custom_bin.display())),
-        "plan output should surface the overridden agent command:\n{stdout}"
-    );
-    assert!(
-        compact.contains("Resolution:providedcommand"),
-        "plan output should mark the agent runtime as a provided command when CLI overrides are supplied:\n{stdout}"
+        stderr.contains("`--agent-command` was removed"),
+        "missing removed-flag guidance:\n{stderr}"
     );
     Ok(())
 }
@@ -425,14 +408,7 @@ fn test_plan_json_mixed_precedence_fixture_and_cli_override() -> TestResult {
 
     let with_cli = repo
         .vizier_cmd_with_config(&fixture)
-        .args([
-            "--agent-label",
-            "cli-runtime",
-            "--agent-command",
-            "/bin/echo",
-            "plan",
-            "--json",
-        ])
+        .args(["--agent", "gemini", "plan", "--json"])
         .output()?;
     assert!(
         with_cli.status.success(),
@@ -442,17 +418,17 @@ fn test_plan_json_mixed_precedence_fixture_and_cli_override() -> TestResult {
     let with_cli_json: Value = serde_json::from_slice(&with_cli.stdout)?;
     assert_eq!(
         with_cli_json
-            .pointer("/commands/save/agent_runtime/label")
+            .pointer("/commands/save/agent")
             .and_then(Value::as_str),
-        Some("cli-runtime"),
-        "CLI runtime overrides should beat template/alias/legacy/default"
+        Some("gemini"),
+        "CLI agent selector override should beat template/alias/legacy/default"
     );
     assert_eq!(
         with_cli_json
-            .pointer("/commands/release_flow/agent_runtime/label")
+            .pointer("/commands/release_flow/agent")
             .and_then(Value::as_str),
-        Some("cli-runtime"),
-        "CLI runtime overrides should apply to custom aliases too"
+        Some("gemini"),
+        "CLI agent selector override should apply to custom aliases too"
     );
 
     Ok(())

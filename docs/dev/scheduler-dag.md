@@ -236,7 +236,7 @@ DAG behavior (`--format dag`):
   - explicit `after:success -> <job-id> <status>` edges.
 - `--max-depth` limits recursive expansion (default 3).
 
-JSON behavior (`--format json` or global `--json`):
+JSON behavior (`--format json`):
 - Top-level contract:
   - `version` (currently `1`)
   - `ordering` (`"created_at_then_job_id"`)

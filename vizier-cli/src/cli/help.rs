@@ -9,15 +9,12 @@ use super::util::flag_present;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PagerMode {
     Auto,
-    Always,
     Never,
 }
 
 pub(crate) fn pager_mode_from_args(args: &[String]) -> PagerMode {
     if flag_present(args, None, "--no-pager") {
         PagerMode::Never
-    } else if flag_present(args, None, "--pager") {
-        PagerMode::Always
     } else {
         PagerMode::Auto
     }
@@ -42,9 +39,7 @@ pub(crate) fn render_help_with_pager(
         return Ok(());
     }
 
-    if matches!(pager_mode, PagerMode::Always | PagerMode::Auto)
-        && try_page_output("less -FRSX", help_text).is_ok()
-    {
+    if try_page_output("less -FRSX", help_text).is_ok() {
         return Ok(());
     }
 
@@ -153,6 +148,8 @@ fn global_arg_takes_value(arg: &str) -> bool {
             | "-l"
             | "--load-session"
             | "--agent"
+            // Legacy removed globals kept here so subcommand extraction can
+            // still skip their values and report better migration guidance.
             | "--agent-label"
             | "--agent-command"
             | "--background-job-id"

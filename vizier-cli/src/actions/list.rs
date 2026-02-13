@@ -316,9 +316,6 @@ fn list_pending_plans(opts: ListOptions) -> Result<(), Box<dyn std::error::Error
     if let Some(fields) = opts.fields.clone() {
         list_config.entry_fields = fields;
     }
-    if opts.emit_json {
-        list_config.format = config::ListFormat::Json;
-    }
 
     let header_fields = parse_fields(
         "display.lists.list.header_fields",

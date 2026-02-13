@@ -75,7 +75,7 @@ Update (2025-11-24, follow-up): Progress filters own the final reply
 - The bundled `examples/agents/codex-filter.sh` now requires `jq`, parses Codex JSONL thread/turn/item events into single-line progress with usage summaries, and emits the final (or fallback) agent text on stdout so Codex-backed commands still return a reply even if no explicit `agent_message` event arrives.
 
 Update (2025-11-25): Script-runner shims replace per-backend binaries
-- Agent/Gemini scopes now rely on the `ScriptRunner`, which resolves `agent.label` (defaulting to `codex`/`gemini`, bundled under `examples/agents/`) or a custom `agent.command`/`--agent-command` and reports runtime resolution as bundled shim vs provided command. Autodiscovery of CLI binaries was removed alongside the Codex/Gemini runner/display adapters; progress/usage now flows from stderr lines emitted by the shim, and CLI overrides use `--agent-label`/`--agent-command` instead of the older bin flag.
+- Agent/Gemini scopes now rely on the `ScriptRunner`, which resolves `agent.label` (defaulting to `codex`/`gemini`, bundled under `examples/agents/`) or a custom `agent.command` and reports runtime resolution as bundled shim vs provided command. Autodiscovery of CLI binaries was removed alongside the Codex/Gemini runner/display adapters; progress/usage now flows from stderr lines emitted by the shim.
 
 Update (2025-11-26): Rust adapters retired; GEMINI.md is now historical
 - The Rust Codex/Gemini adapters were removed in favor of the bundled shims; `GEMINI.md` now documents the legacy adapter shape and the current shim entrypoints so future backends can reuse the pattern without expecting in-tree binaries.
@@ -87,6 +87,7 @@ Update (2025-11-28): Bundled Gemini progress filter + defaults
 - Added `examples/agents/gemini/filter.sh`, a jq-based progress filter that renders Gemini JSONL events into human-readable progress lines on stderr while preserving the final assistant reply on stdout. Default Gemini runtime settings now force wrapped output and automatically attach this filter (guarded by `default_gemini_runtime_sets_progress_filter` in `vizier-core/src/config.rs`), keeping progress/output parity with the Codex shim.
 
 Update (2025-11-29): Documented and regression-tested that bundled progress filters attach based on `agent.label` (not just codex/gemini), so custom shims with a sibling `filter.sh` inherit wrapped output without extra config.
+Update (2026-02-13): Root-level runtime override globals were removed (`--agent-label`, `--agent-command`). Selector one-offs continue through `--agent`, while runtime command/label overrides are now file-backed via `[agents.commands.<alias>.agent]` + `--config-file`.
 
 ## Repo-local config precedence (Snapshot: Code state — repo/global configs now layer; env fallback only when no config files)
 

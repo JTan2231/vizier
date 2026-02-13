@@ -10,8 +10,8 @@ use vizier_core::{
 
 use crate::actions::shared::format_table;
 use crate::cli::args::{
-    JobsAction, JobsCmd, JobsListField, JobsScheduleFormatArg, JobsShowField, normalize_labels,
-    parse_fields, resolve_label,
+    JobsAction, JobsActionFormatArg, JobsCmd, JobsListField, JobsScheduleFormatArg, JobsShowField,
+    normalize_labels, parse_fields, resolve_label,
 };
 use crate::jobs::{self, JobStatus};
 
@@ -707,7 +707,6 @@ pub(crate) fn run_jobs_command(
     jobs_root: &Path,
     cmd: JobsCmd,
     follow: bool,
-    emit_json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
         JobsAction::List {
@@ -719,10 +718,6 @@ pub(crate) fn run_jobs_command(
             if let Some(fmt) = format {
                 list_config.format = fmt.into();
             }
-            if emit_json {
-                list_config.format = config::ListFormat::Json;
-            }
-
             let show_succeeded = if all {
                 true
             } else {
@@ -886,15 +881,11 @@ pub(crate) fn run_jobs_command(
             format,
             max_depth,
         } => {
-            let schedule_format = if emit_json {
-                ScheduleFormat::Json
-            } else {
-                match format {
-                    Some(JobsScheduleFormatArg::Summary) => ScheduleFormat::Summary,
-                    Some(JobsScheduleFormatArg::Dag) => ScheduleFormat::Dag,
-                    Some(JobsScheduleFormatArg::Json) => ScheduleFormat::Json,
-                    None => ScheduleFormat::Summary,
-                }
+            let schedule_format = match format {
+                Some(JobsScheduleFormatArg::Summary) => ScheduleFormat::Summary,
+                Some(JobsScheduleFormatArg::Dag) => ScheduleFormat::Dag,
+                Some(JobsScheduleFormatArg::Json) => ScheduleFormat::Json,
+                None => ScheduleFormat::Summary,
             };
 
             let records = jobs::list_records(jobs_root)?;
@@ -930,10 +921,6 @@ pub(crate) fn run_jobs_command(
             if let Some(fmt) = format {
                 show_config.format = fmt.into();
             }
-            if emit_json {
-                show_config.format = config::ListFormat::Json;
-            }
-
             let fields = parse_fields(
                 "display.lists.jobs_show.fields",
                 &show_config.fields,
@@ -986,13 +973,13 @@ pub(crate) fn run_jobs_command(
             }
             Ok(())
         }
-        JobsAction::Status { job } => {
+        JobsAction::Status { job, format } => {
             let record = jobs::read_record(jobs_root, &job)?;
             let exit = record
                 .exit_code
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            if emit_json {
+            if matches!(format, JobsActionFormatArg::Json) {
                 let payload = json!({
                     "job": record.id,
                     "status": jobs::status_label(record.status),
@@ -1013,10 +1000,10 @@ pub(crate) fn run_jobs_command(
             }
             Ok(())
         }
-        JobsAction::Retry { job } => {
+        JobsAction::Retry { job, format } => {
             let binary = std::env::current_exe()?;
             let outcome = jobs::retry_job(project_root, jobs_root, &binary, &job)?;
-            if emit_json {
+            if matches!(format, JobsActionFormatArg::Json) {
                 let payload = json!({
                     "outcome": "Jobs retried",
                     "requested_job": outcome.requested_job,
@@ -1048,7 +1035,7 @@ pub(crate) fn run_jobs_command(
             }
             Ok(())
         }
-        JobsAction::Approve { job } => {
+        JobsAction::Approve { job, format } => {
             let binary = std::env::current_exe()?;
             let outcome = jobs::approve_job(project_root, jobs_root, &binary, &job)?;
             let approval_state = outcome
@@ -1058,7 +1045,7 @@ pub(crate) fn run_jobs_command(
                 .and_then(|schedule| schedule.approval.as_ref())
                 .map(|approval| jobs::approval_state_label(approval.state).to_string())
                 .unwrap_or_else(|| "none".to_string());
-            if emit_json {
+            if matches!(format, JobsActionFormatArg::Json) {
                 let payload = json!({
                     "outcome": "Job approval granted",
                     "job": outcome.record.id,
@@ -1088,7 +1075,11 @@ pub(crate) fn run_jobs_command(
             }
             Ok(())
         }
-        JobsAction::Reject { job, reason } => {
+        JobsAction::Reject {
+            job,
+            reason,
+            format,
+        } => {
             let record = jobs::reject_job(project_root, jobs_root, &job, reason.as_deref())?;
             let approval_state = record
                 .schedule
@@ -1102,7 +1093,7 @@ pub(crate) fn run_jobs_command(
                 .and_then(|schedule| schedule.approval.as_ref())
                 .and_then(|approval| approval.reason.clone())
                 .unwrap_or_else(|| "approval rejected".to_string());
-            if emit_json {
+            if matches!(format, JobsActionFormatArg::Json) {
                 let payload = json!({
                     "outcome": "Job approval rejected",
                     "job": record.id,

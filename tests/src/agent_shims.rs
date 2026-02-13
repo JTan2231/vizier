@@ -6,7 +6,7 @@ fn test_missing_agent_binary_blocks_run() -> TestResult {
     let mut cmd = repo.vizier_cmd();
     cmd.env("PATH", "/nonexistent");
     cmd.args([
-        "--agent-label",
+        "--agent",
         "missing-agent",
         "save",
         "missing agent should fail",

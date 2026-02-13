@@ -58,7 +58,7 @@ Config precedence: when you skip `--config-file`, Vizier loads the user/global c
 
 If the selected agent crashes or rejects the request, the command fails immediately with the shim error. Vizier does not fall back to another agent; rerun the command once the configured selector is healthy.
 
-CLI overrides (`--agent`, `--agent-label`, `--agent-command`) apply only to the command being executed and sit above alias/template config tables for that invocation.
+CLI selector overrides (`--agent`) apply only to the command being executed and sit above alias/template config tables for that invocation.
 
 Need to sanity-check how those layers resolve before you kick off the workflow? Run `vizier plan` (or `vizier plan --json`) to print the effective configuration, per-command selector, template mapping, and resolved runtime without mutating the repo or starting a session.
 
@@ -78,7 +78,7 @@ Every step commits code and canonical narrative edits together in a single commi
 
 At every stage you can pause, review the artifacts, and hand control back to a human maintainer.
 
-All assistant-backed commands now enqueue background jobs. Use `--follow` when you want to stream the job’s stdout/stderr to your terminal; otherwise inspect progress with `vizier jobs`. Scheduled commands do not support `--json` output; use `vizier jobs show --format json` instead. On a TTY, `vizier approve`/`vizier merge` prompt for confirmation before the job is queued, and `vizier review` prompts for the review mode unless you pass `--yes`/`--review-only`/`--review-file`; non-TTY runs require explicit flags. For explicit ordering across unrelated jobs, pass repeatable `--after <job-id>` flags when queueing any scheduler-backed command.
+All assistant-backed commands now enqueue background jobs. Use `--follow` when you want to stream the job’s stdout/stderr to your terminal; otherwise inspect progress with `vizier jobs`. Machine-readable output is command-local (`vizier jobs ... --format json`, `vizier plan --json`). On a TTY, `vizier approve`/`vizier merge` prompt for confirmation before the job is queued, and `vizier review` prompts for the review mode unless you pass `--yes`/`--review-only`/`--review-file`; non-TTY runs require explicit flags. For explicit ordering across unrelated jobs, pass repeatable `--after <job-id>` flags when queueing any scheduler-backed command.
 
 `vizier approve` also supports `--require-approval` to queue work immediately but hold execution at `waiting_on_approval` until someone runs `vizier jobs approve <job-id>`. Use `vizier jobs reject <job-id> --reason "..."` to reject the queued run and leave an auditable `blocked_by_approval` terminal record.
 

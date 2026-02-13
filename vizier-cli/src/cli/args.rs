@@ -46,12 +46,8 @@ pub(crate) struct GlobalOpts {
     #[arg(long = "no-ansi", global = true)]
     pub(crate) no_ansi: bool,
 
-    /// Page help output when available; defaults to TTY-only paging and honors $VIZIER_PAGER
-    #[arg(long = "pager", action = ArgAction::SetTrue, global = true, conflicts_with = "no_pager")]
-    pub(crate) pager: bool,
-
-    /// Disable paging for help output even on a TTY
-    #[arg(long = "no-pager", action = ArgAction::SetTrue, global = true, conflicts_with = "pager")]
+    /// Internal hook for child runs to disable help paging in detached/non-interactive contexts
+    #[arg(long = "no-pager", action = ArgAction::SetTrue, hide = true, global = true)]
     pub(crate) no_pager: bool,
 
     /// Load session context from `.vizier/sessions/<id>/session.json` before running
@@ -66,18 +62,6 @@ pub(crate) struct GlobalOpts {
     #[arg(long = "agent", value_name = "SELECTOR", global = true)]
     pub(crate) agent: Option<String>,
 
-    /// Bundled agent shim label to run (for example, `codex` or `gemini`); overrides config until the end of this invocation
-    #[arg(long = "agent-label", value_name = "LABEL", global = true)]
-    pub(crate) agent_label: Option<String>,
-
-    /// Path to a custom agent script (stdout = assistant text; stderr = progress/errors); wins over labels/config for this run
-    #[arg(long = "agent-command", value_name = "PATH", global = true)]
-    pub(crate) agent_command: Option<String>,
-
-    /// Emit the audit/outcome as JSON to stdout (human epilogues may be suppressed depending on the command)
-    #[arg(short = 'j', long, global = true)]
-    pub(crate) json: bool,
-
     /// Config file to load (supports JSON or TOML); bypasses the normal global+repo layering
     #[arg(short = 'C', long = "config-file", global = true)]
     pub(crate) config_file: Option<String>,
@@ -90,27 +74,9 @@ pub(crate) struct GlobalOpts {
     #[arg(long = "no-commit", action = ArgAction::SetTrue, global = true)]
     pub(crate) no_commit: bool,
 
-    /// Deprecated: assistant-backed commands always enqueue jobs; use --follow to stream logs
-    #[arg(long = "background", action = ArgAction::SetTrue, global = true)]
-    pub(crate) background: bool,
-
     /// Attach to a scheduled job and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
-    #[arg(
-        long = "follow",
-        action = ArgAction::SetTrue,
-        global = true,
-        conflicts_with_all = ["background", "no_background"]
-    )]
+    #[arg(long = "follow", action = ArgAction::SetTrue, global = true)]
     pub(crate) follow: bool,
-
-    /// Deprecated: foreground execution is no longer supported for assistant-backed commands
-    #[arg(
-        long = "no-background",
-        action = ArgAction::SetTrue,
-        global = true,
-        conflicts_with_all = ["background", "follow"]
-    )]
-    pub(crate) no_background: bool,
 
     /// Internal hook for background child processes; do not set manually
     #[arg(long = "background-job-id", hide = true, global = true)]
@@ -175,6 +141,12 @@ pub(crate) enum BuildPipelineArg {
 pub(crate) enum JobsScheduleFormatArg {
     Summary,
     Dag,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum JobsActionFormatArg {
+    Text,
     Json,
 }
 
@@ -807,7 +779,11 @@ pub(crate) struct CleanCmd {
 }
 
 #[derive(ClapArgs, Debug)]
-pub(crate) struct PlanCmd {}
+pub(crate) struct PlanCmd {
+    /// Emit the resolved configuration as JSON
+    #[arg(short = 'j', long = "json", action = ArgAction::SetTrue)]
+    pub(crate) json: bool,
+}
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct JobsCmd {
@@ -865,18 +841,30 @@ pub(crate) enum JobsAction {
     Status {
         #[arg(value_name = "JOB")]
         job: String,
+
+        /// Output format (text, json)
+        #[arg(long = "format", value_enum, default_value_t = JobsActionFormatArg::Text)]
+        format: JobsActionFormatArg,
     },
 
     /// Rewind a failed/blocked job chain to its predecessor state and re-queue it
     Retry {
         #[arg(value_name = "JOB")]
         job: String,
+
+        /// Output format (text, json)
+        #[arg(long = "format", value_enum, default_value_t = JobsActionFormatArg::Text)]
+        format: JobsActionFormatArg,
     },
 
     /// Approve a queued job that is waiting on explicit human approval
     Approve {
         #[arg(value_name = "JOB")]
         job: String,
+
+        /// Output format (text, json)
+        #[arg(long = "format", value_enum, default_value_t = JobsActionFormatArg::Text)]
+        format: JobsActionFormatArg,
     },
 
     /// Reject a queued job that is waiting on explicit human approval
@@ -887,6 +875,10 @@ pub(crate) enum JobsAction {
         /// Optional reason recorded in job/outcome metadata
         #[arg(long = "reason", value_name = "TEXT")]
         reason: Option<String>,
+
+        /// Output format (text, json)
+        #[arg(long = "format", value_enum, default_value_t = JobsActionFormatArg::Text)]
+        format: JobsActionFormatArg,
     },
 
     /// Tail logs for a background job (stdout/stderr); add --follow to stream until completion

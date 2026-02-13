@@ -25,7 +25,6 @@ pub(crate) fn resolve_draft_spec(
 
 pub(crate) fn resolve_list_options(
     cmd: &ListCmd,
-    emit_json: bool,
 ) -> Result<ListOptions, Box<dyn std::error::Error>> {
     let fields = if let Some(raw) = cmd.fields.as_ref() {
         let trimmed = raw.trim();
@@ -50,7 +49,6 @@ pub(crate) fn resolve_list_options(
         target: cmd.target.clone(),
         format: cmd.format.map(Into::into),
         fields,
-        emit_json,
     })
 }
 
@@ -327,30 +325,6 @@ pub(crate) fn build_cli_agent_overrides(
         && !agent.trim().is_empty()
     {
         overrides.selector = Some(agent.trim().to_ascii_lowercase());
-    }
-
-    if let Some(label) = opts
-        .agent_label
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        overrides
-            .agent_runtime
-            .get_or_insert_with(Default::default)
-            .label = Some(label.to_ascii_lowercase());
-    }
-
-    if let Some(command) = opts
-        .agent_command
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        overrides
-            .agent_runtime
-            .get_or_insert_with(Default::default)
-            .command = Some(vec![command.to_string()]);
     }
 
     if overrides.is_empty() {

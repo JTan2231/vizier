@@ -105,14 +105,11 @@ fn test_scheduler_rejects_json_output() -> TestResult {
         .vizier_cmd_background()
         .args(["save", "--json"])
         .output()?;
-    assert!(
-        !blocked.status.success(),
-        "expected ask --json to fail under scheduler"
-    );
+    assert!(!blocked.status.success(), "expected save --json to fail");
     let stderr = String::from_utf8_lossy(&blocked.stderr);
     assert!(
-        stderr.contains("--json cannot be used"),
-        "unexpected stderr for --json scheduler error:\n{stderr}"
+        stderr.contains("global `--json` was removed"),
+        "unexpected stderr for removed --json guidance:\n{stderr}"
     );
     Ok(())
 }
@@ -135,8 +132,26 @@ fn test_scheduler_rejects_json_for_additional_commands() -> TestResult {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("--json cannot be used"),
-            "missing --json rejection message:\n{stderr}"
+            stderr.contains("global `--json` was removed"),
+            "missing removed --json guidance:\n{stderr}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_scheduler_rejects_removed_background_globals() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    for flag in ["--background", "--no-background"] {
+        let output = repo.vizier_cmd_background().args([flag, "save"]).output()?;
+        assert!(
+            !output.status.success(),
+            "expected {flag} to fail with migration guidance"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("was removed"),
+            "missing removed-flag guidance for {flag}:\n{stderr}"
         );
     }
     Ok(())

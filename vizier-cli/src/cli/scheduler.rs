@@ -537,15 +537,7 @@ fn strip_background_flags(raw_args: &[String]) -> Vec<String> {
             continue;
         }
 
-        if arg == "--background" || arg.starts_with("--background=") {
-            continue;
-        }
-
         if arg == "--follow" || arg.starts_with("--follow=") {
-            continue;
-        }
-
-        if arg == "--no-background" || arg.starts_with("--no-background=") {
             continue;
         }
 
@@ -646,7 +638,7 @@ fn build_background_child_args_base(
         args.push("--quiet".to_string());
     }
 
-    if !flag_present(&args, None, "--no-pager") && !flag_present(&args, None, "--pager") {
+    if !flag_present(&args, None, "--no-pager") {
         args.push("--no-pager".to_string());
     }
 
@@ -662,12 +654,9 @@ mod tests {
         let raw_args = vec![
             "vizier".to_string(),
             "save".to_string(),
-            "--background".to_string(),
             "--background-job-id".to_string(),
             "abc123".to_string(),
             "--follow".to_string(),
-            "--no-background".to_string(),
-            "--background=1".to_string(),
             "--follow=1".to_string(),
             "--background-job-id=xyz".to_string(),
             "--other".to_string(),
@@ -690,7 +679,6 @@ mod tests {
         let raw_args = vec![
             "vizier".to_string(),
             "save".to_string(),
-            "--background".to_string(),
             "--background-job-id".to_string(),
             "abc123".to_string(),
             "--flag".to_string(),

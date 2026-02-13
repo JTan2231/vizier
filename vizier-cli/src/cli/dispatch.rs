@@ -54,8 +54,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if matches!(subcommand_from_raw_args(&raw_args).as_deref(), Some("ask")) {
         return Err("`ask` has been removed; use supported workflow commands (`save`, `draft`, `approve`, `review`, `merge`).".into());
     }
+    if let Some(message) = removed_global_flag_guidance(&raw_args) {
+        return Err(message.into());
+    }
     let quiet_requested = flag_present(&raw_args, Some('q'), "--quiet");
-    let json_requested = flag_present(&raw_args, Some('j'), "--json");
     let no_ansi_requested = flag_present(&raw_args, None, "--no-ansi");
     let pager_mode = pager_mode_from_args(&raw_args);
 
@@ -90,12 +92,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     strip_ansi_codes(&rendered)
                 };
 
-                render_help_with_pager(
-                    &help_text,
-                    pager_mode,
-                    stdout_is_tty,
-                    quiet_requested || json_requested,
-                )?;
+                render_help_with_pager(&help_text, pager_mode, stdout_is_tty, quiet_requested)?;
                 return Ok(());
             }
             ErrorKind::DisplayVersion => {
@@ -145,12 +142,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             strip_ansi_codes(&rendered)
         };
 
-        render_help_with_pager(
-            &help_text,
-            pager_mode,
-            stdout_is_tty,
-            quiet_requested || json_requested,
-        )?;
+        render_help_with_pager(&help_text, pager_mode, stdout_is_tty, quiet_requested)?;
         return Ok(());
     }
 
@@ -202,7 +194,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut auditor_cleanup = auditor::AuditorCleanup {
         debug: cli.global.debug,
-        print_json: cli.global.json,
+        print_json: false,
         persisted: false,
     };
 
@@ -293,26 +285,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cfg.backend = config::backend_kind_for_selector(&cfg.agent_selector);
     }
 
-    if let Some(label) = cli
-        .global
-        .agent_label
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        cfg.agent_runtime.label = Some(label.to_ascii_lowercase());
-    }
-
-    if let Some(command) = cli
-        .global
-        .agent_command
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        cfg.agent_runtime.command = vec![command.to_string()];
-    }
-
     if let Some(job_id) = cli.global.background_job_id.as_deref()
         && let Ok(record) = jobs::read_record(&jobs_root, job_id)
         && let Some(snapshot) = record.config_snapshot.as_ref()
@@ -336,17 +308,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let follow = cli.global.follow;
 
     if cli.global.background_job_id.is_none() && scheduler_supported(&cli.command) {
-        if cli.global.no_background {
-            return Err(
-                "foreground execution is no longer supported; scheduled commands always run as jobs"
-                    .into(),
-            );
-        }
-
-        if cli.global.json {
-            return Err("--json cannot be used with scheduled execution; use `vizier jobs show --format json` instead".into());
-        }
-
         let job_id = generate_job_id();
         let config_snapshot = background_config_snapshot(&config::get_config());
         let passthrough_global_args = workflow_node_passthrough_global_args(&cli.global);
@@ -1048,78 +1009,68 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 file,
                 name,
                 command,
-            }) => {
-                if cli.global.json {
-                    return Err("--json is not supported for vizier build".into());
+            }) => match command {
+                Some(BuildActionCmd::Execute(exec)) => {
+                    let pipeline = exec.pipeline.map(|value| match value {
+                        BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
+                        BuildPipelineArg::ApproveReview => BuildExecutionPipeline::ApproveReview,
+                        BuildPipelineArg::ApproveReviewMerge => {
+                            BuildExecutionPipeline::ApproveReviewMerge
+                        }
+                    });
+                    run_build_execute(
+                        BuildExecuteArgs {
+                            build_id: exec.build_id,
+                            pipeline_override: pipeline,
+                            target_override: None,
+                            resume: exec.resume,
+                            assume_yes: exec.assume_yes,
+                            follow: cli.global.follow,
+                            requested_after: &[],
+                        },
+                        &project_root,
+                    )
+                    .await
                 }
-                match command {
-                    Some(BuildActionCmd::Execute(exec)) => {
-                        let pipeline = exec.pipeline.map(|value| match value {
-                            BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
-                            BuildPipelineArg::ApproveReview => {
-                                BuildExecutionPipeline::ApproveReview
-                            }
-                            BuildPipelineArg::ApproveReviewMerge => {
-                                BuildExecutionPipeline::ApproveReviewMerge
-                            }
-                        });
-                        run_build_execute(
-                            BuildExecuteArgs {
-                                build_id: exec.build_id,
-                                pipeline_override: pipeline,
-                                target_override: None,
-                                resume: exec.resume,
-                                assume_yes: exec.assume_yes,
-                                follow: cli.global.follow,
-                                requested_after: &[],
-                            },
-                            &project_root,
-                        )
-                        .await
-                    }
-                    Some(BuildActionCmd::Materialize(materialize)) => {
-                        run_build_materialize(
-                            materialize.build_id,
-                            materialize.step_key,
-                            materialize.slug,
-                            materialize.branch,
-                            materialize.target,
-                            &project_root,
-                        )
-                        .await
-                    }
-                    Some(BuildActionCmd::TemplateNode(node)) => {
-                        run_build_template_node(
-                            BuildTemplateNodeArgs {
-                                build_id: node.build_id,
-                                step_key: node.step_key,
-                                node_id: node.node_id,
-                                slug: node.slug,
-                                branch: node.branch,
-                                target: node.target,
-                                node_json: node.node_json,
-                            },
-                            &project_root,
-                        )
-                        .await
-                    }
-                    None => {
-                        let build_file =
-                            file.ok_or("vizier build requires --file when no subcommand is used")?;
-                        let agent = resolve_wrapper_agent(
-                            &config::get_config(),
-                            "build_execute",
-                            cli_agent_override.as_ref(),
-                        )?;
-                        run_build(build_file, name, &project_root, &agent, commit_mode).await
-                    }
+                Some(BuildActionCmd::Materialize(materialize)) => {
+                    run_build_materialize(
+                        materialize.build_id,
+                        materialize.step_key,
+                        materialize.slug,
+                        materialize.branch,
+                        materialize.target,
+                        &project_root,
+                    )
+                    .await
                 }
-            }
+                Some(BuildActionCmd::TemplateNode(node)) => {
+                    run_build_template_node(
+                        BuildTemplateNodeArgs {
+                            build_id: node.build_id,
+                            step_key: node.step_key,
+                            node_id: node.node_id,
+                            slug: node.slug,
+                            branch: node.branch,
+                            target: node.target,
+                            node_json: node.node_json,
+                        },
+                        &project_root,
+                    )
+                    .await
+                }
+                None => {
+                    let build_file =
+                        file.ok_or("vizier build requires --file when no subcommand is used")?;
+                    let agent = resolve_wrapper_agent(
+                        &config::get_config(),
+                        "build_execute",
+                        cli_agent_override.as_ref(),
+                    )?;
+                    run_build(build_file, name, &project_root, &agent, commit_mode).await
+                }
+            },
 
             Commands::Patch(cmd) => {
-                if cli.global.json {
-                    return Err("--json is not supported for vizier patch".into());
-                }
                 let pipeline = cmd.pipeline.map(|value| match value {
                     BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
                     BuildPipelineArg::ApproveReview => BuildExecutionPipeline::ApproveReview,
@@ -1149,17 +1100,13 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .await
             }
 
-            Commands::List(cmd) => run_list(resolve_list_options(&cmd, cli.global.json)?),
+            Commands::List(cmd) => run_list(resolve_list_options(&cmd)?),
             Commands::Cd(cmd) => run_cd(resolve_cd_options(&cmd)?),
             Commands::Clean(cmd) => run_clean(resolve_clean_options(&cmd)?),
-            Commands::Plan(_) => run_plan_summary(cli_agent_override.as_ref(), cli.global.json),
-            Commands::Jobs(cmd) => run_jobs_command(
-                &project_root,
-                &jobs_root,
-                cmd,
-                cli.global.follow,
-                cli.global.json,
-            ),
+            Commands::Plan(cmd) => run_plan_summary(cli_agent_override.as_ref(), cmd.json),
+            Commands::Jobs(cmd) => {
+                run_jobs_command(&project_root, &jobs_root, cmd, cli.global.follow)
+            }
 
             Commands::Approve(cmd) => {
                 let opts = resolve_approve_options(&cmd, push_after)?;
@@ -1217,11 +1164,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let session_path = auditor::Auditor::persist_session_log().map(|artifact| {
             auditor_cleanup.persisted = true;
             display::info(format!("Session saved to {}", artifact.display_path()));
-            if auditor_cleanup.print_json
-                && let Ok(contents) = std::fs::read_to_string(&artifact.path)
-            {
-                println!("{contents}");
-            }
             artifact.display_path()
         });
 
@@ -1263,6 +1205,101 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     result
 }
 
+fn legacy_global_arg_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-C" | "--config-file"
+            | "-l"
+            | "--load-session"
+            | "--agent"
+            | "--agent-label"
+            | "--agent-command"
+            | "--background-job-id"
+    )
+}
+
+fn first_subcommand_index(raw_args: &[String]) -> Option<usize> {
+    let mut index = 1usize;
+    while index < raw_args.len() {
+        let arg = &raw_args[index];
+        if arg == "--" {
+            break;
+        }
+
+        if let Some((flag, _)) = arg.split_once('=')
+            && legacy_global_arg_takes_value(flag)
+        {
+            index += 1;
+            continue;
+        }
+
+        if arg.starts_with('-') {
+            index += 1;
+            if legacy_global_arg_takes_value(arg) {
+                index += 1;
+            }
+            continue;
+        }
+
+        return Some(index);
+    }
+
+    None
+}
+
+fn removed_global_flag_guidance(raw_args: &[String]) -> Option<String> {
+    let subcommand = first_subcommand_index(raw_args)
+        .and_then(|index| raw_args.get(index).map(|value| (index, value.as_str())));
+
+    for (index, arg) in raw_args.iter().enumerate().skip(1) {
+        let flag = arg.split_once('=').map(|(name, _)| name).unwrap_or(arg);
+        match flag {
+            "--background" => {
+                return Some(
+                    "`--background` was removed; assistant-backed commands already run as scheduled jobs. Use `--follow` to stream logs.".to_string(),
+                );
+            }
+            "--no-background" => {
+                return Some(
+                    "`--no-background` was removed; foreground execution is no longer supported for assistant-backed commands.".to_string(),
+                );
+            }
+            "--pager" => {
+                return Some(
+                    "`--pager` was removed; help output pages automatically on TTY and respects `$VIZIER_PAGER`. Use `--no-pager` to disable paging."
+                        .to_string(),
+                );
+            }
+            "--agent-label" => {
+                return Some(
+                    "`--agent-label` was removed; set the shim label in config (`[agents.commands.<alias>.agent] label = \"...\"`) and use `--config-file` for ad-hoc runs."
+                        .to_string(),
+                );
+            }
+            "--agent-command" => {
+                return Some(
+                    "`--agent-command` was removed; set runtime commands in config (`[agents.commands.<alias>.agent] command = [\"...\"]`) and use `--config-file` for ad-hoc runs."
+                        .to_string(),
+                );
+            }
+            "-j" | "--json" => {
+                let plan_local = subcommand
+                    .map(|(sub_index, name)| name == "plan" && index > sub_index)
+                    .unwrap_or(false);
+                if !plan_local {
+                    return Some(
+                        "global `--json` was removed; use command-local output selectors (`vizier list --format json`, `vizier jobs ... --format json`) or `vizier plan --json`."
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 fn workflow_node_passthrough_global_args(global: &GlobalOpts) -> Vec<String> {
     let mut args = Vec::new();
     if global.quiet {
@@ -1287,14 +1324,6 @@ fn workflow_node_passthrough_global_args(global: &GlobalOpts) -> Vec<String> {
     if let Some(agent) = global.agent.as_ref() {
         args.push("--agent".to_string());
         args.push(agent.clone());
-    }
-    if let Some(label) = global.agent_label.as_ref() {
-        args.push("--agent-label".to_string());
-        args.push(label.clone());
-    }
-    if let Some(command) = global.agent_command.as_ref() {
-        args.push("--agent-command".to_string());
-        args.push(command.clone());
     }
     if let Some(config_file) = global.config_file.as_ref() {
         args.push("--config-file".to_string());

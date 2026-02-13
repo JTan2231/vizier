@@ -157,11 +157,11 @@ fn test_jobs_status_output() -> TestResult {
 
     let output = repo
         .vizier_cmd_background()
-        .args(["--json", "jobs", "status", job_id])
+        .args(["jobs", "status", "--format", "json", job_id])
         .output()?;
     assert!(
         output.status.success(),
-        "vizier --json jobs status failed: {}",
+        "vizier jobs status --format json failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout)?;
@@ -2687,11 +2687,11 @@ fn test_jobs_retry_json_output() -> TestResult {
 
     let output = repo
         .vizier_cmd_background()
-        .args(["--json", "jobs", "retry", job_id])
+        .args(["jobs", "retry", "--format", "json", job_id])
         .output()?;
     assert!(
         output.status.success(),
-        "vizier --json jobs retry failed: {}",
+        "vizier jobs retry --format json failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let payload: Value = serde_json::from_slice(&output.stdout)?;

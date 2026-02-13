@@ -51,7 +51,7 @@ Selector/runtime/documentation settings resolve in this order:
 3. `[agents.commands.<alias>]`
 4. `[agents.templates."<template-selector>"]`
 5. Prompt-local nested override (`[...prompts.<kind>.agent]`)
-6. CLI overrides (`--agent`, `--agent-label`, `--agent-command`)
+6. CLI selector override (`--agent`)
 
 Template tables win over alias tables; alias tables win over legacy scope tables.
 

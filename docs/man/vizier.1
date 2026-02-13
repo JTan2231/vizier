@@ -39,12 +39,6 @@ Options:
       --no-ansi
           Disable ANSI control sequences even on TTYs (non-TTY is always plain); useful for CI/log scrapers
 
-      --pager
-          Page help output when available; defaults to TTY-only paging and honors $VIZIER_PAGER
-
-      --no-pager
-          Disable paging for help output even on a TTY
-
   -l, --load-session <LOAD_SESSION>
           Load session context from `.vizier/sessions/<id>/session.json` before running
 
@@ -53,15 +47,6 @@ Options:
 
       --agent <SELECTOR>
           Agent selector to run for assistant-backed commands (e.g., `codex`, `gemini`, or a custom shim name). Overrides config for this run
-
-      --agent-label <LABEL>
-          Bundled agent shim label to run (for example, `codex` or `gemini`); overrides config until the end of this invocation
-
-      --agent-command <PATH>
-          Path to a custom agent script (stdout = assistant text; stderr = progress/errors); wins over labels/config for this run
-
-  -j, --json
-          Emit the audit/outcome as JSON to stdout (human epilogues may be suppressed depending on the command)
 
   -C, --config-file <CONFIG_FILE>
           Config file to load (supports JSON or TOML); bypasses the normal global+repo layering
@@ -72,14 +57,8 @@ Options:
       --no-commit
           Leave changes staged/dirty instead of committing automatically (`[workflow] no_commit_default` sets the default posture)
 
-      --background
-          Deprecated: assistant-backed commands always enqueue jobs; use --follow to stream logs
-
       --follow
           Attach to a scheduled job and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
-
-      --no-background
-          Deprecated: foreground execution is no longer supported for assistant-backed commands
 
   -h, --help
           Print help

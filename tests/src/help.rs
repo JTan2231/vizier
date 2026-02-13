@@ -94,8 +94,12 @@ fn test_help_all_prints_full_reference() -> TestResult {
         "removed commands should not appear in full help inventory: {stdout}"
     );
     assert!(
-        stdout.contains("--no-ansi") && stdout.contains("--pager"),
+        stdout.contains("--no-ansi") && stdout.contains("--follow"),
         "full help should include global options: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--pager"),
+        "full help should not advertise removed --pager: {stdout}"
     );
     Ok(())
 }
@@ -202,11 +206,11 @@ fn test_help_does_not_invoke_pager_when_not_a_tty() -> TestResult {
 
     let mut cmd = repo.vizier_cmd();
     cmd.env("VIZIER_PAGER", &pager_cmd);
-    cmd.args(["--pager", "--help"]);
+    cmd.args(["--help"]);
     let output = cmd.output()?;
     assert!(
         output.status.success(),
-        "help with --pager should exit 0: {}",
+        "help should exit 0: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -219,6 +223,21 @@ fn test_help_does_not_invoke_pager_when_not_a_tty() -> TestResult {
     assert!(
         !stdout.trim().is_empty(),
         "help should still print when pager is suppressed: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_removed_pager_flag_shows_migration_guidance() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let output = repo.vizier_output_no_follow(&["--pager", "help"])?;
+    assert!(!output.status.success(), "removed --pager should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`--pager` was removed"),
+        "missing removed --pager guidance:\n{stderr}"
     );
     Ok(())
 }
