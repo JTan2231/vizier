@@ -27,13 +27,18 @@ If bump resolves to `none`, Vizier prints a no-op outcome unless you force `--pa
 
 ## Notes policy
 
-Commits are grouped into:
-- Breaking Changes
-- Features
-- Fixes/Performance
-- Other
+Release notes render a single section:
+- `Changes`
 
-Each section is capped by `--max-commits` (default `20`); overflow is summarized as `+N more`.
+Only commits with Conventional Commit subject format are included:
+- `type: description`
+- `type(scope): description`
+- `type!: description`
+- `type(scope)!: description`
+
+Where `type` is alphabetic and `description` is non-empty.
+
+The `Changes` section is capped by `--max-commits` (default `20`); overflow is summarized as `+N more`.
 
 ## Safety checks
 

@@ -23,10 +23,10 @@ pub use merge::{
     list_conflicted_paths, prepare_merge,
 };
 pub use release::{
-    ReleaseBump, ReleaseCommit, ReleaseNoteEntry, ReleaseNotes, ReleaseSection, ReleaseSectionKind,
-    ReleaseTag, ReleaseVersion, build_release_notes, classify_commit, commits_since_release_tag,
-    create_annotated_release_tag, derive_release_bump, latest_reachable_release_tag,
-    parse_release_version_tag, release_tag_exists,
+    ReleaseBump, ReleaseCommit, ReleaseNoteEntry, ReleaseNotes, ReleaseSectionKind, ReleaseTag,
+    ReleaseVersion, build_release_notes, classify_commit, commits_since_release_tag,
+    create_annotated_release_tag, derive_release_bump, is_conventional_commit_subject,
+    latest_reachable_release_tag, parse_release_version_tag, release_tag_exists,
 };
 pub use remotes::{
     AttemptOutcome, CredentialAttempt, CredentialStrategy, HelperScope, PushError, PushErrorKind,

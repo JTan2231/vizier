@@ -86,17 +86,6 @@ pub enum ReleaseSectionKind {
     Other,
 }
 
-impl ReleaseSectionKind {
-    pub fn title(self) -> &'static str {
-        match self {
-            ReleaseSectionKind::BreakingChanges => "Breaking Changes",
-            ReleaseSectionKind::Features => "Features",
-            ReleaseSectionKind::FixesPerformance => "Fixes/Performance",
-            ReleaseSectionKind::Other => "Other",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseNoteEntry {
     pub short_sha: String,
@@ -104,56 +93,35 @@ pub struct ReleaseNoteEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReleaseSection {
-    pub kind: ReleaseSectionKind,
+pub struct ReleaseNotes {
     pub entries: Vec<ReleaseNoteEntry>,
     pub overflow: usize,
 }
 
-impl ReleaseSection {
+impl ReleaseNotes {
+    pub const SECTION_TITLE: &str = "Changes";
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.overflow == 0
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReleaseNotes {
-    pub breaking: ReleaseSection,
-    pub features: ReleaseSection,
-    pub fixes_performance: ReleaseSection,
-    pub other: ReleaseSection,
-}
-
-impl ReleaseNotes {
-    pub fn sections(&self, include_other: bool) -> Vec<&ReleaseSection> {
-        let mut out = vec![&self.breaking, &self.features, &self.fixes_performance];
-        if include_other {
-            out.push(&self.other);
-        }
-        out
+    pub fn total_entries(&self) -> usize {
+        self.entries.len() + self.overflow
     }
 
-    pub fn render_markdown(&self, include_other: bool) -> String {
+    pub fn render_markdown(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+
         let mut lines = Vec::new();
-
-        for section in self.sections(include_other) {
-            if section.is_empty() {
-                continue;
-            }
-            lines.push(format!("### {}", section.kind.title()));
-            for entry in &section.entries {
-                lines.push(format!("- {} ({})", entry.subject, entry.short_sha));
-            }
-            if section.overflow > 0 {
-                lines.push(format!("- +{} more", section.overflow));
-            }
-            lines.push(String::new());
+        lines.push(format!("### {}", Self::SECTION_TITLE));
+        for entry in &self.entries {
+            lines.push(format!("- {} ({})", entry.subject, entry.short_sha));
         }
-
-        while lines.last().is_some_and(|line| line.is_empty()) {
-            lines.pop();
+        if self.overflow > 0 {
+            lines.push(format!("- +{} more", self.overflow));
         }
-
         lines.join("\n")
     }
 }
@@ -351,6 +319,45 @@ fn conventional_type_from_header(header: &str) -> Option<String> {
     }
 }
 
+fn conventional_scope_is_valid(scope: &str) -> bool {
+    let scope = scope.trim();
+    !scope.is_empty() && !scope.contains('(') && !scope.contains(')')
+}
+
+pub fn is_conventional_commit_subject(subject: &str) -> bool {
+    let Some((header, description)) = subject.trim().split_once(':') else {
+        return false;
+    };
+    if description.trim().is_empty() {
+        return false;
+    }
+
+    let mut header = header.trim();
+    if header.is_empty() {
+        return false;
+    }
+
+    if let Some(stripped) = header.strip_suffix('!') {
+        header = stripped.trim_end();
+    }
+    if header.is_empty() {
+        return false;
+    }
+
+    if let Some((commit_type, scope)) = header.split_once('(') {
+        if !scope.ends_with(')') {
+            return false;
+        }
+        if !conventional_scope_is_valid(&scope[..scope.len() - 1]) {
+            return false;
+        }
+        let commit_type = commit_type.trim();
+        !commit_type.is_empty() && commit_type.chars().all(|ch| ch.is_ascii_alphabetic())
+    } else {
+        header.chars().all(|ch| ch.is_ascii_alphabetic())
+    }
+}
+
 fn commit_is_breaking(subject: &str, message: &str) -> bool {
     let header = commit_header(subject);
     if header.ends_with('!') {
@@ -383,54 +390,30 @@ pub fn derive_release_bump(commits: &[ReleaseCommit]) -> ReleaseBump {
     })
 }
 
-fn push_note(section: &mut ReleaseSection, entry: ReleaseNoteEntry, max_commits: usize) {
-    if section.entries.len() < max_commits {
-        section.entries.push(entry);
+fn push_note(notes: &mut ReleaseNotes, entry: ReleaseNoteEntry, max_commits: usize) {
+    if notes.entries.len() < max_commits {
+        notes.entries.push(entry);
     } else {
-        section.overflow += 1;
+        notes.overflow += 1;
     }
 }
 
 pub fn build_release_notes(commits: &[ReleaseCommit], max_commits: usize) -> ReleaseNotes {
     let cap = max_commits.max(1);
     let mut notes = ReleaseNotes {
-        breaking: ReleaseSection {
-            kind: ReleaseSectionKind::BreakingChanges,
-            entries: Vec::new(),
-            overflow: 0,
-        },
-        features: ReleaseSection {
-            kind: ReleaseSectionKind::Features,
-            entries: Vec::new(),
-            overflow: 0,
-        },
-        fixes_performance: ReleaseSection {
-            kind: ReleaseSectionKind::FixesPerformance,
-            entries: Vec::new(),
-            overflow: 0,
-        },
-        other: ReleaseSection {
-            kind: ReleaseSectionKind::Other,
-            entries: Vec::new(),
-            overflow: 0,
-        },
+        entries: Vec::new(),
+        overflow: 0,
     };
 
     for commit in commits {
-        let (_, section_kind) = classify_commit(&commit.subject, &commit.message);
+        if !is_conventional_commit_subject(&commit.subject) {
+            continue;
+        }
         let entry = ReleaseNoteEntry {
             short_sha: commit.short_sha.clone(),
             subject: commit.subject.clone(),
         };
-
-        match section_kind {
-            ReleaseSectionKind::BreakingChanges => push_note(&mut notes.breaking, entry, cap),
-            ReleaseSectionKind::Features => push_note(&mut notes.features, entry, cap),
-            ReleaseSectionKind::FixesPerformance => {
-                push_note(&mut notes.fixes_performance, entry, cap)
-            }
-            ReleaseSectionKind::Other => push_note(&mut notes.other, entry, cap),
-        }
+        push_note(&mut notes, entry, cap);
     }
 
     notes
@@ -599,23 +582,81 @@ mod tests {
     }
 
     #[test]
-    fn build_release_notes_caps_sections_and_records_overflow() {
+    fn conventional_commit_subject_predicate_accepts_expected_shapes() {
+        for subject in [
+            "feat: add release",
+            "feat(core): add release",
+            "feat!: break release",
+            "feat(core)!: break release",
+            "FEAT(ui): uppercase type is accepted",
+        ] {
+            assert!(
+                is_conventional_commit_subject(subject),
+                "expected `{subject}` to be accepted"
+            );
+        }
+
+        for subject in [
+            "feat add release",
+            "1feat: add release",
+            "feat:   ",
+            "feat(): add release",
+            "feat(scope: add release",
+            "feat(scope)): add release",
+        ] {
+            assert!(
+                !is_conventional_commit_subject(subject),
+                "expected `{subject}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn build_release_notes_includes_only_conventional_subjects() {
+        let commits = vec![
+            fake_commit("feat: one", "feat: one"),
+            fake_commit(
+                "Merge branch 'topic' into main",
+                "Merge branch 'topic' into main",
+            ),
+            fake_commit("docs: note", "docs: note"),
+            fake_commit("fix(core): patch", "fix(core): patch"),
+        ];
+
+        let notes = build_release_notes(&commits, 10);
+        let subjects = notes
+            .entries
+            .iter()
+            .map(|entry| entry.subject.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            subjects,
+            vec!["feat: one", "docs: note", "fix(core): patch"]
+        );
+        assert_eq!(notes.overflow, 0);
+    }
+
+    #[test]
+    fn build_release_notes_caps_changes_and_records_overflow() {
         let commits = vec![
             fake_commit("feat: one", "feat: one"),
             fake_commit("feat: two", "feat: two"),
             fake_commit("feat: three", "feat: three"),
-            fake_commit("docs: note", "docs: note"),
+            fake_commit("fix: patch", "fix: patch"),
         ];
 
         let notes = build_release_notes(&commits, 2);
-        assert_eq!(notes.features.entries.len(), 2);
-        assert_eq!(notes.features.overflow, 1);
-        assert_eq!(notes.other.entries.len(), 1);
+        assert_eq!(notes.entries.len(), 2);
+        assert_eq!(notes.overflow, 2);
+        assert_eq!(notes.total_entries(), 4);
 
-        let rendered = notes.render_markdown(true);
-        assert!(rendered.contains("### Features"));
-        assert!(rendered.contains("- +1 more"));
-        assert!(rendered.contains("### Other"));
+        let rendered = notes.render_markdown();
+        assert!(rendered.contains("### Changes"));
+        assert!(rendered.contains("- +2 more"));
+        assert!(!rendered.contains("### Breaking Changes"));
+        assert!(!rendered.contains("### Features"));
+        assert!(!rendered.contains("### Fixes/Performance"));
+        assert!(!rendered.contains("### Other"));
     }
 
     #[test]

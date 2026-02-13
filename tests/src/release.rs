@@ -52,6 +52,21 @@ fn test_release_dry_run_prints_plan_without_mutation() -> TestResult {
         stdout.contains("Release notes preview:"),
         "expected release notes preview in dry run: {stdout}"
     );
+    assert!(
+        stdout.contains("Changes:"),
+        "expected Changes heading in preview: {stdout}"
+    );
+    for legacy_heading in [
+        "Breaking Changes:",
+        "Features:",
+        "Fixes/Performance:",
+        "Other:",
+    ] {
+        assert!(
+            !stdout.contains(legacy_heading),
+            "dry-run preview should not include {legacy_heading}: {stdout}"
+        );
+    }
 
     let commit_count_after = count_commits_from_head(&repo.repo())?;
     let tags_after = tag_names(&repo)?;
@@ -60,6 +75,90 @@ fn test_release_dry_run_prints_plan_without_mutation() -> TestResult {
         "dry-run must not create commits"
     );
     assert_eq!(tags_before, tags_after, "dry-run must not create tags");
+
+    Ok(())
+}
+
+#[test]
+fn test_release_notes_preview_filters_non_conventional_subjects() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write("changes.txt", "one\n")?;
+    repo.git(&["add", "changes.txt"])?;
+    repo.git(&["commit", "-m", "feat: include this change"])?;
+
+    repo.write("changes.txt", "two\n")?;
+    repo.git(&["add", "changes.txt"])?;
+    repo.git(&["commit", "-m", "Merge branch 'topic' into main"])?;
+
+    repo.write("changes.txt", "three\n")?;
+    repo.git(&["add", "changes.txt"])?;
+    repo.git(&["commit", "-m", "fix(core): include this fix"])?;
+
+    let output = repo.vizier_output(&["release", "--dry-run", "--max-commits", "10"])?;
+    assert!(
+        output.status.success(),
+        "vizier release --dry-run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Changes:"),
+        "expected Changes heading in preview: {stdout}"
+    );
+    assert!(
+        stdout.contains("feat: include this change"),
+        "expected conventional feat commit in preview: {stdout}"
+    );
+    assert!(
+        stdout.contains("fix(core): include this fix"),
+        "expected conventional fix commit in preview: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Merge branch 'topic' into main"),
+        "non-conventional commit subject should be excluded: {stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_release_notes_preview_respects_max_commits_overflow() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    for (index, subject) in [
+        "feat: first change",
+        "fix: second change",
+        "docs: third change",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let contents = format!("{index}\n");
+        repo.write("overflow.txt", &contents)?;
+        repo.git(&["add", "overflow.txt"])?;
+        repo.git(&["commit", "-m", subject])?;
+    }
+
+    let output = repo.vizier_output(&["release", "--dry-run", "--max-commits", "2"])?;
+    assert!(
+        output.status.success(),
+        "vizier release --dry-run --max-commits 2 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Changes:"),
+        "expected Changes heading in preview: {stdout}"
+    );
+    assert!(
+        stdout.contains("  - +1 more"),
+        "expected overflow summary in preview: {stdout}"
+    );
 
     Ok(())
 }
@@ -97,6 +196,22 @@ fn test_release_yes_creates_commit_and_annotated_tag() -> TestResult {
         Some("chore(release): v0.0.1"),
         "release commit subject should match"
     );
+    let commit_message = head_commit.message().unwrap_or_default();
+    assert!(
+        commit_message.contains("### Changes"),
+        "release commit body should render Changes heading: {commit_message}"
+    );
+    for legacy_heading in [
+        "### Breaking Changes",
+        "### Features",
+        "### Fixes/Performance",
+        "### Other",
+    ] {
+        assert!(
+            !commit_message.contains(legacy_heading),
+            "release commit body should not include {legacy_heading}: {commit_message}"
+        );
+    }
 
     let tag_ref = repo_handle.find_reference("refs/tags/v0.0.1")?;
     let tag_object = tag_ref.peel(ObjectType::Tag)?;

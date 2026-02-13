@@ -3,7 +3,7 @@ use std::io::{self, IsTerminal};
 use chrono::Utc;
 use git2::{Repository, RepositoryState};
 use vizier_core::vcs::{
-    self, ReleaseBump, ReleaseCommit, ReleaseNotes, ReleaseSection, ReleaseTag, ReleaseVersion,
+    self, ReleaseBump, ReleaseCommit, ReleaseNotes, ReleaseTag, ReleaseVersion,
 };
 
 use super::shared::format_block;
@@ -168,35 +168,17 @@ fn releasable_commit_count(commits: &[ReleaseCommit]) -> usize {
         .count()
 }
 
-fn section_total(section: &ReleaseSection) -> usize {
-    section.entries.len() + section.overflow
-}
-
 fn render_notes_preview(notes: &ReleaseNotes) -> String {
-    let mut lines = Vec::new();
-
-    for section in notes.sections(true) {
-        if section.is_empty() {
-            continue;
-        }
-
-        lines.push(format!("{}:", section.kind.title()));
-        for entry in &section.entries {
-            lines.push(format!("  - {} ({})", entry.subject, entry.short_sha));
-        }
-        if section.overflow > 0 {
-            lines.push(format!("  - +{} more", section.overflow));
-        }
-        lines.push(String::new());
-    }
-
-    while lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-
-    if lines.is_empty() {
+    if notes.is_empty() {
         "(no release notes entries)".to_string()
     } else {
+        let mut lines = vec![format!("{}:", ReleaseNotes::SECTION_TITLE)];
+        for entry in &notes.entries {
+            lines.push(format!("  - {} ({})", entry.subject, entry.short_sha));
+        }
+        if notes.overflow > 0 {
+            lines.push(format!("  - +{} more", notes.overflow));
+        }
         lines.join("\n")
     }
 }
@@ -319,7 +301,7 @@ fn build_release_commit_message(plan: &ReleasePlan) -> String {
         "Release Notes:".to_string(),
     ];
 
-    let notes = plan.notes.render_markdown(true);
+    let notes = plan.notes.render_markdown();
     if notes.is_empty() {
         body.push("- No release notes entries".to_string());
     } else {
@@ -339,16 +321,13 @@ fn build_release_commit_message(plan: &ReleasePlan) -> String {
 
 fn build_tag_annotation(plan: &ReleasePlan) -> String {
     format!(
-        "Release {}\n\nFrom: v{}\nBump: {}\nCommits scanned: {}\nReleasable commits: {}\nBreaking changes: {}\nFeatures: {}\nFixes/Performance: {}\nOther: {}",
+        "Release {}\n\nFrom: v{}\nBump: {}\nCommits scanned: {}\nReleasable commits: {}\nRelease note entries (Conventional Commits): {}",
         plan.target_tag,
         plan.base_version,
         plan.selected_bump,
         plan.commits.len(),
         releasable_commit_count(&plan.commits),
-        section_total(&plan.notes.breaking),
-        section_total(&plan.notes.features),
-        section_total(&plan.notes.fixes_performance),
-        section_total(&plan.notes.other),
+        plan.notes.total_entries(),
     )
 }
 
