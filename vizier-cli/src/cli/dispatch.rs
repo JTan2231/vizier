@@ -1104,9 +1104,13 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Commands::Cd(cmd) => run_cd(resolve_cd_options(&cmd)?),
             Commands::Clean(cmd) => run_clean(resolve_clean_options(&cmd)?),
             Commands::Plan(cmd) => run_plan_summary(cli_agent_override.as_ref(), cmd.json),
-            Commands::Jobs(cmd) => {
-                run_jobs_command(&project_root, &jobs_root, cmd, cli.global.follow)
-            }
+            Commands::Jobs(cmd) => run_jobs_command(
+                &project_root,
+                &jobs_root,
+                cmd,
+                cli.global.follow,
+                cli.global.no_ansi,
+            ),
 
             Commands::Approve(cmd) => {
                 let opts = resolve_approve_options(&cmd, push_after)?;

@@ -1,6 +1,10 @@
 use std::collections::HashSet;
+use std::io::{self, Write};
 use std::path::Path;
+use std::thread;
+use std::time::Duration as StdDuration;
 
+use chrono::Local;
 use git2::Repository;
 use serde_json::{Map, Value, json};
 use vizier_core::{
@@ -129,6 +133,7 @@ fn schedule_roots(
     roots
 }
 
+#[derive(Clone)]
 struct ScheduleSummaryRow {
     order: usize,
     slug: Option<String>,
@@ -243,8 +248,7 @@ fn schedule_summary_rows(graph: &jobs::ScheduleGraph, roots: &[String]) -> Vec<S
     rows
 }
 
-fn render_schedule_summary(rows: &[ScheduleSummaryRow]) {
-    println!("Schedule (Summary)");
+fn schedule_summary_table_rows(rows: &[ScheduleSummaryRow]) -> Vec<Vec<String>> {
     let mut table_rows = vec![vec![
         "#".to_string(),
         "Slug".to_string(),
@@ -265,7 +269,12 @@ fn render_schedule_summary(rows: &[ScheduleSummaryRow]) {
         ]);
     }
 
-    let table = format_table(&table_rows, 0);
+    table_rows
+}
+
+fn render_schedule_summary(rows: &[ScheduleSummaryRow]) {
+    println!("Schedule (Summary)");
+    let table = format_table(&schedule_summary_table_rows(rows), 0);
     if !table.is_empty() {
         println!("{table}");
     }
@@ -443,6 +452,154 @@ fn render_schedule_dag(
             path.insert(job_id.clone());
             render_schedule_dependencies(graph, repo, job_id, max_depth, "", &mut path);
         }
+    }
+}
+
+const WATCH_LOG_TAIL_BYTES: usize = 16 * 1024;
+const WATCH_ANSI_CLEAR_AND_HOME: &str = "\x1b[2J\x1b[H";
+
+#[derive(Debug, Default)]
+struct ScheduleStatusCounts {
+    queued: usize,
+    waiting: usize,
+    running: usize,
+    blocked: usize,
+    terminal: usize,
+}
+
+fn schedule_status_counts(rows: &[ScheduleSummaryRow]) -> ScheduleStatusCounts {
+    let mut counts = ScheduleStatusCounts::default();
+    for row in rows {
+        match row.status {
+            JobStatus::Queued => counts.queued += 1,
+            JobStatus::WaitingOnDeps | JobStatus::WaitingOnApproval | JobStatus::WaitingOnLocks => {
+                counts.waiting += 1;
+            }
+            JobStatus::Running => counts.running += 1,
+            JobStatus::BlockedByDependency | JobStatus::BlockedByApproval => counts.blocked += 1,
+            JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled => {
+                counts.terminal += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn select_watch_running_job(
+    rows: &[ScheduleSummaryRow],
+    focused_job: Option<&str>,
+    top: usize,
+) -> Option<String> {
+    if let Some(job_id) = focused_job
+        && rows
+            .iter()
+            .any(|row| row.job_id == job_id && row.status == JobStatus::Running)
+    {
+        return Some(job_id.to_string());
+    }
+
+    rows.iter()
+        .take(top)
+        .find(|row| row.status == JobStatus::Running)
+        .map(|row| row.job_id.clone())
+}
+
+fn render_schedule_watch(
+    rows: &[ScheduleSummaryRow],
+    top: usize,
+    interval_ms: u64,
+    selected_running_job: Option<&str>,
+    latest_line: Option<&jobs::LatestLogLine>,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Schedule Watch | refreshed {} | interval={}ms | top={}\n",
+        Local::now().to_rfc3339(),
+        interval_ms,
+        top
+    ));
+
+    let counts = schedule_status_counts(rows);
+    out.push_str(&format!(
+        "State: queued={} waiting={} running={} blocked={} terminal={}\n\n",
+        counts.queued, counts.waiting, counts.running, counts.blocked, counts.terminal
+    ));
+
+    out.push_str("Schedule (Summary)\n");
+    let visible_rows = rows.iter().take(top).cloned().collect::<Vec<_>>();
+    if visible_rows.is_empty() {
+        out.push_str("(no scheduled jobs)\n");
+    } else {
+        let table_rows = schedule_summary_table_rows(&visible_rows);
+        let table = format_table(&table_rows, 0);
+        out.push_str(&table);
+        out.push('\n');
+    }
+
+    out.push('\n');
+    out.push_str("Running Job Output\n");
+    if let Some(job_id) = selected_running_job {
+        out.push_str(&format!("Running job: {job_id}\n"));
+        if let Some(line) = latest_line {
+            out.push_str(&format!(
+                "Latest line: [{}] {}\n",
+                line.stream.label(),
+                line.line
+            ));
+        } else {
+            out.push_str("Latest line: (no output yet)\n");
+        }
+    } else {
+        out.push_str("No running job\n");
+        out.push_str("Latest line: (none)\n");
+    }
+
+    out
+}
+
+fn ensure_watch_mode_allowed(no_ansi: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let display_cfg = vizier_core::display::get_display_config();
+    if display_cfg.stdout_is_tty && display_cfg.stderr_is_tty && !no_ansi {
+        return Ok(());
+    }
+
+    Err(
+        "`--watch` requires an interactive TTY with ANSI enabled; rerun without `--watch` for static output."
+            .into(),
+    )
+}
+
+fn run_schedule_watch_loop(
+    jobs_root: &Path,
+    all: bool,
+    focused_job: Option<&str>,
+    max_depth: usize,
+    top: usize,
+    interval_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let records = jobs::list_records(jobs_root)?;
+        let graph = jobs::ScheduleGraph::new(records);
+        let roots = schedule_roots(&graph, all, focused_job, max_depth);
+        let rows = schedule_summary_rows(&graph, &roots);
+        let selected_running_job = select_watch_running_job(&rows, focused_job, top);
+        let latest_line = selected_running_job
+            .as_deref()
+            .and_then(|job_id| {
+                jobs::latest_job_log_line(jobs_root, job_id, WATCH_LOG_TAIL_BYTES).ok()
+            })
+            .flatten();
+
+        let frame = render_schedule_watch(
+            &rows,
+            top,
+            interval_ms,
+            selected_running_job.as_deref(),
+            latest_line.as_ref(),
+        );
+        print!("{WATCH_ANSI_CLEAR_AND_HOME}{frame}");
+        io::stdout().flush()?;
+        thread::sleep(StdDuration::from_millis(interval_ms));
     }
 }
 
@@ -707,6 +864,7 @@ pub(crate) fn run_jobs_command(
     jobs_root: &Path,
     cmd: JobsCmd,
     follow: bool,
+    no_ansi: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
         JobsAction::List {
@@ -879,6 +1037,9 @@ pub(crate) fn run_jobs_command(
             all,
             job,
             format,
+            watch,
+            top,
+            interval_ms,
             max_depth,
         } => {
             let schedule_format = match format {
@@ -887,6 +1048,32 @@ pub(crate) fn run_jobs_command(
                 Some(JobsScheduleFormatArg::Json) => ScheduleFormat::Json,
                 None => ScheduleFormat::Summary,
             };
+
+            if top == 0 {
+                return Err("`--top` must be at least 1.".into());
+            }
+            if interval_ms < 100 {
+                return Err("`--interval-ms` must be at least 100.".into());
+            }
+
+            if watch && !matches!(schedule_format, ScheduleFormat::Summary) {
+                return Err(
+                    "`--watch` only supports summary format; rerun without `--format dag|json`."
+                        .into(),
+                );
+            }
+
+            if watch {
+                ensure_watch_mode_allowed(no_ansi)?;
+                return run_schedule_watch_loop(
+                    jobs_root,
+                    all,
+                    job.as_deref(),
+                    max_depth,
+                    top,
+                    interval_ms,
+                );
+            }
 
             let records = jobs::list_records(jobs_root)?;
             let graph = jobs::ScheduleGraph::new(records);
@@ -1162,5 +1349,53 @@ pub(crate) fn run_jobs_command(
             println!("Outcome: removed {} job(s)", removed);
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(order: usize, job_id: &str, status: JobStatus) -> ScheduleSummaryRow {
+        ScheduleSummaryRow {
+            order,
+            slug: None,
+            name: format!("job-{order}"),
+            status,
+            wait: None,
+            job_id: job_id.to_string(),
+            created_at: "2026-02-13T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn select_watch_running_job_prefers_focused_running_job() {
+        let rows = vec![
+            row(1, "job-a", JobStatus::Running),
+            row(2, "job-b", JobStatus::Running),
+        ];
+        let selected = select_watch_running_job(&rows, Some("job-b"), 1);
+        assert_eq!(selected.as_deref(), Some("job-b"));
+    }
+
+    #[test]
+    fn select_watch_running_job_falls_back_to_first_visible_running() {
+        let rows = vec![
+            row(1, "job-queued", JobStatus::Queued),
+            row(2, "job-running-1", JobStatus::Running),
+            row(3, "job-running-2", JobStatus::Running),
+        ];
+        let selected = select_watch_running_job(&rows, None, 2);
+        assert_eq!(selected.as_deref(), Some("job-running-1"));
+    }
+
+    #[test]
+    fn select_watch_running_job_returns_none_when_no_visible_running_jobs() {
+        let rows = vec![
+            row(1, "job-queued", JobStatus::Queued),
+            row(2, "job-running-hidden", JobStatus::Running),
+        ];
+        let selected = select_watch_running_job(&rows, None, 1);
+        assert!(selected.is_none());
     }
 }

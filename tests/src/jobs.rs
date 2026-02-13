@@ -872,6 +872,69 @@ fn test_jobs_schedule_empty_state() -> TestResult {
 }
 
 #[test]
+fn test_jobs_schedule_watch_rejects_without_interactive_tty() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["jobs", "schedule", "--watch"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for non-interactive watch mode"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires an interactive TTY with ANSI enabled"),
+        "expected interactive TTY rejection message:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_watch_rejects_with_no_ansi() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    let output = repo
+        .vizier_cmd_background()
+        .args(["--no-ansi", "jobs", "schedule", "--watch"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for --no-ansi watch mode"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires an interactive TTY with ANSI enabled"),
+        "expected no-ansi rejection message:\n{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_jobs_schedule_watch_rejects_incompatible_format() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+
+    for format in ["json", "dag"] {
+        let output = repo
+            .vizier_cmd_background()
+            .args(["jobs", "schedule", "--watch", "--format", format])
+            .output()?;
+        assert!(
+            !output.status.success(),
+            "expected non-zero exit for --watch --format {format}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("only supports summary format"),
+            "expected watch format rejection for {format}:\n{stderr}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_jobs_schedule_dag_and_json_output() -> TestResult {
     let repo = IntegrationRepo::new()?;
     repo.git(&["branch", "present-branch"])?;

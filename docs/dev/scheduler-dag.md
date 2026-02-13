@@ -219,7 +219,7 @@ configuration (`display.lists.jobs` and `display.lists.jobs_show`).
 - `json`: stable parseable contract for tooling.
 
 Usage:
-`vizier jobs schedule [--all] [--job <id>] [--format summary|dag|json] [--max-depth N]`
+`vizier jobs schedule [--all] [--job <id>] [--format summary|dag|json] [--watch] [--top N] [--interval-ms MS] [--max-depth N]`
 
 Summary behavior (default):
 - Header: `Schedule (Summary)`.
@@ -254,6 +254,21 @@ JSON behavior (`--format json`):
   - `from`
   - `to`
   - either `after` (`{ policy }`) or `artifact` (with optional `state`)
+
+Watch behavior (`--watch`):
+- Interactive summary dashboard with in-place ANSI redraw (top-style) that includes:
+  - refresh header (timestamp + poll interval)
+  - status bucket counts (`queued`, `waiting`, `running`, `blocked`, `terminal`)
+  - top-N summary table (`--top`, default `10`, minimum `1`)
+  - running-job pane showing the selected job and latest `[stdout]`/`[stderr]` line
+- Running job selection:
+  - if `--job <id>` is set and that job is `running`, watch pins to that job
+  - otherwise watch uses the first visible `running` summary row (after top-N truncation)
+- Latest-line source reads bounded log tails from `stdout.log` and `stderr.log` and picks the most recently modified stream.
+- Guardrails:
+  - requires interactive stdout/stderr TTY with ANSI enabled
+  - `--watch` rejects `--format dag|json` (summary-only mode)
+  - `--interval-ms` default `500`, minimum `100`
 
 Example:
 ```

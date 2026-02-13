@@ -186,6 +186,27 @@ pub enum LogStream {
     Both,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LatestLogStream {
+    Stdout,
+    Stderr,
+}
+
+impl LatestLogStream {
+    pub fn label(self) -> &'static str {
+        match self {
+            LatestLogStream::Stdout => "stdout",
+            LatestLogStream::Stderr => "stderr",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LatestLogLine {
+    pub stream: LatestLogStream,
+    pub line: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CancelCleanupStatus {
@@ -2374,6 +2395,86 @@ fn emit_log(path: &Path, offset: u64, label: &str, labeled: bool) -> io::Result<
     Ok(new_offset)
 }
 
+fn read_log_tail(path: &Path, tail_bytes: usize) -> io::Result<Option<Vec<u8>>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(tail_bytes as u64);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    Ok(Some(buffer))
+}
+
+fn latest_non_empty_line(path: &Path, tail_bytes: usize) -> io::Result<Option<String>> {
+    let Some(buffer) = read_log_tail(path, tail_bytes)? else {
+        return Ok(None);
+    };
+    if buffer.is_empty() {
+        return Ok(None);
+    }
+
+    let text = String::from_utf8_lossy(&buffer);
+    let line = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string());
+    Ok(line)
+}
+
+fn latest_log_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+}
+
+pub fn latest_job_log_line(
+    jobs_root: &Path,
+    job_id: &str,
+    tail_bytes: usize,
+) -> io::Result<Option<LatestLogLine>> {
+    let paths = paths_for(jobs_root, job_id);
+    let stdout_line = latest_non_empty_line(&paths.stdout_path, tail_bytes)?;
+    let stderr_line = latest_non_empty_line(&paths.stderr_path, tail_bytes)?;
+
+    match (stdout_line, stderr_line) {
+        (Some(line), None) => Ok(Some(LatestLogLine {
+            stream: LatestLogStream::Stdout,
+            line,
+        })),
+        (None, Some(line)) => Ok(Some(LatestLogLine {
+            stream: LatestLogStream::Stderr,
+            line,
+        })),
+        (Some(stdout), Some(stderr)) => {
+            let stdout_mtime = latest_log_mtime(&paths.stdout_path);
+            let stderr_mtime = latest_log_mtime(&paths.stderr_path);
+            let prefer_stderr = match (stdout_mtime, stderr_mtime) {
+                (Some(out), Some(err)) => err >= out,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if prefer_stderr {
+                Ok(Some(LatestLogLine {
+                    stream: LatestLogStream::Stderr,
+                    line: stderr,
+                }))
+            } else {
+                Ok(Some(LatestLogLine {
+                    stream: LatestLogStream::Stdout,
+                    line: stdout,
+                }))
+            }
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 fn follow_poll_delay(advanced: bool, idle_polls: &mut u32) -> StdDuration {
     if advanced {
         *idle_polls = 0;
@@ -3081,6 +3182,75 @@ mod tests {
         assert_eq!(
             follow_poll_delay(false, &mut idle_polls),
             StdDuration::from_millis(40)
+        );
+    }
+
+    #[test]
+    fn latest_job_log_line_returns_stdout_when_only_stdout_has_content() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        let paths = paths_for(&jobs_root, "job-stdout-only");
+        fs::create_dir_all(&paths.job_dir).expect("create job dir");
+        fs::write(&paths.stdout_path, "first line\nlatest stdout\n").expect("write stdout log");
+
+        let latest = latest_job_log_line(&jobs_root, "job-stdout-only", 8 * 1024)
+            .expect("resolve latest log line")
+            .expect("expected stdout line");
+        assert_eq!(latest.stream, LatestLogStream::Stdout);
+        assert_eq!(latest.line, "latest stdout");
+    }
+
+    #[test]
+    fn latest_job_log_line_returns_stderr_when_only_stderr_has_content() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        let paths = paths_for(&jobs_root, "job-stderr-only");
+        fs::create_dir_all(&paths.job_dir).expect("create job dir");
+        fs::write(&paths.stderr_path, "latest stderr\n").expect("write stderr log");
+
+        let latest = latest_job_log_line(&jobs_root, "job-stderr-only", 8 * 1024)
+            .expect("resolve latest log line")
+            .expect("expected stderr line");
+        assert_eq!(latest.stream, LatestLogStream::Stderr);
+        assert_eq!(latest.line, "latest stderr");
+    }
+
+    #[test]
+    fn latest_job_log_line_prefers_newer_stream_when_both_have_content() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        let paths = paths_for(&jobs_root, "job-both-streams");
+        fs::create_dir_all(&paths.job_dir).expect("create job dir");
+
+        fs::write(&paths.stdout_path, "old stdout\n").expect("write stdout log");
+        thread::sleep(StdDuration::from_millis(20));
+        fs::write(&paths.stderr_path, "new stderr\n").expect("write stderr log");
+
+        let latest = latest_job_log_line(&jobs_root, "job-both-streams", 8 * 1024)
+            .expect("resolve latest log line")
+            .expect("expected latest line");
+        assert_eq!(latest.stream, LatestLogStream::Stderr);
+        assert_eq!(latest.line, "new stderr");
+    }
+
+    #[test]
+    fn latest_job_log_line_returns_none_for_missing_or_empty_logs() {
+        let temp = TempDir::new().expect("temp dir");
+        let jobs_root = temp.path().join(".vizier/jobs");
+        let paths = paths_for(&jobs_root, "job-empty");
+        fs::create_dir_all(&paths.job_dir).expect("create job dir");
+        fs::write(&paths.stdout_path, "\n\n").expect("write stdout log");
+        fs::write(&paths.stderr_path, "   \n").expect("write stderr log");
+
+        let latest =
+            latest_job_log_line(&jobs_root, "job-empty", 8 * 1024).expect("resolve latest line");
+        assert!(latest.is_none(), "expected no latest line for empty logs");
+
+        let missing =
+            latest_job_log_line(&jobs_root, "job-missing", 8 * 1024).expect("resolve missing");
+        assert!(
+            missing.is_none(),
+            "expected no latest line for missing logs"
         );
     }
 

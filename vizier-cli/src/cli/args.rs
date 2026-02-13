@@ -822,6 +822,18 @@ pub(crate) enum JobsAction {
         #[arg(long = "format", value_enum)]
         format: Option<JobsScheduleFormatArg>,
 
+        /// Render an interactive, refreshing schedule dashboard (TTY + ANSI only)
+        #[arg(long = "watch", action = ArgAction::SetTrue)]
+        watch: bool,
+
+        /// Limit schedule rows shown per refresh when --watch is enabled
+        #[arg(long = "top", value_name = "N", default_value_t = 10)]
+        top: usize,
+
+        /// Poll interval in milliseconds when --watch is enabled
+        #[arg(long = "interval-ms", value_name = "MS", default_value_t = 500)]
+        interval_ms: u64,
+
         /// Limit dependency expansion depth
         #[arg(long = "max-depth", value_name = "N", default_value_t = 3)]
         max_depth: usize,
