@@ -1,0 +1,41 @@
+.TH VIZIER-JOBS 1 "UNRELEASED" "Vizier" "User Commands"
+.SH NAME
+vizier-jobs \- scheduler and job operations
+.SH REFERENCE
+.nf
+Inspect detached Vizier background jobs
+
+Usage: vizier jobs [OPTIONS] <COMMAND>
+
+Commands:
+  list      List tracked background jobs (succeeded hidden by default; failures optional)
+  schedule  Show scheduled jobs and dependency relationships
+  show      Show details for a background job id
+  status    Show a terse status line for a background job id
+  retry     Rewind a failed/blocked job chain to its predecessor state and re-queue it
+  approve   Approve a queued job that is waiting on explicit human approval
+  reject    Reject a queued job that is waiting on explicit human approval
+  tail      Tail logs for a background job (stdout/stderr); add --follow to stream until completion
+  attach    Attach to both stdout and stderr for a running job
+  cancel    Attempt to cancel a running background job
+  gc        Garbage-collect completed jobs older than N days (default 7)
+
+Options:
+  -v, --verbose...                   Increase stderr verbosity (`-v` = info, `-vv` = debug); quiet wins over verbose, and output still honors TTY/--no-ansi gating
+  -q, --quiet                        Silence progress/history; only errors and explicit output (help/outcome) remain
+  -d, --debug                        Enable debug logging (alias for -vv; kept for parity with older workflows)
+      --no-ansi                      Disable ANSI control sequences even on TTYs (non-TTY is always plain); useful for CI/log scrapers
+  -l, --load-session <LOAD_SESSION>  Load session context from `.vizier/sessions/<id>/session.json` before running
+  -n, --no-session                   Skip writing session logs (for compliance-sensitive runs)
+      --agent <SELECTOR>             Agent selector to run for assistant-backed commands (e.g., `codex`, `gemini`, or a custom shim name). Overrides config for this run
+  -C, --config-file <CONFIG_FILE>    Config file to load (supports JSON or TOML); bypasses the normal global+repo layering
+  -P, --push                         Push the current branch to origin after mutating git history (approve/merge/save flows)
+      --no-commit                    Leave changes staged/dirty instead of committing automatically (`[workflow] no_commit_default` sets the default posture)
+      --follow                       Attach to a scheduled job and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
+  -h, --help                         Print help
+  -V, --version                      Print version
+.fi
+.SH SEE ALSO
+.BR vizier (1),
+.BR vizier-build (1),
+.BR vizier-workflow (7)

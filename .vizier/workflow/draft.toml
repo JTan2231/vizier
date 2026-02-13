@@ -1,0 +1,21 @@
+id = "template.stage.draft"
+version = "v1"
+
+[params]
+commit_mode = "auto"
+name_override = "${slug}"
+spec_file = ""
+spec_source = "inline"
+spec_text = ""
+
+[[nodes]]
+id = "draft_generate_plan"
+kind = "builtin"
+uses = "vizier.draft.generate_plan"
+
+[nodes.args]
+commit_mode = "${commit_mode}"
+name_override = "${name_override}"
+spec_file = "${spec_file}"
+spec_source = "${spec_source}"
+spec_text = "${spec_text}"

@@ -1,0 +1,22 @@
+id = "template.develop"
+version = "v1"
+
+[[imports]]
+name = "develop_draft"
+path = "workflow/draft.toml"
+
+[[imports]]
+name = "develop_approve"
+path = "workflow/approve.toml"
+
+[[imports]]
+name = "develop_merge"
+path = "workflow/merge.toml"
+
+[[links]]
+from = "develop_draft"
+to = "develop_approve"
+
+[[links]]
+from = "develop_approve"
+to = "develop_merge"

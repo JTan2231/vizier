@@ -1,0 +1,35 @@
+id = "template.stage.merge"
+version = "v1"
+
+[params]
+assume_yes = "true"
+cicd_auto_resolve = "false"
+cicd_retries = "1"
+cicd_script = ""
+commit_mode = "auto"
+complete_conflict = "false"
+conflict_auto_resolve = "false"
+conflict_auto_resolve_source = "workflow template"
+delete_branch = "true"
+push_after = "false"
+squash = "true"
+squash_mainline = ""
+
+[[nodes]]
+id = "merge_integrate"
+kind = "builtin"
+uses = "vizier.merge.integrate"
+
+[nodes.args]
+assume_yes = "${assume_yes}"
+cicd_auto_resolve = "${cicd_auto_resolve}"
+cicd_retries = "${cicd_retries}"
+cicd_script = "${cicd_script}"
+commit_mode = "${commit_mode}"
+complete_conflict = "${complete_conflict}"
+conflict_auto_resolve = "${conflict_auto_resolve}"
+conflict_auto_resolve_source = "${conflict_auto_resolve_source}"
+delete_branch = "${delete_branch}"
+push_after = "${push_after}"
+squash = "${squash}"
+squash_mainline = "${squash_mainline}"

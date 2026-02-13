@@ -605,21 +605,11 @@ pub(crate) struct DraftCmd {
 #[derive(ClapArgs, Debug)]
 pub(crate) struct BuildCmd {
     /// Path to the build file (TOML or JSON)
-    #[arg(
-        short = 'f',
-        long = "file",
-        value_name = "PATH",
-        conflicts_with = "command"
-    )]
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
     pub(crate) file: Option<PathBuf>,
 
     /// Optional stable build id override (letters/numbers/dashes, no leading '.', no '/')
-    #[arg(
-        long = "name",
-        value_name = "NAME",
-        requires = "file",
-        conflicts_with = "command"
-    )]
+    #[arg(long = "name", value_name = "NAME", requires = "file")]
     pub(crate) name: Option<String>,
 
     #[command(subcommand)]

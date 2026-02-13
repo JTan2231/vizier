@@ -17,7 +17,9 @@ Environment variables:
 Install layout:
   $BINDIR/vizier
   $DATADIR/vizier/agents/<label>/{agent.sh,filter.sh,...}
-  $MANDIR/man1/vizier.1
+  $MANDIR/man1/*.1
+  $MANDIR/man5/*.5
+  $MANDIR/man7/*.7
 
 Notes:
   - For system prefixes, run as root or via sudo (this script never invokes sudo).
@@ -72,7 +74,7 @@ DATADIR=${DATADIR:-"$PREFIX/share"}
 MANDIR=${MANDIR:-"$PREFIX/share/man"}
 
 agents_src="examples/agents"
-man_src="docs/man/man1/vizier.1"
+man_src_root="docs/man"
 
 manifest_rel="$DATADIR/vizier/install-manifest.txt"
 manifest_path="$DESTDIR$manifest_rel"
@@ -175,8 +177,13 @@ if [ ! -d "$agents_src" ]; then
   die "missing agent shims directory: $agents_src"
 fi
 
-if [ ! -f "$man_src" ]; then
-  die "missing man page: $man_src"
+if [ ! -d "$man_src_root" ]; then
+  die "missing man pages directory: $man_src_root"
+fi
+
+man_files=$(find "$man_src_root" -type f -path "$man_src_root/man*/*" | sort)
+if [ -z "$man_files" ]; then
+  die "no man pages found under $man_src_root/man*/"
 fi
 
 check_install_permissions
@@ -200,6 +207,7 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$bin_src" ]; then
 fi
 
 installed_paths=""
+installed_man_targets=""
 
 record_manifest_path() {
   installed_paths="${installed_paths}${1}\n"
@@ -215,8 +223,13 @@ for src in $(find "$agents_src" -type f); do
   record_manifest_path "$dst_rel"
 done
 
-install_file 0644 "$man_src" "$DESTDIR$MANDIR/man1/vizier.1"
-record_manifest_path "$MANDIR/man1/vizier.1"
+for src in $man_files; do
+  rel=${src#"$man_src_root"/}
+  dst_rel="$MANDIR/$rel"
+  install_file 0644 "$src" "$DESTDIR$dst_rel"
+  record_manifest_path "$dst_rel"
+  installed_man_targets="${installed_man_targets}  $dst_rel\n"
+done
 
 install_dir "$(dirname "$manifest_path")"
 if [ "$dry_run" -eq 1 ]; then
@@ -228,6 +241,7 @@ fi
 say "Installed:"
 say "  $BINDIR/vizier"
 say "  $DATADIR/vizier/agents/*"
-say "  $MANDIR/man1/vizier.1"
+say "Man pages:"
+printf "%b" "$installed_man_targets"
 say "Manifest:"
 say "  $manifest_rel"

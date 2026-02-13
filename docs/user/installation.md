@@ -1,6 +1,8 @@
 # Installing Vizier (from a clone)
 
-Vizier can be installed directly from this repository. The installer builds the `vizier` binary and installs the bundled agent shim scripts and the `vizier(1)` man page into a standard prefix layout.
+Vizier can be installed directly from this repository. The installer builds the
+`vizier` binary and installs bundled agent shim scripts plus sectioned man pages
+into a standard prefix layout.
 
 ## Prerequisites
 
@@ -19,6 +21,10 @@ This installs:
 - `"$HOME/.local/bin/vizier"`
 - `"$HOME/.local/share/vizier/agents/*"`
 - `"$HOME/.local/share/man/man1/vizier.1"`
+- `"$HOME/.local/share/man/man1/vizier-jobs.1"`
+- `"$HOME/.local/share/man/man1/vizier-build.1"`
+- `"$HOME/.local/share/man/man5/vizier-config.5"`
+- `"$HOME/.local/share/man/man7/vizier-workflow.7"`
 
 ## Initialize a repository
 
@@ -82,7 +88,33 @@ This writes into:
 
 - `"$DESTDIR/usr/local/bin/vizier"`
 - `"$DESTDIR/usr/local/share/vizier/agents/*"`
-- `"$DESTDIR/usr/local/share/man/man1/vizier.1"`
+- `"$DESTDIR/usr/local/share/man/man1/*.1"`
+- `"$DESTDIR/usr/local/share/man/man5/*.5"`
+- `"$DESTDIR/usr/local/share/man/man7/*.7"`
+
+## Man-page lookup
+
+After install, you can open the shipped pages with standard `man` tooling:
+
+```sh
+man vizier
+man vizier-jobs
+man vizier-build
+man 5 vizier-config
+man 7 vizier-workflow
+```
+
+If your prefix is not on `MANPATH`, either pass `-M` directly:
+
+```sh
+man -M "$HOME/.local/share/man" vizier
+```
+
+or prepend `MANPATH`:
+
+```sh
+MANPATH="$HOME/.local/share/man:${MANPATH:-}" man vizier-jobs
+```
 
 ## Directory overrides
 

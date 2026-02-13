@@ -80,8 +80,8 @@ fn test_cicd_defaults_cargo_target_dir_when_unset() -> TestResult {
     let entries = read_commands(&log)?;
     assert_eq!(
         entries.len(),
-        3,
-        "expected three cargo invocations; got {entries:?}"
+        4,
+        "expected four cargo invocations; got {entries:?}"
     );
 
     for entry in &entries {
@@ -104,6 +104,7 @@ fn test_cicd_defaults_cargo_target_dir_when_unset() -> TestResult {
         vec![
             "fmt",
             "clippy --all --all-targets -- -D warnings",
+            "run -p vizier --bin gen-man -- --check",
             "test --all --all-targets",
         ]
     );
@@ -152,8 +153,8 @@ fn test_cicd_respects_explicit_cargo_target_dir() -> TestResult {
     let entries = read_commands(&log)?;
     assert_eq!(
         entries.len(),
-        3,
-        "expected three cargo invocations; got {entries:?}"
+        4,
+        "expected four cargo invocations; got {entries:?}"
     );
     let expected_target = fs::canonicalize(&custom_target)?;
     for entry in &entries {

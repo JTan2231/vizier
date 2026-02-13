@@ -1179,8 +1179,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 file,
                 name,
                 command,
-            }) => match command {
-                Some(BuildActionCmd::Execute(exec)) => {
+            }) => {
+                if command.is_some() && (file.is_some() || name.is_some()) {
+                    return Err(
+                        "`vizier build --file/--name` cannot be combined with subcommands (`execute`, `__materialize`, `__template-node`)."
+                            .into(),
+                    );
+                }
+                match command {
+                    Some(BuildActionCmd::Execute(exec)) => {
                     let pipeline = exec.pipeline.map(|value| match value {
                         BuildPipelineArg::Approve => BuildExecutionPipeline::Approve,
                         BuildPipelineArg::ApproveReview => BuildExecutionPipeline::ApproveReview,
@@ -1202,7 +1209,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await
                 }
-                Some(BuildActionCmd::Materialize(materialize)) => {
+                    Some(BuildActionCmd::Materialize(materialize)) => {
                     run_build_materialize(
                         materialize.build_id,
                         materialize.step_key,
@@ -1213,7 +1220,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await
                 }
-                Some(BuildActionCmd::TemplateNode(node)) => {
+                    Some(BuildActionCmd::TemplateNode(node)) => {
                     run_build_template_node(
                         BuildTemplateNodeArgs {
                             build_id: node.build_id,
@@ -1228,7 +1235,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await
                 }
-                None => {
+                    None => {
                     let build_file =
                         file.ok_or("vizier build requires --file when no subcommand is used")?;
                     let agent = resolve_wrapper_agent(
@@ -1238,7 +1245,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     run_build(build_file, name, &project_root, &agent, commit_mode).await
                 }
-            },
+                }
+            }
 
             Commands::Patch(cmd) => {
                 let pipeline = cmd.pipeline.map(|value| match value {

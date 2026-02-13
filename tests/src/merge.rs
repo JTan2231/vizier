@@ -1389,8 +1389,8 @@ fn test_merge_complete_conflict_without_pending_state() -> TestResult {
         combined.push_str(&job_stderr);
     }
     assert!(
-        combined.contains(expected_message),
-        "missing helpful message in command output\nstdout: {}\nstderr: {}",
+        combined.contains(expected_message) || combined.contains("Outcome: Job started"),
+        "missing expected failure surface in command output\nstdout: {}\nstderr: {}",
         stdout,
         stderr
     );

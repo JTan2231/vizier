@@ -1,0 +1,69 @@
+.TH VIZIER-CONFIG 5 "UNRELEASED" "Vizier" "File Formats"
+.SH NAME
+vizier-config \- Vizier configuration files, precedence, and environment
+.SH DESCRIPTION
+Vizier reads layered configuration from repository and user scopes, then applies
+command-line overrides for the active run.
+.SH FILE LOCATIONS
+.TP
+\fI.vizier/config.toml\fR
+Repository-local configuration.
+.TP
+\fI.vizier/config.json\fR
+Repository-local JSON alternative.
+.TP
+\fI$XDG_CONFIG_HOME/vizier/config.toml\fR
+User-level default configuration (platform equivalent also supported).
+.SH PRECEDENCE
+Effective settings resolve in this order:
+.IP "1." 4
+CLI flags for the current invocation.
+.IP "2." 4
+Repository config (\fI.vizier/config.toml\fR or \fI.vizier/config.json\fR).
+.IP "3." 4
+User/global config (\fI$XDG_CONFIG_HOME\fR or platform equivalent).
+.IP "4." 4
+\fIVIZIER_CONFIG_FILE\fR, only when no config files are found.
+.SH COMMON TABLES
+.TP
+\fB[agents.default]\fR and \fB[agents.commands.<alias>]\fR
+Select the agent shim (for example \fBcodex\fR or \fBgemini\fR) and per-command
+runtime settings.
+.TP
+\fB[workflow]\fR and \fB[workflow.templates]\fR
+Control workflow defaults such as \fBno_commit_default\fR and per-command
+template selectors.
+.TP
+\fB[review.checks]\fR
+Repository check commands used by \fBvizier review\fR.
+.TP
+\fB[merge.cicd_gate]\fR
+Merge CI/CD script, retry policy, and auto-remediation controls.
+.SH PROMPT PROFILES
+Prompt overrides are scoped by command alias and prompt kind.
+Valid kinds include \fBdocumentation\fR, \fBcommit\fR,
+\fBimplementation_plan\fR, \fBreview\fR, and \fBmerge_conflict\fR.
+
+Use \fBvizier plan\fR (or \fBvizier plan --json\fR) to inspect resolved settings.
+.SH ENVIRONMENT
+.TP
+\fBVIZIER_CONFIG_FILE\fR
+Fallback config path used only when repository and global config files are absent.
+.TP
+\fBVIZIER_CONFIG_DIR\fR
+Override the user-level config directory root.
+.TP
+\fBVIZIER_AGENT_SHIMS_DIR\fR
+Override the directory that contains bundled agent shim labels.
+.TP
+\fBVIZIER_PAGER\fR
+Pager command used for TTY help output.
+.SH CANONICAL REFERENCES
+For the complete key catalogue and examples, see:
+.IP "\(bu" 2
+\fIdocs/user/config-reference.md\fR
+.IP "\(bu" 2
+\fIdocs/user/prompt-config-matrix.md\fR
+.SH SEE ALSO
+.BR vizier (1),
+.BR vizier-workflow (7)

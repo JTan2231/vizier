@@ -149,49 +149,78 @@ fn test_help_command_matches_subcommand_help() -> TestResult {
     );
     Ok(())
 }
+
 #[test]
-fn test_manpage_is_in_sync_with_help_all() -> TestResult {
+fn test_help_build_subcommand_renders_without_panic() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
-    let full_help = repo.vizier_output(&["help", "--all", "--no-ansi"])?;
+    let output = repo.vizier_output(&["help", "build", "--no-ansi"])?;
     assert!(
-        full_help.status.success(),
-        "`vizier help --all` failed: {}",
-        String::from_utf8_lossy(&full_help.stderr)
+        output.status.success(),
+        "`vizier help build` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let help_stdout = String::from_utf8_lossy(&full_help.stdout);
-
-    let man_path = repo_root().join("docs/man/vizier.1");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        man_path.exists(),
-        "expected manpage at {}",
-        man_path.display()
+        stdout.contains("Usage: vizier build"),
+        "unexpected help output for build subcommand: {stdout}"
+    );
+    Ok(())
+}
+#[test]
+fn test_manpage_layout_uses_sectioned_real_files() -> TestResult {
+    let repo_root = repo_root();
+    let required = [
+        "docs/man/man1/vizier.1",
+        "docs/man/man1/vizier-jobs.1",
+        "docs/man/man1/vizier-build.1",
+        "docs/man/man5/vizier-config.5",
+        "docs/man/man7/vizier-workflow.7",
+    ];
+
+    for rel in required {
+        let path = repo_root.join(rel);
+        assert!(path.exists(), "missing man page {}", path.display());
+        let metadata = fs::symlink_metadata(&path)?;
+        assert!(
+            metadata.file_type().is_file(),
+            "expected regular file for {}, got symlink or non-file",
+            path.display()
+        );
+    }
+
+    let legacy = repo_root.join("docs/man/vizier.1");
+    assert!(
+        !legacy.exists(),
+        "legacy single-page path should not exist: {}",
+        legacy.display()
     );
 
-    let man_contents = fs::read_to_string(&man_path)?;
+    let build_page = fs::read_to_string(repo_root.join("docs/man/man1/vizier-build.1"))?;
+    assert!(
+        !build_page.contains("__materialize") && !build_page.contains("__template-node"),
+        "hidden build internals should not appear in generated build man page: {build_page}"
+    );
+    let root_page = fs::read_to_string(repo_root.join("docs/man/man1/vizier.1"))?;
+    assert!(
+        !root_page.contains("__complete") && !root_page.contains("__workflow-node"),
+        "hidden root internals should not appear in generated root man page: {root_page}"
+    );
+    Ok(())
+}
 
-    let mut expected = String::new();
-    expected.push_str(".TH VIZIER 1 \"UNRELEASED\" \"Vizier\" \"User Commands\"\n");
-    expected.push_str(".SH NAME\n");
-    expected.push_str("vizier \\- A CLI for LLM project management\n");
-    expected.push_str(".SH REFERENCE\n");
-    expected.push_str(".nf\n");
-    let mut normalized_help = help_stdout.to_string();
-    if !normalized_help.ends_with('\n') {
-        normalized_help.push('\n');
-    }
-    for line in normalized_help.split_inclusive('\n') {
-        if line.starts_with('.') || line.starts_with('\'') {
-            expected.push_str("\\&");
-        }
-        expected.push_str(line);
-    }
-    expected.push_str(".fi\n");
-
-    assert_eq!(
-        man_contents, expected,
-        "docs/man/vizier.1 should be generated from `vizier help --all --no-ansi`"
+#[test]
+fn test_manpage_generation_check_passes() -> TestResult {
+    let output = Command::new("cargo")
+        .current_dir(repo_root())
+        .args(["run", "-p", "vizier", "--bin", "gen-man", "--", "--check"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "man page check failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
 }

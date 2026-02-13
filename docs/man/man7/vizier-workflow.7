@@ -1,0 +1,47 @@
+.TH VIZIER-WORKFLOW 7 "UNRELEASED" "Vizier" "Miscellaneous Information Manual"
+.SH NAME
+vizier-workflow \- operator workflow patterns for draft, review, and merge
+.SH DESCRIPTION
+Vizier's default operator flow uses dedicated plan branches and auditable command
+checkpoints. This page summarizes the user-level workflow contract.
+.SH PLAN LIFECYCLE
+.IP "1. Draft" 4
+\fBvizier draft\fR creates \fIdraft/<slug>\fR and writes the implementation plan.
+.IP "2. Approve" 4
+\fBvizier approve\fR applies the plan on the draft branch in an isolated worktree.
+.IP "3. Review" 4
+\fBvizier review\fR runs checks/gates, streams critique, and can optionally apply
+fixes on the draft branch.
+.IP "4. Merge" 4
+\fBvizier merge\fR integrates approved plan work into the target branch (squash by
+default), enforces CI/CD gate policy, and cleans up plan artifacts.
+.SH BUILD AND PATCH FLOWS
+\fBvizier build\fR and \fBvizier patch\fR queue multi-step workflows through the
+scheduler and template policy surface.
+.PP
+Use \fBvizier jobs\fR to inspect queued/running states, dependencies, approvals,
+locks, and logs.
+.SH RESUME AND CONFLICT HANDLING
+When merges hit conflicts, Vizier writes resume state under
+\fI.vizier/tmp/merge-conflicts/\fR and expects operators to rerun
+\fBvizier merge <slug> --complete-conflict\fR after resolution.
+.PP
+Build execution resume state is persisted under
+\fI.vizier/implementation-plans/builds/<id>/execution*.json\fR with policy-drift
+diagnostics.
+.SH GATES AND CHECKS
+Workflow outcomes can be gated by repository policy:
+.IP "\(bu" 2
+\fB[review.checks]\fR commands during \fBvizier review\fR.
+.IP "\(bu" 2
+\fB[merge.cicd_gate]\fR script and retries during \fBvizier merge\fR.
+.IP "\(bu" 2
+\fB[approve.stop_condition]\fR loop checks during \fBvizier approve\fR.
+.SH WORKFLOW GUIDE
+For an end-to-end operator runbook with examples, see:
+\fIdocs/user/workflows/draft-approve-merge.md\fR
+.SH SEE ALSO
+.BR vizier (1),
+.BR vizier-build (1),
+.BR vizier-jobs (1),
+.BR vizier-config (5)

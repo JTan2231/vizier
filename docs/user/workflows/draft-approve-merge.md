@@ -2,6 +2,10 @@
 
 This guide explains how Vizier’s plan workflow turns a high-level spec into audited code without disturbing your working tree. Use it whenever you want Vizier (or an external agent) to implement a scoped change on a dedicated branch and then merge it back with a metadata-rich commit.
 
+Installed reference pages for this workflow are available via `man vizier`,
+`man vizier-build`, `man vizier-jobs`, `man 5 vizier-config`, and
+`man 7 vizier-workflow`.
+
 For the canonical non-agent `.vizier/*` material model (entities, state vocab, durability, and compatibility/recovery semantics), see `docs/dev/vizier-material-model.md`.
 
 Before starting plan workflows in a repository, run `vizier init` once (or

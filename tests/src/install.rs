@@ -120,7 +120,13 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
     }
 
     let expected_exe = stage.join("usr/local/bin/vizier");
-    let expected_man = stage.join("usr/local/share/man/man1/vizier.1");
+    let expected_man_pages = [
+        "usr/local/share/man/man1/vizier.1",
+        "usr/local/share/man/man1/vizier-build.1",
+        "usr/local/share/man/man1/vizier-jobs.1",
+        "usr/local/share/man/man5/vizier-config.5",
+        "usr/local/share/man/man7/vizier-workflow.7",
+    ];
     let expected_manifest = stage.join("usr/local/share/vizier/install-manifest.txt");
     let expected_agents = [
         "usr/local/share/vizier/agents/codex/agent.sh",
@@ -132,7 +138,10 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
     ];
 
     assert!(expected_exe.is_file(), "missing {}", expected_exe.display());
-    assert!(expected_man.is_file(), "missing {}", expected_man.display());
+    for rel in expected_man_pages {
+        let path = stage.join(rel);
+        assert!(path.is_file(), "missing {}", path.display());
+    }
     assert!(
         expected_manifest.is_file(),
         "missing {}",
@@ -147,7 +156,10 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
             assert!(path.is_file(), "missing {}", path.display());
             assert_mode(&path, 0o755)?;
         }
-        assert_mode(&expected_man, 0o644)?;
+        for rel in expected_man_pages {
+            let path = stage.join(rel);
+            assert_mode(&path, 0o644)?;
+        }
     }
 
     let manifest = fs::read_to_string(&expected_manifest)?;
@@ -156,10 +168,13 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         manifest_lines.contains("/usr/local/bin/vizier"),
         "manifest missing vizier binary: {manifest}"
     );
-    assert!(
-        manifest_lines.contains("/usr/local/share/man/man1/vizier.1"),
-        "manifest missing man page: {manifest}"
-    );
+    for rel in expected_man_pages {
+        let manifest_path = format!("/{rel}");
+        assert!(
+            manifest_lines.contains(manifest_path.as_str()),
+            "manifest missing man page entry {manifest_path}: {manifest}"
+        );
+    }
     assert!(
         manifest_lines.contains("/usr/local/share/vizier/agents/codex/agent.sh"),
         "manifest missing codex shim: {manifest}"
@@ -191,11 +206,14 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         let path = stage.join(rel);
         assert!(!path.exists(), "expected shim removed: {}", path.display());
     }
-    assert!(
-        !expected_man.exists(),
-        "expected man page removed: {}",
-        expected_man.display()
-    );
+    for rel in expected_man_pages {
+        let path = stage.join(rel);
+        assert!(
+            !path.exists(),
+            "expected man page removed: {}",
+            path.display()
+        );
+    }
     assert!(
         !expected_manifest.exists(),
         "expected manifest removed: {}",
@@ -246,6 +264,19 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for rel in [
+        "/usr/local/share/man/man1/vizier.1",
+        "/usr/local/share/man/man1/vizier-build.1",
+        "/usr/local/share/man/man1/vizier-jobs.1",
+        "/usr/local/share/man/man5/vizier-config.5",
+        "/usr/local/share/man/man7/vizier-workflow.7",
+    ] {
+        assert!(
+            stdout.contains(rel),
+            "dry-run output should include planned man install target {rel}: {stdout}"
+        );
+    }
 
     let stage_empty = fs::read_dir(&stage)?.next().is_none();
     assert!(

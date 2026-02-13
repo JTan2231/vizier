@@ -10,4 +10,5 @@ mkdir -p "$CARGO_TARGET_DIR"
 
 cargo fmt
 cargo clippy --all --all-targets -- -D warnings
+cargo run -p vizier --bin gen-man -- --check
 cargo test --all --all-targets

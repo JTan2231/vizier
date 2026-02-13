@@ -5,6 +5,15 @@
 1. Create a build session from a TOML/JSON build file.
 2. Execute a succeeded build session by queueing scheduler jobs from the compiled build-execute workflow template DAG (built-in default is `materialize -> approve -> review -> merge`, depending on pipeline).
 
+For installed CLI reference pages, see `man vizier-build` and `man vizier-jobs`.
+
+To regenerate checked-in command pages from live Clap metadata:
+
+```bash
+cargo run -p vizier --bin gen-man --
+cargo run -p vizier --bin gen-man -- --check
+```
+
 For the canonical artifact/state contract behind these flows (build manifests, execution state, job/sentinel/session relationships, durability classes), see `docs/dev/vizier-material-model.md`.
 
 ## Queue file-backed intents with `vizier patch`

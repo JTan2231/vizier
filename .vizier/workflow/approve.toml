@@ -1,0 +1,21 @@
+id = "template.stage.approve"
+version = "v1"
+
+[params]
+assume_yes = "true"
+commit_mode = "auto"
+push_after = "false"
+stop_condition_retries = "3"
+stop_condition_script = ""
+
+[[nodes]]
+id = "approve_apply_once"
+kind = "builtin"
+uses = "vizier.approve.apply_once"
+
+[nodes.args]
+assume_yes = "${assume_yes}"
+commit_mode = "${commit_mode}"
+push_after = "${push_after}"
+stop_condition_retries = "${stop_condition_retries}"
+stop_condition_script = "${stop_condition_script}"

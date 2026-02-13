@@ -2,3 +2,6 @@
 script = "./cicd.sh"
 auto_resolve = true
 retries = 2
+
+[commands]
+develop = "file:.vizier/develop.toml"
