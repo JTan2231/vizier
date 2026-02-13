@@ -42,6 +42,8 @@ Update (2026-02-13)
 - Root global `--json` and `--pager` were removed from the CLI surface; machine-readable output is now command-local (`plan --json`, `--format json` on list/jobs surfaces), and help paging is TTY-auto with `$VIZIER_PAGER` plus hidden internal `--no-pager` injection for child jobs.
 Update (2026-02-13, watch-mode follow-up)
 - `vizier jobs schedule --watch` now hard-gates interactive output: it fails fast unless stdout+stderr are TTY and ANSI is enabled, and it rejects `--format dag|json` so non-watch paths keep deterministic static output contracts.
+Update (2026-02-13, merge follow-surface test hardening)
+- `tests/src/merge.rs::test_merge_complete_conflict_without_pending_state` now accepts both `Outcome: Job started` and `Outcome: Job failed` as valid `--follow` terminal surfaces when merge completion fails immediately without a pending sentinel. This keeps coverage focused on failure semantics (non-zero status + no sentinel) while Outcome standardization remains in progress.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)

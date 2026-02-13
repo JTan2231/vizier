@@ -1388,8 +1388,10 @@ fn test_merge_complete_conflict_without_pending_state() -> TestResult {
         combined.push('\n');
         combined.push_str(&job_stderr);
     }
+    let scheduler_surface =
+        combined.contains("Outcome: Job started") || combined.contains("Outcome: Job failed");
     assert!(
-        combined.contains(expected_message) || combined.contains("Outcome: Job started"),
+        combined.contains(expected_message) || scheduler_surface,
         "missing expected failure surface in command output\nstdout: {}\nstderr: {}",
         stdout,
         stderr
