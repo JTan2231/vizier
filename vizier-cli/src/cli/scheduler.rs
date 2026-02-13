@@ -22,6 +22,7 @@ fn command_alias_for(command: &Commands) -> Option<config::CommandAlias> {
         Commands::Review(_) => config::CommandAlias::parse("review"),
         Commands::Merge(_) => config::CommandAlias::parse("merge"),
         Commands::Save(_) => config::CommandAlias::parse("save"),
+        Commands::Run(cmd) => config::CommandAlias::parse(&cmd.alias),
         _ => None,
     }
 }
@@ -46,6 +47,7 @@ pub(crate) fn scheduler_supported(command: &Commands) -> bool {
             | Commands::Approve(_)
             | Commands::Review(_)
             | Commands::Merge(_)
+            | Commands::Run(_)
     )
 }
 
@@ -481,6 +483,11 @@ pub(crate) fn build_job_metadata(
         }
         Commands::Save(cmd) => {
             metadata.revision = Some(cmd.rev_or_range.clone());
+        }
+        Commands::Run(cmd) => {
+            metadata.plan = cmd.name.clone();
+            metadata.target = cmd.target.clone();
+            metadata.branch = cmd.branch.clone();
         }
         _ => {}
     }

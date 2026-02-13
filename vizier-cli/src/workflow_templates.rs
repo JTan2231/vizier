@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use vizier_core::{
     config,
     workflow_template::{
@@ -763,10 +764,44 @@ fn render_template(template: &mut WorkflowTemplate, runtime_params: &BTreeMap<St
     }
 }
 
-fn parse_template_contents(
+#[derive(Debug, Deserialize)]
+struct TemplateDocument {
+    #[serde(flatten)]
+    template: WorkflowTemplate,
+    #[serde(default)]
+    imports: Vec<TemplateImport>,
+    #[serde(default)]
+    links: Vec<TemplateLink>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateImport {
+    name: String,
+    #[serde(alias = "file")]
+    path: String,
+    #[serde(default)]
+    prefix: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateLink {
+    from: String,
+    to: String,
+    #[serde(default)]
+    policy: jobs::AfterPolicy,
+}
+
+#[derive(Debug)]
+struct ImportedStage {
+    prefixed_node_ids: BTreeMap<String, String>,
+    roots: Vec<String>,
+    terminals: Vec<String>,
+}
+
+fn parse_template_document(
     path: &Path,
     contents: &str,
-) -> Result<WorkflowTemplate, Box<dyn std::error::Error>> {
+) -> Result<TemplateDocument, Box<dyn std::error::Error>> {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -789,6 +824,365 @@ fn parse_template_contents(
     }
 }
 
+fn canonical_existing_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn prefixed_node_id(prefix: &str, node_id: &str) -> String {
+    format!("{prefix}__{node_id}")
+}
+
+fn template_roots(nodes: &[WorkflowNode]) -> Vec<String> {
+    let mut roots = nodes
+        .iter()
+        .filter_map(|node| {
+            if node.after.is_empty() {
+                Some(node.id.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn template_terminals(nodes: &[WorkflowNode]) -> Vec<String> {
+    let mut parents = BTreeSet::new();
+    for node in nodes {
+        for dependency in &node.after {
+            parents.insert(dependency.node_id.clone());
+        }
+    }
+    let mut terminals = nodes
+        .iter()
+        .filter_map(|node| {
+            if parents.contains(&node.id) {
+                None
+            } else {
+                Some(node.id.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+    terminals.sort();
+    terminals.dedup();
+    terminals
+}
+
+fn prefix_imported_template(
+    imported: &WorkflowTemplate,
+    prefix: &str,
+) -> Result<(Vec<WorkflowNode>, ImportedStage), Box<dyn std::error::Error>> {
+    if imported.nodes.is_empty() {
+        return Err("imported workflow template has no nodes".into());
+    }
+
+    let mut remap = BTreeMap::new();
+    for node in &imported.nodes {
+        let prefixed = prefixed_node_id(prefix, &node.id);
+        if remap.insert(node.id.clone(), prefixed).is_some() {
+            return Err(format!(
+                "imported workflow template defines duplicate node `{}`",
+                node.id
+            )
+            .into());
+        }
+    }
+
+    let mut nodes = imported.nodes.clone();
+    for node in &mut nodes {
+        let original_id = node.id.clone();
+        node.id = remap
+            .get(&original_id)
+            .cloned()
+            .ok_or_else(|| format!("missing remap for imported node `{}`", original_id))?;
+        for dependency in &mut node.after {
+            if let Some(mapped) = remap.get(&dependency.node_id) {
+                dependency.node_id = mapped.clone();
+            } else {
+                return Err(format!(
+                    "imported workflow node `{}` references unknown after node `{}`",
+                    original_id, dependency.node_id
+                )
+                .into());
+            }
+        }
+        for target in &mut node.on.succeeded {
+            if let Some(mapped) = remap.get(target) {
+                *target = mapped.clone();
+            }
+        }
+        for target in &mut node.on.failed {
+            if let Some(mapped) = remap.get(target) {
+                *target = mapped.clone();
+            }
+        }
+        for target in &mut node.on.blocked {
+            if let Some(mapped) = remap.get(target) {
+                *target = mapped.clone();
+            }
+        }
+        for target in &mut node.on.cancelled {
+            if let Some(mapped) = remap.get(target) {
+                *target = mapped.clone();
+            }
+        }
+    }
+
+    let roots = template_roots(&nodes);
+    let terminals = template_terminals(&nodes);
+
+    Ok((
+        nodes,
+        ImportedStage {
+            prefixed_node_ids: remap,
+            roots,
+            terminals,
+        },
+    ))
+}
+
+fn parse_link_endpoint(
+    value: &str,
+) -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("template link endpoint cannot be empty".into());
+    }
+    if let Some((stage, node)) = trimmed.split_once(':') {
+        let stage_name = stage.trim();
+        let node_name = node.trim();
+        if stage_name.is_empty() || node_name.is_empty() {
+            return Err(format!(
+                "invalid link endpoint `{trimmed}`; expected `stage` or `stage:node`"
+            )
+            .into());
+        }
+        return Ok((stage_name.to_string(), Some(node_name.to_string())));
+    }
+    Ok((trimmed.to_string(), None))
+}
+
+fn resolve_link_endpoint_nodes(
+    stages: &BTreeMap<String, ImportedStage>,
+    endpoint: &str,
+    choose_roots: bool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let (stage_name, node_name) = parse_link_endpoint(endpoint)?;
+    let stage = stages.get(&stage_name).ok_or_else(|| {
+        format!(
+            "workflow link references unknown import stage `{}`",
+            stage_name
+        )
+    })?;
+    if let Some(node_name) = node_name {
+        let mapped = stage
+            .prefixed_node_ids
+            .get(&node_name)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "workflow link references unknown stage node `{}` in `{}`",
+                    node_name, stage_name
+                )
+            })?;
+        return Ok(vec![mapped]);
+    }
+    if choose_roots {
+        return Ok(stage.roots.clone());
+    }
+    Ok(stage.terminals.clone())
+}
+
+fn resolve_template_from_path(
+    path: &Path,
+    runtime_params: &BTreeMap<String, String>,
+    stack: &mut Vec<PathBuf>,
+) -> Result<WorkflowTemplate, Box<dyn std::error::Error>> {
+    let canonical = canonical_existing_path(path);
+    if let Some(pos) = stack.iter().position(|existing| existing == &canonical) {
+        let mut cycle = stack[pos..]
+            .iter()
+            .map(|entry| entry.display().to_string())
+            .collect::<Vec<_>>();
+        cycle.push(canonical.display().to_string());
+        return Err(format!(
+            "workflow template import cycle detected: {}",
+            cycle.join(" -> ")
+        )
+        .into());
+    }
+
+    stack.push(canonical);
+
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("read workflow template file {}: {}", path.display(), err))?;
+    let mut document = parse_template_document(path, &raw)?;
+    render_template(&mut document.template, runtime_params);
+
+    if document.imports.is_empty() {
+        if !document.links.is_empty() {
+            stack.pop();
+            return Err(format!(
+                "workflow template {} declares links without imports",
+                path.display()
+            )
+            .into());
+        }
+        let template = document.template;
+        stack.pop();
+        return Ok(template);
+    }
+
+    let mut composed = document.template;
+    let mut existing_node_ids = composed
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut known_contracts = composed
+        .artifact_contracts
+        .iter()
+        .map(|contract| (contract.id.clone(), contract.version.clone()))
+        .collect::<BTreeSet<_>>();
+
+    let base_dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let mut imported = BTreeMap::<String, ImportedStage>::new();
+    for import in document.imports {
+        let stage_name = import.name.trim().to_string();
+        if stage_name.is_empty() {
+            stack.pop();
+            return Err(format!(
+                "workflow template {} has import with empty name",
+                path.display()
+            )
+            .into());
+        }
+        if imported.contains_key(&stage_name) {
+            stack.pop();
+            return Err(format!(
+                "workflow template {} defines duplicate import stage `{}`",
+                path.display(),
+                stage_name
+            )
+            .into());
+        }
+        let import_path = {
+            let raw = import.path.trim();
+            if raw.is_empty() {
+                stack.pop();
+                return Err(format!(
+                    "workflow template {} import `{}` has an empty path",
+                    path.display(),
+                    stage_name
+                )
+                .into());
+            }
+            let parsed = PathBuf::from(raw);
+            if parsed.is_absolute() {
+                parsed
+            } else {
+                base_dir.join(parsed)
+            }
+        };
+        let imported_template = resolve_template_from_path(&import_path, runtime_params, stack)?;
+
+        let prefix =
+            normalize_selector_component(import.prefix.as_deref().unwrap_or(stage_name.as_str()));
+        if prefix.is_empty() {
+            stack.pop();
+            return Err(format!(
+                "workflow template {} import `{}` resolved to an empty prefix",
+                path.display(),
+                stage_name
+            )
+            .into());
+        }
+        let (prefixed_nodes, stage_info) = prefix_imported_template(&imported_template, &prefix)?;
+        for node in &prefixed_nodes {
+            if !existing_node_ids.insert(node.id.clone()) {
+                stack.pop();
+                return Err(format!(
+                    "workflow template {} import `{}` produced duplicate node id `{}`",
+                    path.display(),
+                    stage_name,
+                    node.id
+                )
+                .into());
+            }
+        }
+        for contract in imported_template.artifact_contracts {
+            let key = (contract.id.clone(), contract.version.clone());
+            if known_contracts.insert(key) {
+                composed.artifact_contracts.push(contract);
+            }
+        }
+        composed.nodes.extend(prefixed_nodes);
+        imported.insert(stage_name, stage_info);
+    }
+
+    let by_id = composed
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.id.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    for link in document.links {
+        let from_nodes = resolve_link_endpoint_nodes(&imported, &link.from, false)?;
+        let to_nodes = resolve_link_endpoint_nodes(&imported, &link.to, true)?;
+        if from_nodes.is_empty() {
+            stack.pop();
+            return Err(format!(
+                "workflow template {} link `{}` resolved to no source nodes",
+                path.display(),
+                link.from
+            )
+            .into());
+        }
+        if to_nodes.is_empty() {
+            stack.pop();
+            return Err(format!(
+                "workflow template {} link `{}` resolved to no destination nodes",
+                path.display(),
+                link.to
+            )
+            .into());
+        }
+        for to_node in &to_nodes {
+            let node_index = by_id.get(to_node).copied().ok_or_else(|| {
+                format!(
+                    "workflow template {} link target `{}` does not exist after import expansion",
+                    path.display(),
+                    to_node
+                )
+            })?;
+            let node = composed
+                .nodes
+                .get_mut(node_index)
+                .ok_or_else(|| format!("missing node entry at index {}", node_index))?;
+            for from_node in &from_nodes {
+                let already_present = node.after.iter().any(|dependency| {
+                    dependency.node_id == *from_node && dependency.policy == link.policy
+                });
+                if !already_present {
+                    node.after.push(WorkflowAfterDependency {
+                        node_id: from_node.clone(),
+                        policy: link.policy,
+                    });
+                }
+            }
+        }
+    }
+
+    stack.pop();
+    Ok(composed)
+}
+
 fn resolve_template_file(
     template_ref: &WorkflowTemplateRef,
     runtime_params: &BTreeMap<String, String>,
@@ -796,11 +1190,8 @@ fn resolve_template_file(
     let Some(path) = template_ref.source_path.as_ref() else {
         return Ok(None);
     };
-
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("read workflow template file {}: {}", path.display(), err))?;
-    let mut template = parse_template_contents(path, &raw)?;
-    render_template(&mut template, runtime_params);
+    let mut stack = Vec::new();
+    let mut template = resolve_template_from_path(path, runtime_params, &mut stack)?;
     if template.id.trim().is_empty() {
         template.id = template_ref.id.clone();
     }
@@ -825,15 +1216,8 @@ fn resolve_selector_template_file_from_base(
             continue;
         }
 
-        let raw = fs::read_to_string(&path).map_err(|err| {
-            format!(
-                "read workflow template selector {}: {}",
-                path.display(),
-                err
-            )
-        })?;
-        let mut template = parse_template_contents(&path, &raw)?;
-        render_template(&mut template, runtime_params);
+        let mut stack = Vec::new();
+        let mut template = resolve_template_from_path(&path, runtime_params, &mut stack)?;
         if template.id.trim().is_empty() {
             template.id = template_ref.id.clone();
         }
@@ -890,6 +1274,84 @@ fn resolve_template_instance(
         scope.label(),
         supported,
         if searched.is_empty() { "none".to_string() } else { searched }
+    )
+    .into())
+}
+
+fn alias_template_fallback_paths(alias: &config::CommandAlias) -> Vec<PathBuf> {
+    let name = alias.as_str();
+    vec![
+        PathBuf::from(format!(".vizier/{name}.toml")),
+        PathBuf::from(format!(".vizier/{name}.json")),
+        PathBuf::from(format!(".vizier/workflow/{name}.toml")),
+        PathBuf::from(format!(".vizier/workflow/{name}.json")),
+    ]
+}
+
+pub(crate) fn resolve_custom_alias_template_ref(
+    cfg: &config::Config,
+    alias: &config::CommandAlias,
+) -> Result<WorkflowTemplateRef, Box<dyn std::error::Error>> {
+    let fallback_id = format!("template.{}", alias.as_str());
+    if let Some(selector) = cfg.template_selector_for_alias(alias) {
+        return Ok(parse_template_ref(selector.as_str(), &fallback_id));
+    }
+
+    for candidate in alias_template_fallback_paths(alias) {
+        if candidate.exists() {
+            return Ok(WorkflowTemplateRef {
+                id: fallback_id.clone(),
+                version: "v1".to_string(),
+                source_path: Some(candidate),
+            });
+        }
+    }
+
+    let searched = alias_template_fallback_paths(alias)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "command alias `{}` is not configured under [commands] and no repo-local fallback template was found (searched: {})",
+        alias.as_str(),
+        if searched.is_empty() {
+            "none".to_string()
+        } else {
+            searched
+        }
+    )
+    .into())
+}
+
+pub(crate) fn resolve_custom_alias_template(
+    cfg: &config::Config,
+    alias: &config::CommandAlias,
+    runtime_params: &BTreeMap<String, String>,
+) -> Result<(WorkflowTemplateRef, WorkflowTemplate), Box<dyn std::error::Error>> {
+    let template_ref = resolve_custom_alias_template_ref(cfg, alias)?;
+    if let Some(template) = resolve_template_file(&template_ref, runtime_params)? {
+        return Ok((template_ref, template));
+    }
+    if let Some(template) = resolve_selector_template_file(&template_ref, runtime_params)? {
+        return Ok((template_ref, template));
+    }
+
+    let searched = workflow_selector_candidate_paths(&template_ref)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "command alias `{}` resolved selector `{}@{}` but no selector file was found (searched: {})",
+        alias.as_str(),
+        template_ref.id,
+        template_ref.version,
+        if searched.is_empty() {
+            "none".to_string()
+        } else {
+            searched
+        }
     )
     .into())
 }

@@ -2,7 +2,7 @@
 
 - **A/M/D/R**: The Auditor’s change summary buckets: Added / Modified / Deleted / Renamed.
 - **Agent (backend)**: The external tool Vizier invokes to draft, implement, review, or resolve work (today typically `codex`, with other backends planned).
-- **Agent scope**: Which Vizier command is running (e.g., `ask`, `save`, `draft`, `approve`, `review`, `merge`) and therefore which prompts/bounds/config apply.
+- **Agent scope**: Which Vizier command/alias is running (for example `save`, `draft`, `approve`, `review`, `merge`, `patch`, `build_execute`, or `run`-resolved aliases) and therefore which prompts/bounds/config apply.
 - **Auditor**: The component that records what happened (session logs), summarizes repo edits (A/M/D/R), and constructs commit/outcome metadata from observed facts.
 - **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
 - **CI gate target-dir fallback**: `./cicd.sh` default that sets `CARGO_TARGET_DIR` to `.vizier/tmp/cargo-target` when unset so permission-restricted repo `target/` directories do not block gate runs.
@@ -39,6 +39,11 @@
 - **Job artifact**: A named output that jobs produce/consume (plan docs/branches, plan commits, target branches, ask/save patches) for dependency tracking.
 - **Job after dependency**: A scheduler dependency encoded in `schedule.after` that waits on a specific predecessor job/status, separate from artifact-based `schedule.dependencies`.
 - **Build phase after chain**: `vizier build execute` now compiles template node edges into phase-job `schedule.after` links (`approve <- materialize`, `review <- approve`, `merge <- review`) so phase ordering comes from workflow-template compilation instead of hand-built wiring.
+- **Composed workflow alias**: A repo-defined command alias (for example `develop`) mapped under `[commands]` to a workflow template and executed via `vizier run <alias>`.
+- **Develop alias bundle**: The repo-local composition set required for default `run develop` behavior in this repo: `[commands].develop = "file:.vizier/develop.toml"` plus `.vizier/develop.toml` and `.vizier/workflow/{draft,approve,merge}.toml`; integration fixtures seed this set so `plan --json` and `run develop` coverage remains deterministic.
+- **Develop alias selector mapping**: The specific repo-default `.vizier/config.toml` entry `[commands].develop = "file:.vizier/develop.toml"`; when missing, `vizier plan --json` loses `/commands/develop/template_selector` and plan/run alias coverage drifts from expected defaults.
+- **Template import/link composition**: File-backed workflow feature where a template pulls in stage templates via `imports` and wires stage-to-stage dependencies via `links`, with prefixing/cycle/collision validation before queueing.
+- **Run alias fallback chain**: Resolution order for unmapped `vizier run <alias>` templates: `.vizier/<alias>.toml`, `.vizier/<alias>.json`, `.vizier/workflow/<alias>.toml`, `.vizier/workflow/<alias>.json`.
 - **Job dependency**: An artifact-based prerequisite that keeps a job waiting or blocked until the required artifact exists.
 - **Job lock**: A named shared/exclusive mutex (for example `repo_serial`, `branch:<name>`, `temp_worktree:<id>`, `merge_sentinel:<slug>`) that gates concurrent job execution.
 - **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.

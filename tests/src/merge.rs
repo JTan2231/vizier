@@ -1374,9 +1374,22 @@ fn test_merge_complete_conflict_without_pending_state() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&attempt.stdout);
     let stderr = String::from_utf8_lossy(&attempt.stderr);
-    let combined = format!("{stdout}\n{stderr}");
+    let expected_message = "No Vizier-managed merge is awaiting completion";
+    let mut combined = format!("{stdout}\n{stderr}");
+    if !combined.contains(expected_message)
+        && let Some(job_id) = extract_job_id(&stdout)
+    {
+        wait_for_job_completion(&repo, &job_id, Duration::from_secs(40))?;
+        let job_dir = repo.path().join(".vizier/jobs").join(&job_id);
+        let job_stdout = fs::read_to_string(job_dir.join("stdout.log")).unwrap_or_default();
+        let job_stderr = fs::read_to_string(job_dir.join("stderr.log")).unwrap_or_default();
+        combined.push('\n');
+        combined.push_str(&job_stdout);
+        combined.push('\n');
+        combined.push_str(&job_stderr);
+    }
     assert!(
-        combined.contains("No Vizier-managed merge is awaiting completion"),
+        combined.contains(expected_message),
         "missing helpful message in command output\nstdout: {}\nstderr: {}",
         stdout,
         stderr

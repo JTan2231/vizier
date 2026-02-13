@@ -34,9 +34,24 @@ vizier patch BUG1.md BUG2.md --yes
 
 `patch` now queues a root scheduler job first (`command_alias=patch`, shown in the `Scope` field for compatibility), runs full-file preflight inside that job, then queues per-step phase jobs in exact CLI order. It deduplicates repeated paths by default, defaults to the full `approve-review-merge` pipeline when `--pipeline` is omitted, and reuses the same build execution machinery under a deterministic patch session id (`--resume` reuses non-terminal jobs for that session).
 
+## Compose a One-Command Plan Flow with `vizier run`
+
+If your repo defines a composed alias (for example `develop`) under `[commands]`, you can run the full draft/approve/merge chain as one queued DAG:
+
+```toml
+[commands]
+develop = "file:.vizier/develop.toml"
+```
+
+```bash
+vizier run develop --name release-cut "ship release cut"
+```
+
+`vizier run` resolves `[commands.<alias>]` first, then repo fallback files (`.vizier/<alias>.toml|json`, `.vizier/workflow/<alias>.toml|json`) when the alias is unmapped. The run keeps the same scheduler semantics (`--after`, locks, dependencies, retries, `--follow`) and emits normal job metadata for each staged node.
+
 ### Agent configuration
 
-The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) resolve agent settings through command aliases + template selectors. Declare defaults under `[agents.default]`, then override per alias with `[agents.commands.<alias>]` (and optionally per template with `[agents.templates."<selector>"]`) to mix editing stacks as needed (see `docs/user/prompt-config-matrix.md` for the full matrix):
+The plan commands (`vizier draft`, `vizier approve`, `vizier review`, `vizier merge`) and custom alias runs (`vizier run <alias>`) resolve agent settings through command aliases + template selectors. Declare defaults under `[agents.default]`, then override per alias with `[agents.commands.<alias>]` (and optionally per template with `[agents.templates."<selector>"]`) to mix editing stacks as needed (see `docs/user/prompt-config-matrix.md` for the full matrix):
 
 ```toml
 [agents.default]
@@ -67,6 +82,8 @@ Agent runs require either a bundled selector (for example, `agent = "codex"`/`"g
 Want to exercise an alias-resolved agent without touching `.vizier` or Git? `vizier test-display [--command save|draft|approve|review|merge|patch|build_execute]` streams progress through the normal display stack using a harmless prompt, reports the agent’s exit code/duration/stdout/stderr, and defaults to no session logging (`--session` opts back in). Hidden/deprecated `--scope` is still accepted as compatibility input.
 
 ## High-Level Timeline
+
+If you have a composed alias such as `develop`, `vizier run develop ...` executes the same stages as one scheduled DAG. Otherwise, run the explicit flow below:
 
 1. **`vizier draft <spec>`** — Creates a `draft/<slug>` branch and writes `.vizier/implementation-plans/<slug>.md` inside a disposable worktree based on the primary branch. Your checkout stays untouched.
 2. **Manual plan edits (optional)** — If the plan needs clarification, edit `.vizier/implementation-plans/<slug>.md` directly on the `draft/<slug>` branch and commit the update.

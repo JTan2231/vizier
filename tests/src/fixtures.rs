@@ -420,6 +420,15 @@ fn seed_vizier_dir(source_repo_root: &Path, target_repo_root: &Path) -> io::Resu
         &source_vizier.join("config.json"),
         &target_vizier.join("config.json"),
     )?;
+    copy_file_if_exists(
+        &source_vizier.join("develop.toml"),
+        &target_vizier.join("develop.toml"),
+    )?;
+
+    let source_workflow = source_vizier.join("workflow");
+    if source_workflow.is_dir() {
+        copy_dir_recursive(&source_workflow, &target_vizier.join("workflow"))?;
+    }
 
     let source_narrative = source_vizier.join("narrative");
     if source_narrative.is_dir() {
@@ -1477,6 +1486,7 @@ mod tests {
         let target = temp_root.path().join("target");
 
         fs::create_dir_all(source.join(".vizier/narrative/threads"))?;
+        fs::create_dir_all(source.join(".vizier/workflow"))?;
         fs::create_dir_all(source.join(".vizier/tmp/cargo-target/debug"))?;
         fs::create_dir_all(source.join(".vizier/jobs/job-1"))?;
         fs::create_dir_all(source.join(".vizier/sessions/s1"))?;
@@ -1486,6 +1496,14 @@ mod tests {
         fs::write(
             source.join(".vizier/config.json"),
             "{ \"agent\": \"gemini\" }\n",
+        )?;
+        fs::write(
+            source.join(".vizier/develop.toml"),
+            "id = \"template.develop\"\n",
+        )?;
+        fs::write(
+            source.join(".vizier/workflow/draft.toml"),
+            "id = \"template.stage.draft\"\n",
         )?;
         fs::write(source.join(".vizier/narrative/snapshot.md"), "snapshot\n")?;
         fs::write(source.join(".vizier/narrative/glossary.md"), "glossary\n")?;
@@ -1518,6 +1536,14 @@ mod tests {
         assert!(
             target.join(".vizier/narrative/threads/demo.md").is_file(),
             "expected narrative threads to be copied"
+        );
+        assert!(
+            target.join(".vizier/develop.toml").is_file(),
+            "expected develop workflow composition template to be copied"
+        );
+        assert!(
+            target.join(".vizier/workflow/draft.toml").is_file(),
+            "expected workflow stage templates to be copied"
         );
         assert!(
             target.join(".vizier/implementation-plans").is_dir(),

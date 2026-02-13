@@ -20,6 +20,7 @@ mod patch;
 mod plan;
 mod release;
 mod review;
+mod run;
 mod save;
 mod session;
 mod test_display;

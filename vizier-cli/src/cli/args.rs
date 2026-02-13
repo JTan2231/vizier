@@ -540,6 +540,9 @@ pub(crate) enum Commands {
     /// Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
     Merge(MergeCmd),
 
+    /// Run a repo-defined workflow alias/template as one scheduled DAG execution
+    Run(RunCmd),
+
     /// Create a local release commit and optional annotated tag from conventional commits
     Release(ReleaseCmd),
 
@@ -1096,6 +1099,45 @@ pub(crate) struct MergeCmd {
 }
 
 #[derive(ClapArgs, Debug)]
+pub(crate) struct RunCmd {
+    /// Repo-defined command alias/template selector (for example `develop`)
+    #[arg(value_name = "ALIAS")]
+    pub(crate) alias: String,
+
+    /// Optional operator spec text (mapped to spec_text/spec_source runtime params)
+    #[arg(value_name = "SPEC")]
+    pub(crate) spec: Option<String>,
+
+    /// Read the operator spec from a file instead of inline text
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    pub(crate) file: Option<PathBuf>,
+
+    /// Optional slug/name hint for draft-style workflows
+    #[arg(long = "name", value_name = "NAME")]
+    pub(crate) name: Option<String>,
+
+    /// Optional draft branch override for workflows that need branch context
+    #[arg(long = "branch", value_name = "BRANCH")]
+    pub(crate) branch: Option<String>,
+
+    /// Optional target branch override for workflows that need merge context
+    #[arg(long = "target", value_name = "BRANCH")]
+    pub(crate) target: Option<String>,
+
+    /// Additional runtime params passed into template rendering (`KEY=VALUE`)
+    #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
+    pub(crate) set: Vec<String>,
+
+    /// Force assume-yes semantics for workflow nodes that gate on confirmation
+    #[arg(long = "yes", short = 'y')]
+    pub(crate) assume_yes: bool,
+
+    /// Wait for one or more predecessor jobs to succeed before this job can run
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
+}
+
+#[derive(ClapArgs, Debug)]
 #[command(group(
     ArgGroup::new("release_bump")
         .args(["major", "minor", "patch"])
@@ -1144,7 +1186,7 @@ pub(crate) struct HiddenCompleteCmd {}
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct HiddenWorkflowNodeCmd {
-    /// Optional command scope label (`save`, `draft`, `approve`, `review`, `merge`, `patch`, `build_execute`)
+    /// Optional command scope label (`save`, `draft`, `approve`, `review`, `merge`, `patch`, `build_execute`, or a custom run alias)
     #[arg(long = "scope", value_name = "SCOPE")]
     pub(crate) scope: Option<String>,
 

@@ -7,7 +7,8 @@ use vizier_core::{
     display::{self, LogLevel},
     tools, vcs,
     workflow_template::{
-        WorkflowCapability, WorkflowNode, WorkflowTemplate, workflow_node_capability,
+        WorkflowCapability, WorkflowGate, WorkflowNode, WorkflowPrecondition, WorkflowTemplate,
+        workflow_node_capability,
     },
 };
 
@@ -33,11 +34,12 @@ use crate::cli::scheduler::{
 };
 use crate::cli::util::flag_present;
 use crate::workflow_templates::{
-    MergeTemplateGateConfig, TemplateScope, WorkflowTemplateRef, compile_template_node,
-    compile_template_node_schedule, resolve_approve_template, resolve_draft_template,
-    resolve_merge_template, resolve_patch_template, resolve_primary_template_node_id,
-    resolve_review_template, resolve_save_template, resolve_template_ref,
-    resolve_template_ref_for_alias, validate_template_agent_backends,
+    MergeTemplateGateConfig, TemplateScope, WorkflowTemplateNodeSchedule, WorkflowTemplateRef,
+    compile_template_node, compile_template_node_schedule, resolve_approve_template,
+    resolve_custom_alias_template, resolve_draft_template, resolve_merge_template,
+    resolve_patch_template, resolve_primary_template_node_id, resolve_review_template,
+    resolve_save_template, resolve_template_ref, resolve_template_ref_for_alias,
+    validate_template_agent_backends,
 };
 use crate::{jobs, plan};
 
@@ -52,7 +54,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let stderr_is_tty = std::io::stderr().is_terminal();
     let raw_args: Vec<String> = std::env::args().collect();
     if matches!(subcommand_from_raw_args(&raw_args).as_deref(), Some("ask")) {
-        return Err("`ask` has been removed; use supported workflow commands (`save`, `draft`, `approve`, `review`, `merge`).".into());
+        return Err("`ask` has been removed; use supported workflow commands (`save`, `draft`, `approve`, `review`, `merge`, `run`).".into());
     }
     if let Some(message) = removed_global_flag_guidance(&raw_args) {
         return Err(message.into());
@@ -318,6 +320,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Commands::Approve(cmd) => cmd.after.clone(),
             Commands::Review(cmd) => cmd.after.clone(),
             Commands::Merge(cmd) => cmd.after.clone(),
+            Commands::Run(cmd) => cmd.after.clone(),
             _ => Vec::new(),
         };
 
@@ -364,7 +367,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     requested_after: &requested_after,
                     base_metadata: &metadata,
                     template_ref: &template_ref,
-                    template_scope,
+                    scope_label: template_scope.label().to_string(),
+                    compat_scope: Some(template_scope),
                     template: &template,
                     primary_node_id: &primary_node_id,
                     pinned_head: Some(pinned),
@@ -441,7 +445,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     requested_after: &requested_after,
                     base_metadata: &metadata,
                     template_ref: &template_ref,
-                    template_scope,
+                    scope_label: template_scope.label().to_string(),
+                    compat_scope: Some(template_scope),
                     template: &template,
                     primary_node_id: &primary_node_id,
                     pinned_head: None,
@@ -514,7 +519,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     requested_after: &requested_after,
                     base_metadata: &metadata,
                     template_ref: &template_ref,
-                    template_scope,
+                    scope_label: template_scope.label().to_string(),
+                    compat_scope: Some(template_scope),
                     template: &template,
                     primary_node_id: &primary_node_id,
                     pinned_head: None,
@@ -608,7 +614,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     requested_after: &requested_after,
                     base_metadata: &metadata,
                     template_ref: &template_ref,
-                    template_scope,
+                    scope_label: template_scope.label().to_string(),
+                    compat_scope: Some(template_scope),
                     template: &template,
                     primary_node_id: &primary_node_id,
                     pinned_head: None,
@@ -754,7 +761,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     requested_after: &requested_after,
                     base_metadata: &metadata,
                     template_ref: &template_ref,
-                    template_scope,
+                    scope_label: template_scope.label().to_string(),
+                    compat_scope: Some(template_scope),
                     template: &template,
                     primary_node_id: &primary_node_id,
                     pinned_head: None,
@@ -880,7 +888,169 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     requested_after: &requested_after,
                     base_metadata: &metadata,
                     template_ref: &template_ref,
-                    template_scope,
+                    scope_label: template_scope.label().to_string(),
+                    compat_scope: Some(template_scope),
+                    template: &template,
+                    primary_node_id: &primary_node_id,
+                    pinned_head: None,
+                    capture_save_patch_for_primary: false,
+                    primary_node_arg_overrides: &primary_node_arg_overrides,
+                    passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
+                })?;
+            }
+            Commands::Run(cmd) => {
+                let alias = parse_command_alias(&cmd.alias)?;
+                let mut runtime_params = parse_runtime_param_overrides(&cmd.set)?;
+
+                let include_prompt_input = cmd.spec.is_some() || cmd.file.is_some();
+                if include_prompt_input {
+                    let (resolved, input_file) = prepare_prompt_input(
+                        cmd.spec.as_deref(),
+                        cmd.file.as_deref(),
+                        &project_root,
+                        &job_id,
+                    )?;
+                    if !runtime_params.contains_key("spec_source") {
+                        match (&resolved.origin, input_file.as_ref()) {
+                            (InputOrigin::Inline, _) => {
+                                runtime_params
+                                    .insert("spec_source".to_string(), "inline".to_string());
+                                runtime_params
+                                    .entry("spec_text".to_string())
+                                    .or_insert(resolved.text.clone());
+                            }
+                            (InputOrigin::File(path), _) => {
+                                runtime_params
+                                    .insert("spec_source".to_string(), "file".to_string());
+                                runtime_params
+                                    .entry("spec_file".to_string())
+                                    .or_insert(path.display().to_string());
+                            }
+                            (InputOrigin::Stdin, Some(path)) => {
+                                runtime_params
+                                    .insert("spec_source".to_string(), "stdin".to_string());
+                                runtime_params
+                                    .entry("spec_file".to_string())
+                                    .or_insert(path.display().to_string());
+                            }
+                            (InputOrigin::Stdin, None) => {
+                                runtime_params
+                                    .insert("spec_source".to_string(), "stdin".to_string());
+                                runtime_params
+                                    .entry("spec_text".to_string())
+                                    .or_insert(resolved.text.clone());
+                            }
+                        }
+                    }
+                }
+
+                let resolved_slug = resolve_run_slug(&runtime_params, cmd.name.as_deref())?;
+                let plan_dir = project_root.join(".vizier/implementation-plans");
+                std::fs::create_dir_all(&plan_dir)?;
+                let slug = plan::ensure_unique_slug(&resolved_slug, &plan_dir, "draft/")?;
+                runtime_params
+                    .entry("slug".to_string())
+                    .or_insert(slug.clone());
+                runtime_params
+                    .entry("plan".to_string())
+                    .or_insert(slug.clone());
+
+                let branch = runtime_params
+                    .get("branch")
+                    .cloned()
+                    .or_else(|| cmd.branch.clone())
+                    .unwrap_or_else(|| plan::default_branch_for_slug(&slug));
+                runtime_params
+                    .entry("branch".to_string())
+                    .or_insert(branch.clone());
+
+                let target = runtime_params
+                    .get("target")
+                    .cloned()
+                    .or_else(|| cmd.target.clone())
+                    .or_else(vcs::detect_primary_branch)
+                    .unwrap_or_else(|| "main".to_string());
+                runtime_params
+                    .entry("target".to_string())
+                    .or_insert(target.clone());
+
+                let cfg = config::get_config();
+                runtime_params
+                    .entry("commit_mode".to_string())
+                    .or_insert(commit_mode.label().to_string());
+                runtime_params
+                    .entry("push_after".to_string())
+                    .or_insert(push_after.to_string());
+                runtime_params
+                    .entry("assume_yes".to_string())
+                    .or_insert("true".to_string());
+                runtime_params
+                    .entry("delete_branch".to_string())
+                    .or_insert("true".to_string());
+                runtime_params
+                    .entry("complete_conflict".to_string())
+                    .or_insert("false".to_string());
+                runtime_params
+                    .entry("stop_condition_retries".to_string())
+                    .or_insert(cfg.approve.stop_condition.retries.to_string());
+                if let Some(script) = cfg.approve.stop_condition.script.as_ref() {
+                    runtime_params
+                        .entry("stop_condition_script".to_string())
+                        .or_insert(script.display().to_string());
+                }
+                runtime_params
+                    .entry("cicd_auto_resolve".to_string())
+                    .or_insert(cfg.merge.cicd_gate.auto_resolve.to_string());
+                runtime_params
+                    .entry("cicd_retries".to_string())
+                    .or_insert(cfg.merge.cicd_gate.retries.to_string());
+                if let Some(script) = cfg.merge.cicd_gate.script.as_ref() {
+                    runtime_params
+                        .entry("cicd_script".to_string())
+                        .or_insert(script.display().to_string());
+                }
+                runtime_params
+                    .entry("conflict_auto_resolve".to_string())
+                    .or_insert(cfg.merge.conflicts.auto_resolve.to_string());
+                runtime_params
+                    .entry("conflict_auto_resolve_source".to_string())
+                    .or_insert("merge.conflicts.auto_resolve".to_string());
+                runtime_params
+                    .entry("squash".to_string())
+                    .or_insert(cfg.merge.squash_default.to_string());
+                if let Some(mainline) = cfg.merge.squash_mainline {
+                    runtime_params
+                        .entry("squash_mainline".to_string())
+                        .or_insert(mainline.to_string());
+                }
+
+                let (template_ref, mut template) =
+                    resolve_custom_alias_template(&cfg, &alias, &runtime_params)?;
+                strip_empty_runtime_args(&mut template);
+                validate_template_agent_backends(&template, &cfg, cli_agent_override.as_ref())?;
+
+                let node_schedule = compile_template_node_schedule(&template)?;
+                let primary_node_id = select_primary_run_node_id(&template, &node_schedule)?;
+                metadata.command_alias = Some(alias.to_string());
+                metadata.scope = Some(alias.to_string());
+                metadata.plan = Some(slug.clone());
+                metadata.branch = Some(branch.clone());
+                metadata.target = Some(target.clone());
+
+                let primary_node_arg_overrides = BTreeMap::new();
+                enqueue_wrapper_template_graph(EnqueueWrapperTemplateGraphRequest {
+                    project_root: &project_root,
+                    jobs_root: &jobs_root,
+                    root_job_id: &job_id,
+                    follow_primary: follow,
+                    background: &workflow_defaults.background,
+                    config_snapshot: &config_snapshot,
+                    requested_after: &requested_after,
+                    base_metadata: &metadata,
+                    template_ref: &template_ref,
+                    scope_label: alias.to_string(),
+                    compat_scope: None,
                     template: &template,
                     primary_node_id: &primary_node_id,
                     pinned_head: None,
@@ -1139,6 +1309,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
                 run_merge(opts, &agent, commit_mode).await
             }
+            Commands::Run(_) => {
+                Err("`vizier run` executes through the scheduler; invoke it without --background-job-id".into())
+            }
             Commands::Release(cmd) => run_release(cmd),
         }
     })
@@ -1351,6 +1524,118 @@ fn parse_command_alias(alias: &str) -> Result<config::CommandAlias, Box<dyn std:
     })
 }
 
+fn parse_runtime_param_overrides(
+    entries: &[String],
+) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = BTreeMap::new();
+    for entry in entries {
+        let (key, value) = entry.split_once('=').ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid --set value `{entry}`; expected KEY=VALUE"),
+            )
+        })?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid --set value `{entry}`; key cannot be empty"),
+            )
+            .into());
+        }
+        parsed.insert(key.to_string(), value.to_string());
+    }
+    Ok(parsed)
+}
+
+fn resolve_run_slug(
+    runtime_params: &BTreeMap<String, String>,
+    explicit_name: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(slug) = runtime_params
+        .get("slug")
+        .or_else(|| runtime_params.get("plan"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return plan::sanitize_name_override(slug).map_err(|err| {
+            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+        });
+    }
+    if let Some(name) = explicit_name {
+        return plan::sanitize_name_override(name).map_err(|err| {
+            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+        });
+    }
+    if let Some(name_override) = runtime_params
+        .get("name_override")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return plan::sanitize_name_override(name_override).map_err(|err| {
+            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
+        });
+    }
+    if let Some(spec_text) = runtime_params
+        .get("spec_text")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(plan::slug_from_spec(spec_text));
+    }
+    Ok("draft-plan".to_string())
+}
+
+fn strip_empty_runtime_args(template: &mut WorkflowTemplate) {
+    for node in &mut template.nodes {
+        node.args.retain(|_, value| !value.trim().is_empty());
+        for precondition in &mut node.preconditions {
+            if let WorkflowPrecondition::Custom { args, .. } = precondition {
+                args.retain(|_, value| !value.trim().is_empty());
+            }
+        }
+        for gate in &mut node.gates {
+            if let WorkflowGate::Custom { args, .. } = gate {
+                args.retain(|_, value| !value.trim().is_empty());
+            }
+        }
+    }
+}
+
+fn select_primary_run_node_id(
+    template: &WorkflowTemplate,
+    schedule: &WorkflowTemplateNodeSchedule,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let roots = template
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            if node.after.is_empty() {
+                Some(node.id.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    if roots.is_empty() {
+        return Err(format!(
+            "workflow template {}@{} has no root node",
+            template.id, template.version
+        )
+        .into());
+    }
+    for node_id in &schedule.order {
+        if roots.contains(node_id) {
+            return Ok(node_id.clone());
+        }
+    }
+    Err(format!(
+        "workflow template {}@{} root nodes are missing from the compiled schedule",
+        template.id, template.version
+    )
+    .into())
+}
+
 fn resolve_wrapper_template_ref(
     cfg: &config::Config,
     alias_name: &str,
@@ -1509,7 +1794,8 @@ struct EnqueueWrapperTemplateGraphRequest<'a> {
     requested_after: &'a [String],
     base_metadata: &'a jobs::JobMetadata,
     template_ref: &'a WorkflowTemplateRef,
-    template_scope: TemplateScope,
+    scope_label: String,
+    compat_scope: Option<TemplateScope>,
     template: &'a WorkflowTemplate,
     primary_node_id: &'a str,
     pinned_head: Option<jobs::PinnedHead>,
@@ -1532,7 +1818,8 @@ fn enqueue_wrapper_template_graph(
         requested_after,
         base_metadata,
         template_ref,
-        template_scope,
+        scope_label,
+        compat_scope,
         template,
         primary_node_id,
         pinned_head,
@@ -1550,10 +1837,7 @@ fn enqueue_wrapper_template_graph(
         .ok_or_else(|| {
             format!(
                 "workflow template selector `{}@{}` for scope `{}` is missing primary node `{}`",
-                template_ref.id,
-                template_ref.version,
-                template_scope.label(),
-                primary_node_id
+                template_ref.id, template_ref.version, scope_label, primary_node_id
             )
         })?;
     primary_node.args.extend(primary_node_arg_overrides.clone());
@@ -1573,8 +1857,10 @@ fn enqueue_wrapper_template_graph(
         .command_alias
         .clone()
         .or(base_metadata.scope.clone())
-        .unwrap_or_else(|| template_scope.label().to_string());
-    let builtin_selector = is_builtin_scope_selector(template_scope, template_ref);
+        .unwrap_or_else(|| scope_label.clone());
+    let builtin_selector = compat_scope
+        .map(|scope| is_builtin_scope_selector(scope, template_ref))
+        .unwrap_or(false);
 
     let mut planned_job_ids = BTreeMap::new();
     let mut used_job_ids = BTreeSet::new();
@@ -1628,7 +1914,8 @@ fn enqueue_wrapper_template_graph(
 
         let mut runtime_node = node.clone();
         if builtin_selector
-            && mark_builtin_control_node_as_compat_noop(template_scope, node, primary_node_id)
+            && let Some(scope) = compat_scope
+            && mark_builtin_control_node_as_compat_noop(scope, node, primary_node_id)
         {
             runtime_node
                 .args
@@ -1636,7 +1923,7 @@ fn enqueue_wrapper_template_graph(
         }
 
         let raw_args = hidden_workflow_node_raw_args(
-            template_scope,
+            &scope_label,
             &runtime_node,
             base_metadata,
             passthrough_global_args,
@@ -1691,10 +1978,7 @@ fn enqueue_wrapper_template_graph(
     if !seen_primary {
         return Err(format!(
             "workflow template selector `{}@{}` for scope `{}` did not schedule primary node `{}`",
-            template_ref.id,
-            template_ref.version,
-            template_scope.label(),
-            primary_node_id
+            template_ref.id, template_ref.version, scope_label, primary_node_id
         )
         .into());
     }
@@ -1745,7 +2029,7 @@ fn wrapper_template_node_scope(base_scope: &str, node: &WorkflowNode) -> String 
 }
 
 fn hidden_workflow_node_raw_args(
-    template_scope: TemplateScope,
+    scope_label: &str,
     node: &WorkflowNode,
     metadata: &jobs::JobMetadata,
     passthrough_global_args: &[String],
@@ -1755,7 +2039,7 @@ fn hidden_workflow_node_raw_args(
     raw.extend([
         "__workflow-node".to_string(),
         "--scope".to_string(),
-        template_scope.label().to_string(),
+        scope_label.to_string(),
         "--node".to_string(),
         node.id.clone(),
         "--node-json".to_string(),

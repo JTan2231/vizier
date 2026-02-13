@@ -68,6 +68,26 @@ fn test_plan_command_outputs_resolved_config() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn test_plan_json_surfaces_develop_alias_selector() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    let output = repo.vizier_output(&["plan", "--json"])?;
+    assert!(
+        output.status.success(),
+        "vizier plan --json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        json.pointer("/commands/develop/template_selector")
+            .and_then(Value::as_str),
+        Some("file:.vizier/develop.toml"),
+        "plan JSON should surface repo-local develop alias selector"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_plan_json_respects_config_file_and_overrides() -> TestResult {
     let repo = IntegrationRepo::new()?;
