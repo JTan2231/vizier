@@ -566,6 +566,834 @@ pub fn compile_workflow_node(
     })
 }
 
+pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Result<(), String> {
+    let mut by_id = BTreeMap::new();
+    for node in &template.nodes {
+        if by_id.insert(node.id.clone(), node).is_some() {
+            return Err(format!(
+                "template {}@{} defines duplicate node id `{}`",
+                template.id, template.version, node.id
+            ));
+        }
+    }
+
+    let cicd_gate_nodes = template
+        .nodes
+        .iter()
+        .filter(|node| workflow_node_capability(node) == Some(WorkflowCapability::GateCicd))
+        .map(|node| node.id.as_str())
+        .collect::<Vec<_>>();
+    if cicd_gate_nodes.len() > 1 {
+        return Err(format!(
+            "template {}@{} capability `{}` nodes [{}] violate single-gate cardinality",
+            template.id,
+            template.version,
+            WorkflowCapability::GateCicd.id(),
+            cicd_gate_nodes.join(", ")
+        ));
+    }
+
+    for node in &template.nodes {
+        let Some(capability) = workflow_node_capability(node) else {
+            continue;
+        };
+
+        match capability {
+            WorkflowCapability::PlanApplyOnce => {
+                validate_plan_apply_once_contract(template, &by_id, node)?;
+            }
+            WorkflowCapability::GateStopCondition => {
+                validate_stop_condition_contract(template, &by_id, node)?;
+            }
+            WorkflowCapability::GitIntegratePlanBranch => {
+                validate_integrate_plan_branch_contract(template, &by_id, node)?;
+            }
+            WorkflowCapability::GateConflictResolution => {
+                validate_conflict_resolution_contract(template, &by_id, node)?;
+            }
+            WorkflowCapability::GateCicd => {
+                validate_cicd_gate_contract(template, &by_id, node)?;
+            }
+            WorkflowCapability::RemediationCicdAutoFix => {
+                validate_cicd_remediation_contract(template, &by_id, node)?;
+            }
+            WorkflowCapability::ReviewCritiqueOrFix | WorkflowCapability::ReviewApplyFixesOnly => {
+                validate_review_contract(template, node, capability)?;
+            }
+            WorkflowCapability::ExecCustomCommand => {
+                validate_exec_custom_command_contract(template, node)?;
+            }
+            WorkflowCapability::GitSaveWorktreePatch => {
+                validate_save_worktree_patch_contract(template, node)?;
+            }
+            WorkflowCapability::PlanGenerateDraftPlan => {
+                validate_generate_draft_plan_contract(template, node)?;
+            }
+            WorkflowCapability::PatchExecutePipeline => {
+                validate_patch_execute_contract(template, node)?;
+            }
+            WorkflowCapability::BuildMaterializeStep => {
+                validate_build_materialize_contract(template, node)?;
+            }
+            WorkflowCapability::InternalTerminalSink => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_plan_apply_once_contract(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if script_gate_count(node) > 1 {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanApplyOnce,
+            node,
+            "defines multiple script gates; expected at most one",
+        ));
+    }
+
+    let stop_targets =
+        resolve_outcome_targets(template, by_id, node, "succeeded", &node.on.succeeded)?
+            .into_iter()
+            .filter(|target| {
+                target.id == "approve_gate_stop_condition"
+                    || workflow_node_capability(target)
+                        == Some(WorkflowCapability::GateStopCondition)
+                    || (matches!(target.kind, WorkflowNodeKind::Gate)
+                        && script_gate_count(target) > 0)
+            })
+            .collect::<Vec<_>>();
+
+    if stop_targets.len() > 1 {
+        let ids = stop_targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanApplyOnce,
+            node,
+            &format!("has ambiguous stop-condition targets on on.succeeded: {ids}"),
+        ));
+    }
+
+    if !node.on.succeeded.is_empty() && stop_targets.is_empty() {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanApplyOnce,
+            node,
+            "has on.succeeded targets but none resolve to a stop-condition gate",
+        ));
+    }
+
+    let Some(stop_node) = stop_targets.first().copied() else {
+        return Ok(());
+    };
+    if !matches!(stop_node.kind, WorkflowNodeKind::Gate) {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanApplyOnce,
+            node,
+            &format!(
+                "targets stop-condition node `{}` with kind {:?}; expected gate",
+                stop_node.id, stop_node.kind
+            ),
+        ));
+    }
+
+    if script_gate_count(stop_node) > 1 {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanApplyOnce,
+            node,
+            &format!(
+                "stop-condition node `{}` defines multiple script gates",
+                stop_node.id
+            ),
+        ));
+    }
+
+    if script_gate_count(stop_node) == 1
+        && matches!(stop_node.retry.mode, WorkflowRetryMode::UntilGate)
+        && !stop_node.on.failed.iter().any(|target| target == &node.id)
+    {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanApplyOnce,
+            node,
+            &format!(
+                "stop-condition node `{}` has until_gate retry but on.failed does not route back to `{}`",
+                stop_node.id, node.id
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_stop_condition_contract(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if !matches!(node.kind, WorkflowNodeKind::Gate) {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateStopCondition,
+            node,
+            &format!("uses kind {:?}; expected gate", node.kind),
+        ));
+    }
+    if script_gate_count(node) > 1 {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateStopCondition,
+            node,
+            "defines multiple script gates; expected at most one",
+        ));
+    }
+
+    let parents = template
+        .nodes
+        .iter()
+        .filter(|candidate| {
+            workflow_node_capability(candidate) == Some(WorkflowCapability::PlanApplyOnce)
+                && candidate
+                    .on
+                    .succeeded
+                    .iter()
+                    .any(|target| target == &node.id)
+        })
+        .collect::<Vec<_>>();
+    if parents.is_empty() {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateStopCondition,
+            node,
+            "is not targeted from any cap.plan.apply_once on.succeeded edge",
+        ));
+    }
+    if parents.len() > 1 {
+        let ids = parents
+            .iter()
+            .map(|parent| parent.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateStopCondition,
+            node,
+            &format!("is targeted by multiple apply nodes: {ids}"),
+        ));
+    }
+
+    if script_gate_count(node) == 1
+        && matches!(node.retry.mode, WorkflowRetryMode::UntilGate)
+        && !node.on.failed.iter().any(|target| target == &parents[0].id)
+    {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateStopCondition,
+            node,
+            &format!(
+                "has until_gate retry but on.failed does not route back to `{}`",
+                parents[0].id
+            ),
+        ));
+    }
+
+    let _ = resolve_outcome_targets(template, by_id, node, "failed", &node.on.failed)?;
+    Ok(())
+}
+
+fn validate_integrate_plan_branch_contract(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if cicd_gate_count(node) > 1 {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GitIntegratePlanBranch,
+            node,
+            "defines multiple cicd gates; expected at most one",
+        ));
+    }
+
+    let conflict_targets =
+        resolve_outcome_targets(template, by_id, node, "blocked", &node.on.blocked)?
+            .into_iter()
+            .filter(|target| {
+                target.id == "merge_conflict_resolution"
+                    || workflow_node_capability(target)
+                        == Some(WorkflowCapability::GateConflictResolution)
+                    || node_has_custom_gate(target, "conflict_resolution")
+            })
+            .collect::<Vec<_>>();
+    if conflict_targets.len() > 1 {
+        let ids = conflict_targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GitIntegratePlanBranch,
+            node,
+            &format!("has ambiguous conflict-resolution targets on on.blocked: {ids}"),
+        ));
+    }
+    if let Some(conflict_target) = conflict_targets.first().copied()
+        && !matches!(conflict_target.kind, WorkflowNodeKind::Gate)
+    {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GitIntegratePlanBranch,
+            node,
+            &format!(
+                "targets conflict-resolution node `{}` with kind {:?}; expected gate",
+                conflict_target.id, conflict_target.kind
+            ),
+        ));
+    }
+
+    let cicd_targets =
+        resolve_outcome_targets(template, by_id, node, "succeeded", &node.on.succeeded)?
+            .into_iter()
+            .filter(|target| {
+                target.id == "merge_gate_cicd"
+                    || workflow_node_capability(target) == Some(WorkflowCapability::GateCicd)
+                    || cicd_gate_count(target) > 0
+            })
+            .collect::<Vec<_>>();
+    if cicd_targets.len() > 1 {
+        let ids = cicd_targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GitIntegratePlanBranch,
+            node,
+            &format!("has ambiguous cicd gate targets on on.succeeded: {ids}"),
+        ));
+    }
+    if let Some(gate_target) = cicd_targets.first().copied() {
+        if !matches!(gate_target.kind, WorkflowNodeKind::Gate) {
+            return Err(capability_error(
+                template,
+                WorkflowCapability::GitIntegratePlanBranch,
+                node,
+                &format!(
+                    "targets cicd node `{}` with kind {:?}; expected gate",
+                    gate_target.id, gate_target.kind
+                ),
+            ));
+        }
+        if cicd_gate_count(gate_target) != 1 {
+            return Err(capability_error(
+                template,
+                WorkflowCapability::GitIntegratePlanBranch,
+                node,
+                &format!(
+                    "cicd target node `{}` must define exactly one cicd gate",
+                    gate_target.id
+                ),
+            ));
+        }
+        if let Some((_script, auto_resolve)) = single_cicd_gate(gate_target)
+            && auto_resolve
+            && !gate_retry_loop_closes(template, by_id, gate_target)?
+        {
+            return Err(capability_error(
+                template,
+                WorkflowCapability::GitIntegratePlanBranch,
+                node,
+                &format!(
+                    "cicd gate node `{}` enables auto_resolve but on.failed does not return to the gate",
+                    gate_target.id
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_conflict_resolution_contract(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if !matches!(node.kind, WorkflowNodeKind::Gate) {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateConflictResolution,
+            node,
+            &format!("uses kind {:?}; expected gate", node.kind),
+        ));
+    }
+
+    let integrate_parents = template
+        .nodes
+        .iter()
+        .filter(|candidate| {
+            workflow_node_capability(candidate) == Some(WorkflowCapability::GitIntegratePlanBranch)
+                && candidate.on.blocked.iter().any(|target| target == &node.id)
+        })
+        .collect::<Vec<_>>();
+    if integrate_parents.is_empty() {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateConflictResolution,
+            node,
+            "is not targeted from any cap.git.integrate_plan_branch on.blocked edge",
+        ));
+    }
+    if integrate_parents.len() > 1 {
+        let ids = integrate_parents
+            .iter()
+            .map(|parent| parent.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateConflictResolution,
+            node,
+            &format!("is targeted by multiple integrate nodes: {ids}"),
+        ));
+    }
+
+    let auto_resolve = conflict_auto_resolve_enabled(template, node)?;
+    if auto_resolve
+        && !node
+            .on
+            .succeeded
+            .iter()
+            .any(|target| target == &integrate_parents[0].id)
+    {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateConflictResolution,
+            node,
+            &format!(
+                "enables auto_resolve but on.succeeded does not route back to `{}`",
+                integrate_parents[0].id
+            ),
+        ));
+    }
+
+    let _ = resolve_outcome_targets(template, by_id, node, "succeeded", &node.on.succeeded)?;
+    Ok(())
+}
+
+fn validate_cicd_gate_contract(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if !matches!(node.kind, WorkflowNodeKind::Gate) {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateCicd,
+            node,
+            &format!("uses kind {:?}; expected gate", node.kind),
+        ));
+    }
+    if cicd_gate_count(node) != 1 {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateCicd,
+            node,
+            "must define exactly one cicd gate",
+        ));
+    }
+
+    if let Some((_script, auto_resolve)) = single_cicd_gate(node)
+        && auto_resolve
+        && !gate_retry_loop_closes(template, by_id, node)?
+    {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateCicd,
+            node,
+            "enables auto_resolve but on.failed does not return to the gate",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_cicd_remediation_contract(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let targets = resolve_outcome_targets(template, by_id, node, "succeeded", &node.on.succeeded)?
+        .into_iter()
+        .filter(|target| {
+            target.id == "merge_gate_cicd"
+                || workflow_node_capability(target) == Some(WorkflowCapability::GateCicd)
+        })
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::RemediationCicdAutoFix,
+            node,
+            "must route on.succeeded back to exactly one cicd gate node",
+        ));
+    }
+    if targets.len() > 1 {
+        let ids = targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(capability_error(
+            template,
+            WorkflowCapability::RemediationCicdAutoFix,
+            node,
+            &format!("routes on.succeeded to multiple cicd gate nodes: {ids}"),
+        ));
+    }
+    if !matches!(targets[0].kind, WorkflowNodeKind::Gate) {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::RemediationCicdAutoFix,
+            node,
+            &format!(
+                "routes on.succeeded to `{}` with kind {:?}; expected gate",
+                targets[0].id, targets[0].kind
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_review_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+    capability: WorkflowCapability,
+) -> Result<(), String> {
+    if cicd_gate_count(node) > 1 {
+        return Err(capability_error(
+            template,
+            capability,
+            node,
+            "defines multiple cicd gates; expected at most one",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exec_custom_command_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let has_command = has_nonempty_arg(node, "command") || has_nonempty_arg(node, "script");
+    if matches!(
+        node.kind,
+        WorkflowNodeKind::Shell | WorkflowNodeKind::Custom
+    ) {
+        if !has_command && node.uses.trim().is_empty() {
+            return Err(capability_error(
+                template,
+                WorkflowCapability::ExecCustomCommand,
+                node,
+                "requires args.command/args.script or a non-empty `uses` fallback",
+            ));
+        }
+        return Ok(());
+    }
+
+    if !has_command {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::ExecCustomCommand,
+            node,
+            "requires args.command or args.script for non-shell/custom node kinds",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_save_worktree_patch_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if !matches!(node.kind, WorkflowNodeKind::Builtin) {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GitSaveWorktreePatch,
+            node,
+            &format!(
+                "uses kind {:?}; expected builtin for scheduled save-worktree execution",
+                node.kind
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_generate_draft_plan_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let has_spec_text = has_nonempty_arg(node, "spec_text");
+    let has_spec_file = has_nonempty_arg(node, "spec_file");
+    if !has_spec_text && !has_spec_file {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PlanGenerateDraftPlan,
+            node,
+            "requires spec_text or spec_file",
+        ));
+    }
+
+    let source = node
+        .args
+        .get("spec_source")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "inline".to_string());
+    match source.as_str() {
+        "inline" | "stdin" => Ok(()),
+        "file" => {
+            if has_spec_file {
+                Ok(())
+            } else {
+                Err(capability_error(
+                    template,
+                    WorkflowCapability::PlanGenerateDraftPlan,
+                    node,
+                    "has spec_source=file but no spec_file argument",
+                ))
+            }
+        }
+        _ => Err(capability_error(
+            template,
+            WorkflowCapability::PlanGenerateDraftPlan,
+            node,
+            &format!("has unsupported spec_source `{source}`"),
+        )),
+    }
+}
+
+fn validate_patch_execute_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let files_json = node.args.get("files_json").ok_or_else(|| {
+        capability_error(
+            template,
+            WorkflowCapability::PatchExecutePipeline,
+            node,
+            "requires files_json",
+        )
+    })?;
+    let files: Vec<String> = serde_json::from_str(files_json).map_err(|err| {
+        capability_error(
+            template,
+            WorkflowCapability::PatchExecutePipeline,
+            node,
+            &format!("has invalid files_json payload: {err}"),
+        )
+    })?;
+    if files.is_empty() {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::PatchExecutePipeline,
+            node,
+            "requires at least one patch file in files_json",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_build_materialize_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let required = ["build_id", "step_key", "slug", "branch", "target"];
+    let present = required
+        .iter()
+        .filter(|key| has_nonempty_arg(node, key))
+        .copied()
+        .collect::<Vec<_>>();
+    if present.is_empty() {
+        return Ok(());
+    }
+    if present.len() == required.len() {
+        return Ok(());
+    }
+
+    let missing = required
+        .iter()
+        .filter(|key| !present.contains(key))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(capability_error(
+        template,
+        WorkflowCapability::BuildMaterializeStep,
+        node,
+        &format!("provides partial runtime arguments; missing required keys: {missing}"),
+    ))
+}
+
+fn has_nonempty_arg(node: &WorkflowNode, key: &str) -> bool {
+    node.args
+        .get(key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn capability_error(
+    template: &WorkflowTemplate,
+    capability: WorkflowCapability,
+    node: &WorkflowNode,
+    detail: &str,
+) -> String {
+    format!(
+        "template {}@{} capability `{}` node `{}` {}",
+        template.id,
+        template.version,
+        capability.id(),
+        node.id,
+        detail
+    )
+}
+
+fn resolve_outcome_targets<'a>(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &'a WorkflowNode>,
+    node: &WorkflowNode,
+    outcome: &str,
+    targets: &[String],
+) -> Result<Vec<&'a WorkflowNode>, String> {
+    let mut resolved = Vec::new();
+    for target in targets {
+        let Some(target_node) = by_id.get(target).copied() else {
+            return Err(format!(
+                "template {}@{} node `{}` references unknown on.{} target `{}`",
+                template.id, template.version, node.id, outcome, target
+            ));
+        };
+        resolved.push(target_node);
+    }
+    Ok(resolved)
+}
+
+fn script_gate_count(node: &WorkflowNode) -> usize {
+    node.gates
+        .iter()
+        .filter(|gate| matches!(gate, WorkflowGate::Script { .. }))
+        .count()
+}
+
+fn cicd_gate_count(node: &WorkflowNode) -> usize {
+    node.gates
+        .iter()
+        .filter(|gate| matches!(gate, WorkflowGate::Cicd { .. }))
+        .count()
+}
+
+fn single_cicd_gate(node: &WorkflowNode) -> Option<(String, bool)> {
+    let gates = node
+        .gates
+        .iter()
+        .filter_map(|gate| match gate {
+            WorkflowGate::Cicd {
+                script,
+                auto_resolve,
+                ..
+            } => Some((script.clone(), *auto_resolve)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if gates.len() == 1 {
+        gates.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn node_has_custom_gate(node: &WorkflowNode, gate_id: &str) -> bool {
+    node.gates
+        .iter()
+        .any(|gate| matches!(gate, WorkflowGate::Custom { id, .. } if id == gate_id))
+}
+
+fn conflict_auto_resolve_enabled(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<bool, String> {
+    if let Some(raw) = node.args.get("auto_resolve")
+        && let Some(value) = parse_bool_like(raw)
+    {
+        return Ok(value);
+    }
+    let matches = node
+        .gates
+        .iter()
+        .filter_map(|gate| match gate {
+            WorkflowGate::Custom { id, args, .. } if id == "conflict_resolution" => {
+                Some(args.get("auto_resolve").cloned())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(capability_error(
+            template,
+            WorkflowCapability::GateConflictResolution,
+            node,
+            "defines multiple custom gates `conflict_resolution`; expected at most one",
+        ));
+    }
+    Ok(matches
+        .into_iter()
+        .next()
+        .flatten()
+        .as_deref()
+        .and_then(parse_bool_like)
+        .unwrap_or(false))
+}
+
+fn parse_bool_like(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn gate_retry_loop_closes(
+    template: &WorkflowTemplate,
+    by_id: &BTreeMap<String, &WorkflowNode>,
+    gate_node: &WorkflowNode,
+) -> Result<bool, String> {
+    if gate_node
+        .on
+        .failed
+        .iter()
+        .any(|target| target == &gate_node.id)
+    {
+        return Ok(true);
+    }
+    let failed_targets =
+        resolve_outcome_targets(template, by_id, gate_node, "failed", &gate_node.on.failed)?;
+    Ok(failed_targets
+        .into_iter()
+        .any(|target| target.on.succeeded.iter().any(|next| next == &gate_node.id)))
+}
+
 fn validate_node_artifact_contracts(
     template: &WorkflowTemplate,
     node: &WorkflowNode,
@@ -1468,5 +2296,285 @@ mod tests {
             None,
             "unknown vizier labels should remain unmapped so runtime can reject/handle explicitly"
         );
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_approve_stop_gate_missing_retry_back_edge() {
+        let template = WorkflowTemplate {
+            id: "template.approve".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: "plan_doc".to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "approve_apply".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "vizier.approve.apply_once".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: vec![JobArtifact::PlanDoc {
+                        slug: "slug".to_string(),
+                        branch: "draft/slug".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["approve_stop".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "approve_stop".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "vizier.approve.stop_condition".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Script {
+                        script: "./scripts/stop.sh".to_string(),
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy {
+                        mode: WorkflowRetryMode::UntilGate,
+                        budget: 2,
+                    },
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("stop-condition gate without retry edge should fail");
+        assert!(
+            error.contains("cap.gate.stop_condition") || error.contains("cap.plan.apply_once"),
+            "unexpected error: {error}"
+        );
+        assert!(error.contains("on.failed"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_merge_cicd_auto_resolve_without_retry_loop() {
+        let template = WorkflowTemplate {
+            id: "template.merge".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![
+                WorkflowNode {
+                    id: "merge_gate".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "vizier.merge.cicd_gate".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Cicd {
+                        script: "./cicd.sh".to_string(),
+                        auto_resolve: true,
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy {
+                        mode: WorkflowRetryMode::UntilGate,
+                        budget: 2,
+                    },
+                    on: WorkflowOutcomeEdges {
+                        failed: vec!["fix".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "fix".to_string(),
+                    kind: WorkflowNodeKind::Agent,
+                    uses: "vizier.merge.cicd_auto_fix".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("auto-resolve cicd gate without retry closure should fail");
+        assert!(error.contains("cap.gate.cicd"), "unexpected error: {error}");
+        assert!(error.contains("on.failed"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_capability_contracts_allows_merge_inline_and_explicit_cicd_gate_paths() {
+        let template = WorkflowTemplate {
+            id: "template.merge".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![
+                WorkflowNode {
+                    id: "merge_integrate".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "vizier.merge.integrate".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Cicd {
+                        script: "./cicd.sh".to_string(),
+                        auto_resolve: false,
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["merge_gate_cicd".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "merge_gate_cicd".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "vizier.merge.cicd_gate".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Cicd {
+                        script: "./cicd.sh".to_string(),
+                        auto_resolve: false,
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+        validate_workflow_capability_contracts(&template)
+            .expect("compat inline+explicit merge gate paths should remain valid");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_review_node_with_multiple_cicd_gates() {
+        let template = WorkflowTemplate {
+            id: "template.review".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "review_main".to_string(),
+                kind: WorkflowNodeKind::Agent,
+                uses: "vizier.review.critique".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: vec![
+                    WorkflowGate::Cicd {
+                        script: "./first.sh".to_string(),
+                        auto_resolve: false,
+                        policy: WorkflowGatePolicy::Warn,
+                    },
+                    WorkflowGate::Cicd {
+                        script: "./second.sh".to_string(),
+                        auto_resolve: false,
+                        policy: WorkflowGatePolicy::Warn,
+                    },
+                ],
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("multiple review cicd gates should fail");
+        assert!(
+            error.contains("cap.review.critique_or_fix"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("multiple cicd gates"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_accepts_review_node_without_canonical_id() {
+        let template = WorkflowTemplate {
+            id: "template.review".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "custom_review".to_string(),
+                kind: WorkflowNodeKind::Agent,
+                uses: "vizier.review.critique".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        validate_workflow_capability_contracts(&template)
+            .expect("semantic review capability should pass without canonical node id");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_patch_execute_without_files() {
+        let template = WorkflowTemplate {
+            id: "template.patch".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "patch".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "vizier.patch.execute".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("patch node without files_json should fail");
+        assert!(
+            error.contains("cap.patch.execute_pipeline"),
+            "unexpected error: {error}"
+        );
+        assert!(error.contains("files_json"), "unexpected error: {error}");
     }
 }

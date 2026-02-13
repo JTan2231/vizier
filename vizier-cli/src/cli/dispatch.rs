@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal, Write};
 
 use clap::{ColorChoice, CommandFactory, FromArgMatches, error::ErrorKind};
@@ -37,7 +37,7 @@ use crate::workflow_templates::{
     compile_template_node_schedule, resolve_approve_template, resolve_draft_template,
     resolve_merge_template, resolve_patch_template, resolve_primary_template_node_id,
     resolve_review_template, resolve_save_template, resolve_template_ref,
-    resolve_template_ref_for_alias,
+    resolve_template_ref_for_alias, validate_template_agent_backends,
 };
 use crate::{jobs, plan};
 
@@ -410,6 +410,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_save_patch_for_primary: true,
                     primary_node_arg_overrides: &primary_node_arg_overrides,
                     passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
                 })?;
             }
             Commands::Draft(cmd) => {
@@ -486,6 +487,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_save_patch_for_primary: false,
                     primary_node_arg_overrides: &primary_node_arg_overrides,
                     passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
                 })?;
             }
             Commands::Patch(cmd) => {
@@ -558,6 +560,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_save_patch_for_primary: false,
                     primary_node_arg_overrides: &primary_node_arg_overrides,
                     passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
                 })?;
             }
             Commands::Approve(cmd) => {
@@ -651,6 +654,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_save_patch_for_primary: false,
                     primary_node_arg_overrides: &primary_node_arg_overrides,
                     passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
                 })?;
             }
             Commands::Review(cmd) => {
@@ -796,6 +800,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_save_patch_for_primary: false,
                     primary_node_arg_overrides: &primary_node_arg_overrides,
                     passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
                 })?;
             }
             Commands::Merge(cmd) => {
@@ -921,6 +926,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_save_patch_for_primary: false,
                     primary_node_arg_overrides: &primary_node_arg_overrides,
                     passthrough_global_args: &passthrough_global_args,
+                    cli_agent_override: cli_agent_override.as_ref(),
                 })?;
             }
             _ => {}
@@ -1477,6 +1483,7 @@ struct EnqueueWrapperTemplateGraphRequest<'a> {
     capture_save_patch_for_primary: bool,
     primary_node_arg_overrides: &'a BTreeMap<String, String>,
     passthrough_global_args: &'a [String],
+    cli_agent_override: Option<&'a config::AgentOverrides>,
 }
 
 fn enqueue_wrapper_template_graph(
@@ -1499,10 +1506,32 @@ fn enqueue_wrapper_template_graph(
         capture_save_patch_for_primary,
         primary_node_arg_overrides,
         passthrough_global_args,
+        cli_agent_override,
     } = request;
 
-    let node_schedule = compile_template_node_schedule(template)?;
-    let node_lookup = template
+    let mut scheduled_template = template.clone();
+    let primary_node = scheduled_template
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == primary_node_id)
+        .ok_or_else(|| {
+            format!(
+                "workflow template selector `{}@{}` for scope `{}` is missing primary node `{}`",
+                template_ref.id,
+                template_ref.version,
+                template_scope.label(),
+                primary_node_id
+            )
+        })?;
+    primary_node.args.extend(primary_node_arg_overrides.clone());
+    validate_template_agent_backends(
+        &scheduled_template,
+        &config::get_config(),
+        cli_agent_override,
+    )?;
+
+    let node_schedule = compile_template_node_schedule(&scheduled_template)?;
+    let node_lookup = scheduled_template
         .nodes
         .iter()
         .map(|node| (node.id.clone(), node))
@@ -1514,27 +1543,47 @@ fn enqueue_wrapper_template_graph(
         .unwrap_or_else(|| template_scope.label().to_string());
     let builtin_selector = is_builtin_scope_selector(template_scope, template_ref);
 
+    let mut planned_job_ids = BTreeMap::new();
+    let mut used_job_ids = BTreeSet::new();
+    used_job_ids.insert(root_job_id.to_string());
+    for node_id in &node_schedule.order {
+        let node_job_id = if node_id == primary_node_id {
+            root_job_id.to_string()
+        } else {
+            let mut candidate = generate_job_id();
+            while used_job_ids.contains(&candidate) {
+                candidate = generate_job_id();
+            }
+            candidate
+        };
+        used_job_ids.insert(node_job_id.clone());
+        planned_job_ids.insert(node_id.clone(), node_job_id);
+    }
+
+    let mut compiled_nodes = BTreeMap::new();
+    for node_id in &node_schedule.order {
+        let compiled = compile_template_node(
+            &scheduled_template,
+            node_id,
+            &planned_job_ids,
+            pinned_head.clone(),
+        )?;
+        compiled_nodes.insert(node_id.clone(), compiled);
+    }
+
     let mut seen_primary = false;
-    let mut resolved_after = BTreeMap::new();
     for node_id in &node_schedule.order {
         let node = node_lookup
             .get(node_id)
             .copied()
             .ok_or_else(|| format!("workflow template missing scheduled node `{node_id}`"))?;
-        let node_job_id = if node.id == primary_node_id {
-            root_job_id.to_string()
-        } else {
-            let mut candidate = generate_job_id();
-            while candidate == root_job_id
-                || resolved_after.values().any(|value| value == &candidate)
-            {
-                candidate = generate_job_id();
-            }
-            candidate
-        };
-
-        let compiled =
-            compile_template_node(template, &node.id, &resolved_after, pinned_head.clone())?;
+        let node_job_id = planned_job_ids
+            .get(&node.id)
+            .cloned()
+            .ok_or_else(|| format!("missing planned job id for node `{}`", node.id))?;
+        let compiled = compiled_nodes
+            .remove(node_id)
+            .ok_or_else(|| format!("missing compiled metadata for node `{}`", node.id))?;
         let mut schedule = compiled.schedule;
         if node.after.is_empty() {
             schedule.after = jobs::resolve_after_dependencies_for_enqueue(
@@ -1545,9 +1594,6 @@ fn enqueue_wrapper_template_graph(
         }
 
         let mut runtime_node = node.clone();
-        if node.id == primary_node_id {
-            runtime_node.args.extend(primary_node_arg_overrides.clone());
-        }
         if builtin_selector
             && mark_builtin_control_node_as_compat_noop(template_scope, node, primary_node_id)
         {
@@ -1604,7 +1650,6 @@ fn enqueue_wrapper_template_graph(
             capture_save_input_patch(project_root, jobs_root, &node_job_id)?;
         }
 
-        resolved_after.insert(node.id.clone(), node_job_id);
         if node.id == primary_node_id {
             seen_primary = true;
         }

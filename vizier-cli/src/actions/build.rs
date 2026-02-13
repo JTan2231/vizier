@@ -40,6 +40,7 @@ use crate::cli::scheduler::{
 use crate::workflow_templates::{
     BuildExecuteGateConfig, TemplateScope, WorkflowTemplateRef, compile_template_node,
     compile_template_node_schedule, resolve_build_execute_template, resolve_template_ref,
+    validate_template_agent_backends,
 };
 use crate::{jobs, plan};
 
@@ -477,6 +478,12 @@ struct BuildExecutionResumePolicy {
 }
 
 type StepNodeSchedule = crate::workflow_templates::WorkflowTemplateNodeSchedule;
+
+#[derive(Debug, Clone)]
+struct PreparedStepTemplate {
+    template: WorkflowTemplate,
+    node_schedule: StepNodeSchedule,
+}
 
 impl BuildExecutionStep {
     fn resolved_policy(
@@ -1137,6 +1144,41 @@ pub(crate) async fn run_build_execute(
         .enumerate()
         .map(|(idx, step)| (step.step_key.clone(), idx))
         .collect::<BTreeMap<_, _>>();
+    let mut prepared_templates = BTreeMap::new();
+    for step_key in &step_order {
+        let Some(step_idx) = step_index.get(step_key).copied() else {
+            return Err(format!(
+                "internal build execution error: unknown step key {}",
+                step_key
+            )
+            .into());
+        };
+        let step = execution
+            .steps
+            .get(step_idx)
+            .ok_or_else(|| format!("missing build execution step {}", step_key))?;
+        let policy = step.resolved_policy(fallback_pipeline);
+        let step_template = resolve_build_execute_template(
+            &build_template_ref,
+            &step.derived_slug,
+            &step.derived_branch,
+            &policy.target_branch,
+            policy.pipeline.includes_review(),
+            policy.pipeline.includes_merge(),
+            &gate_config,
+        )?;
+        validate_template_agent_backends(&step_template, &config::get_config(), None)?;
+        let node_schedule = workflow_step_node_schedule(&step_template)?;
+        prevalidate_template_nodes(&step_template, &node_schedule, None)?;
+        prepared_templates.insert(
+            step_key.clone(),
+            PreparedStepTemplate {
+                template: step_template,
+                node_schedule,
+            },
+        );
+    }
+
     let mut completion_artifacts: BTreeMap<String, Vec<jobs::JobArtifact>> = BTreeMap::new();
     let mut queued_job_ids = Vec::new();
     let mut resumed_job_ids = Vec::new();
@@ -1175,6 +1217,11 @@ pub(crate) async fn run_build_execute(
             patch_total,
             &repo_root,
         );
+        let prepared = prepared_templates
+            .remove(&step_key)
+            .ok_or_else(|| format!("missing prepared template for step {}", step_key))?;
+        let step_template = prepared.template;
+        let node_schedule = prepared.node_schedule;
 
         let mut policy_dependencies = Vec::new();
         for dependency in &policy.dependencies {
@@ -1187,17 +1234,6 @@ pub(crate) async fn run_build_execute(
             };
             policy_dependencies.extend(artifacts.iter().cloned());
         }
-
-        let step_template = resolve_build_execute_template(
-            &build_template_ref,
-            &step.derived_slug,
-            &step.derived_branch,
-            &policy.target_branch,
-            policy.pipeline.includes_review(),
-            policy.pipeline.includes_merge(),
-            &gate_config,
-        )?;
-        let node_schedule = workflow_step_node_schedule(&step_template)?;
         step.terminal_node_ids = node_schedule.terminal_nodes.clone();
         hydrate_node_job_ids_from_legacy_fields(step, &step_template);
 
@@ -2757,6 +2793,21 @@ fn workflow_step_node_schedule(
     template: &WorkflowTemplate,
 ) -> Result<StepNodeSchedule, Box<dyn std::error::Error>> {
     compile_template_node_schedule(template)
+}
+
+fn prevalidate_template_nodes(
+    template: &WorkflowTemplate,
+    node_schedule: &StepNodeSchedule,
+    pinned_head: Option<jobs::PinnedHead>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut resolved_after = BTreeMap::new();
+    for (idx, node_id) in node_schedule.order.iter().enumerate() {
+        resolved_after.insert(node_id.clone(), format!("validate-{idx}"));
+    }
+    for node_id in &node_schedule.order {
+        let _ = compile_template_node(template, node_id, &resolved_after, pinned_head.clone())?;
+    }
+    Ok(())
 }
 
 fn resolve_build_execute_resume_policy(

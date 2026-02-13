@@ -388,6 +388,109 @@ approve = "custom.approve@v1"
 }
 
 #[test]
+fn test_scheduled_approve_rejects_invalid_template_before_queue() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    schedule_job_and_expect_status(
+        &repo,
+        &[
+            "draft",
+            "--name",
+            "approve-invalid-template",
+            "approve invalid template graph",
+        ],
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+
+    repo.write(
+        ".vizier/workflow/custom.invalid.approve@v1.json",
+        r#"{
+  "id": "custom.invalid.approve",
+  "version": "v1",
+  "artifact_contracts": [
+    { "id": "plan_doc", "version": "v1" },
+    { "id": "plan_commits", "version": "v1" }
+  ],
+  "nodes": [
+    {
+      "id": "apply",
+      "kind": "builtin",
+      "uses": "vizier.approve.apply_once",
+      "needs": [
+        { "plan_doc": { "slug": "${slug}", "branch": "${branch}" } }
+      ],
+      "on": {
+        "succeeded": ["stop"]
+      }
+    },
+    {
+      "id": "stop",
+      "kind": "gate",
+      "uses": "vizier.approve.stop_condition",
+      "gates": [
+        {
+          "kind": "script",
+          "script": "./scripts/stop.sh",
+          "policy": "retry"
+        }
+      ],
+      "retry": {
+        "mode": "until_gate",
+        "budget": 2
+      }
+    }
+  ]
+}"#,
+    )?;
+
+    let config_path = repo
+        .path()
+        .join(".vizier/tmp/custom-invalid-approve-config.toml");
+    fs::create_dir_all(config_path.parent().ok_or("missing config parent")?)?;
+    fs::write(
+        &config_path,
+        r#"[commands]
+approve = "custom.invalid.approve@v1"
+"#,
+    )?;
+
+    let before_records = load_job_records(&repo)?;
+    let before_count = before_records.len();
+
+    let output = repo
+        .vizier_cmd_background_with_config(&config_path)
+        .args(["approve", "approve-invalid-template", "--yes"])
+        .output()?;
+    assert!(
+        !output.status.success(),
+        "invalid template should fail before queueing approve jobs"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cap.gate.stop_condition") || stderr.contains("cap.plan.apply_once"),
+        "expected capability-contract error, got:\n{stderr}"
+    );
+
+    let after_records = load_job_records(&repo)?;
+    assert_eq!(
+        after_records.len(),
+        before_count,
+        "invalid template should not enqueue additional jobs"
+    );
+    assert!(
+        workflow_node_jobs_for_plan(
+            &after_records,
+            "custom.invalid.approve",
+            "approve-invalid-template"
+        )
+        .is_empty(),
+        "invalid template should not produce workflow node jobs"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_approve_merges_plan() -> TestResult {
     let repo = IntegrationRepo::new()?;
     let draft = repo.vizier_output(&[

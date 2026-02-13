@@ -102,6 +102,7 @@ Execution mode:
 - Requires manifest `status = succeeded`.
 - Materializes deterministic per-step `draft/<slug>` branches and canonical plan docs.
 - Compiles each run against the configured workflow template mapping (`[commands].build_execute`, legacy fallback `[workflow.templates].build_execute`) and queues every compiled node in topological `after` order.
+- Prevalidates every compiled node capability contract before queueing any step jobs (loop wiring/cardinality + schedulable arg-shape checks), so invalid templates fail fast without partial graph creation.
 - All queued build-execute nodes run through hidden `__workflow-node` jobs. Canonical capabilities (`cap.build.materialize_step`, `cap.plan.apply_once`, `cap.review.critique_or_fix`, `cap.git.integrate_plan_branch`) execute via node-runtime built-in handlers; generic custom capability nodes execute through generic node runtime.
 - Persists execution state at:
 

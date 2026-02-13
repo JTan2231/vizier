@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_5e2668f395f747f294d4e3e6934654f6",
+  "slug": "implicit",
+  "branch": "draft/implicit",
+  "source": "draft",
+  "intent": "file:IMPLICIT.md",
+  "target_branch": "master",
+  "work_ref": "draft/implicit",
+  "status": "draft",
+  "summary": "# Implicit Capability Dependencies",
+  "created_at": "2026-02-13T16:03:00.323613+00:00",
+  "updated_at": "2026-02-13T16:03:00.323613+00:00",
+  "job_ids": {}
+}

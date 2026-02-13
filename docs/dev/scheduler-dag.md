@@ -33,6 +33,10 @@ durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
 - **Workflow-template compile validation** rejects jobs that reference undeclared
   artifact contracts, unknown template `after` nodes, or invalid `on.<outcome>`
   multiplexers before enqueue.
+- **Capability-contract preflight** runs before queueing any wrapper/build DAG nodes:
+  approve/merge/review loop wiring, gate cardinality, and schedulable capability
+  argument contracts fail fast at compile-time so invalid templates do not create
+  partial queued graphs.
 - **Template runtime gate execution** for `approve` stop-condition retries,
   `review` CI/CD probes, and `merge` CI/CD remediation retries is driven from
   compiled node gate/retry policy plus `on` outcome edges (`vizier-cli/src/actions/workflow_runtime.rs`).

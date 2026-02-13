@@ -18,7 +18,8 @@ use vizier_core::{
 use crate::{
     plan,
     workflow_templates::{
-        TemplateScope, compile_template_node, resolve_review_template, resolve_template_ref,
+        TemplateScope, compile_template_node, resolve_primary_template_node_id,
+        resolve_review_template, resolve_template_ref,
     },
 };
 
@@ -110,9 +111,10 @@ pub(crate) async fn run_review(
         "runtime-review",
         gate_script.as_deref(),
     )?;
+    let review_node_id = resolve_primary_template_node_id(&review_template, TemplateScope::Review)?;
     let compiled_template = compile_template_node(
         &review_template,
-        "review_critique",
+        &review_node_id,
         &std::collections::BTreeMap::new(),
         None,
     )?;

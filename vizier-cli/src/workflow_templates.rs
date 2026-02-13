@@ -9,7 +9,7 @@ use vizier_core::{
         WorkflowGate, WorkflowGatePolicy, WorkflowNode, WorkflowNodeKind, WorkflowOutcomeArtifacts,
         WorkflowOutcomeEdges, WorkflowPrecondition, WorkflowResumePolicy, WorkflowResumeReuseMode,
         WorkflowRetryMode, WorkflowRetryPolicy, WorkflowTemplate, WorkflowTemplatePolicy,
-        compile_workflow_node, workflow_node_capability,
+        compile_workflow_node, validate_workflow_capability_contracts, workflow_node_capability,
     },
 };
 
@@ -260,6 +260,8 @@ pub(crate) fn compile_template_node_schedule(
             .into());
         }
     }
+    validate_workflow_capability_contracts(template)
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
     let mut indegree = by_id
         .keys()
@@ -428,6 +430,91 @@ pub(crate) struct MergeTemplateGateConfig<'a> {
     pub cicd_auto_resolve: bool,
     pub cicd_retries: u32,
     pub conflict_auto_resolve: bool,
+}
+
+pub(crate) fn validate_template_agent_backends(
+    template: &WorkflowTemplate,
+    cfg: &config::Config,
+    cli_override: Option<&config::AgentOverrides>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut required_aliases = BTreeSet::new();
+    for node in &template.nodes {
+        let Some(capability) = workflow_node_capability(node) else {
+            continue;
+        };
+        match capability {
+            WorkflowCapability::PlanGenerateDraftPlan => {
+                required_aliases.insert("draft");
+            }
+            WorkflowCapability::PlanApplyOnce => {
+                required_aliases.insert("approve");
+            }
+            WorkflowCapability::ReviewCritiqueOrFix | WorkflowCapability::ReviewApplyFixesOnly => {
+                required_aliases.insert("review");
+            }
+            WorkflowCapability::RemediationCicdAutoFix => {
+                required_aliases.insert("merge");
+            }
+            WorkflowCapability::GateConflictResolution => {
+                if capability_auto_resolve_enabled(node) {
+                    required_aliases.insert("merge");
+                }
+            }
+            WorkflowCapability::GateCicd => {
+                if node.gates.iter().any(|gate| {
+                    matches!(
+                        gate,
+                        WorkflowGate::Cicd {
+                            auto_resolve: true,
+                            ..
+                        }
+                    )
+                }) {
+                    required_aliases.insert("merge");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for alias_name in required_aliases {
+        let alias = alias_name
+            .parse::<config::CommandAlias>()
+            .map_err(|err| format!("invalid command alias `{alias_name}`: {err}"))?;
+        let settings = config::resolve_agent_settings_for_alias(cfg, &alias, cli_override)?;
+        if !settings.backend.requires_agent_runner() {
+            return Err(format!(
+                "workflow template {}@{} requires an agent-capable backend for alias `{}` (capability contract preflight)",
+                template.id, template.version, alias_name
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn capability_auto_resolve_enabled(node: &WorkflowNode) -> bool {
+    if let Some(raw) = node.args.get("auto_resolve")
+        && let Some(value) = parse_bool_like(raw)
+    {
+        return value;
+    }
+    node.gates.iter().any(|gate| {
+        matches!(gate, WorkflowGate::Custom { id, args, .. } if id == "conflict_resolution"
+            && args
+                .get("auto_resolve")
+                .and_then(|value| parse_bool_like(value))
+                .unwrap_or(false))
+    })
+}
+
+fn parse_bool_like(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 pub(crate) fn compile_template_node(
@@ -2330,6 +2417,83 @@ mod tests {
         assert!(
             matches!(node.kind, WorkflowNodeKind::Builtin),
             "patch_execute should be a builtin node"
+        );
+    }
+
+    #[test]
+    fn compile_template_node_schedule_rejects_invalid_approve_retry_wiring() {
+        let template = WorkflowTemplate {
+            id: "custom.approve".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: default_template_policy(),
+            artifact_contracts: vec![artifact_contract("plan_doc", "v1")],
+            nodes: vec![
+                WorkflowNode {
+                    id: "apply".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "vizier.approve.apply_once".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: vec![jobs::JobArtifact::PlanDoc {
+                        slug: "slug".to_string(),
+                        branch: "draft/slug".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["stop".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "stop".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "vizier.approve.stop_condition".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Script {
+                        script: "./scripts/stop.sh".to_string(),
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy {
+                        mode: WorkflowRetryMode::UntilGate,
+                        budget: 1,
+                    },
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let error = compile_template_node_schedule(&template)
+            .expect_err("invalid stop-condition retry wiring should fail schedule compile");
+        assert!(
+            error.to_string().contains("cap.gate.stop_condition")
+                || error.to_string().contains("cap.plan.apply_once"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn compile_template_node_schedule_rejects_patch_without_files_json() {
+        let template_ref = WorkflowTemplateRef {
+            id: "template.patch".to_string(),
+            version: "v1".to_string(),
+            source_path: None,
+        };
+        let template = patch_template(&template_ref, "approve-review", Some("main"), false);
+        let error = compile_template_node_schedule(&template)
+            .expect_err("patch template without files_json should fail schedule compile");
+        assert!(
+            error.to_string().contains("cap.patch.execute_pipeline"),
+            "unexpected error: {error}"
         );
     }
 }
