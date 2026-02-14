@@ -81,7 +81,6 @@ Out of scope:
   - `workflow_template_id`
   - `workflow_template_version`
   - `workflow_node_id`
-  - `workflow_capability_id` (legacy compatibility)
   - `workflow_executor_class`
   - `workflow_executor_operation`
   - `workflow_control_policy`
@@ -91,10 +90,12 @@ Out of scope:
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
 
 Compatibility policy:
-- Legacy mixed capability IDs (`cap.*` / legacy `vizier.*` uses labels) remain accepted through a compatibility window with warning diagnostics.
-- Legacy purpose-specific agent IDs (`cap.agent.plan.*`, `cap.agent.review.*`, `cap.agent.remediation.*`, `cap.agent.merge.resolve_conflict`) normalize to executor operation `agent.invoke` during the same window.
-- Unknown arbitrary `uses` labels are rejected; there is no implicit fallback to executable custom capability.
-- Hard rejection for legacy aliases is scheduled after `2026-06-01`.
+- Workflow template identity is canonical-only (`cap.env.*`, `cap.agent.invoke`,
+  and `control.*`).
+- Legacy `vizier.*` labels and legacy non-env `cap.*` labels are rejected
+  during template validation.
+- Unknown arbitrary `uses` labels are rejected; there is no implicit fallback to
+  executable custom capability.
 
 ### 6) Merge conflict sentinel material
 - Path: `.vizier/tmp/merge-conflicts/<slug>.json`.

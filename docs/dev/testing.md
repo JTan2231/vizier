@@ -20,7 +20,7 @@ Executor/control taxonomy logic should be covered in
 - canonical prompt/invoke executor mapping (`cap.env.*.prompt.resolve` + `cap.agent.invoke`)
 - prompt artifact contract enforcement (`custom:prompt_text:<key>` producer/consumer shape)
 - control-node policy typing
-- legacy alias diagnostics
+- hard rejection of legacy `vizier.*` and legacy non-env `cap.*` labels
 - rejection of unknown implicit `uses` labels
 
 Keep overlap minimal: rules should be validated in spec tests, and integration tests should focus on user-visible behavior.
@@ -42,7 +42,7 @@ When touching scheduler metadata:
 
 - Keep dual-write assertions for migration windows (`metadata.scope` plus `metadata.command_alias`/`metadata.workflow_template_selector`).
 - Verify retry/status/show flows preserve alias/template metadata while clearing runtime-only fields.
-- Verify `jobs show` can render both legacy `workflow_capability_id` and the executor-first fields (`workflow_executor_class`, `workflow_executor_operation`, `workflow_control_policy`).
+- Verify `jobs show` prioritizes executor-first fields (`workflow_executor_class`, `workflow_executor_operation`, `workflow_control_policy`) and that historical records with legacy fields still deserialize safely.
 
 ## Fixture temp lifecycle
 - Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.

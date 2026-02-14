@@ -13,17 +13,23 @@ Tension
 Desired behavior (Product-level)
 - Internal template validation classifies every node as either executor (`environment.builtin`, `environment.shell`, `agent`) or control.
 - Executor nodes must declare explicit executor IDs; control nodes must declare control policies and never masquerade as executor operations.
-- Legacy `cap.*`/legacy `vizier.*` labels remain temporarily compatible but emit warning diagnostics tied to an explicit deprecation window.
+- Workflow identity is canonical-only: accepted `uses` IDs are `cap.env.*`, `cap.agent.invoke`, and `control.*`.
 - Unknown arbitrary `uses` labels are rejected; there is no implicit custom-command fallback.
-- Jobs metadata/rendering can show executor identity (`workflow_executor_class`, `workflow_executor_operation`, optional `workflow_control_policy`) while retaining legacy `workflow_capability_id` compatibility.
+- Jobs metadata/rendering shows executor identity (`workflow_executor_class`, `workflow_executor_operation`, optional `workflow_control_policy`) as the forward identity contract.
 
 Acceptance criteria
 - Validator rejects unknown implicit `uses` labels and kind/class mismatches with deterministic errors.
-- Validator/diagnostic coverage confirms legacy alias warnings include the compatibility deadline (`2026-06-01`).
+- Validator coverage confirms legacy `vizier.*` and legacy non-env `cap.*` labels are hard-rejected.
 - Maintained `.vizier/workflow/*.toml` artifacts express env/agent/control boundaries explicitly without reintroducing removed top-level workflow commands.
-- `vizier jobs show` can surface executor identity fields when present and still render legacy capability metadata for historical records.
+- `vizier jobs show` surfaces executor identity fields for new records while remaining tolerant of historical records that still include legacy capability metadata.
 
 Status
+- Update (2026-02-14, canonical uses-only hard cut):
+  - `vizier-kernel/src/workflow_template.rs` removed legacy alias translation (`vizier.*`, legacy non-env `cap.*`, and alias-window diagnostics), requires explicit non-empty canonical `uses` IDs, and validates workflow semantics by executor operation/control policy.
+  - Canonical acceptance is now strict: only `cap.env.*`, `cap.agent.invoke`, and `control.*` compile.
+  - `.vizier/workflow/{draft,approve,merge}.toml` now use canonical built-in IDs (`plan.persist`, `git.stage_commit`, `git.integrate_plan_branch`) with no legacy labels.
+  - `vizier-cli` jobs metadata now treats executor identity fields as canonical; legacy `workflow_capability_id` is deserialize-only historical compatibility and no longer part of active display/merge posture.
+  - Docs/tests were updated to remove compatibility-window language and assert hard rejection behavior.
 - Update (2026-02-14): Landed v1 of executor/control split scaffolding.
   - `vizier-kernel/src/workflow_template.rs` now classifies nodes into executor/control identity, adds explicit executor/control metadata to compiled nodes, emits legacy alias diagnostics, and rejects unknown implicit `uses` labels.
   - Compatibility policy is documented with a hard-rejection date after `2026-06-01`.

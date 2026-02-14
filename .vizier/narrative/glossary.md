@@ -11,7 +11,7 @@
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
 - **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree; used with branch inventory to quantify legacy drift.
-- **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that expose executor/control identity without relying on legacy capability IDs.
+- **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that define canonical workflow identity for scheduler/job records.
 - **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
 - **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
 - **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
@@ -21,7 +21,8 @@
 - **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.
 - **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
 - **Man-page taxonomy**: Installed sectioned docs under `man1` (`vizier`, `vizier-jobs`), `man5` (`vizier-config`), `man7` (`vizier-workflow`).
-- **Legacy capability alias window**: Compatibility period where legacy `cap.*`, legacy `vizier.*`, and legacy purpose-specific `cap.agent.*` `uses` labels still classify with warning diagnostics; hard rejection is scheduled after `2026-06-01`.
+- **Canonical uses-only contract**: Workflow template identity policy that accepts only `cap.env.*`, `cap.agent.invoke`, and `control.*` `uses` IDs; legacy `vizier.*`, legacy non-env `cap.*`, and unknown labels fail validation immediately.
+- **Legacy workflow capability field**: Historical job metadata key `workflow_capability_id`; retained for deserializing old records but no longer treated as active identity for new scheduler output.
 - **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
 - **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`.
@@ -37,4 +38,5 @@
 - **snapshotDelta**: Internal narrative-diff artifact not printed in user-facing responses.
 - **Thread doc**: Focused narrative file under `.vizier/narrative/threads/` for one tension.
 - **Worktree**: Separate checkout under `.vizier/tmp-worktrees/`.
+- **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions to keep legacy drift reporting current.
 - **Workspace commands (`cd`/`clean`)**: Deprecated-but-retained worktree helpers currently still available on the reduced CLI surface.

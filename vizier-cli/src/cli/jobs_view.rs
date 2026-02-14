@@ -725,9 +725,6 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
             metadata.and_then(|meta| meta.workflow_template_version.clone())
         }
         JobsShowField::WorkflowNode => metadata.and_then(|meta| meta.workflow_node_id.clone()),
-        JobsShowField::WorkflowCapability => {
-            metadata.and_then(|meta| meta.workflow_capability_id.clone())
-        }
         JobsShowField::WorkflowExecutorClass => {
             metadata.and_then(|meta| meta.workflow_executor_class.clone())
         }
@@ -1426,7 +1423,6 @@ mod tests {
             session_path: None,
             outcome_path: None,
             metadata: Some(jobs::JobMetadata {
-                workflow_capability_id: Some("cap.plan.apply_once".to_string()),
                 workflow_executor_class: Some("environment_builtin".to_string()),
                 workflow_executor_operation: Some("plan.apply_once".to_string()),
                 workflow_control_policy: Some("gate.stop_condition".to_string()),
@@ -1436,10 +1432,6 @@ mod tests {
             schedule: None,
         };
 
-        assert_eq!(
-            jobs_show_field_value(JobsShowField::WorkflowCapability, &record).as_deref(),
-            Some("cap.plan.apply_once")
-        );
         assert_eq!(
             jobs_show_field_value(JobsShowField::WorkflowExecutorClass, &record).as_deref(),
             Some("environment_builtin")
@@ -1479,10 +1471,6 @@ mod tests {
             schedule: None,
         };
 
-        assert_eq!(
-            jobs_show_field_value(JobsShowField::WorkflowCapability, &record),
-            None
-        );
         assert_eq!(
             jobs_show_field_value(JobsShowField::WorkflowExecutorClass, &record).as_deref(),
             Some("agent")

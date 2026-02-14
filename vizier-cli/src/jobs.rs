@@ -129,6 +129,7 @@ pub struct JobMetadata {
     pub workflow_template_id: Option<String>,
     pub workflow_template_version: Option<String>,
     pub workflow_node_id: Option<String>,
+    #[serde(default, skip_serializing)]
     pub workflow_capability_id: Option<String>,
     pub workflow_executor_class: Option<String>,
     pub workflow_executor_operation: Option<String>,
@@ -564,9 +565,6 @@ fn merge_metadata(
             }
             if base.workflow_node_id.is_none() {
                 base.workflow_node_id = update.workflow_node_id;
-            }
-            if base.workflow_capability_id.is_none() {
-                base.workflow_capability_id = update.workflow_capability_id;
             }
             if base.workflow_executor_class.is_none() {
                 base.workflow_executor_class = update.workflow_executor_class;

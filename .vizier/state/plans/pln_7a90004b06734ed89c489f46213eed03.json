@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_7a90004b06734ed89c489f46213eed03",
+  "slug": "reduce",
+  "branch": "draft/reduce",
+  "source": "draft",
+  "intent": "file:REDUCE.md",
+  "target_branch": "master",
+  "work_ref": "draft/reduce",
+  "status": "draft",
+  "summary": "# Capability Reduction Spec: Canonical Uses-Only",
+  "created_at": "2026-02-14T16:21:45.404424+00:00",
+  "updated_at": "2026-02-14T16:21:45.404424+00:00",
+  "job_ids": {}
+}

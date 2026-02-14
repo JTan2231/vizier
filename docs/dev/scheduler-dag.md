@@ -44,8 +44,8 @@ exactly one such artifact as input.
   `artifacts`, `pinned_head`, `approval`, `wait_reason`, and `waited_on`.
 - **Workflow-template compile metadata** is stored per job in `metadata`:
   `workflow_template_id`, `workflow_template_version`, `workflow_node_id`,
-  `workflow_capability_id` (legacy compatibility), `workflow_executor_class`,
-  `workflow_executor_operation`, `workflow_control_policy`,
+  `workflow_executor_class`, `workflow_executor_operation`,
+  `workflow_control_policy`,
   `workflow_policy_snapshot_hash`, and `workflow_gates`.
 - **Workflow-template compile validation** rejects jobs that reference undeclared
   artifact contracts, unknown template `after` nodes, or invalid `on.<outcome>`
@@ -53,17 +53,15 @@ exactly one such artifact as input.
 - **Scheduler lock** lives at `.vizier/jobs/scheduler.lock` and serializes scheduler
   ticks.
 
-## Capability Compatibility Window
-- Legacy mixed IDs (`cap.*` and legacy `vizier.*` uses labels) still classify
-  through compatibility aliases and emit warning diagnostics.
-- Legacy purpose-specific agent IDs (`cap.agent.plan.*`, `cap.agent.review.*`,
-  `cap.agent.remediation.*`, `cap.agent.merge.resolve_conflict`) classify through
-  the same compatibility window and normalize to executor operation
-  `agent.invoke`.
+## Canonical `uses` Contract
+- Workflow template `uses` labels are canonical-only.
+- Accepted families:
+  - executor IDs: `cap.env.*` and `cap.agent.invoke`
+  - control IDs: `control.*`
+- Legacy `vizier.*` labels and legacy non-env `cap.*` labels fail template
+  validation immediately.
 - Unknown arbitrary `uses` labels are rejected; there is no implicit fallback
   to executable custom-command capability.
-- Compatibility aliases are scheduled for hard rejection after **June 1, 2026**
-  (`2026-06-01`), which is enforced in validator diagnostics.
 
 ## Job lifecycle
 Statuses:
