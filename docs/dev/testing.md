@@ -17,6 +17,8 @@ Kernel-only logic (config normalization, prompt assembly) should be covered with
 Executor/control taxonomy logic should be covered in
 `vizier-kernel/src/workflow_template.rs` with unit tests for:
 - explicit executor-class classification (`environment.builtin`, `environment.shell`, `agent`)
+- canonical prompt/invoke executor mapping (`cap.env.*.prompt.resolve` + `cap.agent.invoke`)
+- prompt artifact contract enforcement (`custom:prompt_text:<key>` producer/consumer shape)
 - control-node policy typing
 - legacy alias diagnostics
 - rejection of unknown implicit `uses` labels

@@ -4,6 +4,10 @@ vizier-workflow \- operator workflow patterns for init, list, jobs, and release
 .SH DESCRIPTION
 Vizier now exposes a reduced operational surface focused on repository bootstrap,
 plan visibility, scheduler introspection, and release automation.
+Internally, workflow-template metadata classifies agent execution as
+\fBcap.agent.invoke\fR and prompt construction as explicit
+\fBcap.env.*.prompt.resolve\fR nodes; this is a compatibility-preserving internal
+migration and does not add user-facing commands.
 .SH COMMAND SET
 .PP
 Primary user-facing commands are:

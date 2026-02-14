@@ -1,6 +1,7 @@
 # Glossary
 
 - **A/M/D/R**: Auditor change buckets: Added / Modified / Deleted / Renamed.
+- **`cap.agent.invoke`**: Canonical agent executor capability ID; runtime primitive that reads one prompt artifact and streams assistant output/telemetry without inline prompt construction.
 - **Auditor**: Component that records run facts, summarizes repo edits, and writes session metadata.
 - **Change discipline**: AGENTS.md contract that code changes must update docs/tests and pass `./cicd.sh`.
 - **Clap unknown-subcommand path**: Standard parser failure surface used for removed commands; no custom migration text.
@@ -9,6 +10,7 @@
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
+- **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree; used with branch inventory to quantify legacy drift.
 - **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that expose executor/control identity without relying on legacy capability IDs.
 - **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
 - **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
@@ -19,7 +21,7 @@
 - **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.
 - **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
 - **Man-page taxonomy**: Installed sectioned docs under `man1` (`vizier`, `vizier-jobs`), `man5` (`vizier-config`), `man7` (`vizier-workflow`).
-- **Legacy capability alias window**: Compatibility period where legacy `cap.*` and legacy `vizier.*` `uses` labels still classify with warning diagnostics; hard rejection is scheduled after `2026-06-01`.
+- **Legacy capability alias window**: Compatibility period where legacy `cap.*`, legacy `vizier.*`, and legacy purpose-specific `cap.agent.*` `uses` labels still classify with warning diagnostics; hard rejection is scheduled after `2026-06-01`.
 - **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
 - **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`.
@@ -27,6 +29,8 @@
 - **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--background-job-id`.
 - **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
 - **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.
+- **Prompt artifact contract**: Canonical prompt payload wiring for executor templates: one custom artifact shaped `custom:prompt_text:<key>` produced by prompt-resolve nodes and consumed by canonical invoke nodes.
+- **Prompt-resolve node**: Environment executor node (`cap.env.builtin.prompt.resolve` or `cap.env.shell.prompt.resolve`) that outputs exactly one prompt artifact for downstream `cap.agent.invoke`.
 - **Release dry run**: `vizier release --dry-run` preview mode for version bump and notes without commit/tag creation.
 - **Session log**: Per-run artifact at `.vizier/sessions/<id>/session.json` when session logging is enabled.
 - **Snapshot**: Canonical project frame in `.vizier/narrative/snapshot.md`.

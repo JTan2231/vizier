@@ -19,6 +19,17 @@ and archival compatibility. Executor identity is now modeled explicitly as:
 Control behavior (`gate`, `retry`, terminal routing) is modeled separately and
 is not an executor capability.
 
+Canonical agent execution now uses one executor operation:
+- `cap.agent.invoke` (`workflow_executor_operation = "agent.invoke"`).
+
+Prompt construction is modeled as explicit upstream environment nodes:
+- `cap.env.builtin.prompt.resolve`
+- `cap.env.shell.prompt.resolve`
+
+Prompt-resolve nodes produce exactly one custom artifact of shape
+`custom:prompt_text:<key>`, and canonical `cap.agent.invoke` nodes consume
+exactly one such artifact as input.
+
 ## Architecture
 - **Job records** live under `.vizier/jobs/<id>/`:
   - `job.json` is the canonical record.
@@ -45,6 +56,10 @@ is not an executor capability.
 ## Capability Compatibility Window
 - Legacy mixed IDs (`cap.*` and legacy `vizier.*` uses labels) still classify
   through compatibility aliases and emit warning diagnostics.
+- Legacy purpose-specific agent IDs (`cap.agent.plan.*`, `cap.agent.review.*`,
+  `cap.agent.remediation.*`, `cap.agent.merge.resolve_conflict`) classify through
+  the same compatibility window and normalize to executor operation
+  `agent.invoke`.
 - Unknown arbitrary `uses` labels are rejected; there is no implicit fallback
   to executable custom-command capability.
 - Compatibility aliases are scheduled for hard rejection after **June 1, 2026**

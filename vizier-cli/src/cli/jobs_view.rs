@@ -1453,4 +1453,43 @@ mod tests {
             Some("gate.stop_condition")
         );
     }
+
+    #[test]
+    fn jobs_show_field_value_supports_canonical_agent_invoke_metadata() {
+        let record = jobs::JobRecord {
+            id: "job-2".to_string(),
+            status: JobStatus::Queued,
+            command: vec!["vizier".to_string(), "jobs".to_string(), "show".to_string()],
+            child_args: Vec::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: ".vizier/jobs/job-2/stdout.log".to_string(),
+            stderr_path: ".vizier/jobs/job-2/stderr.log".to_string(),
+            session_path: None,
+            outcome_path: None,
+            metadata: Some(jobs::JobMetadata {
+                workflow_executor_class: Some("agent".to_string()),
+                workflow_executor_operation: Some("agent.invoke".to_string()),
+                ..jobs::JobMetadata::default()
+            }),
+            config_snapshot: None,
+            schedule: None,
+        };
+
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowCapability, &record),
+            None
+        );
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowExecutorClass, &record).as_deref(),
+            Some("agent")
+        );
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowExecutorOperation, &record).as_deref(),
+            Some("agent.invoke")
+        );
+    }
 }

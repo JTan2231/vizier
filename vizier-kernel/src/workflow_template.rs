@@ -549,6 +549,7 @@ pub struct WorkflowPolicySnapshotLock {
 }
 
 const LEGACY_CAPABILITY_COMPATIBILITY_END_DATE: &str = "2026-06-01";
+pub const PROMPT_ARTIFACT_TYPE_ID: &str = "prompt_text";
 
 #[derive(Debug, Clone)]
 struct WorkflowNodeResolution {
@@ -807,24 +808,14 @@ fn canonical_executor_operation(value: &str) -> Option<(WorkflowExecutorClass, &
             WorkflowExecutorClass::EnvironmentBuiltin,
             "merge.sentinel.clear",
         )),
+        "cap.env.shell.prompt.resolve" => {
+            Some((WorkflowExecutorClass::EnvironmentShell, "prompt.resolve"))
+        }
         "cap.env.shell.command.run" => {
             Some((WorkflowExecutorClass::EnvironmentShell, "command.run"))
         }
         "cap.env.shell.cicd.run" => Some((WorkflowExecutorClass::EnvironmentShell, "cicd.run")),
-        "cap.agent.plan.generate_draft" => Some((WorkflowExecutorClass::Agent, "plan.generate")),
-        "cap.agent.plan.apply" => Some((WorkflowExecutorClass::Agent, "plan.apply")),
-        "cap.agent.review.critique_or_fix" => {
-            Some((WorkflowExecutorClass::Agent, "review.critique_or_fix"))
-        }
-        "cap.agent.review.apply_fixes" => {
-            Some((WorkflowExecutorClass::Agent, "review.apply_fixes"))
-        }
-        "cap.agent.remediation.cicd_fix" => {
-            Some((WorkflowExecutorClass::Agent, "remediation.cicd_fix"))
-        }
-        "cap.agent.merge.resolve_conflict" => {
-            Some((WorkflowExecutorClass::Agent, "merge.resolve_conflict"))
-        }
+        "cap.agent.invoke" => Some((WorkflowExecutorClass::Agent, "agent.invoke")),
         _ => None,
     }
 }
@@ -848,6 +839,22 @@ fn legacy_executor_alias(
     Option<WorkflowCapability>,
 )> {
     match value {
+        "cap.agent.plan.generate_draft" => {
+            Some((WorkflowExecutorClass::Agent, "agent.invoke", None))
+        }
+        "cap.agent.plan.apply" => Some((WorkflowExecutorClass::Agent, "agent.invoke", None)),
+        "cap.agent.review.critique_or_fix" => {
+            Some((WorkflowExecutorClass::Agent, "agent.invoke", None))
+        }
+        "cap.agent.review.apply_fixes" => {
+            Some((WorkflowExecutorClass::Agent, "agent.invoke", None))
+        }
+        "cap.agent.remediation.cicd_fix" => {
+            Some((WorkflowExecutorClass::Agent, "agent.invoke", None))
+        }
+        "cap.agent.merge.resolve_conflict" => {
+            Some((WorkflowExecutorClass::Agent, "agent.invoke", None))
+        }
         "cap.git.save_worktree_patch" | "vizier.save.apply" => Some((
             WorkflowExecutorClass::EnvironmentBuiltin,
             "git.save_worktree_patch",
@@ -865,7 +872,7 @@ fn legacy_executor_alias(
         )),
         "cap.review.critique_or_fix" | "vizier.review.critique" => Some((
             WorkflowExecutorClass::Agent,
-            "review.critique_or_fix",
+            "agent.invoke",
             Some(WorkflowCapability::ReviewCritiqueOrFix),
         )),
         "cap.git.integrate_plan_branch" | "vizier.merge.integrate" => Some((
@@ -885,7 +892,7 @@ fn legacy_executor_alias(
         )),
         "cap.remediation.cicd_auto_fix" | "vizier.merge.cicd_auto_fix" => Some((
             WorkflowExecutorClass::Agent,
-            "remediation.cicd_auto_fix",
+            "agent.invoke",
             Some(WorkflowCapability::RemediationCicdAutoFix),
         )),
         "cap.exec.custom_command" => Some((
@@ -895,7 +902,7 @@ fn legacy_executor_alias(
         )),
         "cap.review.apply_fixes_only" | "vizier.review.apply" => Some((
             WorkflowExecutorClass::Agent,
-            "review.apply_fixes_only",
+            "agent.invoke",
             Some(WorkflowCapability::ReviewApplyFixesOnly),
         )),
         _ => None,
@@ -1075,7 +1082,30 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
     }
 
     for node in &template.nodes {
-        let Some(capability) = workflow_node_capability(node) else {
+        let resolution = node_resolutions.get(&node.id).ok_or_else(|| {
+            format!(
+                "template {}@{} missing classifier state for node `{}`",
+                template.id, template.version, node.id
+            )
+        })?;
+
+        match resolution.identity.executor_operation.as_deref() {
+            Some("agent.invoke") => {
+                let enforce_prompt_dependency = node.uses.trim() == "cap.agent.invoke";
+                validate_agent_invoke_contract(template, node, enforce_prompt_dependency)?;
+            }
+            Some("prompt.resolve") => {
+                if let Some(executor_class) = resolution.identity.executor_class {
+                    validate_prompt_resolve_contract(template, node, executor_class)?;
+                }
+            }
+            _ => {}
+        }
+
+        let capability = resolution
+            .capability
+            .or_else(|| workflow_node_capability(node));
+        let Some(capability) = capability else {
             continue;
         };
 
@@ -1121,6 +1151,129 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
     }
 
     Ok(())
+}
+
+fn validate_agent_invoke_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+    enforce_prompt_dependency: bool,
+) -> Result<(), String> {
+    if !matches!(node.kind, WorkflowNodeKind::Agent) {
+        return Err(executor_contract_error(
+            template,
+            "agent.invoke",
+            node,
+            &format!("uses kind {:?}; expected agent", node.kind),
+        ));
+    }
+    if has_nonempty_arg(node, "command") || has_nonempty_arg(node, "script") {
+        return Err(executor_contract_error(
+            template,
+            "agent.invoke",
+            node,
+            "must not declare args.command or args.script; runtime command comes from config",
+        ));
+    }
+    if !enforce_prompt_dependency {
+        return Ok(());
+    }
+
+    let prompt_dependency_count = node
+        .needs
+        .iter()
+        .filter(|artifact| is_prompt_artifact(artifact))
+        .count();
+    if prompt_dependency_count != 1 || node.needs.len() != 1 {
+        return Err(executor_contract_error(
+            template,
+            "agent.invoke",
+            node,
+            "requires exactly one prompt artifact dependency (`custom:prompt_text:<key>`)",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_prompt_resolve_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+    executor_class: WorkflowExecutorClass,
+) -> Result<(), String> {
+    match executor_class {
+        WorkflowExecutorClass::EnvironmentBuiltin => {
+            if !matches!(node.kind, WorkflowNodeKind::Builtin) {
+                return Err(executor_contract_error(
+                    template,
+                    "prompt.resolve",
+                    node,
+                    &format!("uses kind {:?}; expected builtin", node.kind),
+                ));
+            }
+            if has_nonempty_arg(node, "command") || has_nonempty_arg(node, "script") {
+                return Err(executor_contract_error(
+                    template,
+                    "prompt.resolve",
+                    node,
+                    "builtin prompt resolve must not declare args.command or args.script",
+                ));
+            }
+            validate_prompt_resolve_output_contract(template, node)
+        }
+        WorkflowExecutorClass::EnvironmentShell => {
+            if !matches!(
+                node.kind,
+                WorkflowNodeKind::Shell | WorkflowNodeKind::Custom
+            ) {
+                return Err(executor_contract_error(
+                    template,
+                    "prompt.resolve",
+                    node,
+                    &format!("uses kind {:?}; expected shell/custom", node.kind),
+                ));
+            }
+            let has_command = has_nonempty_arg(node, "command");
+            let has_script = has_nonempty_arg(node, "script");
+            if has_command == has_script {
+                return Err(executor_contract_error(
+                    template,
+                    "prompt.resolve",
+                    node,
+                    "shell prompt resolve requires exactly one of args.command or args.script",
+                ));
+            }
+            validate_prompt_resolve_output_contract(template, node)
+        }
+        WorkflowExecutorClass::Agent => Err(executor_contract_error(
+            template,
+            "prompt.resolve",
+            node,
+            "agent executor class is invalid for prompt.resolve",
+        )),
+    }
+}
+
+fn validate_prompt_resolve_output_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let artifacts = node.produces.all();
+    if artifacts.len() != 1 || !is_prompt_artifact(&artifacts[0]) {
+        return Err(executor_contract_error(
+            template,
+            "prompt.resolve",
+            node,
+            "must produce exactly one prompt artifact (`custom:prompt_text:<key>`)",
+        ));
+    }
+    Ok(())
+}
+
+fn is_prompt_artifact(artifact: &JobArtifact) -> bool {
+    matches!(
+        artifact,
+        JobArtifact::Custom { type_id, .. } if type_id == PROMPT_ARTIFACT_TYPE_ID
+    )
 }
 
 fn validate_plan_apply_once_contract(
@@ -1733,6 +1886,18 @@ fn has_nonempty_arg(node: &WorkflowNode, key: &str) -> bool {
         .get(key)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
+}
+
+fn executor_contract_error(
+    template: &WorkflowTemplate,
+    operation: &str,
+    node: &WorkflowNode,
+    detail: &str,
+) -> String {
+    format!(
+        "template {}@{} executor `{}` node `{}` {}",
+        template.id, template.version, operation, node.id, detail
+    )
 }
 
 fn capability_error(
@@ -2409,6 +2574,13 @@ mod tests {
     use super::*;
     use crate::scheduler::{LockMode, format_artifact};
 
+    fn prompt_artifact(key: &str) -> JobArtifact {
+        JobArtifact::Custom {
+            type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+            key: key.to_string(),
+        }
+    }
+
     fn sample_template() -> WorkflowTemplate {
         WorkflowTemplate {
             id: "template.review".to_string(),
@@ -2593,10 +2765,7 @@ mod tests {
         assert_eq!(compiled.node_id, "review_apply");
         assert_eq!(compiled.node_class, WorkflowNodeClass::Executor);
         assert_eq!(compiled.executor_class, Some(WorkflowExecutorClass::Agent));
-        assert_eq!(
-            compiled.executor_operation.as_deref(),
-            Some("review.apply_fixes_only")
-        );
+        assert_eq!(compiled.executor_operation.as_deref(), Some("agent.invoke"));
         assert_eq!(
             compiled.control_policy, None,
             "executor nodes should not expose control policy"
@@ -2885,7 +3054,11 @@ mod tests {
             version: "v1".to_string(),
             params: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
-            artifact_contracts: vec![],
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
@@ -2894,7 +3067,10 @@ mod tests {
                     args: BTreeMap::new(),
                     after: Vec::new(),
                     needs: Vec::new(),
-                    produces: WorkflowOutcomeArtifacts::default(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![prompt_artifact("resolve_prompt")],
+                        ..Default::default()
+                    },
                     locks: Vec::new(),
                     preconditions: Vec::new(),
                     gates: Vec::new(),
@@ -2907,10 +3083,10 @@ mod tests {
                 WorkflowNode {
                     id: "apply_plan".to_string(),
                     kind: WorkflowNodeKind::Agent,
-                    uses: "cap.agent.plan.apply".to_string(),
+                    uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
                     after: Vec::new(),
-                    needs: Vec::new(),
+                    needs: vec![prompt_artifact("resolve_prompt")],
                     produces: WorkflowOutcomeArtifacts::default(),
                     locks: Vec::new(),
                     preconditions: Vec::new(),
@@ -2965,6 +3141,179 @@ mod tests {
             "canonical ids should not emit legacy warnings: {:?}",
             compiled.diagnostics
         );
+
+        let invoke = compile_workflow_node(&template, "apply_plan", &BTreeMap::new())
+            .expect("invoke node should compile");
+        assert_eq!(invoke.node_class, WorkflowNodeClass::Executor);
+        assert_eq!(invoke.executor_class, Some(WorkflowExecutorClass::Agent));
+        assert_eq!(invoke.executor_operation.as_deref(), Some("agent.invoke"));
+        assert!(
+            invoke.diagnostics.is_empty(),
+            "canonical invoke should not emit legacy warnings: {:?}",
+            invoke.diagnostics
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_agent_invoke_without_prompt_dependency() {
+        let template = WorkflowTemplate {
+            id: "template.invoke".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![WorkflowNode {
+                id: "invoke".to_string(),
+                kind: WorkflowNodeKind::Agent,
+                uses: "cap.agent.invoke".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("invoke without prompt dependency should fail");
+        assert!(
+            error.contains("requires exactly one prompt artifact dependency"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_agent_invoke_with_multiple_prompt_dependencies() {
+        let template = WorkflowTemplate {
+            id: "template.invoke".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![WorkflowNode {
+                id: "invoke".to_string(),
+                kind: WorkflowNodeKind::Agent,
+                uses: "cap.agent.invoke".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: vec![prompt_artifact("one"), prompt_artifact("two")],
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("invoke with multiple prompt dependencies should fail");
+        assert!(
+            error.contains("requires exactly one prompt artifact dependency"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_shell_prompt_resolve_without_command_or_script() {
+        let template = WorkflowTemplate {
+            id: "template.prompt".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![WorkflowNode {
+                id: "resolve_prompt".to_string(),
+                kind: WorkflowNodeKind::Shell,
+                uses: "cap.env.shell.prompt.resolve".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts {
+                    succeeded: vec![prompt_artifact("resolve_prompt")],
+                    ..Default::default()
+                },
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("shell prompt resolve without command/script should fail");
+        assert!(
+            error.contains("requires exactly one of args.command or args.script"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_allow_intent_as_non_critical_metadata() {
+        let template = WorkflowTemplate {
+            id: "template.invoke".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![prompt_artifact("invoke")],
+                        ..Default::default()
+                    },
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "invoke".to_string(),
+                    kind: WorkflowNodeKind::Agent,
+                    uses: "cap.agent.invoke".to_string(),
+                    args: BTreeMap::from([("intent".to_string(), "optional".to_string())]),
+                    after: Vec::new(),
+                    needs: vec![prompt_artifact("invoke")],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        validate_workflow_capability_contracts(&template)
+            .expect("intent should remain optional metadata and not part of invoke routing");
     }
 
     #[test]

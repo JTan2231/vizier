@@ -30,6 +30,11 @@ Status
   - `.vizier/workflow/{draft,approve,merge}.toml` and `.vizier/develop.toml` moved to v2 executor-first node chains.
   - `vizier-cli/src/jobs.rs`, `vizier-cli/src/cli/args.rs`, and `vizier-cli/src/cli/jobs_view.rs` now support/display executor identity metadata alongside legacy capability fields.
   - Docs updated: `docs/dev/scheduler-dag.md`, `docs/dev/vizier-material-model.md`, `docs/dev/testing.md`.
+- Update (2026-02-14, invoke migration): Canonicalized agent execution to `cap.agent.invoke` with explicit prompt artifacts.
+  - `vizier-kernel/src/workflow_template.rs` now maps canonical agent runtime execution to `agent.invoke`, keeps legacy purpose-specific agent IDs as warning aliases through `2026-06-01`, and adds validator contracts for canonical `prompt.resolve`/`agent.invoke` wiring.
+  - Canonical validation now requires `custom:prompt_text:<key>` producer/consumer shape: prompt-resolve nodes emit exactly one prompt artifact and canonical invoke nodes consume exactly one prompt artifact with no inline command/script args.
+  - `.vizier/workflow/{draft,approve,merge}.toml` now model explicit `prompt.resolve -> agent.invoke` chains with `prompt_text` artifact contracts (`v2` templates).
+  - Runtime/observability coverage expanded: `vizier-core/src/agent.rs` now tests prompt stdin forwarding explicitly, and `vizier-cli/src/cli/jobs_view.rs` tests canonical `agent.invoke` metadata rendering alongside legacy capability fields.
 
 Pointers
 - `vizier-kernel/src/workflow_template.rs`

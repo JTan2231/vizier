@@ -92,6 +92,7 @@ Out of scope:
 
 Compatibility policy:
 - Legacy mixed capability IDs (`cap.*` / legacy `vizier.*` uses labels) remain accepted through a compatibility window with warning diagnostics.
+- Legacy purpose-specific agent IDs (`cap.agent.plan.*`, `cap.agent.review.*`, `cap.agent.remediation.*`, `cap.agent.merge.resolve_conflict`) normalize to executor operation `agent.invoke` during the same window.
 - Unknown arbitrary `uses` labels are rejected; there is no implicit fallback to executable custom capability.
 - Hard rejection for legacy aliases is scheduled after `2026-06-01`.
 
@@ -178,6 +179,8 @@ Ephemeral operational artifacts:
 - Default plan branch naming is `draft/<slug>`.
 - Workflow-consumed plan docs must include front matter keys `plan` and `branch`.
 - Build execute resume reuses the execution state lane selected by template `policy.resume.key` and enforces drift according to `policy.resume.reuse_mode` (`strict` rejects all drift; `compatible` still rejects node/edge/artifact drift but allows policy-only drift).
+- Canonical agent execution nodes use `cap.agent.invoke`, consume exactly one prompt artifact dependency (`custom:prompt_text:<key>`), and do not source runtime command/script args from node config.
+- Prompt-resolve nodes (`cap.env.builtin.prompt.resolve` / `cap.env.shell.prompt.resolve`) produce exactly one prompt artifact (`custom:prompt_text:<key>`); shell prompt resolvers require exactly one of `args.command` or `args.script`.
 - Scheduler retry refuses to mutate running jobs; it rewinds queued/waiting descendants and preserves predecessor success boundaries.
 - `vizier merge --complete-conflict` only operates on existing Vizier-managed sentinel state.
 - Clean-worktree checks ignore ephemeral Vizier paths:

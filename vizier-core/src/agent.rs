@@ -765,6 +765,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwards_prompt_text_to_agent_stdin() {
+        let runner = ScriptRunner;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("capture.sh");
+        let prompt_path = tmp.path().join("prompt.txt");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nset -eu\ncat > \"$1\"\nprintf 'ack from script\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let prompt = "Resolve prompt artifact and invoke agent.\nSecond line.\n";
+        let request = AgentRequest {
+            prompt: prompt.to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            command: vec![
+                script.display().to_string(),
+                prompt_path.display().to_string(),
+            ],
+            progress_filter: None,
+            output: config::AgentOutputHandling::Wrapped,
+            allow_script_wrapper: false,
+            scope: Some(CommandScope::Save),
+            metadata: BTreeMap::new(),
+            timeout: Some(Duration::from_secs(2)),
+        };
+
+        let result = runner
+            .execute(request, None)
+            .await
+            .expect("script should succeed");
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result.assistant_text.contains("ack from script"),
+            "expected stdout to be captured as assistant output"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&prompt_path).unwrap(),
+            prompt,
+            "runner should write prompt text to stdin unchanged"
+        );
+    }
+
+    #[tokio::test]
     async fn streams_wrapped_json_with_progress_filter() {
         let runner = ScriptRunner;
         let tmp = tempfile::tempdir().unwrap();
