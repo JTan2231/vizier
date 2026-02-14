@@ -96,6 +96,12 @@ pub(crate) enum JobsActionFormatArg {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum RunFormatArg {
+    Text,
+    Json,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum JobsListField {
     Job,
@@ -478,6 +484,9 @@ pub(crate) enum Commands {
     /// Inspect detached Vizier background jobs
     Jobs(JobsCmd),
 
+    /// Compile and enqueue a workflow run from an alias, selector, or template file
+    Run(RunCmd),
+
     /// Generate shell completion scripts
     Completions(CompletionsCmd),
 
@@ -562,6 +571,37 @@ pub(crate) struct CleanCmd {
 pub(crate) struct JobsCmd {
     #[command(subcommand)]
     pub(crate) action: JobsAction,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct RunCmd {
+    /// Workflow source: alias, selector, file:<path>, or direct .toml/.json path
+    #[arg(value_name = "FLOW")]
+    pub(crate) flow: String,
+
+    /// Template parameter override (KEY=VALUE); repeatable
+    #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
+    pub(crate) set: Vec<String>,
+
+    /// External predecessor dependency; root jobs wait for these jobs to succeed
+    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    pub(crate) after: Vec<String>,
+
+    /// Require explicit approval before root jobs can start
+    #[arg(long = "require-approval", action = ArgAction::SetTrue, conflicts_with = "no_require_approval")]
+    pub(crate) require_approval: bool,
+
+    /// Disable approval gating for root jobs (overrides template-root approval)
+    #[arg(long = "no-require-approval", action = ArgAction::SetTrue)]
+    pub(crate) no_require_approval: bool,
+
+    /// Wait for terminal run state and stream progress in text mode
+    #[arg(long = "follow", action = ArgAction::SetTrue)]
+    pub(crate) follow: bool,
+
+    /// Output format (text, json)
+    #[arg(long = "format", value_enum, default_value_t = RunFormatArg::Text)]
+    pub(crate) format: RunFormatArg,
 }
 
 #[derive(Subcommand, Debug)]

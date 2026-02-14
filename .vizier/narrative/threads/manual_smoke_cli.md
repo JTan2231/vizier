@@ -1,6 +1,6 @@
 # Manual smoke coverage for core CLI
 
-Status (2026-02-14): REFRAMED. Smoke scope now tracks retained commands only (`init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`) plus removed-command negative checks.
+Status (2026-02-14): REFRAMED. Smoke scope now tracks retained commands (`init`, `list`, `cd`, `clean`, `jobs`, `run`, `completions`, `release`) plus removed-wrapper negative checks.
 
 Thread: Manual smoke coverage (cross: Stdout/stderr contract + verbosity, Outcome summaries, Agent workflow orchestration)
 
@@ -11,7 +11,7 @@ Tension
 - Automated tests alone can miss regressions in CLI output contracts (quiet/no-ansi), session logging, and gate flows, so releases can look green while user-visible behavior drifts.
 
 Desired behavior (Product-level)
-- Provide a lightweight human smoke checklist covering `vizier init/list/cd/clean/jobs/release/completions` in default, quiet, and no-ansi modes, plus negative checks that removed commands fail as unknown subcommands.
+- Provide a lightweight human smoke checklist covering `vizier init/list/cd/clean/jobs/run/release/completions` in default, quiet, and no-ansi modes, plus negative checks that removed wrapper commands fail as unknown subcommands.
 - Smoke runs capture the emitted Outcome lines and the `.vizier/sessions/<id>/session.json` paths so auditors can trace what was exercised.
 - Any regression found during a smoke run is recorded as a TODO tied to the relevant snapshot thread instead of disappearing into chat.
 - The checklist lives alongside the existing workflow docs so operators know when/how to run it without learning a new surface.

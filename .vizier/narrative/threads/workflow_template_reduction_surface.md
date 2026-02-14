@@ -1,6 +1,6 @@
 # Workflow-template reduction surface
 
-Status (2026-02-14): RETIRED. Workflow-template expansion targeted removed workflow commands (`plan/build/patch/run` and draft/approve/review/merge family); keep for historical context only.
+Status (2026-02-14): ACTIVE. `vizier run` is now the public workflow-template orchestrator while wrapper families remain removed.
 
 Thread: Workflow-template reduction surface (cross: Agent workflow orchestration, Configuration posture + defaults, Session logging)
 
@@ -14,7 +14,7 @@ Tension
 - Without a config-first template layer, extending workflows risks adding more command-specific branching and uneven observability.
 
 Desired behavior (Product-level)
-- Keep existing wrapper commands and user-facing flags intact while routing orchestration through a shared template contract (`Node`, `Edge`, `Template`, `PolicySnapshot`).
+- Keep wrapper command removals intact while routing public orchestration through `vizier run` on top of the shared template contract (`Node`, `Edge`, `Template`, `PolicySnapshot`).
 - Make template selection explicit and configurable per command scope via repo config, with resolved values visible in `vizier plan` and job/session artifacts.
 - Persist policy snapshot identity for resumable workflows so compatibility checks can fail with actionable categories instead of opaque mismatch strings.
 - Surface workflow metadata in jobs/sessions so operators can audit which template/node/gate policy drove a run without reading command internals.
@@ -27,6 +27,10 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-14, run front-door restoration):
+  - `vizier-cli` now exposes `vizier run <flow>` with flow resolution (`file:`/path, `[commands]` alias, selector lookup, repo fallback files), composed-template support (`imports` + `links`), `${key}` parameter expansion via `--set`, root scheduling overrides (`--after`, approval toggles), and follow-mode terminal exit semantics.
+  - Queue-time orchestration now calls `enqueue_workflow_run` from the new `run` action, preserving canonical runtime execution through hidden `__workflow-node`.
+  - Integration coverage (`tests/src/run.rs`) now asserts alias/file execution, set-override expansion, legacy `uses` rejection without partial enqueue, root dependency/approval overrides, and follow exit mapping.
 - Update (2026-02-09): Phase 1-3 scaffolding landed. `vizier-kernel/src/workflow_template.rs` now defines the canonical template/policy snapshot contract and hashing; `vizier-cli/src/workflow_templates.rs` resolves/compiles scoped template refs; config now exposes `[workflow.templates]` defaults and overrides; `vizier plan` reports resolved template mappings; jobs/build execution persist workflow template + policy snapshot metadata; resume mismatches now emit node/edge/policy/artifact diagnostics. Docs (`docs/user/build.md`, `docs/user/config-reference.md`, `docs/dev/scheduler-dag.md`, `docs/dev/vizier-material-model.md`) and tests were updated, and `./cicd.sh` is green.
 - Update (2026-02-09, follow-up): `vizier build execute` phase scheduling now compiles `template.build_execute` nodes directly for `materialize`/`approve`/`review`/`merge`, so queued phase jobs inherit template locks, gate labels, retry policy, and explicit `schedule.after` edges from node relationships rather than hand-built phase structs. Build template gate config now derives from `[merge.cicd_gate]` (script/auto-resolve/retries), and build integration coverage asserts the compiled chaining behavior.
 - Update (2026-02-13): Capability-boundary migration advanced: `vizier-kernel/src/workflow_template.rs` now enforces schedulable capability contracts at compile-time (approve/review/merge loop wiring, gate cardinality, custom-command fallback shape, and schedulable arg-shape checks), `compile_template_node_schedule` now runs that validator, wrapper/build schedulers precompile full node sets before enqueue to avoid partial graph creation on invalid templates, and review runtime now resolves primary review nodes semantically instead of requiring canonical `review_critique`.

@@ -46,6 +46,7 @@ fn test_help_landing_page_is_curated() -> TestResult {
         "vizier init",
         "vizier list",
         "vizier jobs",
+        "vizier run",
         "vizier release",
     ] {
         assert!(
@@ -61,7 +62,6 @@ fn test_help_landing_page_is_curated() -> TestResult {
         "vizier merge",
         "vizier build",
         "vizier patch",
-        "vizier run",
         "vizier plan",
         "test-display",
     ] {
@@ -93,6 +93,7 @@ fn test_help_all_prints_reduced_reference() -> TestResult {
         "\n  cd ",
         "\n  clean ",
         "\n  jobs ",
+        "\n  run ",
         "\n  completions ",
         "\n  release ",
     ] {
@@ -109,7 +110,6 @@ fn test_help_all_prints_reduced_reference() -> TestResult {
         "\n  merge ",
         "\n  build ",
         "\n  patch ",
-        "\n  run ",
         "\n  plan ",
         "\n  test-display ",
         "\n  __workflow-node ",
@@ -151,7 +151,6 @@ fn test_removed_commands_fail_as_unknown_subcommands() -> TestResult {
         "plan",
         "build",
         "patch",
-        "run",
     ] {
         let output = repo.vizier_output(&[removed])?;
         assert!(
@@ -237,7 +236,6 @@ fn test_manpage_layout_uses_sectioned_real_files() -> TestResult {
         "\n  merge ",
         "\n  build ",
         "\n  patch ",
-        "\n  run ",
         "\n  test-display ",
         "\n  plan ",
     ] {

@@ -1,6 +1,6 @@
 # Command Entry Points
 
-This page summarizes command entry points that remain available after the workflow-command removal.
+This page summarizes command entry points, including the restored orchestration front-door `vizier run`.
 
 ## Repository Setup
 
@@ -20,6 +20,15 @@ Use `vizier jobs` for scheduler/job records:
 - `vizier jobs tail <job> [--follow]`
 - `vizier jobs attach <job>`
 - `vizier jobs approve|reject|retry|cancel|gc ...`
+
+## Workflow Run Orchestrator
+
+Use `vizier run <flow>` to compile and enqueue repo-local workflow templates through scheduler primitives:
+
+- `vizier run develop`
+- `vizier run file:.vizier/workflow/custom.toml --set key=value`
+- `vizier run develop --after <job-id> --require-approval`
+- `vizier run develop --follow --format json`
 
 ## Release Flow
 

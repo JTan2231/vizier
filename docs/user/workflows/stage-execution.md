@@ -1,12 +1,13 @@
 # Stage Execution
 
-The current CLI no longer executes plan-stage implementation commands directly.
+The current CLI executes composed workflow stages through `vizier run` plus scheduler/runtime primitives.
 
 ## What Runs Now
 
 - `init`: validates or writes repository bootstrap markers.
 - `list`: reads pending plan metadata from git branches and plan docs.
 - `jobs`: reads and operates on persisted job records.
+- `run`: resolves a flow source, compiles workflow nodes, enqueues scheduler jobs, and optionally follows terminal state.
 - `release`: computes release bump/notes and writes release artifacts.
 
 ## Operational Notes

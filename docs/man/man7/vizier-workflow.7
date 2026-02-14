@@ -1,14 +1,14 @@
 .TH VIZIER-WORKFLOW 7 "UNRELEASED" "Vizier" "Miscellaneous Information Manual"
 .SH NAME
-vizier-workflow \- operator workflow patterns for init, list, jobs, and release
+vizier-workflow \- operator workflow patterns for init, run, jobs, and release
 .SH DESCRIPTION
-Vizier now exposes a reduced operational surface focused on repository bootstrap,
-plan visibility, scheduler introspection, and release automation.
+Vizier exposes an operational surface focused on repository bootstrap,
+plan visibility, workflow orchestration, scheduler introspection, and release
+automation.
 Internally, workflow-template metadata classifies agent execution as
 \fBcap.agent.invoke\fR and prompt construction as explicit
 \fBcap.env.*.prompt.resolve\fR nodes under a canonical-only \fBuses\fR contract
-(\fBcap.env.*\fR, \fBcap.agent.invoke\fR, and \fBcontrol.*\fR only); this does
-not add user-facing commands.
+(\fBcap.env.*\fR, \fBcap.agent.invoke\fR, and \fBcontrol.*\fR only).
 .SH COMMAND SET
 .PP
 Primary user-facing commands are:
@@ -18,6 +18,8 @@ Primary user-facing commands are:
 \fBvizier list\fR
 .IP "\(bu" 2
 \fBvizier jobs ...\fR
+.IP "\(bu" 2
+\fBvizier run <flow>\fR
 .IP "\(bu" 2
 \fBvizier release\fR
 .IP "\(bu" 2

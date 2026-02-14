@@ -28,6 +28,7 @@ Legacy workflow-global flags are no longer supported.
 - `[display]`: output formatting defaults for list/jobs views.
 - `[jobs]`: cancellation and retention behavior for job operations.
 - `[commits]`: release/commit metadata formatting controls.
+- `[commands]`: alias-to-template mapping consumed by `vizier run <alias>`.
 
 ## Operational Commands
 
@@ -38,6 +39,7 @@ Current user-facing commands are:
 - `vizier cd`
 - `vizier clean`
 - `vizier jobs`
+- `vizier run`
 - `vizier completions`
 - `vizier release`
 

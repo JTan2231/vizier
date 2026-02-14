@@ -6,7 +6,7 @@ use vizier_core::{
     display::{self, LogLevel},
 };
 
-use crate::actions::{run_cd, run_clean, run_init, run_list, run_release};
+use crate::actions::{run_cd, run_clean, run_init, run_list, run_release, run_workflow};
 use crate::cli::args::*;
 use crate::cli::help::{
     curated_help_text, pager_mode_from_args, render_clap_help_text,
@@ -203,6 +203,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Jobs(cmd) => {
             let jobs_root = jobs::ensure_jobs_root(&project_root)?;
             run_jobs_command(&project_root, &jobs_root, cmd, cli.global.no_ansi)
+        }
+        Commands::Run(cmd) => {
+            let jobs_root = jobs::ensure_jobs_root(&project_root)?;
+            run_workflow(&project_root, &jobs_root, cmd)
         }
         Commands::WorkflowNode(cmd) => {
             let jobs_root = jobs::ensure_jobs_root(&project_root)?;

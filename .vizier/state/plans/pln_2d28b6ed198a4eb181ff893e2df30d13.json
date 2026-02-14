@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_2d28b6ed198a4eb181ff893e2df30d13",
+  "slug": "orc",
+  "branch": "draft/orc",
+  "source": "draft",
+  "intent": "file:ORCH.md",
+  "target_branch": "master",
+  "work_ref": "draft/orc",
+  "status": "draft",
+  "summary": "# Feature Spec: `vizier run` Orchestrator",
+  "created_at": "2026-02-14T23:18:47.614570+00:00",
+  "updated_at": "2026-02-14T23:18:47.614570+00:00",
+  "job_ids": {}
+}

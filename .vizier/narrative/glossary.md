@@ -11,6 +11,7 @@
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
 - **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree (including when the directory itself is absent); used with branch inventory to quantify legacy drift.
+- **Mixed plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has at least one on-disk plan doc while also carrying tracked deletions (`D .vizier/implementation-plans/<slug>.md`), signaling overlapping historical drift shapes in one worktree.
 - **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that define canonical workflow identity for scheduler/job records.
 - **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
 - **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
@@ -18,6 +19,7 @@
 - **Help pager contract**: Help text auto-pages only on TTY via `$VIZIER_PAGER` (or fallback pager), prints directly on non-TTY, and can be internally suppressed with hidden `--no-pager`.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
+- **`vizier run` orchestrator**: Public workflow front-door that resolves a flow source, compiles/validates template nodes, enqueues scheduler jobs, and optionally follows to terminal state.
 - **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
 - **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.
 - **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
@@ -27,8 +29,8 @@
 - **Legacy workflow capability field**: Historical job metadata key `workflow_capability_id`; retained for deserializing old records but no longer treated as active identity for new scheduler output.
 - **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
-- **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`.
-- **Removed command family**: Hard-removed top-level commands: `save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`, `run`.
+- **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `run`, `completions`, `release`.
+- **Removed command family**: Hard-removed top-level commands: `save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`.
 - **Pager flag contract drift**: Documentation mismatch where AGENTS advertises explicit `--pager` while the CLI currently rejects it and only retains hidden `--no-pager`.
 - **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, `--background-job-id`.
 - **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
@@ -51,3 +53,6 @@
 - **Workflow node runtime metadata**: Job metadata fields `workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, and `workflow_payload_refs` used by runtime node execution and retry rewinds.
 - **Workflow run manifest**: Queue-time runtime file `.vizier/jobs/runs/<run_id>.json` containing per-node executor/control identity, args, retry policy, routing targets, and outcome artifact maps.
 - **Workflow runtime bridge**: Internal execution layer that compiles canonical templates to scheduler jobs, dispatches node handlers through `__workflow-node`, and routes outcomes without exposing removed public workflow commands.
+- **Run flow resolution order**: `FLOW` lookup contract: explicit `file:`/path, then `[commands]` alias, then selector lookup, then repo fallback files (`.vizier/<flow>.{toml,json}`, `.vizier/workflow/<flow>.{toml,json}`).
+- **Run root overrides**: `vizier run` queue-time root-job schedule overrides: external `--after` dependencies and approval policy toggles (`--require-approval` / `--no-require-approval`).
+- **Run follow exit contract**: `vizier run --follow` aggregate terminal mapping: `0` all succeeded, `10` blocked-only terminal set, non-zero when any failed/cancelled job is terminal.

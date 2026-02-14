@@ -1,18 +1,18 @@
 Running Snapshot — updated (2026-02-14)
 
 Narrative theme
-- Hard-remove workflow/agent command families: Vizier now exposes a reduced, stable CLI contract centered on repository initialization, pending-plan visibility, job record operations, completions, and release creation.
+- Hard-remove wrapper workflow/agent command families while restoring one orchestrator front-door: Vizier keeps `save`/`draft`/`approve`/`review`/`merge`/`build`/`patch` removed and now exposes `run` for template-driven scheduling only.
 - Enforce strict removal semantics: deleted commands and legacy hidden workflow entrypoints fail through standard Clap unknown-subcommand behavior, with no custom migration guidance text in CLI errors.
 - Keep operator surfaces coherent: help, man pages, install assets, docs, and tests all reflect the reduced command set and removed global workflow flags.
 - Keep help paging semantics explicit: help output is TTY-auto paged via `$VIZIER_PAGER` (or fallback pager) with hidden `--no-pager` suppression, while explicit `--pager` remains unsupported and should not be documented as a user-facing flag.
 - Preserve historical artifacts: `vizier jobs` remains operational for existing on-disk job records, including approval/retry/cancel/tail/schedule views.
 - Continue internal workflow-model cleanup without resurrecting removed commands: kernel/template internals now use executor-first classification (`environment.builtin`, `environment.shell`, `agent`) with control policy typed separately, canonicalize agent execution to `cap.agent.invoke`, and require explicit prompt producer/consumer wiring for canonical invoke nodes.
-- Land the internal workflow runtime bridge without reopening public workflow commands: canonical template nodes now materialize to hidden scheduler jobs, run through `__workflow-node`, and persist prompt payloads in typed artifact data files while keeping the public CLI inventory unchanged.
+- Keep runtime plumbing unified under the hidden bridge: canonical template nodes materialize to scheduler jobs, run through `__workflow-node`, and persist prompt payloads in typed artifact data files; `vizier run` is now the public queue-time entrypoint.
 - Complete canonical runtime handler coverage behind the hidden bridge: all 16 executor operations and 5 control policies accepted by template validation now execute concretely (including real `agent.invoke` runner wiring, worktree lifecycle, plan/git/patch/build/sentinel ops, and conflict/cicd/approval/terminal policy handling).
 - Legacy plan artifacts from removed workflows still drift across worktrees (branch/doc mismatches), so archival hygiene remains part of reduced-surface stabilization.
 
 Active threads
-- Reduced CLI surface stabilization: ACTIVE. Ensure removed top-level commands (`save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`, `run`) remain absent from parser/help/man/docs/tests; removed globals (`--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, `--background-job-id`) remain unsupported while hidden `--no-pager` stays internal-only. Internal runtime entrypoint `__workflow-node` stays hidden and scheduler-only. [Cross: stdout/stderr contract, portable man docs]
+- Reduced CLI surface stabilization: ACTIVE. Keep wrapper removals intact (`save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`) while treating `run` as the only restored orchestration command. Removed globals (`--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, `--background-job-id`) remain unsupported while hidden `--no-pager` stays internal-only. Internal runtime entrypoint `__workflow-node` stays hidden and scheduler-only. [Cross: stdout/stderr contract, portable man docs]
 - Init contract durability: ACTIVE. `vizier init` / `vizier init --check` remain the canonical bootstrap and validation path for durable marker files + required ignore rules.
 - Jobs/read-only scheduler operations: ACTIVE. `vizier jobs` continues to expose list/schedule/show/status/tail/attach/approve/reject/retry/cancel/gc against persisted records.
 - Release reliability: ACTIVE. `vizier release` remains intact with dry-run, bump overrides, tag controls, and release-note filtering.
@@ -27,14 +27,18 @@ Code state (behaviors that matter)
   - `cd`
   - `clean`
   - `jobs`
+  - `run`
   - `completions`
   - `release`
-- Removed commands (`save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`, `run`) are no longer parsed; invocations fail as unrecognized subcommands through Clap. Internal scheduler-only `__workflow-node` is parsed as a hidden command and is excluded from help/man/completion surfaces.
+- Removed commands (`save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`) are no longer parsed; invocations fail as unrecognized subcommands through Clap. Internal scheduler-only `__workflow-node` is parsed as a hidden command and is excluded from help/man/completion surfaces.
 - Removed global flags (`--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, hidden `--background-job-id`) are no longer accepted. Help paging is automatic on TTY with `$VIZIER_PAGER`/fallback pager, while hidden `--no-pager` remains an internal suppression hook. `jobs tail` now owns `--follow` locally.
-- Dispatch and actions were reduced to retained surfaces; workflow action modules and workflow-template dispatch wiring were deleted from the CLI build.
+- `vizier run` now resolves flow sources in deterministic order (explicit file/path, `[commands]` alias selector, selector lookup, repo fallback files), loads canonical/composed templates (`imports` + `links`), applies `${key}` parameter expansion from template defaults plus `--set`, and hard-fails queue-time on unresolved placeholders/compose cycles/validator errors before any enqueue.
+- `vizier run` queue-time orchestration now delegates to `enqueue_workflow_run`, annotates alias metadata (`command_alias` + `scope`) when alias-invoked, applies root-level `--after` and `--require-approval`/`--no-require-approval` overrides, triggers one scheduler tick, and emits text/json enqueue summaries including `run_id`, selector, template identity, and root job IDs.
+- `vizier run --follow` now polls scheduler progression to run-terminal state, streams status/log updates in text mode, and exits deterministically (`0` success, `10` blocked-only terminal set, non-zero when any failed/cancelled job is present).
+- Dispatch/actions now include a dedicated `run` orchestration path while removed wrapper action modules remain absent from the CLI build.
 - Man-page output now ships only `man1/vizier.1` + `man1/vizier-jobs.1` + `man5/vizier-config.5` + `man7/vizier-workflow.7`; `man1/vizier-build.1` is removed.
 - Install/test assets now stage and validate the reduced man-page set.
-- Integration coverage was resliced to retained commands and explicit negative coverage for removed-command unknown-subcommand behavior.
+- Integration coverage now includes `vizier run` alias/file execution, parameter overrides, queue-time legacy-uses rejection with no partial enqueue, root `--after`/approval overrides, and follow exit-code semantics, while keeping negative unknown-subcommand coverage for still-removed wrappers.
 - Kernel workflow-template compilation now emits node classification metadata (`node_class`, `executor_class`, `executor_operation`, `control_policy`) and accepts only canonical `uses` families (`cap.env.*`, `cap.agent.invoke`, `control.*`); compile/validate hard-rejects legacy `vizier.*`, legacy non-env `cap.*`, and unknown implicit labels.
 - Canonical executor operation map now treats `cap.agent.invoke` as the single agent runtime primitive with no legacy alias translation path.
 - Canonical validator contracts now require:
@@ -52,11 +56,15 @@ Code state (behaviors that matter)
 - `on.succeeded` routing now materializes to explicit `after` dependencies at enqueue time (single-parent constraint per target), while `on.failed` / `on.blocked` / `on.cancelled` routes trigger retry-driven requeue for target nodes.
 - Prompt payload transport now has a typed adjunct store at `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; custom marker files under `.vizier/jobs/artifacts/custom/...` remain the scheduler gating truth.
 - Legacy `draft/*` branches and `.vizier/implementation-plans/*.md` files can still appear in non-bijective states in existing worktrees; treat them as historical residue, not an active command surface.
-- Current worktree evidence (`draft/impl`, revalidated 2026-02-14): `.vizier/implementation-plans/` is absent (empty plan-doc inventory with no tracked plan-doc deletions), and local branches include `draft/after`, `draft/approve`, `draft/impl`, and `draft/prompting-md` (plus `build/patch-740958c5f8bf` outside draft-plan mapping).
+- Current worktree evidence (`draft/orc`, revalidated 2026-02-14): `.vizier/implementation-plans/` contains `impl.md`, `.vizier/implementation-plans/orc.md` is tracked as deleted, and local draft branch inventory is `draft/orc`; drift remains active because the branch/doc state is still non-bijective.
 
 Acceptance checkpoints (selected)
-- `vizier --help` / `vizier help --all` list only the retained command set and current global flags.
-- Each removed command returns generic unknown-subcommand errors without custom migration guidance.
+- `vizier --help` / `vizier help --all` list the retained command set (`run` included) and current global flags.
+- Each still-removed wrapper command returns generic unknown-subcommand errors without custom migration guidance.
+- `vizier run <alias>` and `vizier run file:<path>` both enqueue manifests + node jobs with canonical `workflow_*` metadata and selector persistence.
+- `vizier run --set` rewrites compiled node args queue-time, and unresolved placeholders fail before enqueue.
+- `vizier run --after` and `vizier run --require-approval` alter root schedule behavior without reviving any removed global flags.
+- `vizier run --follow` returns deterministic terminal exits (`0`, `10`, non-zero) for success/blocked/failure aggregates.
 - `vizier help --pager` and `vizier list --pager` fail as unknown-argument paths (with Clap tip toward hidden `--no-pager`), preventing accidental resurrection of a user-facing pager global.
 - Generated man pages and installation manifests contain no `vizier-build` page and no removed command inventory.
 - Workflow-template validator coverage asserts executor/control classification, canonical prompt->invoke validation, hard rejection of legacy `vizier.*` and legacy non-env `cap.*` labels, and rejection of unknown implicit `uses` labels.
@@ -67,7 +75,7 @@ Acceptance checkpoints (selected)
 
 Next moves
 1) Decide whether runtime `on.succeeded` single-parent constraint should be generalized to multi-parent routing without weakening scheduler determinism.
-2) Decide where/when scheduler enqueue paths should auto-populate runtime run IDs/selectors for external enqueue callers that bypass template compilation helpers.
-3) Keep pruning now-unreachable workflow/template internals while preserving compatibility for persisted job artifacts.
+2) Decide where/when scheduler enqueue paths should auto-populate runtime run IDs/selectors for external enqueue callers that bypass `vizier run` and template compilation helpers.
+3) Keep pruning now-unreachable wrapper-era internals while preserving compatibility for persisted job artifacts.
 4) Define archive cleanup policy for legacy `draft/*` branch and `.vizier/implementation-plans/*.md` drift so retained plan-visibility surfaces stay interpretable after workflow removal.
 5) Reconcile operator guidance with actual help-pager flags (`--pager` currently documented in AGENTS but rejected by CLI; hidden `--no-pager` remains internal).

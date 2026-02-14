@@ -1,8 +1,8 @@
 # Workflow Runtime Contract
 
-This document defines the internal workflow runtime behavior used by scheduler
-child jobs (`vizier __workflow-node --job-id <id>`). It is intentionally
-internal: it does not change the reduced public CLI surface.
+This document defines the workflow runtime behavior used by scheduler child
+jobs (`vizier __workflow-node --job-id <id>`). Public orchestration now enters
+through `vizier run`, which compiles templates into these child jobs.
 
 ## Scope
 
