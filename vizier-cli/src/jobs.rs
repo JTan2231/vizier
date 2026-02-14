@@ -17,7 +17,6 @@ use std::{
     thread,
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
-use vizier_core::display;
 use vizier_core::scheduler::spec::{
     self, AfterDependencyState, JobAfterDependencyStatus, JobPreconditionFact,
     JobPreconditionState, PinnedHeadFact, SchedulerAction, SchedulerFacts,
@@ -28,9 +27,13 @@ pub use vizier_core::scheduler::{
     JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,
 };
 use vizier_core::workflow_template::{
-    CompiledWorkflowNode, PROMPT_ARTIFACT_TYPE_ID, WorkflowNodeKind, WorkflowOutcomeEdges,
-    WorkflowPrecondition, WorkflowRetryMode, WorkflowTemplate, compile_workflow_node,
-    validate_workflow_capability_contracts,
+    CompiledWorkflowNode, PROMPT_ARTIFACT_TYPE_ID, WorkflowGate, WorkflowNodeKind,
+    WorkflowOutcomeEdges, WorkflowPrecondition, WorkflowRetryMode, WorkflowTemplate,
+    compile_workflow_node, validate_workflow_capability_contracts,
+};
+use vizier_core::{
+    agent::{AgentError, AgentRequest, DEFAULT_AGENT_TIMEOUT},
+    config, display,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -327,13 +330,15 @@ impl WorkflowNodeOutcome {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowNodeResult {
     pub outcome: WorkflowNodeOutcome,
     #[serde(default)]
     pub artifacts_written: Vec<JobArtifact>,
     #[serde(default)]
     pub payload_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<JobMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -346,6 +351,7 @@ impl WorkflowNodeResult {
             outcome: WorkflowNodeOutcome::Succeeded,
             artifacts_written: Vec::new(),
             payload_refs: Vec::new(),
+            metadata: None,
             summary: Some(summary.into()),
             exit_code: Some(0),
         }
@@ -356,6 +362,18 @@ impl WorkflowNodeResult {
             outcome: WorkflowNodeOutcome::Failed,
             artifacts_written: Vec::new(),
             payload_refs: Vec::new(),
+            metadata: None,
+            summary: Some(summary.into()),
+            exit_code,
+        }
+    }
+
+    fn blocked(summary: impl Into<String>, exit_code: Option<i32>) -> Self {
+        Self {
+            outcome: WorkflowNodeOutcome::Blocked,
+            artifacts_written: Vec::new(),
+            payload_refs: Vec::new(),
+            metadata: None,
             summary: Some(summary.into()),
             exit_code,
         }
@@ -408,6 +426,8 @@ struct WorkflowRuntimeNodeManifest {
     executor_operation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     control_policy: Option<String>,
+    #[serde(default)]
+    gates: Vec<WorkflowGate>,
     retry: vizier_core::workflow_template::WorkflowRetryPolicy,
     routes: WorkflowRouteTargets,
     #[serde(default)]
@@ -1445,6 +1465,7 @@ pub fn enqueue_workflow_run(
                 args: node.args.clone(),
                 executor_operation: compiled.executor_operation.clone(),
                 control_policy: compiled.control_policy.clone(),
+                gates: compiled.gates.clone(),
                 retry: compiled.retry.clone(),
                 routes: convert_outcome_edges_to_routes(&compiled.on),
                 artifacts_by_outcome: workflow_node_artifacts_by_outcome(template, &node.id)?,
@@ -2581,13 +2602,13 @@ fn map_workflow_outcome_to_job_status(
 }
 
 fn run_shell_text_command(
-    project_root: &Path,
+    execution_root: &Path,
     script: &str,
 ) -> Result<(i32, String, String), Box<dyn std::error::Error>> {
     let output = Command::new("sh")
         .arg("-lc")
         .arg(script)
-        .current_dir(project_root)
+        .current_dir(execution_root)
         .output()?;
     let status = output.status.code().unwrap_or(1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -2595,8 +2616,335 @@ fn run_shell_text_command(
     Ok((status, stdout, stderr))
 }
 
-fn workflow_prompt_text_from_record(
+fn parse_bool_like(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn bool_arg(args: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    args.get(key).and_then(|value| parse_bool_like(value))
+}
+
+fn resolve_execution_root(
     project_root: &Path,
+    record: &JobRecord,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let Some(worktree) = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.worktree_path.as_ref())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(project_root.to_path_buf());
+    };
+
+    let resolved = resolve_recorded_path(project_root, worktree);
+    if resolved.exists() {
+        Ok(resolved)
+    } else {
+        Err(format!(
+            "workflow execution root {} does not exist",
+            resolved.display()
+        )
+        .into())
+    }
+}
+
+fn resolve_path_in_execution_root(execution_root: &Path, path: &str) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        execution_root.join(candidate)
+    }
+}
+
+fn first_non_empty_arg(args: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = args.get(*key)
+            && !value.trim().is_empty()
+        {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_node_shell_script(
+    node: &WorkflowRuntimeNodeManifest,
+    fallback: Option<String>,
+) -> Option<String> {
+    first_non_empty_arg(&node.args, &["command", "script"]).or(fallback)
+}
+
+fn script_gate_script(node: &WorkflowRuntimeNodeManifest) -> Option<String> {
+    node.gates.iter().find_map(|gate| match gate {
+        WorkflowGate::Script { script, .. } => {
+            if script.trim().is_empty() {
+                None
+            } else {
+                Some(script.trim().to_string())
+            }
+        }
+        _ => None,
+    })
+}
+
+fn cicd_gate_config(node: &WorkflowRuntimeNodeManifest) -> Option<(String, bool)> {
+    node.gates.iter().find_map(|gate| match gate {
+        WorkflowGate::Cicd {
+            script,
+            auto_resolve,
+            ..
+        } if !script.trim().is_empty() => Some((script.trim().to_string(), *auto_resolve)),
+        _ => None,
+    })
+}
+
+fn conflict_auto_resolve_from_gate(node: &WorkflowRuntimeNodeManifest) -> Option<bool> {
+    for gate in &node.gates {
+        if let WorkflowGate::Custom { id, args, .. } = gate
+            && id == "conflict_resolution"
+            && let Some(value) = args
+                .get("auto_resolve")
+                .and_then(|raw| parse_bool_like(raw))
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn workflow_slug_from_record(record: &JobRecord, node: &WorkflowRuntimeNodeManifest) -> String {
+    if let Some(value) = first_non_empty_arg(&node.args, &["slug", "plan"]) {
+        return value;
+    }
+    if let Some(value) = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.plan.as_ref())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return value.to_string();
+    }
+    if let Some(value) = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.branch.as_ref())
+        .and_then(|branch| branch.strip_prefix("draft/"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return value.to_string();
+    }
+    sanitize_workflow_component(&record.id)
+}
+
+fn merge_sentinel_path(project_root: &Path, slug: &str) -> PathBuf {
+    project_root
+        .join(".vizier/tmp/merge-conflicts")
+        .join(format!("{slug}.json"))
+}
+
+fn ensure_local_branch(
+    execution_root: &Path,
+    branch: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let exists = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("show-ref")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg(format!("refs/heads/{branch}"))
+        .status()?;
+    if exists.success() {
+        return Ok(());
+    }
+
+    let created = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("branch")
+        .arg(branch)
+        .status()?;
+    if created.success() {
+        Ok(())
+    } else {
+        Err(format!("unable to create local branch `{branch}`").into())
+    }
+}
+
+fn current_branch_name(execution_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() || name == "HEAD" {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn has_unmerged_paths(execution_root: &Path) -> bool {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("ls-files")
+        .arg("-u")
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn parse_files_json(
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let Some(raw) = node.args.get("files_json") else {
+        return Err("patch pipeline operation requires args.files_json".into());
+    };
+    let files = serde_json::from_str::<Vec<String>>(raw)
+        .map_err(|err| format!("invalid files_json payload: {err}"))?;
+    if files.is_empty() {
+        return Err("patch pipeline operation requires at least one file".into());
+    }
+    Ok(files)
+}
+
+fn patch_pipeline_manifest_path(jobs_root: &Path, job_id: &str) -> PathBuf {
+    jobs_root.join(job_id).join("patch-pipeline.json")
+}
+
+fn patch_pipeline_finalize_path(jobs_root: &Path, job_id: &str) -> PathBuf {
+    jobs_root.join(job_id).join("patch-pipeline.finalize.json")
+}
+
+fn resolve_workflow_agent_settings(
+    record: &JobRecord,
+) -> Result<config::AgentSettings, Box<dyn std::error::Error>> {
+    let cfg = config::get_config();
+    let scope_alias = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.command_alias.clone().or(meta.scope.clone()));
+    let template_selector = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.workflow_template_selector.clone());
+
+    if let Some(raw_alias) = scope_alias {
+        if let Some(alias) = config::CommandAlias::parse(&raw_alias) {
+            if let Some(raw_template) = template_selector
+                && let Some(selector) = config::TemplateSelector::parse(&raw_template)
+            {
+                return config::resolve_agent_settings_for_alias_template(
+                    &cfg,
+                    &alias,
+                    Some(&selector),
+                    None,
+                );
+            }
+            return config::resolve_agent_settings_for_alias(&cfg, &alias, None);
+        }
+        if let Ok(scope) = raw_alias.parse::<config::CommandScope>() {
+            return config::resolve_agent_settings(&cfg, scope, None);
+        }
+    }
+
+    config::resolve_default_agent_settings(&cfg, None)
+}
+
+fn build_workflow_agent_request(
+    agent: &config::AgentSettings,
+    prompt: String,
+    repo_root: PathBuf,
+) -> AgentRequest {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("agent_backend".to_string(), agent.backend.to_string());
+    metadata.insert("agent_label".to_string(), agent.agent_runtime.label.clone());
+    metadata.insert(
+        "agent_command".to_string(),
+        agent.agent_runtime.command.join(" "),
+    );
+    metadata.insert(
+        "agent_output".to_string(),
+        agent.agent_runtime.output.as_str().to_string(),
+    );
+    if let Some(alias) = agent.command_alias.as_ref() {
+        metadata.insert("command_alias".to_string(), alias.to_string());
+    }
+    if let Some(selector) = agent.template_selector.as_ref() {
+        metadata.insert("template_selector".to_string(), selector.to_string());
+    }
+    if let Some(filter) = agent.agent_runtime.progress_filter.as_ref() {
+        metadata.insert("agent_progress_filter".to_string(), filter.join(" "));
+    }
+    match &agent.agent_runtime.resolution {
+        config::AgentRuntimeResolution::BundledShim { path, .. } => {
+            metadata.insert(
+                "agent_command_source".to_string(),
+                "bundled-shim".to_string(),
+            );
+            metadata.insert("agent_shim_path".to_string(), path.display().to_string());
+        }
+        config::AgentRuntimeResolution::ProvidedCommand => {
+            metadata.insert("agent_command_source".to_string(), "configured".to_string());
+        }
+    }
+
+    AgentRequest {
+        prompt,
+        repo_root,
+        command: agent.agent_runtime.command.clone(),
+        progress_filter: agent.agent_runtime.progress_filter.clone(),
+        output: agent.agent_runtime.output,
+        allow_script_wrapper: agent.agent_runtime.enable_script_wrapper,
+        scope: agent.scope,
+        metadata,
+        timeout: Some(DEFAULT_AGENT_TIMEOUT),
+    }
+}
+
+fn execute_agent_request_blocking(
+    runner: std::sync::Arc<dyn vizier_core::agent::AgentRunner>,
+    request: AgentRequest,
+) -> Result<vizier_core::agent::AgentResponse, AgentError> {
+    let handle = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| AgentError::Io(io::Error::other(format!("tokio runtime: {err}"))))?;
+        runtime.block_on(runner.execute(request, None))
+    });
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(AgentError::Io(io::Error::other(
+            "agent worker thread panicked",
+        ))),
+    }
+}
+
+fn workflow_prompt_text_from_record(
+    execution_root: &Path,
     record: &JobRecord,
     node: &WorkflowRuntimeNodeManifest,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -2608,13 +2956,13 @@ fn workflow_prompt_text_from_record(
     if let Some(path) = node.args.get("prompt_file")
         && !path.trim().is_empty()
     {
-        let abs = resolve_recorded_path(project_root, path);
+        let abs = resolve_path_in_execution_root(execution_root, path);
         return Ok(fs::read_to_string(abs)?);
     }
     if let Some(command) = node.args.get("command")
         && !command.trim().is_empty()
     {
-        let (status, stdout, stderr) = run_shell_text_command(project_root, command)?;
+        let (status, stdout, stderr) = run_shell_text_command(execution_root, command)?;
         if status != 0 {
             return Err(format!(
                 "prompt.resolve command failed (exit {status}): {}",
@@ -2627,7 +2975,7 @@ fn workflow_prompt_text_from_record(
     if let Some(script) = node.args.get("script")
         && !script.trim().is_empty()
     {
-        let (status, stdout, stderr) = run_shell_text_command(project_root, script)?;
+        let (status, stdout, stderr) = run_shell_text_command(execution_root, script)?;
         if status != 0 {
             return Err(format!(
                 "prompt.resolve script failed (exit {status}): {}",
@@ -2693,14 +3041,146 @@ fn resolve_prompt_payload_text(payload: &serde_json::Value) -> Option<String> {
 
 fn execute_workflow_executor(
     project_root: &Path,
-    _jobs_root: &Path,
+    jobs_root: &Path,
     record: &JobRecord,
     node: &WorkflowRuntimeNodeManifest,
 ) -> Result<WorkflowNodeResult, Box<dyn std::error::Error>> {
+    let execution_root = resolve_execution_root(project_root, record)?;
     match node.executor_operation.as_deref() {
-        Some("worktree.prepare") => Ok(WorkflowNodeResult::succeeded("worktree prepared")),
-        Some("worktree.cleanup") => Ok(WorkflowNodeResult::succeeded("worktree cleaned")),
-        Some("terminal") => Ok(WorkflowNodeResult::succeeded("terminal reached")),
+        Some("worktree.prepare") => {
+            let branch = first_non_empty_arg(&node.args, &["branch"])
+                .or_else(|| {
+                    record
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.branch.as_ref().cloned())
+                })
+                .or_else(|| {
+                    record
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.plan.as_ref())
+                        .map(|slug| crate::plan::default_branch_for_slug(slug))
+                })
+                .or_else(|| current_branch_name(project_root))
+                .ok_or_else(|| "worktree.prepare could not determine branch".to_string())?;
+            ensure_local_branch(project_root, &branch)?;
+
+            let purpose = first_non_empty_arg(&node.args, &["purpose"])
+                .unwrap_or_else(|| sanitize_workflow_component(&node.node_id));
+            let dir_name = format!("{}-{}", sanitize_workflow_component(&purpose), record.id);
+            let worktree_path = project_root.join(".vizier/tmp-worktrees").join(&dir_name);
+            if let Some(parent) = worktree_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if worktree_path.exists() {
+                let mut result =
+                    WorkflowNodeResult::succeeded("worktree already exists for this node");
+                result.payload_refs = vec![relative_path(project_root, &worktree_path)];
+                result.metadata = Some(JobMetadata {
+                    worktree_owned: Some(true),
+                    worktree_path: Some(relative_path(project_root, &worktree_path)),
+                    worktree_name: find_worktree_name_by_path(
+                        &Repository::open(project_root)?,
+                        &worktree_path,
+                    ),
+                    ..JobMetadata::default()
+                });
+                return Ok(result);
+            }
+
+            let add = Command::new("git")
+                .arg("-C")
+                .arg(project_root)
+                .arg("worktree")
+                .arg("add")
+                .arg(&worktree_path)
+                .arg(&branch)
+                .output()?;
+            if !add.status.success() {
+                let detail = String::from_utf8_lossy(&add.stderr).trim().to_string();
+                let reason = if detail.is_empty() {
+                    "worktree.prepare failed to add worktree".to_string()
+                } else {
+                    format!("worktree.prepare failed to add worktree: {detail}")
+                };
+                return Ok(WorkflowNodeResult::failed(
+                    reason,
+                    Some(add.status.code().unwrap_or(1)),
+                ));
+            }
+
+            let mut result = WorkflowNodeResult::succeeded("worktree prepared");
+            result.payload_refs = vec![relative_path(project_root, &worktree_path)];
+            let worktree_name =
+                find_worktree_name_by_path(&Repository::open(project_root)?, &worktree_path);
+            result.metadata = Some(JobMetadata {
+                branch: Some(branch),
+                worktree_owned: Some(true),
+                worktree_path: Some(relative_path(project_root, &worktree_path)),
+                worktree_name,
+                ..JobMetadata::default()
+            });
+            Ok(result)
+        }
+        Some("worktree.cleanup") => {
+            let Some(metadata) = record.metadata.as_ref() else {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "worktree cleanup skipped (no worktree metadata)",
+                ));
+            };
+            if metadata.worktree_owned != Some(true) {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "worktree cleanup skipped (worktree not marked as job-owned)",
+                ));
+            }
+            let Some(recorded_path) = metadata.worktree_path.as_ref() else {
+                return Ok(WorkflowNodeResult::failed(
+                    "worktree cleanup cannot run: missing worktree_path metadata",
+                    Some(1),
+                ));
+            };
+
+            let worktree_path = resolve_recorded_path(project_root, recorded_path);
+            let worktree_name = metadata.worktree_name.as_deref();
+            if !worktree_safe_to_remove(project_root, &worktree_path, worktree_name) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!(
+                        "refusing to cleanup unsafe worktree path {}",
+                        worktree_path.display()
+                    ),
+                    Some(1),
+                ));
+            }
+
+            let mut result =
+                if let Err(err) = cleanup_worktree(project_root, &worktree_path, worktree_name) {
+                    display::warn(format!(
+                        "workflow worktree cleanup degraded for job {}: {}",
+                        record.id, err
+                    ));
+                    let mut degraded = WorkflowNodeResult::succeeded(
+                        "worktree cleanup degraded (manual prune may be needed)",
+                    );
+                    degraded.metadata = Some(JobMetadata {
+                        retry_cleanup_status: Some(RetryCleanupStatus::Degraded),
+                        retry_cleanup_error: Some(err),
+                        ..JobMetadata::default()
+                    });
+                    degraded
+                } else {
+                    let mut cleaned = WorkflowNodeResult::succeeded("worktree cleaned");
+                    cleaned.metadata = Some(JobMetadata {
+                        retry_cleanup_status: Some(RetryCleanupStatus::Done),
+                        retry_cleanup_error: None,
+                        ..JobMetadata::default()
+                    });
+                    cleaned
+                };
+            result.payload_refs = vec![relative_path(project_root, &worktree_path)];
+            Ok(result)
+        }
         Some("prompt.resolve") => {
             let prompt_artifact = prompt_output_artifact(node).ok_or_else(|| {
                 "prompt.resolve node is missing prompt artifact output".to_string()
@@ -2712,7 +3192,7 @@ fn execute_workflow_executor(
                 }
             };
 
-            let prompt_text = workflow_prompt_text_from_record(project_root, record, node)?;
+            let prompt_text = workflow_prompt_text_from_record(&execution_root, record, node)?;
             let payload = serde_json::json!({
                 "type_id": type_id,
                 "key": key,
@@ -2725,6 +3205,7 @@ fn execute_workflow_executor(
                 outcome: WorkflowNodeOutcome::Succeeded,
                 artifacts_written: vec![prompt_artifact],
                 payload_refs: vec![relative_path(project_root, &path)],
+                metadata: None,
                 summary: Some("prompt resolved".to_string()),
                 exit_code: Some(0),
             })
@@ -2761,20 +3242,223 @@ fn execute_workflow_executor(
                 )?;
             let prompt_text = resolve_prompt_payload_text(&payload)
                 .ok_or_else(|| "prompt payload missing text field".to_string())?;
-            print!("{prompt_text}");
-            let _ = io::stdout().flush();
-            Ok(WorkflowNodeResult {
-                outcome: WorkflowNodeOutcome::Succeeded,
-                artifacts_written: Vec::new(),
-                payload_refs: vec![relative_path(project_root, &payload_path)],
-                summary: Some("agent invoke consumed prompt payload".to_string()),
-                exit_code: Some(0),
-            })
+
+            let agent_settings = match resolve_workflow_agent_settings(record) {
+                Ok(settings) => settings,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("agent.invoke could not resolve agent settings: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            let runner = match agent_settings.agent_runner() {
+                Ok(runner) => runner.clone(),
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("agent.invoke requires agent backend runner: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            let request = build_workflow_agent_request(
+                &agent_settings,
+                prompt_text,
+                execution_root.to_path_buf(),
+            );
+            let response = execute_agent_request_blocking(runner, request);
+            match response {
+                Ok(response) => {
+                    if !response.assistant_text.is_empty() {
+                        print!("{}", response.assistant_text);
+                        let _ = io::stdout().flush();
+                    }
+                    for line in response.stderr {
+                        eprintln!("{line}");
+                    }
+
+                    let mut result = WorkflowNodeResult::succeeded(
+                        "agent.invoke completed via configured runner",
+                    );
+                    result.payload_refs = vec![relative_path(project_root, &payload_path)];
+                    result.metadata = Some(JobMetadata {
+                        agent_selector: Some(agent_settings.selector.clone()),
+                        agent_backend: Some(agent_settings.backend.to_string()),
+                        agent_label: Some(agent_settings.agent_runtime.label.clone()),
+                        agent_command: Some(agent_settings.agent_runtime.command.clone()),
+                        config_backend: Some(agent_settings.backend.to_string()),
+                        config_agent_selector: Some(agent_settings.selector.clone()),
+                        config_agent_label: Some(agent_settings.agent_runtime.label.clone()),
+                        config_agent_command: Some(agent_settings.agent_runtime.command.clone()),
+                        agent_exit_code: Some(response.exit_code),
+                        ..JobMetadata::default()
+                    });
+                    Ok(result)
+                }
+                Err(AgentError::NonZeroExit(code, lines)) => {
+                    for line in lines {
+                        eprintln!("{line}");
+                    }
+                    Ok(WorkflowNodeResult::failed(
+                        format!("agent.invoke failed (exit {code})"),
+                        Some(code),
+                    ))
+                }
+                Err(AgentError::Timeout(secs)) => Ok(WorkflowNodeResult::failed(
+                    format!("agent.invoke timed out after {secs}s"),
+                    Some(124),
+                )),
+                Err(err) => Ok(WorkflowNodeResult::failed(
+                    format!("agent.invoke failed: {err}"),
+                    Some(1),
+                )),
+            }
+        }
+        Some("plan.persist") => {
+            let spec_source = node
+                .args
+                .get("spec_source")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .unwrap_or_else(|| "inline".to_string());
+            let spec_text_arg = node
+                .args
+                .get("spec_text")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let spec_file = node
+                .args
+                .get("spec_file")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let spec_text = match spec_source.as_str() {
+                "inline" | "stdin" => {
+                    if let Some(text) = spec_text_arg {
+                        text
+                    } else if let Some(path) = spec_file {
+                        fs::read_to_string(resolve_path_in_execution_root(&execution_root, &path))?
+                    } else {
+                        return Ok(WorkflowNodeResult::failed(
+                            "plan.persist requires spec_text or spec_file",
+                            Some(1),
+                        ));
+                    }
+                }
+                "file" => {
+                    let Some(path) = spec_file else {
+                        return Ok(WorkflowNodeResult::failed(
+                            "plan.persist has spec_source=file but no spec_file",
+                            Some(1),
+                        ));
+                    };
+                    fs::read_to_string(resolve_path_in_execution_root(&execution_root, &path))?
+                }
+                other => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("plan.persist has unsupported spec_source `{other}`"),
+                        Some(1),
+                    ));
+                }
+            };
+
+            let requested_slug = first_non_empty_arg(&node.args, &["name_override", "slug"])
+                .or_else(|| record.metadata.as_ref().and_then(|meta| meta.plan.clone()))
+                .unwrap_or_else(|| crate::plan::slug_from_spec(&spec_text));
+            let slug = match crate::plan::sanitize_name_override(&requested_slug) {
+                Ok(value) => value,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("plan.persist invalid slug `{requested_slug}`: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            let branch = first_non_empty_arg(&node.args, &["branch"])
+                .or_else(|| {
+                    record
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.branch.clone())
+                })
+                .unwrap_or_else(|| crate::plan::default_branch_for_slug(&slug));
+            if let Err(err) = ensure_local_branch(&execution_root, &branch) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("plan.persist could not ensure branch `{branch}`: {err}"),
+                    Some(1),
+                ));
+            }
+
+            let plan_id = first_non_empty_arg(&node.args, &["plan_id"])
+                .unwrap_or_else(crate::plan::new_plan_id);
+            let plan_body = first_non_empty_arg(&node.args, &["plan_body", "plan_text", "content"])
+                .unwrap_or_else(|| spec_text.clone());
+            let doc_contents =
+                crate::plan::render_plan_document(&plan_id, &slug, &branch, &spec_text, &plan_body);
+            let plan_rel = crate::plan::plan_rel_path(&slug);
+            let plan_abs = execution_root.join(&plan_rel);
+            if let Err(err) = crate::plan::write_plan_file(&plan_abs, &doc_contents) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("plan.persist failed to write {}: {err}", plan_rel.display()),
+                    Some(1),
+                ));
+            }
+
+            let now = Utc::now().to_rfc3339();
+            let summary = spec_text
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(|line| line.chars().take(160).collect::<String>());
+            let state_rel = crate::plan::upsert_plan_record(
+                &execution_root,
+                crate::plan::PlanRecordUpsert {
+                    plan_id: plan_id.clone(),
+                    slug: Some(slug.clone()),
+                    branch: Some(branch.clone()),
+                    source: Some(spec_source),
+                    intent: first_non_empty_arg(&node.args, &["intent"]),
+                    target_branch: first_non_empty_arg(&node.args, &["target_branch"]).or_else(
+                        || {
+                            record
+                                .metadata
+                                .as_ref()
+                                .and_then(|meta| meta.target.clone())
+                        },
+                    ),
+                    work_ref: Some(format!("workflow-job:{}", record.id)),
+                    status: Some("proposed".to_string()),
+                    summary,
+                    updated_at: now.clone(),
+                    created_at: Some(now),
+                    job_ids: Some(HashMap::from([("persist".to_string(), record.id.clone())])),
+                },
+            )?;
+
+            let mut result = WorkflowNodeResult::succeeded("plan persisted");
+            result.artifacts_written = vec![
+                JobArtifact::PlanBranch {
+                    slug: slug.clone(),
+                    branch: branch.clone(),
+                },
+                JobArtifact::PlanDoc {
+                    slug: slug.clone(),
+                    branch: branch.clone(),
+                },
+            ];
+            result.payload_refs = vec![
+                relative_path(project_root, &plan_abs),
+                relative_path(project_root, &execution_root.join(state_rel)),
+            ];
+            result.metadata = Some(JobMetadata {
+                plan: Some(slug),
+                branch: Some(branch),
+                ..JobMetadata::default()
+            });
+            Ok(result)
         }
         Some("git.stage_commit") => {
             let add = Command::new("git")
                 .arg("-C")
-                .arg(project_root)
+                .arg(&execution_root)
                 .arg("add")
                 .arg("-A")
                 .status()?;
@@ -2787,7 +3471,7 @@ fn execute_workflow_executor(
 
             let diff = Command::new("git")
                 .arg("-C")
-                .arg(project_root)
+                .arg(&execution_root)
                 .arg("diff")
                 .arg("--cached")
                 .arg("--quiet")
@@ -2806,7 +3490,7 @@ fn execute_workflow_executor(
                 .unwrap_or_else(|| "chore: workflow stage commit".to_string());
             let commit = Command::new("git")
                 .arg("-C")
-                .arg(project_root)
+                .arg(&execution_root)
                 .arg("commit")
                 .arg("-m")
                 .arg(&message)
@@ -2819,6 +3503,501 @@ fn execute_workflow_executor(
                 Ok(WorkflowNodeResult::failed(
                     "git commit failed during git.stage_commit",
                     Some(commit.code().unwrap_or(1)),
+                ))
+            }
+        }
+        Some("git.integrate_plan_branch") => {
+            let source_branch =
+                first_non_empty_arg(&node.args, &["branch", "source_branch", "plan_branch"])
+                    .or_else(|| {
+                        record
+                            .metadata
+                            .as_ref()
+                            .and_then(|meta| meta.branch.clone())
+                    })
+                    .or_else(|| {
+                        record
+                            .metadata
+                            .as_ref()
+                            .and_then(|meta| meta.plan.as_ref())
+                            .map(|slug| crate::plan::default_branch_for_slug(slug))
+                    });
+            let Some(source_branch) = source_branch else {
+                return Ok(WorkflowNodeResult::failed(
+                    "git.integrate_plan_branch requires a source branch",
+                    Some(1),
+                ));
+            };
+            let target_branch = first_non_empty_arg(&node.args, &["target", "target_branch"])
+                .or_else(|| {
+                    record
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.target.clone())
+                });
+            let squash = bool_arg(&node.args, "squash").unwrap_or(true);
+            let delete_branch = bool_arg(&node.args, "delete_branch").unwrap_or(false);
+            let slug = workflow_slug_from_record(record, node);
+            let sentinel = merge_sentinel_path(project_root, &slug);
+
+            if let Some(target) = target_branch.as_ref() {
+                let current = current_branch_name(&execution_root);
+                if current.as_deref() != Some(target.as_str()) {
+                    let checkout = Command::new("git")
+                        .arg("-C")
+                        .arg(&execution_root)
+                        .arg("checkout")
+                        .arg(target)
+                        .output()?;
+                    if !checkout.status.success() {
+                        let detail = String::from_utf8_lossy(&checkout.stderr).trim().to_string();
+                        return Ok(WorkflowNodeResult::failed(
+                            format!(
+                                "git.integrate_plan_branch failed checkout `{target}`: {detail}"
+                            ),
+                            Some(checkout.status.code().unwrap_or(1)),
+                        ));
+                    }
+                }
+            }
+
+            let merge_output = if squash {
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&execution_root)
+                    .arg("merge")
+                    .arg("--squash")
+                    .arg(&source_branch)
+                    .output()?
+            } else {
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&execution_root)
+                    .arg("merge")
+                    .arg("--no-ff")
+                    .arg("--no-edit")
+                    .arg(&source_branch)
+                    .output()?
+            };
+            if !merge_output.status.success() {
+                let detail = String::from_utf8_lossy(&merge_output.stderr)
+                    .trim()
+                    .to_string();
+                if has_unmerged_paths(&execution_root) {
+                    if let Some(parent) = sentinel.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let payload = serde_json::json!({
+                        "slug": slug,
+                        "source_branch": source_branch,
+                        "target_branch": target_branch,
+                        "job_id": record.id,
+                        "node_id": node.node_id,
+                        "created_at": Utc::now().to_rfc3339(),
+                    });
+                    fs::write(&sentinel, serde_json::to_vec_pretty(&payload)?)?;
+
+                    let mut result = WorkflowNodeResult::blocked(
+                        "git.integrate_plan_branch detected merge conflicts",
+                        Some(10),
+                    );
+                    result.artifacts_written = vec![JobArtifact::MergeSentinel {
+                        slug: workflow_slug_from_record(record, node),
+                    }];
+                    result.payload_refs = vec![relative_path(project_root, &sentinel)];
+                    return Ok(result);
+                }
+                let summary = if detail.is_empty() {
+                    "git.integrate_plan_branch failed".to_string()
+                } else {
+                    format!("git.integrate_plan_branch failed: {detail}")
+                };
+                return Ok(WorkflowNodeResult::failed(
+                    summary,
+                    Some(merge_output.status.code().unwrap_or(1)),
+                ));
+            }
+
+            if squash {
+                let diff = Command::new("git")
+                    .arg("-C")
+                    .arg(&execution_root)
+                    .arg("diff")
+                    .arg("--cached")
+                    .arg("--quiet")
+                    .status()?;
+                if !diff.success() {
+                    let message =
+                        first_non_empty_arg(&node.args, &["message"]).unwrap_or_else(|| {
+                            format!(
+                                "feat: merge plan {}",
+                                workflow_slug_from_record(record, node)
+                            )
+                        });
+                    let commit = Command::new("git")
+                        .arg("-C")
+                        .arg(&execution_root)
+                        .arg("commit")
+                        .arg("-m")
+                        .arg(&message)
+                        .status()?;
+                    if !commit.success() {
+                        return Ok(WorkflowNodeResult::failed(
+                            "git.integrate_plan_branch squash commit failed",
+                            Some(commit.code().unwrap_or(1)),
+                        ));
+                    }
+                }
+            }
+
+            let _ = remove_file_if_exists(&sentinel);
+            if delete_branch
+                && current_branch_name(&execution_root).as_deref() != Some(source_branch.as_str())
+            {
+                let _ = Command::new("git")
+                    .arg("-C")
+                    .arg(&execution_root)
+                    .arg("branch")
+                    .arg("-D")
+                    .arg(&source_branch)
+                    .status();
+            }
+
+            Ok(WorkflowNodeResult::succeeded(
+                "git.integrate_plan_branch merged source branch",
+            ))
+        }
+        Some("git.save_worktree_patch") => {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&execution_root)
+                .arg("diff")
+                .arg("--binary")
+                .arg("HEAD")
+                .output()?;
+            if !output.status.success() {
+                return Ok(WorkflowNodeResult::failed(
+                    "git.save_worktree_patch could not produce patch",
+                    Some(output.status.code().unwrap_or(1)),
+                ));
+            }
+            let patch_path = command_patch_path(jobs_root, &record.id);
+            if let Some(parent) = patch_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&patch_path, output.stdout)?;
+            let mut result = WorkflowNodeResult::succeeded("saved worktree patch");
+            result.artifacts_written = vec![JobArtifact::CommandPatch {
+                job_id: record.id.clone(),
+            }];
+            result.payload_refs = vec![relative_path(project_root, &patch_path)];
+            result.metadata = Some(JobMetadata {
+                patch_file: Some(relative_path(project_root, &patch_path)),
+                patch_index: Some(1),
+                patch_total: Some(1),
+                ..JobMetadata::default()
+            });
+            Ok(result)
+        }
+        Some("patch.pipeline_prepare") => {
+            let files = match parse_files_json(node) {
+                Ok(files) => files,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("patch.pipeline_prepare: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            for file in &files {
+                let resolved = resolve_path_in_execution_root(&execution_root, file);
+                if !resolved.exists() {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!(
+                            "patch.pipeline_prepare missing patch file {}",
+                            resolved.display()
+                        ),
+                        Some(1),
+                    ));
+                }
+            }
+
+            let manifest_path = patch_pipeline_manifest_path(jobs_root, &record.id);
+            if let Some(parent) = manifest_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let manifest = serde_json::json!({
+                "job_id": record.id,
+                "node_id": node.node_id,
+                "files": files,
+                "prepared_at": Utc::now().to_rfc3339(),
+            });
+            fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+            let total = manifest["files"]
+                .as_array()
+                .map(|items| items.len())
+                .unwrap_or(0);
+            let mut result = WorkflowNodeResult::succeeded("patch pipeline prepared");
+            result.payload_refs = vec![relative_path(project_root, &manifest_path)];
+            result.metadata = Some(JobMetadata {
+                patch_file: Some(relative_path(project_root, &manifest_path)),
+                patch_index: Some(0),
+                patch_total: Some(total),
+                ..JobMetadata::default()
+            });
+            Ok(result)
+        }
+        Some("patch.execute_pipeline") => {
+            let files = match parse_files_json(node) {
+                Ok(files) => files,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("patch.execute_pipeline: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            for file in &files {
+                let path = resolve_path_in_execution_root(&execution_root, file);
+                let apply = Command::new("git")
+                    .arg("-C")
+                    .arg(&execution_root)
+                    .arg("apply")
+                    .arg("--index")
+                    .arg(&path)
+                    .output()?;
+                if !apply.status.success() {
+                    let detail = String::from_utf8_lossy(&apply.stderr).trim().to_string();
+                    let summary = if detail.is_empty() {
+                        format!("patch.execute_pipeline failed applying {}", path.display())
+                    } else {
+                        format!(
+                            "patch.execute_pipeline failed applying {}: {}",
+                            path.display(),
+                            detail
+                        )
+                    };
+                    return Ok(WorkflowNodeResult::failed(
+                        summary,
+                        Some(apply.status.code().unwrap_or(1)),
+                    ));
+                }
+            }
+            let mut result = WorkflowNodeResult::succeeded("patch pipeline executed");
+            result.metadata = Some(JobMetadata {
+                patch_index: Some(files.len()),
+                patch_total: Some(files.len()),
+                ..JobMetadata::default()
+            });
+            Ok(result)
+        }
+        Some("patch.pipeline_finalize") => {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&execution_root)
+                .arg("diff")
+                .arg("--binary")
+                .arg("HEAD")
+                .output()?;
+            if !output.status.success() {
+                return Ok(WorkflowNodeResult::failed(
+                    "patch.pipeline_finalize could not capture patch",
+                    Some(output.status.code().unwrap_or(1)),
+                ));
+            }
+            let patch_path = command_patch_path(jobs_root, &record.id);
+            if let Some(parent) = patch_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&patch_path, &output.stdout)?;
+
+            let finalize_path = patch_pipeline_finalize_path(jobs_root, &record.id);
+            let summary = serde_json::json!({
+                "job_id": record.id,
+                "node_id": node.node_id,
+                "finalized_at": Utc::now().to_rfc3339(),
+                "patch_path": relative_path(project_root, &patch_path),
+            });
+            fs::write(&finalize_path, serde_json::to_vec_pretty(&summary)?)?;
+
+            let mut result = WorkflowNodeResult::succeeded("patch pipeline finalized");
+            result.artifacts_written = vec![JobArtifact::CommandPatch {
+                job_id: record.id.clone(),
+            }];
+            result.payload_refs = vec![
+                relative_path(project_root, &patch_path),
+                relative_path(project_root, &finalize_path),
+            ];
+            result.metadata = Some(JobMetadata {
+                patch_file: Some(relative_path(project_root, &patch_path)),
+                ..JobMetadata::default()
+            });
+            Ok(result)
+        }
+        Some("build.materialize_step") => {
+            let build_id = first_non_empty_arg(&node.args, &["build_id"])
+                .or_else(|| {
+                    record
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.workflow_run_id.clone())
+                })
+                .unwrap_or_else(|| "workflow".to_string());
+            let step_key = first_non_empty_arg(&node.args, &["step_key"])
+                .unwrap_or_else(|| sanitize_workflow_component(&node.node_id));
+            let slug = first_non_empty_arg(&node.args, &["slug", "plan"]);
+            let branch = first_non_empty_arg(&node.args, &["branch"]);
+            let target = first_non_empty_arg(&node.args, &["target", "target_branch"]);
+
+            let step_path = execution_root
+                .join(".vizier/implementation-plans/builds")
+                .join(&build_id)
+                .join("steps")
+                .join(&step_key)
+                .join("materialized.json");
+            if let Some(parent) = step_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let payload = serde_json::json!({
+                "build_id": build_id,
+                "step_key": step_key,
+                "job_id": record.id,
+                "node_id": node.node_id,
+                "args": node.args,
+                "materialized_at": Utc::now().to_rfc3339(),
+            });
+            fs::write(&step_path, serde_json::to_vec_pretty(&payload)?)?;
+
+            let mut artifacts = Vec::new();
+            if let (Some(slug), Some(branch)) = (slug.as_ref(), branch.as_ref()) {
+                let _ = ensure_local_branch(&execution_root, branch);
+                artifacts.push(JobArtifact::PlanBranch {
+                    slug: slug.clone(),
+                    branch: branch.clone(),
+                });
+                let plan_abs = execution_root.join(crate::plan::plan_rel_path(slug));
+                if !plan_abs.exists() {
+                    let doc = crate::plan::render_plan_document(
+                        &crate::plan::new_plan_id(),
+                        slug,
+                        branch,
+                        "Generated by build.materialize_step",
+                        "Build materialization placeholder.",
+                    );
+                    let _ = crate::plan::write_plan_file(&plan_abs, &doc);
+                }
+                if plan_abs.exists() {
+                    artifacts.push(JobArtifact::PlanDoc {
+                        slug: slug.clone(),
+                        branch: branch.clone(),
+                    });
+                }
+            }
+            if let Some(target_branch) = target.as_ref() {
+                let _ = ensure_local_branch(&execution_root, target_branch);
+                artifacts.push(JobArtifact::TargetBranch {
+                    name: target_branch.clone(),
+                });
+            }
+
+            let mut result = WorkflowNodeResult::succeeded("build step materialized");
+            result.artifacts_written = artifacts;
+            result.payload_refs = vec![relative_path(project_root, &step_path)];
+            result.metadata = Some(JobMetadata {
+                build_pipeline: first_non_empty_arg(&node.args, &["pipeline"]),
+                build_target: target,
+                plan: slug,
+                branch,
+                ..JobMetadata::default()
+            });
+            Ok(result)
+        }
+        Some("merge.sentinel.write") => {
+            let slug = workflow_slug_from_record(record, node);
+            let sentinel = merge_sentinel_path(project_root, &slug);
+            if let Some(parent) = sentinel.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let payload = serde_json::json!({
+                "slug": slug,
+                "job_id": record.id,
+                "node_id": node.node_id,
+                "run_id": record.metadata.as_ref().and_then(|meta| meta.workflow_run_id.clone()),
+                "source_branch": first_non_empty_arg(&node.args, &["branch", "source_branch"]).or_else(|| record.metadata.as_ref().and_then(|meta| meta.branch.clone())),
+                "target_branch": first_non_empty_arg(&node.args, &["target", "target_branch"]).or_else(|| record.metadata.as_ref().and_then(|meta| meta.target.clone())),
+                "written_at": Utc::now().to_rfc3339(),
+            });
+            fs::write(&sentinel, serde_json::to_vec_pretty(&payload)?)?;
+            let mut result = WorkflowNodeResult::succeeded("merge sentinel written");
+            result.artifacts_written = vec![JobArtifact::MergeSentinel {
+                slug: workflow_slug_from_record(record, node),
+            }];
+            result.payload_refs = vec![relative_path(project_root, &sentinel)];
+            Ok(result)
+        }
+        Some("merge.sentinel.clear") => {
+            let slug = workflow_slug_from_record(record, node);
+            let sentinel = merge_sentinel_path(project_root, &slug);
+            remove_file_if_exists(&sentinel)?;
+            if let Some(parent) = sentinel.parent()
+                && parent.exists()
+                && fs::read_dir(parent)?.next().is_none()
+            {
+                let _ = fs::remove_dir(parent);
+            }
+            let mut result = WorkflowNodeResult::succeeded("merge sentinel cleared");
+            result.payload_refs = vec![relative_path(project_root, &sentinel)];
+            Ok(result)
+        }
+        Some("command.run") => {
+            let Some(script) = resolve_node_shell_script(node, None) else {
+                return Ok(WorkflowNodeResult::failed(
+                    "command.run requires args.command or args.script",
+                    Some(1),
+                ));
+            };
+            let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
+            if !stdout.is_empty() {
+                print!("{stdout}");
+                let _ = io::stdout().flush();
+            }
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+                let _ = io::stderr().flush();
+            }
+            if status == 0 {
+                Ok(WorkflowNodeResult::succeeded("command.run succeeded"))
+            } else {
+                Ok(WorkflowNodeResult::failed(
+                    format!("command.run failed (exit {status})"),
+                    Some(status),
+                ))
+            }
+        }
+        Some("cicd.run") => {
+            let default_gate_script = cicd_gate_config(node).map(|(script, _)| script);
+            let Some(script) = resolve_node_shell_script(node, default_gate_script) else {
+                return Ok(WorkflowNodeResult::failed(
+                    "cicd.run requires args.command/args.script or a cicd gate script",
+                    Some(1),
+                ));
+            };
+            let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
+            if !stdout.is_empty() {
+                print!("{stdout}");
+                let _ = io::stdout().flush();
+            }
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+                let _ = io::stderr().flush();
+            }
+            if status == 0 {
+                Ok(WorkflowNodeResult::succeeded("cicd.run passed"))
+            } else {
+                Ok(WorkflowNodeResult::failed(
+                    format!("cicd.run failed (exit {status})"),
+                    Some(status),
                 ))
             }
         }
@@ -2838,23 +4017,33 @@ fn execute_workflow_control(
     record: &JobRecord,
     node: &WorkflowRuntimeNodeManifest,
 ) -> Result<WorkflowNodeResult, Box<dyn std::error::Error>> {
+    let execution_root = resolve_execution_root(project_root, record)?;
     match node.control_policy.as_deref() {
-        Some("terminal") => Ok(WorkflowNodeResult::succeeded("terminal reached")),
+        Some("terminal") => {
+            let has_routes = !node.routes.succeeded.is_empty()
+                || !node.routes.failed.is_empty()
+                || !node.routes.blocked.is_empty()
+                || !node.routes.cancelled.is_empty();
+            if has_routes {
+                Ok(WorkflowNodeResult::failed(
+                    "terminal policy node must not declare outgoing routes",
+                    Some(1),
+                ))
+            } else {
+                Ok(WorkflowNodeResult::succeeded("terminal sink reached"))
+            }
+        }
         Some("gate.stop_condition") => {
-            let script = node
-                .args
-                .get("script")
-                .map(String::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
+            let script = first_non_empty_arg(&node.args, &["script"])
+                .or_else(|| script_gate_script(node))
+                .unwrap_or_default();
             if script.is_empty() {
                 return Ok(WorkflowNodeResult::succeeded(
                     "stop-condition gate skipped (no script configured)",
                 ));
             }
 
-            let (status, _stdout, stderr) = run_shell_text_command(project_root, &script)?;
+            let (status, _stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
             if status == 0 {
                 return Ok(WorkflowNodeResult::succeeded("stop-condition gate passed"));
             }
@@ -2870,6 +4059,7 @@ fn execute_workflow_control(
                     outcome: WorkflowNodeOutcome::Blocked,
                     artifacts_written: Vec::new(),
                     payload_refs: Vec::new(),
+                    metadata: None,
                     summary: Some(format!(
                         "stop-condition failed on attempt {attempt}; retry budget exhausted ({})",
                         node.retry.budget
@@ -2885,6 +4075,170 @@ fn execute_workflow_control(
                 format!("stop-condition failed on attempt {attempt}: {detail}")
             };
             Ok(WorkflowNodeResult::failed(summary, Some(status)))
+        }
+        Some("gate.conflict_resolution") => {
+            let slug = workflow_slug_from_record(record, node);
+            let sentinel = merge_sentinel_path(project_root, &slug);
+            if !sentinel.exists() {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "conflict-resolution gate skipped (no merge sentinel)",
+                ));
+            }
+
+            let mut conflicts_present = has_unmerged_paths(&execution_root);
+            let auto_resolve = bool_arg(&node.args, "auto_resolve")
+                .or_else(|| conflict_auto_resolve_from_gate(node))
+                .unwrap_or(false);
+            if conflicts_present && auto_resolve {
+                if let Some(script) = resolve_node_shell_script(node, None) {
+                    let (status, stdout, stderr) =
+                        run_shell_text_command(&execution_root, &script)?;
+                    if !stdout.is_empty() {
+                        print!("{stdout}");
+                        let _ = io::stdout().flush();
+                    }
+                    if !stderr.is_empty() {
+                        eprint!("{stderr}");
+                        let _ = io::stderr().flush();
+                    }
+                    if status != 0 {
+                        return Ok(WorkflowNodeResult::failed(
+                            format!("conflict auto-resolve script failed (exit {status})"),
+                            Some(status),
+                        ));
+                    }
+                }
+                conflicts_present = has_unmerged_paths(&execution_root);
+            }
+
+            if conflicts_present {
+                let mut blocked = WorkflowNodeResult::blocked(
+                    format!("merge conflicts remain for slug `{slug}`"),
+                    Some(10),
+                );
+                blocked.artifacts_written = vec![JobArtifact::MergeSentinel { slug }];
+                blocked.payload_refs = vec![relative_path(project_root, &sentinel)];
+                return Ok(blocked);
+            }
+
+            remove_file_if_exists(&sentinel)?;
+            Ok(WorkflowNodeResult::succeeded(
+                "merge conflicts resolved and sentinel cleared",
+            ))
+        }
+        Some("gate.cicd") => {
+            let gate_cfg = cicd_gate_config(node);
+            let script = resolve_node_shell_script(
+                node,
+                gate_cfg.as_ref().map(|(script, _)| script.clone()),
+            );
+            let Some(script) = script else {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "cicd gate skipped (no script configured)",
+                ));
+            };
+            let auto_resolve = bool_arg(&node.args, "auto_resolve")
+                .or_else(|| gate_cfg.as_ref().map(|(_, auto)| *auto))
+                .unwrap_or(false);
+            let attempt = record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.workflow_node_attempt)
+                .unwrap_or(1);
+
+            let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
+            if !stdout.is_empty() {
+                print!("{stdout}");
+                let _ = io::stdout().flush();
+            }
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+                let _ = io::stderr().flush();
+            }
+            if status == 0 {
+                return Ok(WorkflowNodeResult::succeeded(format!(
+                    "cicd gate passed on attempt {attempt}"
+                )));
+            }
+
+            if auto_resolve
+                && let Some(fix_script) = first_non_empty_arg(
+                    &node.args,
+                    &["auto_resolve_command", "auto_resolve_script"],
+                )
+            {
+                let (fix_status, fix_stdout, fix_stderr) =
+                    run_shell_text_command(&execution_root, &fix_script)?;
+                if !fix_stdout.is_empty() {
+                    print!("{fix_stdout}");
+                    let _ = io::stdout().flush();
+                }
+                if !fix_stderr.is_empty() {
+                    eprint!("{fix_stderr}");
+                    let _ = io::stderr().flush();
+                }
+                if fix_status == 0 {
+                    let (retry_status, retry_stdout, retry_stderr) =
+                        run_shell_text_command(&execution_root, &script)?;
+                    if !retry_stdout.is_empty() {
+                        print!("{retry_stdout}");
+                        let _ = io::stdout().flush();
+                    }
+                    if !retry_stderr.is_empty() {
+                        eprint!("{retry_stderr}");
+                        let _ = io::stderr().flush();
+                    }
+                    if retry_status == 0 {
+                        return Ok(WorkflowNodeResult::succeeded(format!(
+                            "cicd gate passed after auto-resolve on attempt {attempt}"
+                        )));
+                    }
+                }
+            }
+
+            Ok(WorkflowNodeResult::failed(
+                format!("cicd gate failed on attempt {attempt} (exit {status})"),
+                Some(status),
+            ))
+        }
+        Some("gate.approval") => {
+            let required = bool_arg(&node.args, "required").unwrap_or(true);
+            if !required {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "approval gate bypassed (required=false)",
+                ));
+            }
+
+            let approval = record
+                .schedule
+                .as_ref()
+                .and_then(|schedule| schedule.approval.as_ref());
+            let Some(approval) = approval else {
+                return Ok(WorkflowNodeResult::blocked(
+                    "approval gate blocked: no approval state present",
+                    Some(10),
+                ));
+            };
+            match approval.state {
+                JobApprovalState::Approved => {
+                    Ok(WorkflowNodeResult::succeeded("approval gate passed"))
+                }
+                JobApprovalState::Pending => Ok(WorkflowNodeResult::blocked(
+                    "approval gate pending human decision",
+                    Some(10),
+                )),
+                JobApprovalState::Rejected => {
+                    let reason = approval
+                        .reason
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("approval rejected");
+                    Ok(WorkflowNodeResult::failed(
+                        format!("approval gate rejected: {reason}"),
+                        Some(10),
+                    ))
+                }
+            }
         }
         Some(other) => Ok(WorkflowNodeResult::failed(
             format!("unsupported control policy `{other}`"),
@@ -2962,14 +4316,15 @@ fn execute_workflow_node_job(
         node_manifest.executor_operation.as_deref(),
         node_manifest.control_policy.as_deref(),
     ) {
-        (Some(_), _) => execute_workflow_executor(project_root, jobs_root, &record, node_manifest)?,
-        (None, Some(_)) => execute_workflow_control(project_root, &record, node_manifest)?,
-        _ => WorkflowNodeResult::failed(
+        (Some(_), _) => execute_workflow_executor(project_root, jobs_root, &record, node_manifest),
+        (None, Some(_)) => execute_workflow_control(project_root, &record, node_manifest),
+        _ => Ok(WorkflowNodeResult::failed(
             format!("workflow node {} has no runtime operation/policy", node_id),
             Some(1),
-        ),
+        )),
     };
     set_current_job_id(None);
+    let result = result?;
 
     let mut artifacts_written = node_manifest
         .artifacts_by_outcome
@@ -2988,6 +4343,7 @@ fn execute_workflow_node_job(
         },
         ..JobMetadata::default()
     };
+    let metadata_update = merge_metadata(Some(metadata_update), result.metadata.clone());
     let _ = finalize_job_with_artifacts(
         project_root,
         jobs_root,
@@ -2995,7 +4351,7 @@ fn execute_workflow_node_job(
         status,
         exit_code,
         None,
-        Some(metadata_update),
+        metadata_update,
         Some(&artifacts_written),
     )?;
 
@@ -4372,6 +5728,86 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn runtime_executor_node(
+        node_id: &str,
+        job_id: &str,
+        uses: &str,
+        operation: &str,
+        args: BTreeMap<String, String>,
+    ) -> WorkflowRuntimeNodeManifest {
+        WorkflowRuntimeNodeManifest {
+            node_id: node_id.to_string(),
+            job_id: job_id.to_string(),
+            uses: uses.to_string(),
+            kind: WorkflowNodeKind::Builtin,
+            args,
+            executor_operation: Some(operation.to_string()),
+            control_policy: None,
+            gates: Vec::new(),
+            retry: vizier_core::workflow_template::WorkflowRetryPolicy::default(),
+            routes: WorkflowRouteTargets::default(),
+            artifacts_by_outcome: WorkflowOutcomeArtifactsByOutcome::default(),
+        }
+    }
+
+    fn runtime_control_node(
+        node_id: &str,
+        job_id: &str,
+        uses: &str,
+        policy: &str,
+        args: BTreeMap<String, String>,
+    ) -> WorkflowRuntimeNodeManifest {
+        WorkflowRuntimeNodeManifest {
+            node_id: node_id.to_string(),
+            job_id: job_id.to_string(),
+            uses: uses.to_string(),
+            kind: WorkflowNodeKind::Gate,
+            args,
+            executor_operation: None,
+            control_policy: Some(policy.to_string()),
+            gates: Vec::new(),
+            retry: vizier_core::workflow_template::WorkflowRetryPolicy::default(),
+            routes: WorkflowRouteTargets::default(),
+            artifacts_by_outcome: WorkflowOutcomeArtifactsByOutcome::default(),
+        }
+    }
+
+    fn git_status(project_root: &Path, args: &[&str]) -> std::process::ExitStatus {
+        Command::new("git")
+            .arg("-C")
+            .arg(project_root)
+            .args(args)
+            .status()
+            .expect("run git")
+    }
+
+    fn git_output(project_root: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .arg("-C")
+            .arg(project_root)
+            .args(args)
+            .output()
+            .expect("run git output")
+    }
+
+    fn git_commit_all(project_root: &Path, message: &str) {
+        let add = git_status(project_root, &["add", "-A"]);
+        assert!(add.success(), "git add failed: {add:?}");
+        let commit = git_status(
+            project_root,
+            &[
+                "-c",
+                "user.name=vizier",
+                "-c",
+                "user.email=vizier@example.com",
+                "commit",
+                "-m",
+                message,
+            ],
+        );
+        assert!(commit.success(), "git commit failed: {commit:?}");
     }
 
     #[test]
@@ -6671,6 +8107,608 @@ mod tests {
     }
 
     #[test]
+    fn workflow_runtime_worktree_prepare_and_cleanup_manage_owned_paths() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-worktree-runtime",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-worktree-runtime").expect("record");
+
+        let prepare = runtime_executor_node(
+            "prepare",
+            "job-worktree-runtime",
+            "cap.env.builtin.worktree.prepare",
+            "worktree.prepare",
+            BTreeMap::from([("branch".to_string(), "draft/worktree-runtime".to_string())]),
+        );
+        let prepare_result = execute_workflow_executor(project_root, &jobs_root, &record, &prepare)
+            .expect("prepare");
+        assert_eq!(prepare_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let prepare_meta = prepare_result.metadata.clone().expect("worktree metadata");
+        let worktree_rel = prepare_meta
+            .worktree_path
+            .as_deref()
+            .expect("worktree path metadata");
+        let worktree_abs = resolve_recorded_path(project_root, worktree_rel);
+        assert!(worktree_abs.exists(), "expected worktree path to exist");
+
+        let mut cleanup_record = record.clone();
+        cleanup_record.metadata = Some(prepare_meta);
+        let cleanup = runtime_executor_node(
+            "cleanup",
+            "job-worktree-runtime",
+            "cap.env.builtin.worktree.cleanup",
+            "worktree.cleanup",
+            BTreeMap::new(),
+        );
+        let cleanup_result =
+            execute_workflow_executor(project_root, &jobs_root, &cleanup_record, &cleanup)
+                .expect("cleanup");
+        assert_eq!(cleanup_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            !worktree_abs.exists(),
+            "expected owned worktree directory to be removed"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_plan_persist_writes_plan_doc_and_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-plan-persist",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-plan-persist").expect("record");
+        let node = runtime_executor_node(
+            "persist",
+            "job-plan-persist",
+            "cap.env.builtin.plan.persist",
+            "plan.persist",
+            BTreeMap::from([
+                ("name_override".to_string(), "runtime-plan".to_string()),
+                ("spec_source".to_string(), "inline".to_string()),
+                (
+                    "spec_text".to_string(),
+                    "Runtime operation completion spec".to_string(),
+                ),
+            ]),
+        );
+        let result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("persist");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            result
+                .artifacts_written
+                .iter()
+                .any(|artifact| matches!(artifact, JobArtifact::PlanBranch { .. })),
+            "expected plan branch artifact"
+        );
+        assert!(
+            result
+                .artifacts_written
+                .iter()
+                .any(|artifact| matches!(artifact, JobArtifact::PlanDoc { .. })),
+            "expected plan doc artifact"
+        );
+        let plan_doc = project_root.join(".vizier/implementation-plans/runtime-plan.md");
+        assert!(plan_doc.exists(), "expected persisted plan doc");
+        let state_ref = result
+            .payload_refs
+            .iter()
+            .find(|entry| entry.contains(".vizier/state/plans/"))
+            .cloned()
+            .expect("plan state payload ref");
+        assert!(
+            project_root.join(state_ref).exists(),
+            "expected persisted plan state"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_integrate_plan_branch_blocks_on_conflict_and_writes_sentinel() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        let target = current_branch_name(project_root).expect("target branch");
+
+        fs::write(project_root.join("conflict.txt"), "base\n").expect("write base");
+        git_commit_all(project_root, "base conflict");
+
+        let checkout = git_status(project_root, &["checkout", "-b", "draft/runtime-conflict"]);
+        assert!(checkout.success(), "create draft branch");
+        fs::write(project_root.join("conflict.txt"), "draft\n").expect("write draft");
+        git_commit_all(project_root, "draft conflict");
+
+        let checkout_target = git_status(project_root, &["checkout", &target]);
+        assert!(checkout_target.success(), "checkout target");
+        fs::write(project_root.join("conflict.txt"), "target\n").expect("write target");
+        git_commit_all(project_root, "target conflict");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-integrate-conflict",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            Some(JobMetadata {
+                plan: Some("runtime-conflict".to_string()),
+                branch: Some("draft/runtime-conflict".to_string()),
+                target: Some(target.clone()),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-integrate-conflict").expect("record");
+        let node = runtime_executor_node(
+            "integrate",
+            "job-integrate-conflict",
+            "cap.env.builtin.git.integrate_plan_branch",
+            "git.integrate_plan_branch",
+            BTreeMap::from([
+                ("branch".to_string(), "draft/runtime-conflict".to_string()),
+                ("target_branch".to_string(), target),
+                ("squash".to_string(), "false".to_string()),
+            ]),
+        );
+        let result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("integrate");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Blocked);
+        assert!(
+            result
+                .artifacts_written
+                .iter()
+                .any(|artifact| matches!(artifact, JobArtifact::MergeSentinel { .. })),
+            "expected merge sentinel artifact"
+        );
+        let sentinel = project_root.join(".vizier/tmp/merge-conflicts/runtime-conflict.json");
+        assert!(sentinel.exists(), "expected merge sentinel file");
+    }
+
+    #[test]
+    fn workflow_runtime_git_save_worktree_patch_writes_command_patch() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::write(project_root.join("README.md"), "updated\n").expect("update readme");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-save-patch",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-save-patch").expect("record");
+        let node = runtime_executor_node(
+            "save_patch",
+            "job-save-patch",
+            "cap.env.builtin.git.save_worktree_patch",
+            "git.save_worktree_patch",
+            BTreeMap::new(),
+        );
+        let result = execute_workflow_executor(project_root, &jobs_root, &record, &node)
+            .expect("save patch");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+        let patch_path = command_patch_path(&jobs_root, "job-save-patch");
+        assert!(patch_path.exists(), "expected command patch output");
+    }
+
+    #[test]
+    fn workflow_runtime_patch_pipeline_prepare_execute_and_finalize() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        fs::write(project_root.join("sample.txt"), "before\n").expect("seed sample");
+        git_commit_all(project_root, "seed sample");
+        fs::write(project_root.join("sample.txt"), "after\n").expect("edit sample");
+        let patch_path = project_root.join("sample.patch");
+        let diff = git_output(project_root, &["diff", "--binary", "HEAD"]);
+        assert!(diff.status.success(), "build patch diff");
+        fs::write(&patch_path, diff.stdout).expect("write patch file");
+        let restore = git_status(project_root, &["checkout", "--", "sample.txt"]);
+        assert!(restore.success(), "restore sample");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-patch-pipeline",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-patch-pipeline").expect("record");
+        let files_json = serde_json::to_string(&vec![patch_path.display().to_string()])
+            .expect("serialize files");
+
+        let prepare = runtime_executor_node(
+            "patch_prepare",
+            "job-patch-pipeline",
+            "cap.env.builtin.patch.pipeline_prepare",
+            "patch.pipeline_prepare",
+            BTreeMap::from([("files_json".to_string(), files_json.clone())]),
+        );
+        let prepare_result = execute_workflow_executor(project_root, &jobs_root, &record, &prepare)
+            .expect("prepare");
+        assert_eq!(prepare_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            patch_pipeline_manifest_path(&jobs_root, "job-patch-pipeline").exists(),
+            "expected pipeline manifest"
+        );
+
+        let execute = runtime_executor_node(
+            "patch_execute",
+            "job-patch-pipeline",
+            "cap.env.builtin.patch.execute_pipeline",
+            "patch.execute_pipeline",
+            BTreeMap::from([("files_json".to_string(), files_json)]),
+        );
+        let execute_result = execute_workflow_executor(project_root, &jobs_root, &record, &execute)
+            .expect("execute");
+        assert_eq!(execute_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let staged = git_output(project_root, &["diff", "--cached", "--name-only"]);
+        assert!(
+            String::from_utf8_lossy(&staged.stdout).contains("sample.txt"),
+            "expected patch application to stage sample.txt"
+        );
+
+        let finalize = runtime_executor_node(
+            "patch_finalize",
+            "job-patch-pipeline",
+            "cap.env.builtin.patch.pipeline_finalize",
+            "patch.pipeline_finalize",
+            BTreeMap::new(),
+        );
+        let finalize_result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &finalize)
+                .expect("finalize");
+        assert_eq!(finalize_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            command_patch_path(&jobs_root, "job-patch-pipeline").exists(),
+            "expected finalized command patch"
+        );
+        assert!(
+            patch_pipeline_finalize_path(&jobs_root, "job-patch-pipeline").exists(),
+            "expected finalize marker"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_build_materialize_step_emits_artifacts() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-build-materialize",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-build-materialize").expect("record");
+        let node = runtime_executor_node(
+            "materialize",
+            "job-build-materialize",
+            "cap.env.builtin.build.materialize_step",
+            "build.materialize_step",
+            BTreeMap::from([
+                ("build_id".to_string(), "build-runtime".to_string()),
+                ("step_key".to_string(), "s1".to_string()),
+                ("slug".to_string(), "runtime-build".to_string()),
+                ("branch".to_string(), "draft/runtime-build".to_string()),
+                ("target".to_string(), "main".to_string()),
+            ]),
+        );
+        let result = execute_workflow_executor(project_root, &jobs_root, &record, &node)
+            .expect("materialize");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            result
+                .artifacts_written
+                .iter()
+                .any(|artifact| matches!(artifact, JobArtifact::PlanBranch { .. })),
+            "expected plan branch artifact"
+        );
+        assert!(
+            project_root
+                .join(
+                    ".vizier/implementation-plans/builds/build-runtime/steps/s1/materialized.json"
+                )
+                .exists(),
+            "expected build step materialized payload"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_merge_sentinel_write_and_clear() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-sentinel",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            Some(JobMetadata {
+                plan: Some("runtime-sentinel".to_string()),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-sentinel").expect("record");
+
+        let write_node = runtime_executor_node(
+            "write_sentinel",
+            "job-sentinel",
+            "cap.env.builtin.merge.sentinel.write",
+            "merge.sentinel.write",
+            BTreeMap::new(),
+        );
+        let write_result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &write_node)
+                .expect("write");
+        assert_eq!(write_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let sentinel = project_root.join(".vizier/tmp/merge-conflicts/runtime-sentinel.json");
+        assert!(sentinel.exists(), "expected sentinel written");
+
+        let clear_node = runtime_executor_node(
+            "clear_sentinel",
+            "job-sentinel",
+            "cap.env.builtin.merge.sentinel.clear",
+            "merge.sentinel.clear",
+            BTreeMap::new(),
+        );
+        let clear_result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &clear_node)
+                .expect("clear");
+        assert_eq!(clear_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(!sentinel.exists(), "expected sentinel cleared");
+    }
+
+    #[test]
+    fn workflow_runtime_command_and_cicd_shell_ops_respect_exit_status() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-shell-op",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-shell-op").expect("record");
+
+        let command_ok = runtime_executor_node(
+            "command_ok",
+            "job-shell-op",
+            "cap.env.shell.command.run",
+            "command.run",
+            BTreeMap::from([("script".to_string(), "printf ok".to_string())]),
+        );
+        let command_ok_result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &command_ok)
+                .expect("command ok");
+        assert_eq!(command_ok_result.outcome, WorkflowNodeOutcome::Succeeded);
+
+        let command_fail = runtime_executor_node(
+            "command_fail",
+            "job-shell-op",
+            "cap.env.shell.command.run",
+            "command.run",
+            BTreeMap::from([("script".to_string(), "exit 9".to_string())]),
+        );
+        let command_fail_result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &command_fail)
+                .expect("command fail");
+        assert_eq!(command_fail_result.outcome, WorkflowNodeOutcome::Failed);
+        assert_eq!(command_fail_result.exit_code, Some(9));
+
+        let cicd = runtime_executor_node(
+            "cicd_ok",
+            "job-shell-op",
+            "cap.env.shell.cicd.run",
+            "cicd.run",
+            BTreeMap::from([("script".to_string(), "exit 0".to_string())]),
+        );
+        let cicd_result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &cicd).expect("cicd");
+        assert_eq!(cicd_result.outcome, WorkflowNodeOutcome::Succeeded);
+    }
+
+    #[test]
+    fn workflow_runtime_conflict_cicd_approval_and_terminal_gates() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        fs::write(project_root.join("gate-conflict.txt"), "base\n").expect("write base");
+        git_commit_all(project_root, "gate conflict base");
+        let target = current_branch_name(project_root).expect("target branch");
+        let checkout = git_status(project_root, &["checkout", "-b", "draft/gate-conflict"]);
+        assert!(checkout.success(), "create draft gate branch");
+        fs::write(project_root.join("gate-conflict.txt"), "draft\n").expect("write draft");
+        git_commit_all(project_root, "gate draft");
+        let checkout_target = git_status(project_root, &["checkout", &target]);
+        assert!(checkout_target.success(), "checkout target");
+        fs::write(project_root.join("gate-conflict.txt"), "target\n").expect("write target");
+        git_commit_all(project_root, "gate target");
+        let merge = git_status(project_root, &["merge", "--no-ff", "draft/gate-conflict"]);
+        assert!(
+            !merge.success(),
+            "expected deliberate merge conflict for gate coverage"
+        );
+
+        let sentinel = project_root.join(".vizier/tmp/merge-conflicts/gate-conflict.json");
+        if let Some(parent) = sentinel.parent() {
+            fs::create_dir_all(parent).expect("create sentinel dir");
+        }
+        fs::write(&sentinel, "{}").expect("write sentinel");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-gates",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            Some(JobMetadata {
+                plan: Some("gate-conflict".to_string()),
+                workflow_node_attempt: Some(2),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let mut record = read_record(&jobs_root, "job-gates").expect("record");
+
+        let conflict_gate = runtime_control_node(
+            "conflict",
+            "job-gates",
+            "control.gate.conflict_resolution",
+            "gate.conflict_resolution",
+            BTreeMap::new(),
+        );
+        let conflict_result =
+            execute_workflow_control(project_root, &record, &conflict_gate).expect("conflict gate");
+        assert_eq!(conflict_result.outcome, WorkflowNodeOutcome::Blocked);
+
+        let mut cicd_gate = runtime_control_node(
+            "cicd",
+            "job-gates",
+            "control.gate.cicd",
+            "gate.cicd",
+            BTreeMap::new(),
+        );
+        cicd_gate.gates = vec![WorkflowGate::Cicd {
+            script: "exit 7".to_string(),
+            auto_resolve: false,
+            policy: vizier_core::workflow_template::WorkflowGatePolicy::Retry,
+        }];
+        let cicd_result =
+            execute_workflow_control(project_root, &record, &cicd_gate).expect("cicd gate");
+        assert_eq!(cicd_result.outcome, WorkflowNodeOutcome::Failed);
+        assert_eq!(cicd_result.exit_code, Some(7));
+
+        let approval_gate = runtime_control_node(
+            "approval",
+            "job-gates",
+            "control.gate.approval",
+            "gate.approval",
+            BTreeMap::new(),
+        );
+        record.schedule = Some(JobSchedule {
+            approval: Some(pending_job_approval()),
+            ..JobSchedule::default()
+        });
+        let approval_pending = execute_workflow_control(project_root, &record, &approval_gate)
+            .expect("approval pending");
+        assert_eq!(approval_pending.outcome, WorkflowNodeOutcome::Blocked);
+
+        if let Some(schedule) = record.schedule.as_mut()
+            && let Some(approval) = schedule.approval.as_mut()
+        {
+            approval.state = JobApprovalState::Approved;
+        }
+        let approval_ok =
+            execute_workflow_control(project_root, &record, &approval_gate).expect("approval ok");
+        assert_eq!(approval_ok.outcome, WorkflowNodeOutcome::Succeeded);
+
+        if let Some(schedule) = record.schedule.as_mut()
+            && let Some(approval) = schedule.approval.as_mut()
+        {
+            approval.state = JobApprovalState::Rejected;
+            approval.reason = Some("manual reject".to_string());
+        }
+        let approval_rejected = execute_workflow_control(project_root, &record, &approval_gate)
+            .expect("approval rejected");
+        assert_eq!(approval_rejected.outcome, WorkflowNodeOutcome::Failed);
+        assert_eq!(approval_rejected.exit_code, Some(10));
+
+        let mut terminal = runtime_control_node(
+            "terminal",
+            "job-gates",
+            "control.terminal",
+            "terminal",
+            BTreeMap::new(),
+        );
+        terminal.routes.failed.push(WorkflowRouteTarget {
+            node_id: "unexpected".to_string(),
+            mode: WorkflowRouteMode::RetryJob,
+        });
+        let invalid_terminal =
+            execute_workflow_control(project_root, &record, &terminal).expect("terminal invalid");
+        assert_eq!(invalid_terminal.outcome, WorkflowNodeOutcome::Failed);
+
+        terminal.routes = WorkflowRouteTargets::default();
+        let valid_terminal =
+            execute_workflow_control(project_root, &record, &terminal).expect("terminal valid");
+        assert_eq!(valid_terminal.outcome, WorkflowNodeOutcome::Succeeded);
+    }
+
+    #[test]
     fn stop_condition_runtime_blocks_when_retry_budget_is_exhausted() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
@@ -6701,6 +8739,7 @@ mod tests {
             args: BTreeMap::from([("script".to_string(), "exit 1".to_string())]),
             executor_operation: None,
             control_policy: Some("gate.stop_condition".to_string()),
+            gates: Vec::new(),
             retry: vizier_core::workflow_template::WorkflowRetryPolicy {
                 mode: WorkflowRetryMode::UntilGate,
                 budget: 1,

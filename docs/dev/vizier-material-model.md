@@ -195,6 +195,17 @@ Ephemeral operational artifacts:
 - Canonical agent execution nodes use `cap.agent.invoke`, consume exactly one prompt artifact dependency (`custom:prompt_text:<key>`), and do not source runtime command/script args from node config.
 - Prompt-resolve nodes (`cap.env.builtin.prompt.resolve` / `cap.env.shell.prompt.resolve`) produce exactly one prompt artifact (`custom:prompt_text:<key>`); shell prompt resolvers require exactly one of `args.command` or `args.script`.
 - Scheduler retry refuses to mutate running jobs; it rewinds queued/waiting descendants and preserves predecessor success boundaries.
+- Runtime node dispatch (`__workflow-node`) executes the complete canonical
+  operation/policy inventory accepted by template validation (all
+  `cap.env.*`/`cap.agent.invoke` executor operations and `control.*` policies
+  mapped in `vizier-kernel/src/workflow_template.rs`).
+- Worktree lifecycle artifacts are ownership-bound:
+  - only job-owned worktrees recorded in metadata are eligible for automatic
+    cleanup;
+  - degraded cleanup keeps worktree metadata for subsequent retry/cancel
+    recovery.
+- Terminal policy nodes are sink-only runtime contracts and are invalid when
+  configured with outgoing routes.
 - `vizier merge --complete-conflict` only operates on existing Vizier-managed sentinel state.
 - Clean-worktree checks ignore ephemeral Vizier paths:
   - `.vizier/jobs`

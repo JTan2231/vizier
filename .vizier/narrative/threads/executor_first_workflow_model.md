@@ -24,6 +24,12 @@ Acceptance criteria
 - `vizier jobs show` surfaces executor identity fields for new records while remaining tolerant of historical records that still include legacy capability metadata.
 
 Status
+- Update (2026-02-14, canonical runtime completion):
+  - `vizier-cli/src/jobs.rs` now executes all canonical runtime handlers accepted by `vizier-kernel` (`prompt.resolve`, `agent.invoke`, `worktree.prepare`, `worktree.cleanup`, `plan.persist`, `git.stage_commit`, `git.integrate_plan_branch`, `git.save_worktree_patch`, `patch.pipeline_prepare`, `patch.execute_pipeline`, `patch.pipeline_finalize`, `build.materialize_step`, `merge.sentinel.write`, `merge.sentinel.clear`, `command.run`, `cicd.run`, plus `gate.stop_condition`, `gate.conflict_resolution`, `gate.cicd`, `gate.approval`, and `terminal`).
+  - `agent.invoke` now resolves real configured agent settings/runner and records backend metadata instead of using payload-echo facade behavior.
+  - Runtime handlers now use execution-root resolution (repo root or job-linked worktree), enforce worktree ownership-safe cleanup semantics, and materialize plan/patch/build/sentinel artifacts with concrete failure/blocked outcomes.
+  - Runtime coverage in `vizier-cli/src/jobs.rs` now includes operation-level success/failure tests across canonical executor/control inventory, and branch validation (`cargo check --all --all-targets`, `cargo test --all --all-targets`, `./cicd.sh`) is green.
+  - Docs were updated to reflect implemented runtime semantics (`RUNTIME.md`, `docs/dev/scheduler-dag.md`, `docs/dev/vizier-material-model.md`, `docs/dev/testing.md`).
 - Update (2026-02-14, runtime bridge):
   - `vizier-cli/src/jobs.rs` now exposes `enqueue_workflow_run` to compile canonical templates into one scheduler job per node with deterministic job IDs, canonical workflow metadata, and hidden `__workflow-node --job-id <id>` child args.
   - `vizier-cli/src/cli/args.rs` + `vizier-cli/src/cli/dispatch.rs` now wire the internal hidden `__workflow-node` entrypoint for scheduler child execution while keeping public help surfaces unchanged.

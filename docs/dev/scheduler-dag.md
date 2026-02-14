@@ -35,8 +35,10 @@ exactly one such artifact as input.
   - `job.json` is the canonical record.
   - `stdout.log` / `stderr.log` capture the child process streams.
   - `outcome.json` is written on finalization.
-  - `command.patch` stores the scheduled command output patch (save jobs).
-  - `save-input.patch` captures the input diff for scheduled save (save jobs only).
+  - `command.patch` stores runtime patch outputs (`git.save_worktree_patch` and
+    patch-pipeline finalize flows).
+  - `save-input.patch` remains historical compatibility material from removed
+    command families.
   - `.vizier/jobs/runs/<run_id>.json` stores queue-time workflow runtime manifests for compiled template runs.
 - **Scheduler core** lives in `vizier-cli/src/jobs.rs` (`scheduler_tick` and helpers).
 - **CLI orchestration** renders/operates scheduler state through
@@ -71,6 +73,45 @@ exactly one such artifact as input.
   validation immediately.
 - Unknown arbitrary `uses` labels are rejected; there is no implicit fallback
   to executable custom-command capability.
+
+## Runtime operation coverage
+`__workflow-node` runtime dispatch now executes the full canonical operation and
+policy inventory accepted by the template validator.
+
+Executor operations:
+- `prompt.resolve`
+- `agent.invoke`
+- `worktree.prepare`
+- `worktree.cleanup`
+- `plan.persist`
+- `git.stage_commit`
+- `git.integrate_plan_branch`
+- `git.save_worktree_patch`
+- `patch.pipeline_prepare`
+- `patch.pipeline_finalize`
+- `patch.execute_pipeline`
+- `build.materialize_step`
+- `merge.sentinel.write`
+- `merge.sentinel.clear`
+- `command.run`
+- `cicd.run`
+
+Control policies:
+- `gate.stop_condition`
+- `gate.conflict_resolution`
+- `gate.cicd`
+- `gate.approval`
+- `terminal`
+
+Runtime notes:
+- handlers resolve execution root from repo/worktree metadata before filesystem
+  or process execution.
+- `agent.invoke` uses resolved configured runner settings (no prompt-echo
+  facade path).
+- `terminal` is an explicit sink policy and fails when outgoing routes are
+  configured.
+- conflict/cicd/approval gates route as `succeeded`/`failed`/`blocked` outcomes
+  for scheduler retry/edge handling.
 
 ## Job lifecycle
 Statuses:

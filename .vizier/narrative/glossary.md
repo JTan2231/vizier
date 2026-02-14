@@ -10,33 +10,39 @@
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
-- **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree; used with branch inventory to quantify legacy drift.
+- **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree (including when the directory itself is absent); used with branch inventory to quantify legacy drift.
 - **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that define canonical workflow identity for scheduler/job records.
 - **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
 - **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
 - **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
+- **Help pager contract**: Help text auto-pages only on TTY via `$VIZIER_PAGER` (or fallback pager), prints directly on non-TTY, and can be internally suppressed with hidden `--no-pager`.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
 - **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
-- **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state (for example `D .vizier/implementation-plans/runtime.md` on `draft/runtime`) used as evidence that branch/doc inventories are diverging in a worktree.
+- **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.
 - **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
 - **Man-page taxonomy**: Installed sectioned docs under `man1` (`vizier`, `vizier-jobs`), `man5` (`vizier-config`), `man7` (`vizier-workflow`).
 - **Canonical uses-only contract**: Workflow template identity policy that accepts only `cap.env.*`, `cap.agent.invoke`, and `control.*` `uses` IDs; legacy `vizier.*`, legacy non-env `cap.*`, and unknown labels fail validation immediately.
+- **Canonical runtime operation inventory**: The full runtime dispatch set behind `__workflow-node`: 16 executor operations (`prompt.resolve`, `agent.invoke`, worktree/plan/git/patch/build/sentinel/shell ops) plus 5 control policies (`gate.stop_condition`, `gate.conflict_resolution`, `gate.cicd`, `gate.approval`, `terminal`) with no canonical placeholder fallthrough.
 - **Legacy workflow capability field**: Historical job metadata key `workflow_capability_id`; retained for deserializing old records but no longer treated as active identity for new scheduler output.
 - **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
 - **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`.
 - **Removed command family**: Hard-removed top-level commands: `save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`, `run`.
-- **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--background-job-id`.
+- **Pager flag contract drift**: Documentation mismatch where AGENTS advertises explicit `--pager` while the CLI currently rejects it and only retains hidden `--no-pager`.
+- **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, `--background-job-id`.
 - **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
 - **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.
 - **Prompt artifact contract**: Canonical prompt payload wiring for executor templates: one custom artifact shaped `custom:prompt_text:<key>` produced by prompt-resolve nodes and consumed by canonical invoke nodes.
 - **Prompt payload data store**: Optional typed JSON payload files for custom artifacts under `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; scheduler gating still keys off marker files.
 - **Prompt-resolve node**: Environment executor node (`cap.env.builtin.prompt.resolve` or `cap.env.shell.prompt.resolve`) that outputs exactly one prompt artifact for downstream `cap.agent.invoke`.
+- **Runtime execution root resolution**: Workflow-node rule that executes each handler in either repo root or metadata-linked worktree root (`metadata.worktree_path`) so shell/git/plan operations apply to the correct checkout.
+- **Sink policy (`terminal`)**: Canonical control-node contract where terminal nodes must have no outgoing routes; configured outgoing edges are treated as runtime failure.
 - **Release dry run**: `vizier release --dry-run` preview mode for version bump and notes without commit/tag creation.
 - **Session log**: Per-run artifact at `.vizier/sessions/<id>/session.json` when session logging is enabled.
 - **Snapshot**: Canonical project frame in `.vizier/narrative/snapshot.md`.
 - **snapshotDelta**: Internal narrative-diff artifact not printed in user-facing responses.
+- **Steady-state inventory refresh**: Worktree inventory refresh where branch/doc/deletion evidence is unchanged from the previous reading; records freshness without introducing a new drift shape.
 - **Thread doc**: Focused narrative file under `.vizier/narrative/threads/` for one tension.
 - **Worktree**: Separate checkout under `.vizier/tmp-worktrees/`.
 - **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions to keep legacy drift reporting current.

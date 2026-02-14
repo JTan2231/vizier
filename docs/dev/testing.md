@@ -6,7 +6,7 @@ This repository keeps scheduler tests in three explicit layers so failures point
 - Rules (spec): Pure, deterministic scheduling decisions live in `vizier-kernel/src/scheduler/spec.rs`. Add unit tests here for dependency precedence, wait-reason ordering, and lock arbitration. These tests should not touch the filesystem or Git.
 - Facts (extraction): Input collection happens in `vizier-cli/src/jobs.rs` (see `build_scheduler_facts`). Add focused tests here that validate artifact existence checks, producer discovery, pinned-head evaluation, and lock state collection. These tests can use temporary repos and job records but should avoid asserting final scheduling outcomes.
 - Integration (effects/UX): CLI output, file effects, and end-to-end job flows stay in `tests/`. Keep formatting and side-effect assertions here.
-- Runtime bridge (node execution): Internal workflow runtime bridge coverage lives in `vizier-cli/src/jobs.rs` and should validate queue-time node materialization, `__workflow-node` dispatch contracts, outcome routing/retry behavior, and custom prompt payload roundtrips (`custom:prompt_text:<key>` marker + payload store).
+- Runtime bridge (node execution): Internal workflow runtime bridge coverage lives in `vizier-cli/src/jobs.rs` and should validate queue-time node materialization, `__workflow-node` dispatch contracts, outcome routing/retry behavior, custom prompt payload roundtrips (`custom:prompt_text:<key>` marker + payload store), and success/failure paths for every canonical executor operation/control policy.
 
 ## Adding new coverage
 1. If the change is deterministic logic, add or update a spec test in `vizier-kernel/src/scheduler/spec.rs`.

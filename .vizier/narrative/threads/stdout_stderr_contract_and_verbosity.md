@@ -40,6 +40,8 @@ Update (2026-01-30)
 - Background job finalization now flushes stdout/stderr before marking jobs complete so `vizier jobs tail --follow` reliably captures the final assistant output.
 Update (2026-02-13)
 - Root global `--json` and `--pager` were removed from the CLI surface; machine-readable output is now command-local (`plan --json`, `--format json` on list/jobs surfaces), and help paging is TTY-auto with `$VIZIER_PAGER` plus hidden internal `--no-pager` injection for child jobs.
+Update (2026-02-14, pager flag check)
+- Re-validated parser behavior: hidden `--no-pager` remains accepted for internal suppression, while explicit `--pager` currently fails as an unexpected argument (with Clap guidance toward `--no-pager`); non-TTY help still prints directly and skips pager invocation.
 Update (2026-02-13, watch-mode follow-up)
 - `vizier jobs schedule --watch` now hard-gates interactive output: it fails fast unless stdout+stderr are TTY and ANSI is enabled, and it rejects `--format dag|json` so non-watch paths keep deterministic static output contracts.
 Update (2026-02-13, merge follow-surface test hardening)
