@@ -36,6 +36,7 @@ Status
   - Updated `install.sh` to install all sectioned man pages from `docs/man/man*/`, record each path, and print installed targets.
   - Extended tests (`tests/src/help.rs`, `tests/src/install.rs`, `tests/src/cicd.rs`) and wired `gen-man --check` into `./cicd.sh`.
   - Updated user docs (`docs/user/installation.md`, `docs/user/build.md`, `docs/user/workflows/draft-approve-merge.md`) with multi-page man lookup and generation guidance.
+- Update (2026-02-14): Refreshed authored man cross-references for the decomposed workflow docs and root alias posture: `vizier-workflow(7)` now points to the workflow landing page plus focused subpages, and `vizier-config(5)` now lists root compatibility aliases (`docs/config-reference.md`, `docs/prompt-config-matrix.md`) alongside canonical `docs/user/*` references.
 
 Pointers
 - Generator: `vizier-cli/src/man.rs`, `vizier-cli/src/bin/gen-man.rs`
