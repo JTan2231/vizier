@@ -7,7 +7,7 @@ It describes what exists under `.vizier/`, which flows own it, how state is repr
 
 In scope:
 - Workflow/scheduler/auditor artifacts that Vizier creates, updates, or consumes.
-- User-visible material for `draft/approve/review/merge/build/jobs/save`.
+- User-visible material for retained commands (`init`, `list`, `cd`, `clean`, `jobs`, `release`) plus historical workflow artifacts that can still exist on disk.
 
 Out of scope:
 - Agent runtime internals (shim protocol details, provider request/response payloads, backend transport mechanics).
@@ -17,7 +17,7 @@ Out of scope:
 ### 1) Narrative material
 - Paths: `.vizier/narrative/**/*.md`, plus legacy `.vizier/.snapshot` compatibility handling.
 - Primary files: `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, and thread docs under `.vizier/narrative/threads/`.
-- Owner flows: save/approve/review/merge refresh flows.
+- Owner flows: narrative upkeep, repository initialization bootstrap, and documentation maintenance.
 - Durability: durable repository material.
 
 ### 2) Plan material
@@ -29,8 +29,8 @@ Out of scope:
 - Required sections:
   - `## Operator Spec`
   - `## Implementation Plan`
-- Owner flows: `vizier draft`, build materialization, `vizier approve`, `vizier merge`.
-- Durability: durable during plan workflow; removed from target branch during merge completion.
+- Owner flows: historical draft/approve/merge workflows (command family removed) plus retained plan visibility surfaces (`vizier list`, `vizier cd`, `vizier clean`).
+- Durability: durable repository artifact; plan/branch bijection can drift in legacy worktrees.
 
 ### 3) Build session material
 - Root: `.vizier/implementation-plans/builds/<build_id>/`.
@@ -40,7 +40,7 @@ Out of scope:
   - `plans/*.md`
   - copied build input under `input/`
 - Branch affinity: `build/<build_id>`.
-- Owner flows: `vizier build` create mode.
+- Owner flows: historical build workflows (command family removed; artifacts may remain).
 - Durability: durable workflow artifact.
 
 ### 4) Build execution material
@@ -57,7 +57,7 @@ Out of scope:
   - `created_at`
   - `status`
   - per-step `derived_slug`, `derived_branch`, policy snapshot, and node/phase job ids.
-- Owner flows: `vizier build execute`.
+- Owner flows: historical build execution workflows (command family removed; state files may remain for audit/recovery).
 - Durability: durable workflow state used for resume/reuse/mismatch detection.
 
 ### 5) Scheduler job material
@@ -81,16 +81,24 @@ Out of scope:
   - `workflow_template_id`
   - `workflow_template_version`
   - `workflow_node_id`
-  - `workflow_capability_id`
+  - `workflow_capability_id` (legacy compatibility)
+  - `workflow_executor_class`
+  - `workflow_executor_operation`
+  - `workflow_control_policy`
   - `workflow_policy_snapshot_hash`
   - `workflow_gates`
 - Owner flows: all scheduler-backed commands.
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
 
+Compatibility policy:
+- Legacy mixed capability IDs (`cap.*` / legacy `vizier.*` uses labels) remain accepted through a compatibility window with warning diagnostics.
+- Unknown arbitrary `uses` labels are rejected; there is no implicit fallback to executable custom capability.
+- Hard rejection for legacy aliases is scheduled after `2026-06-01`.
+
 ### 6) Merge conflict sentinel material
 - Path: `.vizier/tmp/merge-conflicts/<slug>.json`.
-- Purpose: stores merge/cherry-pick resume context for `vizier merge --complete-conflict`.
-- Owner flows: `vizier merge` conflict handling and completion.
+- Purpose: stores historical merge/cherry-pick resume context from removed workflow commands.
+- Owner flows: legacy merge conflict handling state only.
 - Durability: ephemeral operational artifact; removed on successful completion.
 
 ### 7) Session log material
@@ -102,8 +110,8 @@ Out of scope:
 
 ### 8) Temp worktree material
 - Root: `.vizier/tmp-worktrees/`.
-- Purpose: disposable isolation for draft/approve/review/merge/build materialization and scheduler jobs.
-- Owner flows: worktree-backed command execution.
+- Purpose: disposable isolation for retained workspace/scheduler operations plus legacy workflow residue.
+- Owner flows: worktree-backed command execution (`vizier cd`, `vizier clean`, scheduler cleanup/retry paths).
 - Durability: ephemeral operational artifact (may be intentionally preserved on failure for recovery).
 
 ## Relationship Model
@@ -199,9 +207,9 @@ Ephemeral operational artifacts:
 - Operational guidance: new updates should target `.vizier/narrative/snapshot.md`; legacy alias exists for backward compatibility, not as preferred storage.
 
 ### Plan doc durability vs merge-time plan removal
-- Plan docs are durable workflow artifacts while draft/build/review/approval work is active.
-- `vizier merge` intentionally removes `.vizier/implementation-plans/<slug>.md` from the merged target history after embedding plan context into merge commit metadata/body.
-- Reconciliation: workflow durability does not imply target-branch permanence.
+- Plan docs remain durable workflow artifacts in retained plan-visibility surfaces.
+- Historical merge flows may have removed `.vizier/implementation-plans/<slug>.md` from target history after embedding plan context.
+- Reconciliation: workflow durability does not imply target-branch permanence, especially across legacy command-era commits.
 
 ### Plan-doc/branch identity vs current inventory drift
 - Intended contract: one plan slug maps to one `draft/<slug>` identity.
@@ -211,8 +219,7 @@ Ephemeral operational artifacts:
 ## Source Anchors
 
 - Plan schema/front matter: `vizier-cli/src/plan.rs`
-- Build manifests/execution state: `vizier-cli/src/actions/build.rs`
-- Job records/scheduler metadata: `vizier-cli/src/jobs.rs`, `vizier-kernel/src/scheduler/mod.rs`, `docs/dev/scheduler-dag.md`
-- Merge conflict sentinel lifecycle: `vizier-cli/src/actions/merge.rs`
+- Scheduler job records/metadata: `vizier-cli/src/jobs.rs`, `docs/dev/scheduler-dag.md`
+- Workflow capability taxonomy + validator: `vizier-kernel/src/workflow_template.rs`
 - Session schema/path: `vizier-core/src/auditor.rs`
 - Clean-worktree exclusions: `vizier-core/src/vcs/status.rs`

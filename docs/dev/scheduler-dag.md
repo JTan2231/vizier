@@ -1,19 +1,23 @@
 # Scheduler
 
 ## Scope
-The scheduler runs all assistant-backed commands as background jobs. Each job is a node
-in a DAG; edges are expressed as explicit job dependencies (`after`) and artifact
-dependencies. The scheduler decides when a job is eligible to run, records wait
-reasons, and spawns the job process.
+The scheduler maintains and advances background job records for the retained
+`vizier jobs` surface. Each job is a node in a DAG; edges are expressed as
+explicit job dependencies (`after`) and artifact dependencies. The scheduler
+decides when a job is eligible to run, records wait reasons, and spawns the
+job process.
 
 For the full non-agent `.vizier/*` material contract (including jobs/build/sessions/sentinels
 durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
 
-`vizier build execute` also uses scheduler jobs for build-session pipelines:
-- every compiled build-execute node enqueues a hidden `__workflow-node` job
-- canonical capabilities (`cap.build.materialize_step`, `cap.plan.apply_once`, `cap.review.critique_or_fix`, `cap.git.integrate_plan_branch`) execute via node-runtime built-in handlers
-- custom/shell/gate nodes execute through the same hidden `__workflow-node` path (the `build __template-node` shim remains compatibility-only)
-- per-step links are fully template-driven from compiled `after` edges (not hand-built fixed phase IDs)
+The kernel still carries template compilation/validation for scheduler metadata
+and archival compatibility. Executor identity is now modeled explicitly as:
+- `environment.builtin`
+- `environment.shell`
+- `agent`
+
+Control behavior (`gate`, `retry`, terminal routing) is modeled separately and
+is not an executor capability.
 
 ## Architecture
 - **Job records** live under `.vizier/jobs/<id>/`:
@@ -23,30 +27,28 @@ durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
   - `command.patch` stores the scheduled command output patch (save jobs).
   - `save-input.patch` captures the input diff for scheduled save (save jobs only).
 - **Scheduler core** lives in `vizier-cli/src/jobs.rs` (`scheduler_tick` and helpers).
-- **CLI orchestration** enqueues jobs and advances the scheduler (see
-  `vizier-cli/src/cli/dispatch.rs` and `vizier-cli/src/cli/scheduler.rs`).
+- **CLI orchestration** renders/operates scheduler state through
+  `vizier-cli/src/cli/jobs_view.rs`.
 - **Schedule metadata** is stored per job: `after`, `dependencies`, `locks`,
   `artifacts`, `pinned_head`, `approval`, `wait_reason`, and `waited_on`.
 - **Workflow-template compile metadata** is stored per job in `metadata`:
   `workflow_template_id`, `workflow_template_version`, `workflow_node_id`,
-  `workflow_capability_id`, `workflow_policy_snapshot_hash`, and `workflow_gates`.
+  `workflow_capability_id` (legacy compatibility), `workflow_executor_class`,
+  `workflow_executor_operation`, `workflow_control_policy`,
+  `workflow_policy_snapshot_hash`, and `workflow_gates`.
 - **Workflow-template compile validation** rejects jobs that reference undeclared
   artifact contracts, unknown template `after` nodes, or invalid `on.<outcome>`
   multiplexers before enqueue.
-- **Capability-contract preflight** runs before queueing any wrapper/build DAG nodes:
-  approve/merge/review loop wiring, gate cardinality, and schedulable capability
-  argument contracts fail fast at compile-time so invalid templates do not create
-  partial queued graphs.
-- **Template runtime gate execution** for `approve` stop-condition retries,
-  `review` CI/CD probes, and `merge` CI/CD remediation retries is driven from
-  compiled node gate/retry policy plus `on` outcome edges (`vizier-cli/src/actions/workflow_runtime.rs`).
-- **Built-in wrapper control nodes** (`approve_gate_stop_condition`,
-  `merge_conflict_resolution`, `merge_gate_cicd`, `merge_cicd_auto_fix`) are
-  now enqueued as explicit `__workflow-node` jobs for audit visibility; for
-  built-in selectors they execute in compatibility/no-op mode while primary
-  nodes preserve existing gate/retry semantics.
 - **Scheduler lock** lives at `.vizier/jobs/scheduler.lock` and serializes scheduler
   ticks.
+
+## Capability Compatibility Window
+- Legacy mixed IDs (`cap.*` and legacy `vizier.*` uses labels) still classify
+  through compatibility aliases and emit warning diagnostics.
+- Unknown arbitrary `uses` labels are rejected; there is no implicit fallback
+  to executable custom-command capability.
+- Compatibility aliases are scheduled for hard rejection after **June 1, 2026**
+  (`2026-06-01`), which is enforced in validator diagnostics.
 
 ## Job lifecycle
 Statuses:
@@ -149,7 +151,7 @@ When unsatisfied, jobs stay in `waiting_on_deps` (`wait_reason.kind = preconditi
 When a precondition is invalid/unresolvable, jobs are marked `blocked_by_dependency` with `wait_reason.kind = preconditions`.
 
 ## Human approval gate
-`vizier approve <plan> --require-approval` records an approval gate in the job schedule:
+Any queued job can carry an approval gate in schedule metadata:
 - `schedule.approval.required = true`
 - `schedule.approval.state = pending`
 - `schedule.approval.requested_at/requested_by` capture who queued the gate
@@ -181,7 +183,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `plan_commits` (draft branch exists)
 - `target_branch` (target branch exists)
 - `merge_sentinel` (merge conflict sentinel exists)
-- `command_patch` (command patch file exists, or the referenced job finished `succeeded`; build-execute pipelines use this as a completion sentinel between phase jobs; legacy `ask_save_patch` records still deserialize)
+- `command_patch` (command patch file exists, or the referenced job finished `succeeded`; historical build-execute pipelines used this as a phase sentinel; legacy `ask_save_patch` records still deserialize)
 - `custom` (`custom:<type_id>:<key>`; extension artifact kind for template-defined producer/consumer wiring)
 
 ## Failure modes and exit codes
@@ -207,7 +209,7 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 - `pinned_head`
 - `artifacts`
 - `workflow template` / `workflow node` / `workflow policy snapshot` / `workflow gates`
-- `workflow capability`
+- `workflow capability` (legacy) / `workflow executor class` / `workflow executor operation` / `workflow control policy`
 
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).

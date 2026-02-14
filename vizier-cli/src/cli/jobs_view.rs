@@ -728,6 +728,15 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::WorkflowCapability => {
             metadata.and_then(|meta| meta.workflow_capability_id.clone())
         }
+        JobsShowField::WorkflowExecutorClass => {
+            metadata.and_then(|meta| meta.workflow_executor_class.clone())
+        }
+        JobsShowField::WorkflowExecutorOperation => {
+            metadata.and_then(|meta| meta.workflow_executor_operation.clone())
+        }
+        JobsShowField::WorkflowControlPolicy => {
+            metadata.and_then(|meta| meta.workflow_control_policy.clone())
+        }
         JobsShowField::WorkflowPolicySnapshot => {
             metadata.and_then(|meta| meta.workflow_policy_snapshot_hash.clone())
         }
@@ -1398,5 +1407,50 @@ mod tests {
         ];
         let selected = select_watch_running_job(&rows, None, 1);
         assert!(selected.is_none());
+    }
+
+    #[test]
+    fn jobs_show_field_value_surfaces_executor_identity_metadata() {
+        let record = jobs::JobRecord {
+            id: "job-1".to_string(),
+            status: JobStatus::Queued,
+            command: vec!["vizier".to_string(), "jobs".to_string(), "show".to_string()],
+            child_args: Vec::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: ".vizier/jobs/job-1/stdout.log".to_string(),
+            stderr_path: ".vizier/jobs/job-1/stderr.log".to_string(),
+            session_path: None,
+            outcome_path: None,
+            metadata: Some(jobs::JobMetadata {
+                workflow_capability_id: Some("cap.plan.apply_once".to_string()),
+                workflow_executor_class: Some("environment_builtin".to_string()),
+                workflow_executor_operation: Some("plan.apply_once".to_string()),
+                workflow_control_policy: Some("gate.stop_condition".to_string()),
+                ..jobs::JobMetadata::default()
+            }),
+            config_snapshot: None,
+            schedule: None,
+        };
+
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowCapability, &record).as_deref(),
+            Some("cap.plan.apply_once")
+        );
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowExecutorClass, &record).as_deref(),
+            Some("environment_builtin")
+        );
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowExecutorOperation, &record).as_deref(),
+            Some("plan.apply_once")
+        );
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::WorkflowControlPolicy, &record).as_deref(),
+            Some("gate.stop_condition")
+        );
     }
 }

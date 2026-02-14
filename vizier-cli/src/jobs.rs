@@ -130,6 +130,9 @@ pub struct JobMetadata {
     pub workflow_template_version: Option<String>,
     pub workflow_node_id: Option<String>,
     pub workflow_capability_id: Option<String>,
+    pub workflow_executor_class: Option<String>,
+    pub workflow_executor_operation: Option<String>,
+    pub workflow_control_policy: Option<String>,
     pub workflow_policy_snapshot_hash: Option<String>,
     pub workflow_gates: Option<Vec<String>>,
     pub build_pipeline: Option<String>,
@@ -564,6 +567,15 @@ fn merge_metadata(
             }
             if base.workflow_capability_id.is_none() {
                 base.workflow_capability_id = update.workflow_capability_id;
+            }
+            if base.workflow_executor_class.is_none() {
+                base.workflow_executor_class = update.workflow_executor_class;
+            }
+            if base.workflow_executor_operation.is_none() {
+                base.workflow_executor_operation = update.workflow_executor_operation;
+            }
+            if base.workflow_control_policy.is_none() {
+                base.workflow_control_policy = update.workflow_control_policy;
             }
             if base.workflow_policy_snapshot_hash.is_none() {
                 base.workflow_policy_snapshot_hash = update.workflow_policy_snapshot_hash;

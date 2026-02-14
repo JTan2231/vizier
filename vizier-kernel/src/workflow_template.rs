@@ -196,6 +196,20 @@ impl WorkflowCapability {
 
     pub fn from_uses_label(value: &str) -> Option<Self> {
         match value {
+            "cap.git.save_worktree_patch" => Some(Self::GitSaveWorktreePatch),
+            "cap.plan.generate_draft_plan" => Some(Self::PlanGenerateDraftPlan),
+            "cap.plan.apply_once" => Some(Self::PlanApplyOnce),
+            "cap.review.critique_or_fix" => Some(Self::ReviewCritiqueOrFix),
+            "cap.git.integrate_plan_branch" => Some(Self::GitIntegratePlanBranch),
+            "cap.patch.execute_pipeline" => Some(Self::PatchExecutePipeline),
+            "cap.build.materialize_step" => Some(Self::BuildMaterializeStep),
+            "cap.gate.stop_condition" => Some(Self::GateStopCondition),
+            "cap.gate.conflict_resolution" => Some(Self::GateConflictResolution),
+            "cap.gate.cicd" => Some(Self::GateCicd),
+            "cap.remediation.cicd_auto_fix" => Some(Self::RemediationCicdAutoFix),
+            "cap.exec.custom_command" => Some(Self::ExecCustomCommand),
+            "cap.review.apply_fixes_only" => Some(Self::ReviewApplyFixesOnly),
+            "cap.internal.terminal_sink" => Some(Self::InternalTerminalSink),
             "vizier.save.apply" => Some(Self::GitSaveWorktreePatch),
             "vizier.draft.generate_plan" => Some(Self::PlanGenerateDraftPlan),
             "vizier.approve.apply_once" => Some(Self::PlanApplyOnce),
@@ -209,16 +223,14 @@ impl WorkflowCapability {
             "vizier.merge.cicd_auto_fix" => Some(Self::RemediationCicdAutoFix),
             "vizier.review.apply" => Some(Self::ReviewApplyFixesOnly),
             "vizier.approve.terminal" | "vizier.merge.terminal" => Some(Self::InternalTerminalSink),
-            _ if !value.trim().is_empty() && !value.starts_with("vizier.") => {
-                Some(Self::ExecCustomCommand)
-            }
             _ => None,
         }
     }
 }
 
 pub fn workflow_node_capability(node: &WorkflowNode) -> Option<WorkflowCapability> {
-    WorkflowCapability::from_uses_label(&node.uses)
+    let uses = node.uses.trim();
+    WorkflowCapability::from_id(uses).or_else(|| WorkflowCapability::from_uses_label(uses))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,6 +247,59 @@ impl Default for WorkflowNodeKind {
     fn default() -> Self {
         Self::Builtin
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeClass {
+    Executor,
+    Control,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowExecutorClass {
+    EnvironmentBuiltin,
+    EnvironmentShell,
+    Agent,
+}
+
+impl WorkflowExecutorClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EnvironmentBuiltin => "environment_builtin",
+            Self::EnvironmentShell => "environment_shell",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowDiagnosticLevel {
+    Warning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowDiagnostic {
+    pub level: WorkflowDiagnosticLevel,
+    pub node_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowNodeIdentity {
+    pub node_class: WorkflowNodeClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_class: Option<WorkflowExecutorClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_capability_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<WorkflowDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -483,12 +548,413 @@ pub struct WorkflowPolicySnapshotLock {
     pub mode: String,
 }
 
+const LEGACY_CAPABILITY_COMPATIBILITY_END_DATE: &str = "2026-06-01";
+
+#[derive(Debug, Clone)]
+struct WorkflowNodeResolution {
+    identity: WorkflowNodeIdentity,
+    capability: Option<WorkflowCapability>,
+}
+
+pub fn workflow_template_diagnostics(
+    template: &WorkflowTemplate,
+) -> Result<Vec<WorkflowDiagnostic>, String> {
+    let mut diagnostics = Vec::new();
+    for node in &template.nodes {
+        let resolved = classify_template_node(template, node)?;
+        diagnostics.extend(resolved.identity.diagnostics.clone());
+    }
+    Ok(diagnostics)
+}
+
+fn classify_template_node(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<WorkflowNodeResolution, String> {
+    let uses = node.uses.trim();
+    let mut diagnostics = Vec::new();
+
+    let mut resolved = if uses.is_empty() {
+        if !matches!(node.kind, WorkflowNodeKind::Gate) {
+            return Err(format!(
+                "template {}@{} node `{}` must declare an explicit executor or control uses id",
+                template.id, template.version, node.id
+            ));
+        }
+        let inferred_policy = infer_gate_policy(node).ok_or_else(|| {
+            format!(
+                "template {}@{} node `{}` has empty uses and cannot infer a gate policy",
+                template.id, template.version, node.id
+            )
+        })?;
+        diagnostics.push(WorkflowDiagnostic {
+            level: WorkflowDiagnosticLevel::Warning,
+            node_id: node.id.clone(),
+            message: format!(
+                "gate policy inferred as `{inferred_policy}` from gate configuration; declare uses explicitly before {}",
+                LEGACY_CAPABILITY_COMPATIBILITY_END_DATE
+            ),
+        });
+        WorkflowNodeResolution {
+            identity: WorkflowNodeIdentity {
+                node_class: WorkflowNodeClass::Control,
+                executor_class: None,
+                executor_operation: None,
+                control_policy: Some(inferred_policy.to_string()),
+                legacy_capability_id: None,
+                diagnostics: Vec::new(),
+            },
+            capability: None,
+        }
+    } else if let Some((executor_class, executor_operation)) = canonical_executor_operation(uses) {
+        WorkflowNodeResolution {
+            identity: WorkflowNodeIdentity {
+                node_class: WorkflowNodeClass::Executor,
+                executor_class: Some(executor_class),
+                executor_operation: Some(executor_operation.to_string()),
+                control_policy: None,
+                legacy_capability_id: None,
+                diagnostics: Vec::new(),
+            },
+            capability: None,
+        }
+    } else if let Some(control_policy) = canonical_control_policy(uses) {
+        WorkflowNodeResolution {
+            identity: WorkflowNodeIdentity {
+                node_class: WorkflowNodeClass::Control,
+                executor_class: None,
+                executor_operation: None,
+                control_policy: Some(control_policy.to_string()),
+                legacy_capability_id: None,
+                diagnostics: Vec::new(),
+            },
+            capability: None,
+        }
+    } else if let Some((executor_class, executor_operation, capability)) =
+        legacy_executor_alias(uses)
+    {
+        diagnostics.push(WorkflowDiagnostic {
+            level: WorkflowDiagnosticLevel::Warning,
+            node_id: node.id.clone(),
+            message: format!(
+                "legacy uses label `{uses}` is deprecated; migrate to explicit executor ids before {}",
+                LEGACY_CAPABILITY_COMPATIBILITY_END_DATE
+            ),
+        });
+        WorkflowNodeResolution {
+            identity: WorkflowNodeIdentity {
+                node_class: WorkflowNodeClass::Executor,
+                executor_class: Some(executor_class),
+                executor_operation: Some(executor_operation.to_string()),
+                control_policy: None,
+                legacy_capability_id: capability.map(|capability| capability.id().to_string()),
+                diagnostics: Vec::new(),
+            },
+            capability,
+        }
+    } else if let Some((control_policy, capability)) = legacy_control_alias(uses) {
+        diagnostics.push(WorkflowDiagnostic {
+            level: WorkflowDiagnosticLevel::Warning,
+            node_id: node.id.clone(),
+            message: format!(
+                "legacy uses label `{uses}` is deprecated; migrate to explicit control ids before {}",
+                LEGACY_CAPABILITY_COMPATIBILITY_END_DATE
+            ),
+        });
+        WorkflowNodeResolution {
+            identity: WorkflowNodeIdentity {
+                node_class: WorkflowNodeClass::Control,
+                executor_class: None,
+                executor_operation: None,
+                control_policy: Some(control_policy.to_string()),
+                legacy_capability_id: capability.map(|capability| capability.id().to_string()),
+                diagnostics: Vec::new(),
+            },
+            capability,
+        }
+    } else {
+        return Err(format!(
+            "template {}@{} node `{}` uses unknown label `{uses}`; declare one of cap.env.builtin.*, cap.env.shell.*, cap.agent.*, or control.*",
+            template.id, template.version, node.id
+        ));
+    };
+
+    match resolved.identity.node_class {
+        WorkflowNodeClass::Executor => {
+            let Some(executor_class) = resolved.identity.executor_class else {
+                return Err(format!(
+                    "template {}@{} node `{}` executor classification missing executor class",
+                    template.id, template.version, node.id
+                ));
+            };
+            let expected = match node.kind {
+                WorkflowNodeKind::Builtin => Some(WorkflowExecutorClass::EnvironmentBuiltin),
+                WorkflowNodeKind::Shell | WorkflowNodeKind::Custom => {
+                    Some(WorkflowExecutorClass::EnvironmentShell)
+                }
+                WorkflowNodeKind::Agent => Some(WorkflowExecutorClass::Agent),
+                WorkflowNodeKind::Gate => None,
+            };
+            let Some(expected_class) = expected else {
+                return Err(format!(
+                    "template {}@{} node `{}` is a gate node and cannot declare executor operation `{}`",
+                    template.id,
+                    template.version,
+                    node.id,
+                    resolved
+                        .identity
+                        .executor_operation
+                        .as_deref()
+                        .unwrap_or("<unknown>")
+                ));
+            };
+            if executor_class != expected_class {
+                return Err(format!(
+                    "template {}@{} node `{}` declares executor class `{}` but kind `{:?}` requires `{}`",
+                    template.id,
+                    template.version,
+                    node.id,
+                    executor_class.as_str(),
+                    node.kind,
+                    expected_class.as_str()
+                ));
+            }
+        }
+        WorkflowNodeClass::Control => {
+            if !matches!(node.kind, WorkflowNodeKind::Gate) {
+                return Err(format!(
+                    "template {}@{} node `{}` declares control policy `{}` but kind `{:?}` is not gate",
+                    template.id,
+                    template.version,
+                    node.id,
+                    resolved
+                        .identity
+                        .control_policy
+                        .as_deref()
+                        .unwrap_or("unknown"),
+                    node.kind
+                ));
+            }
+            if has_nonempty_arg(node, "command") || has_nonempty_arg(node, "script") {
+                return Err(format!(
+                    "template {}@{} node `{}` declares control policy `{}` but also sets command/script args",
+                    template.id,
+                    template.version,
+                    node.id,
+                    resolved
+                        .identity
+                        .control_policy
+                        .as_deref()
+                        .unwrap_or("unknown")
+                ));
+            }
+        }
+    }
+
+    resolved.identity.diagnostics = diagnostics;
+    Ok(resolved)
+}
+
+fn canonical_executor_operation(value: &str) -> Option<(WorkflowExecutorClass, &'static str)> {
+    match value {
+        "cap.env.builtin.prompt.resolve" => {
+            Some((WorkflowExecutorClass::EnvironmentBuiltin, "prompt.resolve"))
+        }
+        "cap.env.builtin.worktree.prepare" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "worktree.prepare",
+        )),
+        "cap.env.builtin.worktree.cleanup" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "worktree.cleanup",
+        )),
+        "cap.env.builtin.plan.persist" => {
+            Some((WorkflowExecutorClass::EnvironmentBuiltin, "plan.persist"))
+        }
+        "cap.env.builtin.git.stage_commit" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "git.stage_commit",
+        )),
+        "cap.env.builtin.git.integrate_plan_branch" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "git.integrate_plan_branch",
+        )),
+        "cap.env.builtin.git.save_worktree_patch" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "git.save_worktree_patch",
+        )),
+        "cap.env.builtin.patch.pipeline_prepare" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "patch.pipeline_prepare",
+        )),
+        "cap.env.builtin.patch.pipeline_finalize" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "patch.pipeline_finalize",
+        )),
+        "cap.env.builtin.patch.execute_pipeline" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "patch.execute_pipeline",
+        )),
+        "cap.env.builtin.build.materialize_step" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "build.materialize_step",
+        )),
+        "cap.env.builtin.merge.sentinel.write" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "merge.sentinel.write",
+        )),
+        "cap.env.builtin.merge.sentinel.clear" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "merge.sentinel.clear",
+        )),
+        "cap.env.shell.command.run" => {
+            Some((WorkflowExecutorClass::EnvironmentShell, "command.run"))
+        }
+        "cap.env.shell.cicd.run" => Some((WorkflowExecutorClass::EnvironmentShell, "cicd.run")),
+        "cap.agent.plan.generate_draft" => Some((WorkflowExecutorClass::Agent, "plan.generate")),
+        "cap.agent.plan.apply" => Some((WorkflowExecutorClass::Agent, "plan.apply")),
+        "cap.agent.review.critique_or_fix" => {
+            Some((WorkflowExecutorClass::Agent, "review.critique_or_fix"))
+        }
+        "cap.agent.review.apply_fixes" => {
+            Some((WorkflowExecutorClass::Agent, "review.apply_fixes"))
+        }
+        "cap.agent.remediation.cicd_fix" => {
+            Some((WorkflowExecutorClass::Agent, "remediation.cicd_fix"))
+        }
+        "cap.agent.merge.resolve_conflict" => {
+            Some((WorkflowExecutorClass::Agent, "merge.resolve_conflict"))
+        }
+        _ => None,
+    }
+}
+
+fn canonical_control_policy(value: &str) -> Option<&'static str> {
+    match value {
+        "control.gate.stop_condition" => Some("gate.stop_condition"),
+        "control.gate.conflict_resolution" => Some("gate.conflict_resolution"),
+        "control.gate.cicd" => Some("gate.cicd"),
+        "control.gate.approval" => Some("gate.approval"),
+        "control.terminal" => Some("terminal"),
+        _ => None,
+    }
+}
+
+fn legacy_executor_alias(
+    value: &str,
+) -> Option<(
+    WorkflowExecutorClass,
+    &'static str,
+    Option<WorkflowCapability>,
+)> {
+    match value {
+        "cap.git.save_worktree_patch" | "vizier.save.apply" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "git.save_worktree_patch",
+            Some(WorkflowCapability::GitSaveWorktreePatch),
+        )),
+        "cap.plan.generate_draft_plan" | "vizier.draft.generate_plan" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "plan.generate_draft_plan",
+            Some(WorkflowCapability::PlanGenerateDraftPlan),
+        )),
+        "cap.plan.apply_once" | "vizier.approve.apply_once" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "plan.apply_once",
+            Some(WorkflowCapability::PlanApplyOnce),
+        )),
+        "cap.review.critique_or_fix" | "vizier.review.critique" => Some((
+            WorkflowExecutorClass::Agent,
+            "review.critique_or_fix",
+            Some(WorkflowCapability::ReviewCritiqueOrFix),
+        )),
+        "cap.git.integrate_plan_branch" | "vizier.merge.integrate" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "git.integrate_plan_branch",
+            Some(WorkflowCapability::GitIntegratePlanBranch),
+        )),
+        "cap.patch.execute_pipeline" | "vizier.patch.execute" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "patch.execute_pipeline",
+            Some(WorkflowCapability::PatchExecutePipeline),
+        )),
+        "cap.build.materialize_step" | "vizier.build.materialize" => Some((
+            WorkflowExecutorClass::EnvironmentBuiltin,
+            "build.materialize_step",
+            Some(WorkflowCapability::BuildMaterializeStep),
+        )),
+        "cap.remediation.cicd_auto_fix" | "vizier.merge.cicd_auto_fix" => Some((
+            WorkflowExecutorClass::Agent,
+            "remediation.cicd_auto_fix",
+            Some(WorkflowCapability::RemediationCicdAutoFix),
+        )),
+        "cap.exec.custom_command" => Some((
+            WorkflowExecutorClass::EnvironmentShell,
+            "command.run",
+            Some(WorkflowCapability::ExecCustomCommand),
+        )),
+        "cap.review.apply_fixes_only" | "vizier.review.apply" => Some((
+            WorkflowExecutorClass::Agent,
+            "review.apply_fixes_only",
+            Some(WorkflowCapability::ReviewApplyFixesOnly),
+        )),
+        _ => None,
+    }
+}
+
+fn legacy_control_alias(value: &str) -> Option<(&'static str, Option<WorkflowCapability>)> {
+    match value {
+        "cap.gate.stop_condition" | "vizier.approve.stop_condition" => Some((
+            "gate.stop_condition",
+            Some(WorkflowCapability::GateStopCondition),
+        )),
+        "cap.gate.conflict_resolution" | "vizier.merge.conflict_resolution" => Some((
+            "gate.conflict_resolution",
+            Some(WorkflowCapability::GateConflictResolution),
+        )),
+        "cap.gate.cicd" | "vizier.merge.cicd_gate" => {
+            Some(("gate.cicd", Some(WorkflowCapability::GateCicd)))
+        }
+        "cap.internal.terminal_sink" | "vizier.approve.terminal" | "vizier.merge.terminal" => {
+            Some(("terminal", Some(WorkflowCapability::InternalTerminalSink)))
+        }
+        _ => None,
+    }
+}
+
+fn infer_gate_policy(node: &WorkflowNode) -> Option<&'static str> {
+    let has_script = script_gate_count(node) > 0;
+    let has_cicd = cicd_gate_count(node) > 0;
+    let has_approval = approval_gate_count(node) > 0;
+    let active_kinds = [has_script, has_cicd, has_approval]
+        .iter()
+        .filter(|entry| **entry)
+        .count();
+    if active_kinds > 1 {
+        return None;
+    }
+    if has_cicd {
+        Some("gate.cicd")
+    } else if has_script {
+        Some("gate.stop_condition")
+    } else if has_approval {
+        Some("gate.approval")
+    } else {
+        Some("terminal")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledWorkflowNode {
     pub template_id: String,
     pub template_version: String,
     pub node_id: String,
     pub capability: Option<WorkflowCapability>,
+    pub node_class: WorkflowNodeClass,
+    pub executor_class: Option<WorkflowExecutorClass>,
+    pub executor_operation: Option<String>,
+    pub control_policy: Option<String>,
+    pub diagnostics: Vec<WorkflowDiagnostic>,
     pub policy_snapshot_hash: String,
     pub policy_snapshot: WorkflowPolicySnapshot,
     pub after: Vec<JobAfterDependency>,
@@ -518,6 +984,7 @@ pub fn compile_workflow_node(
         })?;
     validate_node_artifact_contracts(template, node)?;
     validate_node_outcome_edges(template, node)?;
+    let resolved = classify_template_node(template, node)?;
 
     let mut after = Vec::new();
     for dependency in &node.after {
@@ -552,7 +1019,14 @@ pub fn compile_workflow_node(
         template_id: template.id.clone(),
         template_version: template.version.clone(),
         node_id: node.id.clone(),
-        capability: workflow_node_capability(node),
+        capability: resolved
+            .capability
+            .or_else(|| workflow_node_capability(node)),
+        node_class: resolved.identity.node_class,
+        executor_class: resolved.identity.executor_class,
+        executor_operation: resolved.identity.executor_operation,
+        control_policy: resolved.identity.control_policy,
+        diagnostics: resolved.identity.diagnostics,
         policy_snapshot_hash,
         policy_snapshot,
         after,
@@ -568,6 +1042,7 @@ pub fn compile_workflow_node(
 
 pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Result<(), String> {
     let mut by_id = BTreeMap::new();
+    let mut node_resolutions = BTreeMap::new();
     for node in &template.nodes {
         if by_id.insert(node.id.clone(), node).is_some() {
             return Err(format!(
@@ -575,20 +1050,26 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
                 template.id, template.version, node.id
             ));
         }
+        let resolution = classify_template_node(template, node)?;
+        node_resolutions.insert(node.id.clone(), resolution);
     }
 
-    let cicd_gate_nodes = template
-        .nodes
+    let cicd_gate_nodes = node_resolutions
         .iter()
-        .filter(|node| workflow_node_capability(node) == Some(WorkflowCapability::GateCicd))
-        .map(|node| node.id.as_str())
+        .filter(|(_id, resolution)| {
+            matches!(
+                resolution.identity.control_policy.as_deref(),
+                Some("gate.cicd")
+            )
+        })
+        .map(|(id, _)| id.as_str())
         .collect::<Vec<_>>();
     if cicd_gate_nodes.len() > 1 {
         return Err(format!(
             "template {}@{} capability `{}` nodes [{}] violate single-gate cardinality",
             template.id,
             template.version,
-            WorkflowCapability::GateCicd.id(),
+            "gate.cicd",
             cicd_gate_nodes.join(", ")
         ));
     }
@@ -1102,12 +1583,12 @@ fn validate_exec_custom_command_contract(
         node.kind,
         WorkflowNodeKind::Shell | WorkflowNodeKind::Custom
     ) {
-        if !has_command && node.uses.trim().is_empty() {
+        if !has_command {
             return Err(capability_error(
                 template,
                 WorkflowCapability::ExecCustomCommand,
                 node,
-                "requires args.command/args.script or a non-empty `uses` fallback",
+                "requires args.command or args.script",
             ));
         }
         return Ok(());
@@ -1301,6 +1782,13 @@ fn cicd_gate_count(node: &WorkflowNode) -> usize {
     node.gates
         .iter()
         .filter(|gate| matches!(gate, WorkflowGate::Cicd { .. }))
+        .count()
+}
+
+fn approval_gate_count(node: &WorkflowNode) -> usize {
+    node.gates
+        .iter()
+        .filter(|gate| matches!(gate, WorkflowGate::Approval { .. }))
         .count()
 }
 
@@ -2043,8 +2531,11 @@ mod tests {
             nodes: vec![WorkflowNode {
                 id: "custom_node".to_string(),
                 kind: WorkflowNodeKind::Custom,
-                uses: "acme.custom.step".to_string(),
-                args: BTreeMap::new(),
+                uses: "cap.env.shell.command.run".to_string(),
+                args: BTreeMap::from([(
+                    "command".to_string(),
+                    "printf custom-workflow".to_string(),
+                )]),
                 after: Vec::new(),
                 needs: vec![JobArtifact::Custom {
                     type_id: "acme.diff".to_string(),
@@ -2100,6 +2591,21 @@ mod tests {
         assert_eq!(compiled.template_id, "template.review");
         assert_eq!(compiled.template_version, "v1");
         assert_eq!(compiled.node_id, "review_apply");
+        assert_eq!(compiled.node_class, WorkflowNodeClass::Executor);
+        assert_eq!(compiled.executor_class, Some(WorkflowExecutorClass::Agent));
+        assert_eq!(
+            compiled.executor_operation.as_deref(),
+            Some("review.apply_fixes_only")
+        );
+        assert_eq!(
+            compiled.control_policy, None,
+            "executor nodes should not expose control policy"
+        );
+        assert_eq!(
+            compiled.diagnostics.len(),
+            1,
+            "legacy uses aliases should emit compile diagnostics"
+        );
         assert_eq!(compiled.after.len(), 1);
         assert_eq!(compiled.after[0].job_id, "job-17");
         assert_eq!(compiled.dependencies.len(), 1);
@@ -2283,18 +2789,181 @@ mod tests {
 
     #[test]
     fn workflow_capability_maps_non_vizier_labels_to_custom_command() {
-        assert_eq!(
-            WorkflowCapability::from_uses_label("acme.shell.note"),
-            Some(WorkflowCapability::ExecCustomCommand)
-        );
+        assert_eq!(WorkflowCapability::from_uses_label("acme.shell.note"), None);
         assert_eq!(
             WorkflowCapability::from_uses_label("custom.namespace.step"),
-            Some(WorkflowCapability::ExecCustomCommand)
+            None
         );
         assert_eq!(
             WorkflowCapability::from_uses_label("vizier.unknown.label"),
             None,
             "unknown vizier labels should remain unmapped so runtime can reject/handle explicitly"
+        );
+    }
+
+    #[test]
+    fn classify_template_node_reports_legacy_alias_warnings() {
+        let template = WorkflowTemplate {
+            id: "template.legacy".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "legacy_merge".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "vizier.merge.integrate".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let diagnostics = workflow_template_diagnostics(&template)
+            .expect("legacy aliases should classify with warnings");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected one warning: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics[0].message.contains("deprecated"),
+            "unexpected warning: {:?}",
+            diagnostics[0]
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains(LEGACY_CAPABILITY_COMPATIBILITY_END_DATE),
+            "warning should include compatibility window end date: {:?}",
+            diagnostics[0]
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_unknown_uses_labels() {
+        let template = WorkflowTemplate {
+            id: "template.unknown".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "unknown".to_string(),
+                kind: WorkflowNodeKind::Custom,
+                uses: "acme.custom.step".to_string(),
+                args: BTreeMap::from([("command".to_string(), "echo nope".to_string())]),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("unknown uses labels should be rejected");
+        assert!(
+            error.contains("uses unknown label"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn compile_node_classifies_executor_first_model() {
+        let template = WorkflowTemplate {
+            id: "template.executor_first".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![
+                WorkflowNode {
+                    id: "resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["apply_plan".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "apply_plan".to_string(),
+                    kind: WorkflowNodeKind::Agent,
+                    uses: "cap.agent.plan.apply".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["stop_gate".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "stop_gate".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "control.gate.stop_condition".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Script {
+                        script: "./stop.sh".to_string(),
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy {
+                        mode: WorkflowRetryMode::UntilGate,
+                        budget: 2,
+                    },
+                    on: WorkflowOutcomeEdges {
+                        failed: vec!["apply_plan".to_string()],
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+
+        validate_workflow_capability_contracts(&template)
+            .expect("executor-first split template should validate");
+        let compiled = compile_workflow_node(&template, "resolve_prompt", &BTreeMap::new())
+            .expect("executor-first node should compile");
+        assert_eq!(compiled.node_class, WorkflowNodeClass::Executor);
+        assert_eq!(
+            compiled.executor_class,
+            Some(WorkflowExecutorClass::EnvironmentBuiltin)
+        );
+        assert_eq!(
+            compiled.executor_operation.as_deref(),
+            Some("prompt.resolve")
+        );
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "canonical ids should not emit legacy warnings: {:?}",
+            compiled.diagnostics
         );
     }
 

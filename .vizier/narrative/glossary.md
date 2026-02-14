@@ -9,12 +9,17 @@
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
+- **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that expose executor/control identity without relying on legacy capability IDs.
+- **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
+- **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
 - **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
 - **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
+- **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.
 - **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
 - **Man-page taxonomy**: Installed sectioned docs under `man1` (`vizier`, `vizier-jobs`), `man5` (`vizier-config`), `man7` (`vizier-workflow`).
+- **Legacy capability alias window**: Compatibility period where legacy `cap.*` and legacy `vizier.*` `uses` labels still classify with warning diagnostics; hard rejection is scheduled after `2026-06-01`.
 - **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
 - **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`.

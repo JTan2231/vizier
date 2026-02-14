@@ -14,6 +14,13 @@ This repository keeps scheduler tests in three explicit layers so failures point
 
 Kernel-only logic (config normalization, prompt assembly) should be covered with unit tests under `vizier-kernel/src/` so it stays pure and reusable across frontends.
 
+Executor/control taxonomy logic should be covered in
+`vizier-kernel/src/workflow_template.rs` with unit tests for:
+- explicit executor-class classification (`environment.builtin`, `environment.shell`, `agent`)
+- control-node policy typing
+- legacy alias diagnostics
+- rejection of unknown implicit `uses` labels
+
 Keep overlap minimal: rules should be validated in spec tests, and integration tests should focus on user-visible behavior.
 
 ## Config migration matrix
@@ -33,6 +40,7 @@ When touching scheduler metadata:
 
 - Keep dual-write assertions for migration windows (`metadata.scope` plus `metadata.command_alias`/`metadata.workflow_template_selector`).
 - Verify retry/status/show flows preserve alias/template metadata while clearing runtime-only fields.
+- Verify `jobs show` can render both legacy `workflow_capability_id` and the executor-first fields (`workflow_executor_class`, `workflow_executor_operation`, `workflow_control_policy`).
 
 ## Fixture temp lifecycle
 - Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.
