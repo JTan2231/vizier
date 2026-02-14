@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_08693b0be1624e158f873e6cfe4d8168",
+  "slug": "impl",
+  "branch": "draft/impl",
+  "source": "draft",
+  "intent": "file:IMPL.md",
+  "target_branch": "master",
+  "work_ref": "draft/impl",
+  "status": "draft",
+  "summary": "# Workflow Ops Completion Spec",
+  "created_at": "2026-02-14T18:01:29.388790+00:00",
+  "updated_at": "2026-02-14T18:01:29.388790+00:00",
+  "job_ids": {}
+}
