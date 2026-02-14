@@ -200,9 +200,13 @@ pub(crate) enum JobsShowField {
     BuildSkipChecks,
     BuildKeepBranch,
     BuildDependencies,
+    WorkflowRun,
     WorkflowTemplate,
     WorkflowTemplateVersion,
     WorkflowNode,
+    WorkflowNodeAttempt,
+    WorkflowNodeOutcome,
+    WorkflowPayloadRefs,
     WorkflowExecutorClass,
     WorkflowExecutorOperation,
     WorkflowControlPolicy,
@@ -263,9 +267,13 @@ impl JobsShowField {
             "build skip checks" => Some(Self::BuildSkipChecks),
             "build keep branch" => Some(Self::BuildKeepBranch),
             "build dependencies" => Some(Self::BuildDependencies),
+            "workflow run" => Some(Self::WorkflowRun),
             "workflow template" => Some(Self::WorkflowTemplate),
             "workflow template version" => Some(Self::WorkflowTemplateVersion),
             "workflow node" => Some(Self::WorkflowNode),
+            "workflow node attempt" => Some(Self::WorkflowNodeAttempt),
+            "workflow node outcome" => Some(Self::WorkflowNodeOutcome),
+            "workflow payload refs" => Some(Self::WorkflowPayloadRefs),
             "workflow executor class" => Some(Self::WorkflowExecutorClass),
             "workflow executor operation" => Some(Self::WorkflowExecutorOperation),
             "workflow control policy" => Some(Self::WorkflowControlPolicy),
@@ -327,9 +335,13 @@ impl JobsShowField {
             Self::BuildSkipChecks => "Build skip checks",
             Self::BuildKeepBranch => "Build keep branch",
             Self::BuildDependencies => "Build dependencies",
+            Self::WorkflowRun => "Workflow run",
             Self::WorkflowTemplate => "Workflow template",
             Self::WorkflowTemplateVersion => "Workflow template version",
             Self::WorkflowNode => "Workflow node",
+            Self::WorkflowNodeAttempt => "Workflow node attempt",
+            Self::WorkflowNodeOutcome => "Workflow node outcome",
+            Self::WorkflowPayloadRefs => "Workflow payload refs",
             Self::WorkflowExecutorClass => "Workflow executor class",
             Self::WorkflowExecutorOperation => "Workflow executor operation",
             Self::WorkflowControlPolicy => "Workflow control policy",
@@ -390,9 +402,13 @@ impl JobsShowField {
             Self::BuildSkipChecks => "build_skip_checks",
             Self::BuildKeepBranch => "build_keep_branch",
             Self::BuildDependencies => "build_dependencies",
+            Self::WorkflowRun => "workflow_run",
             Self::WorkflowTemplate => "workflow_template",
             Self::WorkflowTemplateVersion => "workflow_template_version",
             Self::WorkflowNode => "workflow_node",
+            Self::WorkflowNodeAttempt => "workflow_node_attempt",
+            Self::WorkflowNodeOutcome => "workflow_node_outcome",
+            Self::WorkflowPayloadRefs => "workflow_payload_refs",
             Self::WorkflowExecutorClass => "workflow_executor_class",
             Self::WorkflowExecutorOperation => "workflow_executor_operation",
             Self::WorkflowControlPolicy => "workflow_control_policy",
@@ -468,6 +484,10 @@ pub(crate) enum Commands {
     /// Internal completion entry point (invoked by shell integration)
     #[command(name = "__complete", hide = true)]
     Complete(HiddenCompleteCmd),
+
+    /// Internal workflow-node runtime entry point (invoked by scheduler jobs)
+    #[command(name = "__workflow-node", hide = true)]
+    WorkflowNode(HiddenWorkflowNodeCmd),
 
     /// Create a local release commit and optional annotated tag from conventional commits
     Release(ReleaseCmd),
@@ -733,6 +753,13 @@ pub(crate) struct CompletionsCmd {
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct HiddenCompleteCmd {}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct HiddenWorkflowNodeCmd {
+    /// Scheduler job id for the node runtime invocation
+    #[arg(long = "job-id", value_name = "JOB_ID")]
+    pub(crate) job_id: String,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub(crate) enum CompletionShell {

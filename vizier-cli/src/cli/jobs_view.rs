@@ -716,6 +716,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
                 }
             })
         }),
+        JobsShowField::WorkflowRun => metadata.and_then(|meta| meta.workflow_run_id.clone()),
         JobsShowField::WorkflowTemplate => metadata.and_then(|meta| {
             meta.workflow_template_selector
                 .clone()
@@ -725,6 +726,21 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
             metadata.and_then(|meta| meta.workflow_template_version.clone())
         }
         JobsShowField::WorkflowNode => metadata.and_then(|meta| meta.workflow_node_id.clone()),
+        JobsShowField::WorkflowNodeAttempt => {
+            metadata.and_then(|meta| meta.workflow_node_attempt.map(|value| value.to_string()))
+        }
+        JobsShowField::WorkflowNodeOutcome => {
+            metadata.and_then(|meta| meta.workflow_node_outcome.clone())
+        }
+        JobsShowField::WorkflowPayloadRefs => metadata.and_then(|meta| {
+            meta.workflow_payload_refs.as_ref().map(|values| {
+                if values.is_empty() {
+                    "none".to_string()
+                } else {
+                    values.join(", ")
+                }
+            })
+        }),
         JobsShowField::WorkflowExecutorClass => {
             metadata.and_then(|meta| meta.workflow_executor_class.clone())
         }

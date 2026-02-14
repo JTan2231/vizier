@@ -68,6 +68,9 @@ Out of scope:
   - `stderr.log`
   - `outcome.json` (written on finalization)
   - optional `command.patch` (legacy `ask-save.patch` still recognized for retries) and `save-input.patch`
+- Workflow-run manifests:
+  - `.vizier/jobs/runs/<workflow_run_id>.json`
+  - captures compiled node runtime metadata (`job_id`, `uses`, args, outcome routing, retry policy, per-outcome artifact sets) for internal `__workflow-node` execution.
 - Schedule metadata in `job.json`:
   - `after`
   - `dependencies`
@@ -78,6 +81,10 @@ Out of scope:
   - `wait_reason`
   - `waited_on`
 - Workflow compile metadata in `job.json.metadata`:
+  - `workflow_run_id`
+  - `workflow_node_attempt`
+  - `workflow_node_outcome`
+  - `workflow_payload_refs`
   - `workflow_template_id`
   - `workflow_template_version`
   - `workflow_node_id`
@@ -88,6 +95,11 @@ Out of scope:
   - `workflow_gates`
 - Owner flows: all scheduler-backed commands.
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
+
+Custom artifact payload adjunct:
+- Prompt artifact markers under `.vizier/jobs/artifacts/custom/...` are still the scheduler gating contract.
+- Optional typed payload data for custom artifacts is stored under
+  `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`.
 
 Compatibility policy:
 - Workflow template identity is canonical-only (`cap.env.*`, `cap.agent.invoke`,

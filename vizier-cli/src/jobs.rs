@@ -5,7 +5,7 @@ use git2::{Oid, Repository, WorktreePruneOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -26,6 +26,11 @@ use vizier_core::scheduler::spec::{
 pub use vizier_core::scheduler::{
     AfterPolicy, JobAfterDependency, JobApprovalFact, JobApprovalState, JobArtifact, JobLock,
     JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,
+};
+use vizier_core::workflow_template::{
+    CompiledWorkflowNode, PROMPT_ARTIFACT_TYPE_ID, WorkflowNodeKind, WorkflowOutcomeEdges,
+    WorkflowPrecondition, WorkflowRetryMode, WorkflowTemplate, compile_workflow_node,
+    validate_workflow_capability_contracts,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,6 +130,10 @@ pub struct JobMetadata {
     pub target: Option<String>,
     pub plan: Option<String>,
     pub branch: Option<String>,
+    pub workflow_run_id: Option<String>,
+    pub workflow_node_attempt: Option<u32>,
+    pub workflow_node_outcome: Option<String>,
+    pub workflow_payload_refs: Option<Vec<String>>,
     pub workflow_template_selector: Option<String>,
     pub workflow_template_id: Option<String>,
     pub workflow_template_version: Option<String>,
@@ -298,6 +307,156 @@ impl RetryCleanupResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeOutcome {
+    Succeeded,
+    Failed,
+    Blocked,
+    Cancelled,
+}
+
+impl WorkflowNodeOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowNodeResult {
+    pub outcome: WorkflowNodeOutcome,
+    #[serde(default)]
+    pub artifacts_written: Vec<JobArtifact>,
+    #[serde(default)]
+    pub payload_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+impl WorkflowNodeResult {
+    fn succeeded(summary: impl Into<String>) -> Self {
+        Self {
+            outcome: WorkflowNodeOutcome::Succeeded,
+            artifacts_written: Vec::new(),
+            payload_refs: Vec::new(),
+            summary: Some(summary.into()),
+            exit_code: Some(0),
+        }
+    }
+
+    fn failed(summary: impl Into<String>, exit_code: Option<i32>) -> Self {
+        Self {
+            outcome: WorkflowNodeOutcome::Failed,
+            artifacts_written: Vec::new(),
+            payload_refs: Vec::new(),
+            summary: Some(summary.into()),
+            exit_code,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WorkflowRouteMode {
+    RetryJob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WorkflowRouteTarget {
+    node_id: String,
+    mode: WorkflowRouteMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct WorkflowRouteTargets {
+    #[serde(default)]
+    succeeded: Vec<WorkflowRouteTarget>,
+    #[serde(default)]
+    failed: Vec<WorkflowRouteTarget>,
+    #[serde(default)]
+    blocked: Vec<WorkflowRouteTarget>,
+    #[serde(default)]
+    cancelled: Vec<WorkflowRouteTarget>,
+}
+
+impl WorkflowRouteTargets {
+    fn for_outcome(&self, outcome: WorkflowNodeOutcome) -> &[WorkflowRouteTarget] {
+        match outcome {
+            WorkflowNodeOutcome::Succeeded => &self.succeeded,
+            WorkflowNodeOutcome::Failed => &self.failed,
+            WorkflowNodeOutcome::Blocked => &self.blocked,
+            WorkflowNodeOutcome::Cancelled => &self.cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WorkflowRuntimeNodeManifest {
+    node_id: String,
+    job_id: String,
+    uses: String,
+    kind: WorkflowNodeKind,
+    args: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executor_operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    control_policy: Option<String>,
+    retry: vizier_core::workflow_template::WorkflowRetryPolicy,
+    routes: WorkflowRouteTargets,
+    #[serde(default)]
+    artifacts_by_outcome: WorkflowOutcomeArtifactsByOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct WorkflowOutcomeArtifactsByOutcome {
+    #[serde(default)]
+    succeeded: Vec<JobArtifact>,
+    #[serde(default)]
+    failed: Vec<JobArtifact>,
+    #[serde(default)]
+    blocked: Vec<JobArtifact>,
+    #[serde(default)]
+    cancelled: Vec<JobArtifact>,
+}
+
+impl WorkflowOutcomeArtifactsByOutcome {
+    fn for_outcome(&self, outcome: WorkflowNodeOutcome) -> &[JobArtifact] {
+        match outcome {
+            WorkflowNodeOutcome::Succeeded => &self.succeeded,
+            WorkflowNodeOutcome::Failed => &self.failed,
+            WorkflowNodeOutcome::Blocked => &self.blocked,
+            WorkflowNodeOutcome::Cancelled => &self.cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WorkflowRunManifest {
+    run_id: String,
+    template_selector: String,
+    template_id: String,
+    template_version: String,
+    policy_snapshot_hash: String,
+    nodes: BTreeMap<String, WorkflowRuntimeNodeManifest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnqueueWorkflowRunResult {
+    pub run_id: String,
+    pub template_selector: String,
+    pub template_id: String,
+    pub template_version: String,
+    pub policy_snapshot_hash: String,
+    pub job_ids: BTreeMap<String, String>,
+}
+
 static CURRENT_JOB_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RECORD_TMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -422,6 +581,12 @@ pub(crate) fn save_input_patch_path(jobs_root: &Path, job_id: &str) -> PathBuf {
     jobs_root.join(job_id).join("save-input.patch")
 }
 
+fn workflow_run_manifest_path(project_root: &Path, run_id: &str) -> PathBuf {
+    project_root
+        .join(".vizier/jobs/runs")
+        .join(format!("{run_id}.json"))
+}
+
 fn hex_encode_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len() * 2);
     for byte in value.as_bytes() {
@@ -448,6 +613,13 @@ fn custom_artifact_marker_dir(project_root: &Path, type_id: &str, key: &str) -> 
         .join(hex_encode_component(key))
 }
 
+fn custom_artifact_payload_dir(project_root: &Path, type_id: &str, key: &str) -> PathBuf {
+    project_root
+        .join(".vizier/jobs/artifacts/data")
+        .join(hex_encode_component(type_id))
+        .join(hex_encode_component(key))
+}
+
 fn custom_artifact_marker_path(
     project_root: &Path,
     job_id: &str,
@@ -455,6 +627,15 @@ fn custom_artifact_marker_path(
     key: &str,
 ) -> PathBuf {
     custom_artifact_marker_dir(project_root, type_id, key).join(format!("{job_id}.json"))
+}
+
+fn custom_artifact_payload_path(
+    project_root: &Path,
+    job_id: &str,
+    type_id: &str,
+    key: &str,
+) -> PathBuf {
+    custom_artifact_payload_dir(project_root, type_id, key).join(format!("{job_id}.json"))
 }
 
 fn custom_artifact_marker_exists(project_root: &Path, type_id: &str, key: &str) -> bool {
@@ -465,6 +646,75 @@ fn custom_artifact_marker_exists(project_root: &Path, type_id: &str, key: &str) 
     fs::read_dir(dir)
         .map(|mut entries| entries.next().is_some())
         .unwrap_or(false)
+}
+
+fn write_custom_artifact_payload(
+    project_root: &Path,
+    job_id: &str,
+    type_id: &str,
+    key: &str,
+    payload: &serde_json::Value,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = custom_artifact_payload_path(project_root, job_id, type_id, key);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, serde_json::to_vec_pretty(payload)?)?;
+    Ok(path)
+}
+
+type CustomArtifactPayloadRead = (String, serde_json::Value, PathBuf);
+
+fn read_latest_custom_artifact_payload(
+    project_root: &Path,
+    type_id: &str,
+    key: &str,
+) -> Result<Option<CustomArtifactPayloadRead>, Box<dyn std::error::Error>> {
+    let marker_dir = custom_artifact_marker_dir(project_root, type_id, key);
+    if !marker_dir.is_dir() {
+        return Ok(None);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(&marker_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let job_id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_string();
+        if job_id.trim().is_empty() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        candidates.push((modified, job_id));
+    }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    candidates.sort();
+    let (_modified, job_id) = candidates
+        .last()
+        .cloned()
+        .ok_or_else(|| "missing payload candidate".to_string())?;
+    let payload_path = custom_artifact_payload_path(project_root, &job_id, type_id, key);
+    if !payload_path.exists() {
+        return Ok(None);
+    }
+
+    let payload = serde_json::from_slice::<serde_json::Value>(&fs::read(&payload_path)?)?;
+    Ok(Some((job_id, payload, payload_path)))
 }
 
 fn write_custom_artifact_markers(
@@ -496,17 +746,41 @@ fn remove_custom_artifact_markers(
     job_id: &str,
     artifacts: &[JobArtifact],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    remove_custom_artifact_markers_with_payload_policy(project_root, job_id, artifacts, &[])
+}
+
+fn remove_custom_artifact_markers_with_payload_policy(
+    project_root: &Path,
+    job_id: &str,
+    artifacts: &[JobArtifact],
+    keep_payload_for: &[JobArtifact],
+) -> Result<(), Box<dyn std::error::Error>> {
     for artifact in artifacts {
         let JobArtifact::Custom { type_id, key } = artifact else {
             continue;
         };
         let marker = custom_artifact_marker_path(project_root, job_id, type_id, key);
         remove_file_if_exists(&marker)?;
+        let preserve_payload = keep_payload_for.iter().any(|entry| entry == artifact);
+        if !preserve_payload {
+            let payload = custom_artifact_payload_path(project_root, job_id, type_id, key);
+            remove_file_if_exists(&payload)?;
+        }
         let key_dir = custom_artifact_marker_dir(project_root, type_id, key);
         if key_dir.is_dir() && fs::read_dir(&key_dir)?.next().is_none() {
             let _ = fs::remove_dir(&key_dir);
         }
         if let Some(type_dir) = key_dir.parent()
+            && type_dir.is_dir()
+            && fs::read_dir(type_dir)?.next().is_none()
+        {
+            let _ = fs::remove_dir(type_dir);
+        }
+        let payload_key_dir = custom_artifact_payload_dir(project_root, type_id, key);
+        if payload_key_dir.is_dir() && fs::read_dir(&payload_key_dir)?.next().is_none() {
+            let _ = fs::remove_dir(&payload_key_dir);
+        }
+        if let Some(type_dir) = payload_key_dir.parent()
             && type_dir.is_dir()
             && fs::read_dir(type_dir)?.next().is_none()
         {
@@ -553,6 +827,18 @@ fn merge_metadata(
             }
             if base.branch.is_none() {
                 base.branch = update.branch;
+            }
+            if base.workflow_run_id.is_none() {
+                base.workflow_run_id = update.workflow_run_id;
+            }
+            if base.workflow_node_attempt.is_none() {
+                base.workflow_node_attempt = update.workflow_node_attempt;
+            }
+            if base.workflow_node_outcome.is_none() {
+                base.workflow_node_outcome = update.workflow_node_outcome;
+            }
+            if is_empty_vec(&base.workflow_payload_refs) {
+                base.workflow_payload_refs = update.workflow_payload_refs;
             }
             if base.workflow_template_selector.is_none() {
                 base.workflow_template_selector = update.workflow_template_selector;
@@ -829,6 +1115,365 @@ pub fn resolve_after_dependencies_for_enqueue(
         .collect())
 }
 
+fn sanitize_workflow_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "node".to_string()
+    } else {
+        out
+    }
+}
+
+fn workflow_job_id(run_id: &str, node_id: &str) -> String {
+    format!(
+        "wf-{}-{}",
+        sanitize_workflow_component(run_id),
+        sanitize_workflow_component(node_id)
+    )
+}
+
+fn workflow_node_artifacts_by_outcome(
+    template: &WorkflowTemplate,
+    node_id: &str,
+) -> Result<WorkflowOutcomeArtifactsByOutcome, String> {
+    let node = template
+        .nodes
+        .iter()
+        .find(|entry| entry.id == node_id)
+        .ok_or_else(|| format!("template node `{node_id}` is missing"))?;
+    Ok(WorkflowOutcomeArtifactsByOutcome {
+        succeeded: node.produces.succeeded.clone(),
+        failed: node.produces.failed.clone(),
+        blocked: node.produces.blocked.clone(),
+        cancelled: node.produces.cancelled.clone(),
+    })
+}
+
+fn to_job_preconditions(
+    node_id: &str,
+    preconditions: &[WorkflowPrecondition],
+) -> Result<Vec<JobPrecondition>, Box<dyn std::error::Error>> {
+    let mut converted = Vec::new();
+    for precondition in preconditions {
+        match precondition {
+            WorkflowPrecondition::CleanWorktree => converted.push(JobPrecondition::CleanWorktree),
+            WorkflowPrecondition::BranchExists => {
+                converted.push(JobPrecondition::BranchExists { branch: None })
+            }
+            WorkflowPrecondition::Custom { id, args } => converted.push(JobPrecondition::Custom {
+                id: id.clone(),
+                args: args.clone(),
+            }),
+            WorkflowPrecondition::PinnedHead => {
+                return Err(format!(
+                    "workflow node `{node_id}` uses unsupported scheduler precondition `pinned_head`"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(converted)
+}
+
+fn to_schedule_approval(
+    gates: &[vizier_core::workflow_template::WorkflowGate],
+) -> Option<JobApproval> {
+    for gate in gates {
+        if let vizier_core::workflow_template::WorkflowGate::Approval { required, .. } = gate
+            && *required
+        {
+            return Some(pending_job_approval());
+        }
+    }
+    None
+}
+
+fn workflow_gate_summary(gate: &vizier_core::workflow_template::WorkflowGate) -> String {
+    match gate {
+        vizier_core::workflow_template::WorkflowGate::Approval { required, .. } => {
+            format!("approval(required={required})")
+        }
+        vizier_core::workflow_template::WorkflowGate::Script { script, .. } => {
+            format!("script({script})")
+        }
+        vizier_core::workflow_template::WorkflowGate::Cicd {
+            script,
+            auto_resolve,
+            ..
+        } => format!("cicd(script={script}, auto_resolve={auto_resolve})"),
+        vizier_core::workflow_template::WorkflowGate::Custom { id, .. } => {
+            format!("custom({id})")
+        }
+    }
+}
+
+fn append_unique_after(after: &mut Vec<JobAfterDependency>, dependency: JobAfterDependency) {
+    if after
+        .iter()
+        .any(|entry| entry.job_id == dependency.job_id && entry.policy == dependency.policy)
+    {
+        return;
+    }
+    after.push(dependency);
+}
+
+fn write_workflow_run_manifest(
+    project_root: &Path,
+    manifest: &WorkflowRunManifest,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = workflow_run_manifest_path(project_root, &manifest.run_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(manifest)?)?;
+    Ok(())
+}
+
+fn load_workflow_run_manifest(
+    project_root: &Path,
+    run_id: &str,
+) -> Result<WorkflowRunManifest, Box<dyn std::error::Error>> {
+    let path = workflow_run_manifest_path(project_root, run_id);
+    let bytes = fs::read(path)?;
+    Ok(serde_json::from_slice::<WorkflowRunManifest>(&bytes)?)
+}
+
+fn compiled_node_lookup(
+    template: &WorkflowTemplate,
+) -> Result<BTreeMap<String, CompiledWorkflowNode>, Box<dyn std::error::Error>> {
+    let mut resolved_after = BTreeMap::new();
+    for node in &template.nodes {
+        resolved_after.insert(node.id.clone(), workflow_job_id(&template.id, &node.id));
+    }
+
+    let mut compiled = BTreeMap::new();
+    for node in &template.nodes {
+        let node_compiled = compile_workflow_node(template, &node.id, &resolved_after)?;
+        compiled.insert(node.id.clone(), node_compiled);
+    }
+    Ok(compiled)
+}
+
+fn convert_outcome_edges_to_routes(edges: &WorkflowOutcomeEdges) -> WorkflowRouteTargets {
+    let to_targets = |values: &[String]| {
+        values
+            .iter()
+            .map(|target| WorkflowRouteTarget {
+                node_id: target.clone(),
+                mode: WorkflowRouteMode::RetryJob,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    WorkflowRouteTargets {
+        succeeded: Vec::new(),
+        failed: to_targets(&edges.failed),
+        blocked: to_targets(&edges.blocked),
+        cancelled: to_targets(&edges.cancelled),
+    }
+}
+
+pub fn enqueue_workflow_run(
+    project_root: &Path,
+    jobs_root: &Path,
+    run_id: &str,
+    template_selector: &str,
+    template: &WorkflowTemplate,
+    recorded_args: &[String],
+    config_snapshot: Option<serde_json::Value>,
+) -> Result<EnqueueWorkflowRunResult, Box<dyn std::error::Error>> {
+    validate_workflow_capability_contracts(template)?;
+    if template.nodes.is_empty() {
+        return Err("workflow template has no nodes".into());
+    }
+
+    let mut node_to_job_id = BTreeMap::new();
+    for node in &template.nodes {
+        let job_id = workflow_job_id(run_id, &node.id);
+        if node_to_job_id.insert(node.id.clone(), job_id).is_some() {
+            return Err(format!("duplicate workflow node id `{}`", node.id).into());
+        }
+    }
+
+    let mut resolved_after = BTreeMap::new();
+    for (node_id, job_id) in &node_to_job_id {
+        resolved_after.insert(node_id.clone(), job_id.clone());
+    }
+
+    let mut incoming_success = BTreeMap::<String, Vec<String>>::new();
+    for source in &template.nodes {
+        for target in &source.on.succeeded {
+            incoming_success
+                .entry(target.clone())
+                .or_default()
+                .push(source.id.clone());
+        }
+    }
+
+    for (target, parents) in &incoming_success {
+        if parents.len() > 1 {
+            let list = parents.join(", ");
+            return Err(format!(
+                "template {}@{} node `{}` has multiple on.succeeded parents ({list}); runtime bridge currently requires a single parent",
+                template.id, template.version, target
+            )
+            .into());
+        }
+    }
+
+    let policy_snapshot_hash = template.policy_snapshot().stable_hash_hex()?;
+    let mut manifest_nodes = BTreeMap::new();
+
+    for node in &template.nodes {
+        let compiled = compile_workflow_node(template, &node.id, &resolved_after)?;
+        let job_id = node_to_job_id
+            .get(&node.id)
+            .cloned()
+            .ok_or_else(|| format!("missing job id for node {}", node.id))?;
+
+        let mut after = compiled.after.clone();
+        if let Some(parents) = incoming_success.get(&node.id)
+            && let Some(parent) = parents.first()
+            && let Some(parent_job_id) = node_to_job_id.get(parent)
+        {
+            append_unique_after(
+                &mut after,
+                JobAfterDependency {
+                    job_id: parent_job_id.clone(),
+                    policy: AfterPolicy::Success,
+                },
+            );
+        }
+        sort_after_dependencies(&mut after);
+        after.dedup();
+
+        let preconditions = to_job_preconditions(&node.id, &compiled.preconditions)?;
+        let approval = to_schedule_approval(&compiled.gates);
+        let dependencies = compiled
+            .dependencies
+            .iter()
+            .map(|artifact| JobDependency {
+                artifact: artifact.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let schedule = JobSchedule {
+            after,
+            dependencies,
+            locks: compiled.locks.clone(),
+            artifacts: compiled.artifacts.clone(),
+            pinned_head: None,
+            preconditions,
+            approval,
+            wait_reason: None,
+            waited_on: Vec::new(),
+        };
+
+        let metadata = JobMetadata {
+            workflow_run_id: Some(run_id.to_string()),
+            workflow_node_attempt: Some(1),
+            workflow_template_selector: Some(template_selector.to_string()),
+            workflow_template_id: Some(compiled.template_id.clone()),
+            workflow_template_version: Some(compiled.template_version.clone()),
+            workflow_node_id: Some(compiled.node_id.clone()),
+            workflow_executor_class: compiled
+                .executor_class
+                .map(|value| value.as_str().to_string()),
+            workflow_executor_operation: compiled.executor_operation.clone(),
+            workflow_control_policy: compiled.control_policy.clone(),
+            workflow_policy_snapshot_hash: Some(compiled.policy_snapshot_hash.clone()),
+            workflow_gates: if compiled.gates.is_empty() {
+                None
+            } else {
+                Some(
+                    compiled
+                        .gates
+                        .iter()
+                        .map(workflow_gate_summary)
+                        .collect::<Vec<_>>(),
+                )
+            },
+            ..JobMetadata::default()
+        };
+
+        let child_args = vec![
+            "__workflow-node".to_string(),
+            "--job-id".to_string(),
+            job_id.clone(),
+        ];
+        let command = if recorded_args.is_empty() {
+            vec![
+                "vizier".to_string(),
+                "__workflow-node".to_string(),
+                "--job-id".to_string(),
+                job_id.clone(),
+            ]
+        } else {
+            recorded_args.to_vec()
+        };
+        enqueue_job(
+            project_root,
+            jobs_root,
+            &job_id,
+            &child_args,
+            &command,
+            Some(metadata),
+            config_snapshot.clone(),
+            Some(schedule),
+        )?;
+
+        manifest_nodes.insert(
+            node.id.clone(),
+            WorkflowRuntimeNodeManifest {
+                node_id: node.id.clone(),
+                job_id: job_id.clone(),
+                uses: node.uses.clone(),
+                kind: node.kind,
+                args: node.args.clone(),
+                executor_operation: compiled.executor_operation.clone(),
+                control_policy: compiled.control_policy.clone(),
+                retry: compiled.retry.clone(),
+                routes: convert_outcome_edges_to_routes(&compiled.on),
+                artifacts_by_outcome: workflow_node_artifacts_by_outcome(template, &node.id)?,
+            },
+        );
+    }
+
+    write_workflow_run_manifest(
+        project_root,
+        &WorkflowRunManifest {
+            run_id: run_id.to_string(),
+            template_selector: template_selector.to_string(),
+            template_id: template.id.clone(),
+            template_version: template.version.clone(),
+            policy_snapshot_hash: policy_snapshot_hash.clone(),
+            nodes: manifest_nodes,
+        },
+    )?;
+
+    Ok(EnqueueWorkflowRunResult {
+        run_id: run_id.to_string(),
+        template_selector: template_selector.to_string(),
+        template_id: template.id.clone(),
+        template_version: template.version.clone(),
+        policy_snapshot_hash,
+        job_ids: node_to_job_id,
+    })
+}
+
 #[derive(Debug, Default)]
 pub struct SchedulerOutcome {
     pub started: Vec<String>,
@@ -945,6 +1590,29 @@ pub fn finalize_job(
     session_path: Option<String>,
     metadata: Option<JobMetadata>,
 ) -> Result<JobRecord, Box<dyn std::error::Error>> {
+    finalize_job_with_artifacts(
+        project_root,
+        jobs_root,
+        job_id,
+        status,
+        exit_code,
+        session_path,
+        metadata,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_job_with_artifacts(
+    project_root: &Path,
+    jobs_root: &Path,
+    job_id: &str,
+    status: JobStatus,
+    exit_code: i32,
+    session_path: Option<String>,
+    metadata: Option<JobMetadata>,
+    artifacts_written: Option<&[JobArtifact]>,
+) -> Result<JobRecord, Box<dyn std::error::Error>> {
     let paths = paths_for(jobs_root, job_id);
     let mut record = load_record(&paths)?;
 
@@ -974,9 +1642,21 @@ pub fn finalize_job(
     }
 
     if let Some(schedule) = record.schedule.as_ref() {
-        remove_custom_artifact_markers(project_root, job_id, &schedule.artifacts)?;
-        if record.status == JobStatus::Succeeded {
-            write_custom_artifact_markers(project_root, job_id, &schedule.artifacts)?;
+        let artifacts = if let Some(artifacts) = artifacts_written {
+            artifacts
+        } else if record.status == JobStatus::Succeeded {
+            &schedule.artifacts[..]
+        } else {
+            &[]
+        };
+        remove_custom_artifact_markers_with_payload_policy(
+            project_root,
+            job_id,
+            &schedule.artifacts,
+            artifacts,
+        )?;
+        if !artifacts.is_empty() {
+            write_custom_artifact_markers(project_root, job_id, artifacts)?;
         }
     }
 
@@ -1882,6 +2562,469 @@ pub fn scheduler_tick(
     scheduler_tick_locked(project_root, jobs_root, binary)
 }
 
+fn dedup_job_artifacts(mut artifacts: Vec<JobArtifact>) -> Vec<JobArtifact> {
+    sort_artifacts(&mut artifacts);
+    artifacts.dedup();
+    artifacts
+}
+
+fn map_workflow_outcome_to_job_status(
+    outcome: WorkflowNodeOutcome,
+    exit_code: Option<i32>,
+) -> (JobStatus, i32) {
+    match outcome {
+        WorkflowNodeOutcome::Succeeded => (JobStatus::Succeeded, exit_code.unwrap_or(0)),
+        WorkflowNodeOutcome::Failed => (JobStatus::Failed, exit_code.unwrap_or(1)),
+        WorkflowNodeOutcome::Blocked => (JobStatus::BlockedByDependency, exit_code.unwrap_or(10)),
+        WorkflowNodeOutcome::Cancelled => (JobStatus::Cancelled, exit_code.unwrap_or(143)),
+    }
+}
+
+fn run_shell_text_command(
+    project_root: &Path,
+    script: &str,
+) -> Result<(i32, String, String), Box<dyn std::error::Error>> {
+    let output = Command::new("sh")
+        .arg("-lc")
+        .arg(script)
+        .current_dir(project_root)
+        .output()?;
+    let status = output.status.code().unwrap_or(1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok((status, stdout, stderr))
+}
+
+fn workflow_prompt_text_from_record(
+    project_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(text) = node.args.get("prompt_text")
+        && !text.trim().is_empty()
+    {
+        return Ok(text.clone());
+    }
+    if let Some(path) = node.args.get("prompt_file")
+        && !path.trim().is_empty()
+    {
+        let abs = resolve_recorded_path(project_root, path);
+        return Ok(fs::read_to_string(abs)?);
+    }
+    if let Some(command) = node.args.get("command")
+        && !command.trim().is_empty()
+    {
+        let (status, stdout, stderr) = run_shell_text_command(project_root, command)?;
+        if status != 0 {
+            return Err(format!(
+                "prompt.resolve command failed (exit {status}): {}",
+                stderr.trim()
+            )
+            .into());
+        }
+        return Ok(stdout);
+    }
+    if let Some(script) = node.args.get("script")
+        && !script.trim().is_empty()
+    {
+        let (status, stdout, stderr) = run_shell_text_command(project_root, script)?;
+        if status != 0 {
+            return Err(format!(
+                "prompt.resolve script failed (exit {status}): {}",
+                stderr.trim()
+            )
+            .into());
+        }
+        return Ok(stdout);
+    }
+
+    let from_config = record
+        .config_snapshot
+        .as_ref()
+        .and_then(|snapshot| {
+            snapshot
+                .pointer("/workflow/prompt_text")
+                .and_then(|value| value.as_str())
+                .or_else(|| {
+                    snapshot
+                        .pointer("/workflow_runtime/prompt_text")
+                        .and_then(|value| value.as_str())
+                })
+        })
+        .map(|value| value.to_string());
+    if let Some(text) = from_config {
+        return Ok(text);
+    }
+
+    if let Ok(value) = std::env::var("VIZIER_WORKFLOW_PROMPT_TEXT")
+        && !value.trim().is_empty()
+    {
+        return Ok(value);
+    }
+
+    Err("prompt.resolve missing prompt_text source (args.prompt_text/prompt_file/command/script, config workflow.prompt_text, or VIZIER_WORKFLOW_PROMPT_TEXT)".into())
+}
+
+fn prompt_output_artifact(node: &WorkflowRuntimeNodeManifest) -> Option<JobArtifact> {
+    let mut all = node.artifacts_by_outcome.succeeded.clone();
+    all.extend(node.artifacts_by_outcome.failed.iter().cloned());
+    all.extend(node.artifacts_by_outcome.blocked.iter().cloned());
+    all.extend(node.artifacts_by_outcome.cancelled.iter().cloned());
+    all.into_iter().find(|artifact| {
+        matches!(
+            artifact,
+            JobArtifact::Custom { type_id, .. } if type_id == PROMPT_ARTIFACT_TYPE_ID
+        )
+    })
+}
+
+fn resolve_prompt_payload_text(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            payload
+                .pointer("/payload/text")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+        })
+}
+
+fn execute_workflow_executor(
+    project_root: &Path,
+    _jobs_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<WorkflowNodeResult, Box<dyn std::error::Error>> {
+    match node.executor_operation.as_deref() {
+        Some("worktree.prepare") => Ok(WorkflowNodeResult::succeeded("worktree prepared")),
+        Some("worktree.cleanup") => Ok(WorkflowNodeResult::succeeded("worktree cleaned")),
+        Some("terminal") => Ok(WorkflowNodeResult::succeeded("terminal reached")),
+        Some("prompt.resolve") => {
+            let prompt_artifact = prompt_output_artifact(node).ok_or_else(|| {
+                "prompt.resolve node is missing prompt artifact output".to_string()
+            })?;
+            let (type_id, key) = match prompt_artifact.clone() {
+                JobArtifact::Custom { type_id, key } => (type_id, key),
+                _ => {
+                    return Err("prompt.resolve output artifact must be custom prompt_text".into());
+                }
+            };
+
+            let prompt_text = workflow_prompt_text_from_record(project_root, record, node)?;
+            let payload = serde_json::json!({
+                "type_id": type_id,
+                "key": key,
+                "text": prompt_text,
+                "written_at": Utc::now().to_rfc3339(),
+            });
+            let path =
+                write_custom_artifact_payload(project_root, &record.id, &type_id, &key, &payload)?;
+            Ok(WorkflowNodeResult {
+                outcome: WorkflowNodeOutcome::Succeeded,
+                artifacts_written: vec![prompt_artifact],
+                payload_refs: vec![relative_path(project_root, &path)],
+                summary: Some("prompt resolved".to_string()),
+                exit_code: Some(0),
+            })
+        }
+        Some("agent.invoke") => {
+            let prompt_dependency = record
+                .schedule
+                .as_ref()
+                .and_then(|schedule| {
+                    schedule
+                        .dependencies
+                        .iter()
+                        .find_map(|dependency| match &dependency.artifact {
+                            JobArtifact::Custom { type_id, key }
+                                if type_id == PROMPT_ARTIFACT_TYPE_ID =>
+                            {
+                                Some((type_id.clone(), key.clone()))
+                            }
+                            _ => None,
+                        })
+                })
+                .ok_or_else(|| {
+                    "agent.invoke requires a custom:prompt_text dependency".to_string()
+                })?;
+            let (type_id, key) = prompt_dependency;
+            let (_producer_job, payload, payload_path) =
+                read_latest_custom_artifact_payload(project_root, &type_id, &key)?.ok_or_else(
+                    || {
+                        format!(
+                            "agent.invoke could not find prompt payload for custom:{}:{}",
+                            type_id, key
+                        )
+                    },
+                )?;
+            let prompt_text = resolve_prompt_payload_text(&payload)
+                .ok_or_else(|| "prompt payload missing text field".to_string())?;
+            print!("{prompt_text}");
+            let _ = io::stdout().flush();
+            Ok(WorkflowNodeResult {
+                outcome: WorkflowNodeOutcome::Succeeded,
+                artifacts_written: Vec::new(),
+                payload_refs: vec![relative_path(project_root, &payload_path)],
+                summary: Some("agent invoke consumed prompt payload".to_string()),
+                exit_code: Some(0),
+            })
+        }
+        Some("git.stage_commit") => {
+            let add = Command::new("git")
+                .arg("-C")
+                .arg(project_root)
+                .arg("add")
+                .arg("-A")
+                .status()?;
+            if !add.success() {
+                return Ok(WorkflowNodeResult::failed(
+                    "git add -A failed during git.stage_commit",
+                    Some(add.code().unwrap_or(1)),
+                ));
+            }
+
+            let diff = Command::new("git")
+                .arg("-C")
+                .arg(project_root)
+                .arg("diff")
+                .arg("--cached")
+                .arg("--quiet")
+                .status()?;
+            if diff.success() {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "git.stage_commit: no staged changes",
+                ));
+            }
+
+            let message = node
+                .args
+                .get("message")
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| "chore: workflow stage commit".to_string());
+            let commit = Command::new("git")
+                .arg("-C")
+                .arg(project_root)
+                .arg("commit")
+                .arg("-m")
+                .arg(&message)
+                .status()?;
+            if commit.success() {
+                Ok(WorkflowNodeResult::succeeded(
+                    "git.stage_commit committed changes",
+                ))
+            } else {
+                Ok(WorkflowNodeResult::failed(
+                    "git commit failed during git.stage_commit",
+                    Some(commit.code().unwrap_or(1)),
+                ))
+            }
+        }
+        Some(other) => Ok(WorkflowNodeResult::failed(
+            format!("unsupported executor operation `{other}`"),
+            Some(1),
+        )),
+        None => Ok(WorkflowNodeResult::failed(
+            "missing executor operation in workflow metadata",
+            Some(1),
+        )),
+    }
+}
+
+fn execute_workflow_control(
+    project_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<WorkflowNodeResult, Box<dyn std::error::Error>> {
+    match node.control_policy.as_deref() {
+        Some("terminal") => Ok(WorkflowNodeResult::succeeded("terminal reached")),
+        Some("gate.stop_condition") => {
+            let script = node
+                .args
+                .get("script")
+                .map(String::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if script.is_empty() {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "stop-condition gate skipped (no script configured)",
+                ));
+            }
+
+            let (status, _stdout, stderr) = run_shell_text_command(project_root, &script)?;
+            if status == 0 {
+                return Ok(WorkflowNodeResult::succeeded("stop-condition gate passed"));
+            }
+
+            let attempt = record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.workflow_node_attempt)
+                .unwrap_or(1);
+            let retry_budget = node.retry.budget.saturating_add(1);
+            if matches!(node.retry.mode, WorkflowRetryMode::UntilGate) && attempt > retry_budget {
+                return Ok(WorkflowNodeResult {
+                    outcome: WorkflowNodeOutcome::Blocked,
+                    artifacts_written: Vec::new(),
+                    payload_refs: Vec::new(),
+                    summary: Some(format!(
+                        "stop-condition failed on attempt {attempt}; retry budget exhausted ({})",
+                        node.retry.budget
+                    )),
+                    exit_code: Some(10),
+                });
+            }
+
+            let detail = stderr.trim();
+            let summary = if detail.is_empty() {
+                format!("stop-condition failed on attempt {attempt}")
+            } else {
+                format!("stop-condition failed on attempt {attempt}: {detail}")
+            };
+            Ok(WorkflowNodeResult::failed(summary, Some(status)))
+        }
+        Some(other) => Ok(WorkflowNodeResult::failed(
+            format!("unsupported control policy `{other}`"),
+            Some(1),
+        )),
+        None => Ok(WorkflowNodeResult::failed(
+            "missing control policy in workflow metadata",
+            Some(1),
+        )),
+    }
+}
+
+fn apply_workflow_routes(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    node: &WorkflowRuntimeNodeManifest,
+    run_manifest: &WorkflowRunManifest,
+    outcome: WorkflowNodeOutcome,
+) {
+    for route in node.routes.for_outcome(outcome) {
+        let Some(target) = run_manifest.nodes.get(&route.node_id) else {
+            display::warn(format!(
+                "workflow route target `{}` missing from run manifest {}",
+                route.node_id, run_manifest.run_id
+            ));
+            continue;
+        };
+
+        match route.mode {
+            WorkflowRouteMode::RetryJob => {
+                let target_record = read_record(jobs_root, &target.job_id);
+                if let Ok(record) = target_record
+                    && job_is_active(record.status)
+                {
+                    continue;
+                }
+                if let Err(err) = retry_job(project_root, jobs_root, binary, &target.job_id) {
+                    display::warn(format!(
+                        "workflow route {} -> {} retry failed: {}",
+                        node.node_id, target.node_id, err
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn execute_workflow_node_job(
+    project_root: &Path,
+    jobs_root: &Path,
+    job_id: &str,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let record = read_record(jobs_root, job_id)?;
+    let metadata = record
+        .metadata
+        .as_ref()
+        .ok_or_else(|| format!("workflow node job {} is missing metadata", job_id))?;
+    let run_id = metadata
+        .workflow_run_id
+        .as_deref()
+        .ok_or_else(|| format!("workflow node job {} missing workflow_run_id", job_id))?;
+    let node_id = metadata
+        .workflow_node_id
+        .as_deref()
+        .ok_or_else(|| format!("workflow node job {} missing workflow_node_id", job_id))?;
+    let manifest = load_workflow_run_manifest(project_root, run_id)?;
+    let node_manifest = manifest
+        .nodes
+        .get(node_id)
+        .ok_or_else(|| format!("workflow run {} missing node {}", run_id, node_id))?;
+
+    set_current_job_id(Some(job_id.to_string()));
+    let result = match (
+        node_manifest.executor_operation.as_deref(),
+        node_manifest.control_policy.as_deref(),
+    ) {
+        (Some(_), _) => execute_workflow_executor(project_root, jobs_root, &record, node_manifest)?,
+        (None, Some(_)) => execute_workflow_control(project_root, &record, node_manifest)?,
+        _ => WorkflowNodeResult::failed(
+            format!("workflow node {} has no runtime operation/policy", node_id),
+            Some(1),
+        ),
+    };
+    set_current_job_id(None);
+
+    let mut artifacts_written = node_manifest
+        .artifacts_by_outcome
+        .for_outcome(result.outcome)
+        .to_vec();
+    artifacts_written.extend(result.artifacts_written.clone());
+    artifacts_written = dedup_job_artifacts(artifacts_written);
+
+    let (status, exit_code) = map_workflow_outcome_to_job_status(result.outcome, result.exit_code);
+    let metadata_update = JobMetadata {
+        workflow_node_outcome: Some(result.outcome.as_str().to_string()),
+        workflow_payload_refs: if result.payload_refs.is_empty() {
+            None
+        } else {
+            Some(result.payload_refs.clone())
+        },
+        ..JobMetadata::default()
+    };
+    let _ = finalize_job_with_artifacts(
+        project_root,
+        jobs_root,
+        job_id,
+        status,
+        exit_code,
+        None,
+        Some(metadata_update),
+        Some(&artifacts_written),
+    )?;
+
+    let binary = std::env::current_exe()?;
+    apply_workflow_routes(
+        project_root,
+        jobs_root,
+        &binary,
+        node_manifest,
+        &manifest,
+        result.outcome,
+    );
+    let _ = scheduler_tick(project_root, jobs_root, &binary)?;
+    Ok(exit_code)
+}
+
+pub fn run_workflow_node_command(
+    project_root: &Path,
+    jobs_root: &Path,
+    job_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let code = execute_workflow_node_job(project_root, jobs_root, job_id)?;
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(format!("workflow node {job_id} failed (exit {code})").into())
+    }
+}
+
 fn note_waited(waited_on: &mut Vec<JobWaitKind>, kind: JobWaitKind) {
     if !waited_on.contains(&kind) {
         waited_on.push(kind);
@@ -2320,6 +3463,13 @@ fn rewind_job_record_for_retry(
             metadata.worktree_path = None;
             metadata.worktree_owned = None;
         }
+        let next_attempt = metadata
+            .workflow_node_attempt
+            .unwrap_or(1)
+            .saturating_add(1);
+        metadata.workflow_node_attempt = Some(next_attempt);
+        metadata.workflow_node_outcome = None;
+        metadata.workflow_payload_refs = None;
         metadata.agent_exit_code = None;
         metadata.cancel_cleanup_status = None;
         metadata.cancel_cleanup_error = None;
@@ -3056,9 +4206,14 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use git2::{BranchType, Signature};
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
+    use vizier_core::workflow_template::{
+        WorkflowArtifactContract, WorkflowNode, WorkflowNodeKind, WorkflowOutcomeArtifacts,
+        WorkflowOutcomeEdges, WorkflowRetryMode, WorkflowTemplate, WorkflowTemplatePolicy,
+    };
 
     fn init_repo(temp: &TempDir) -> Result<Repository, git2::Error> {
         let repo = Repository::init(temp.path())?;
@@ -3161,6 +4316,62 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    fn prompt_invoke_template() -> WorkflowTemplate {
+        WorkflowTemplate {
+            id: "template.runtime.prompt_invoke".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::from([("prompt_text".to_string(), "hello world".to_string())]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![JobArtifact::Custom {
+                            type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                            key: "approve_prompt".to_string(),
+                        }],
+                        ..WorkflowOutcomeArtifacts::default()
+                    },
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["invoke_agent".to_string()],
+                        ..WorkflowOutcomeEdges::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "invoke_agent".to_string(),
+                    kind: WorkflowNodeKind::Agent,
+                    uses: "cap.agent.invoke".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: vec![JobArtifact::Custom {
+                        type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                        key: "approve_prompt".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        }
     }
 
     #[test]
@@ -4888,6 +6099,14 @@ mod tests {
         .expect("write custom marker");
         let custom_marker =
             custom_artifact_marker_path(project_root, "job-retry", "acme.execution", "retry-node");
+        let custom_payload = write_custom_artifact_payload(
+            project_root,
+            "job-retry",
+            "acme.execution",
+            "retry-node",
+            &serde_json::json!({"text": "payload"}),
+        )
+        .expect("write custom payload");
 
         let mut record = update_job_record(&jobs_root, "job-retry", |record| {
             record.status = JobStatus::Failed;
@@ -4910,6 +6129,9 @@ mod tests {
             record.metadata = Some(JobMetadata {
                 worktree_owned: Some(true),
                 worktree_path: Some(".vizier/tmp-worktrees/retry-cleanup".to_string()),
+                workflow_node_attempt: Some(4),
+                workflow_node_outcome: Some("failed".to_string()),
+                workflow_payload_refs: Some(vec!["payload.json".to_string()]),
                 agent_exit_code: Some(12),
                 cancel_cleanup_status: Some(CancelCleanupStatus::Failed),
                 cancel_cleanup_error: Some("old error".to_string()),
@@ -4937,6 +6159,9 @@ mod tests {
         assert!(metadata.worktree_name.is_none());
         assert!(metadata.worktree_path.is_none());
         assert!(metadata.worktree_owned.is_none());
+        assert_eq!(metadata.workflow_node_attempt, Some(5));
+        assert!(metadata.workflow_node_outcome.is_none());
+        assert!(metadata.workflow_payload_refs.is_none());
         assert!(metadata.agent_exit_code.is_none());
         assert!(metadata.cancel_cleanup_status.is_none());
         assert!(metadata.cancel_cleanup_error.is_none());
@@ -4961,6 +6186,10 @@ mod tests {
         assert!(
             !custom_marker.exists(),
             "expected custom artifact marker to be removed during rewind"
+        );
+        assert!(
+            !custom_payload.exists(),
+            "expected custom artifact payload to be removed during rewind"
         );
         assert!(
             !worktree_path.exists(),
@@ -5293,6 +6522,204 @@ mod tests {
         assert_eq!(
             outcome.reset,
             vec!["job-root".to_string(), "job-dependent".to_string()]
+        );
+    }
+
+    #[test]
+    fn enqueue_workflow_run_materializes_runtime_node_jobs() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = prompt_invoke_template();
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-runtime",
+            "template.runtime.prompt_invoke@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+
+        assert_eq!(result.job_ids.len(), 2);
+        let resolve_job = result
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+        let invoke_job = result
+            .job_ids
+            .get("invoke_agent")
+            .expect("invoke job id")
+            .clone();
+
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        assert_eq!(
+            resolve_record.child_args,
+            vec![
+                "__workflow-node".to_string(),
+                "--job-id".to_string(),
+                resolve_job.clone()
+            ]
+        );
+        let resolve_meta = resolve_record.metadata.as_ref().expect("resolve metadata");
+        assert_eq!(resolve_meta.workflow_run_id.as_deref(), Some("run-runtime"));
+        assert_eq!(resolve_meta.workflow_node_attempt, Some(1));
+        assert_eq!(
+            resolve_meta.workflow_executor_operation.as_deref(),
+            Some("prompt.resolve")
+        );
+
+        let invoke_record = read_record(&jobs_root, &invoke_job).expect("invoke record");
+        let after = invoke_record
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.after.clone())
+            .unwrap_or_default();
+        assert!(
+            after
+                .iter()
+                .any(|dependency| dependency.job_id == resolve_job),
+            "expected invoke node to depend on resolve node via on.succeeded routing"
+        );
+
+        let manifest =
+            load_workflow_run_manifest(project_root, "run-runtime").expect("workflow run manifest");
+        assert_eq!(manifest.nodes.len(), 2);
+        assert!(manifest.nodes.contains_key("resolve_prompt"));
+        assert!(manifest.nodes.contains_key("invoke_agent"));
+    }
+
+    #[test]
+    fn workflow_runtime_prompt_payload_roundtrip() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = prompt_invoke_template();
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-prompt",
+            "template.runtime.prompt_invoke@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let manifest =
+            load_workflow_run_manifest(project_root, "run-prompt").expect("workflow manifest");
+
+        let resolve_job = result
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        let resolve_node = manifest
+            .nodes
+            .get("resolve_prompt")
+            .expect("resolve node manifest");
+        let resolve_result =
+            execute_workflow_executor(project_root, &jobs_root, &resolve_record, resolve_node)
+                .expect("execute prompt.resolve");
+        assert_eq!(resolve_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert_eq!(resolve_result.payload_refs.len(), 1);
+        let payload_ref = project_root.join(resolve_result.payload_refs[0].as_str());
+        assert!(payload_ref.exists(), "expected payload file to exist");
+        let (status, exit_code) =
+            map_workflow_outcome_to_job_status(resolve_result.outcome, resolve_result.exit_code);
+        let _ = finalize_job_with_artifacts(
+            project_root,
+            &jobs_root,
+            &resolve_job,
+            status,
+            exit_code,
+            None,
+            Some(JobMetadata::default()),
+            Some(&resolve_result.artifacts_written),
+        )
+        .expect("finalize resolve");
+
+        let invoke_job = result
+            .job_ids
+            .get("invoke_agent")
+            .expect("invoke job id")
+            .clone();
+        let invoke_record = read_record(&jobs_root, &invoke_job).expect("invoke record");
+        let invoke_node = manifest
+            .nodes
+            .get("invoke_agent")
+            .expect("invoke node manifest");
+        let invoke_result =
+            execute_workflow_executor(project_root, &jobs_root, &invoke_record, invoke_node)
+                .expect("execute agent.invoke");
+        assert_eq!(invoke_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert_eq!(invoke_result.payload_refs.len(), 1);
+    }
+
+    #[test]
+    fn stop_condition_runtime_blocks_when_retry_budget_is_exhausted() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-stop-gate",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            Some(JobMetadata {
+                workflow_node_attempt: Some(3),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-stop-gate").expect("record");
+
+        let node = WorkflowRuntimeNodeManifest {
+            node_id: "gate".to_string(),
+            job_id: "job-stop-gate".to_string(),
+            uses: "control.gate.stop_condition".to_string(),
+            kind: WorkflowNodeKind::Gate,
+            args: BTreeMap::from([("script".to_string(), "exit 1".to_string())]),
+            executor_operation: None,
+            control_policy: Some("gate.stop_condition".to_string()),
+            retry: vizier_core::workflow_template::WorkflowRetryPolicy {
+                mode: WorkflowRetryMode::UntilGate,
+                budget: 1,
+            },
+            routes: WorkflowRouteTargets::default(),
+            artifacts_by_outcome: WorkflowOutcomeArtifactsByOutcome::default(),
+        };
+
+        let result = execute_workflow_control(project_root, &record, &node)
+            .expect("execute stop-condition gate");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Blocked);
+        assert!(
+            result
+                .summary
+                .as_deref()
+                .unwrap_or("")
+                .contains("retry budget exhausted"),
+            "expected budget summary, got {:?}",
+            result.summary
         );
     }
 

@@ -6,6 +6,7 @@ This repository keeps scheduler tests in three explicit layers so failures point
 - Rules (spec): Pure, deterministic scheduling decisions live in `vizier-kernel/src/scheduler/spec.rs`. Add unit tests here for dependency precedence, wait-reason ordering, and lock arbitration. These tests should not touch the filesystem or Git.
 - Facts (extraction): Input collection happens in `vizier-cli/src/jobs.rs` (see `build_scheduler_facts`). Add focused tests here that validate artifact existence checks, producer discovery, pinned-head evaluation, and lock state collection. These tests can use temporary repos and job records but should avoid asserting final scheduling outcomes.
 - Integration (effects/UX): CLI output, file effects, and end-to-end job flows stay in `tests/`. Keep formatting and side-effect assertions here.
+- Runtime bridge (node execution): Internal workflow runtime bridge coverage lives in `vizier-cli/src/jobs.rs` and should validate queue-time node materialization, `__workflow-node` dispatch contracts, outcome routing/retry behavior, and custom prompt payload roundtrips (`custom:prompt_text:<key>` marker + payload store).
 
 ## Adding new coverage
 1. If the change is deterministic logic, add or update a spec test in `vizier-kernel/src/scheduler/spec.rs`.
@@ -43,6 +44,7 @@ When touching scheduler metadata:
 - Keep dual-write assertions for migration windows (`metadata.scope` plus `metadata.command_alias`/`metadata.workflow_template_selector`).
 - Verify retry/status/show flows preserve alias/template metadata while clearing runtime-only fields.
 - Verify `jobs show` prioritizes executor-first fields (`workflow_executor_class`, `workflow_executor_operation`, `workflow_control_policy`) and that historical records with legacy fields still deserialize safely.
+- Include runtime metadata assertions for workflow-node jobs (`workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, `workflow_payload_refs`) and ensure retry rewind clears outcome/payload while bumping node attempt counters.
 
 ## Fixture temp lifecycle
 - Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.

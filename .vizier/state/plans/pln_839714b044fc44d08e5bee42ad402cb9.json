@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_839714b044fc44d08e5bee42ad402cb9",
+  "slug": "runtime",
+  "branch": "draft/runtime",
+  "source": "draft",
+  "intent": "file:RUNTIME.md",
+  "target_branch": "master",
+  "work_ref": "draft/runtime",
+  "status": "draft",
+  "summary": "# Workflow Runtime Bridge Feature Spec",
+  "created_at": "2026-02-14T17:24:34.402816+00:00",
+  "updated_at": "2026-02-14T17:24:34.402816+00:00",
+  "job_ids": {}
+}

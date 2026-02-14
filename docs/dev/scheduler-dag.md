@@ -37,16 +37,25 @@ exactly one such artifact as input.
   - `outcome.json` is written on finalization.
   - `command.patch` stores the scheduled command output patch (save jobs).
   - `save-input.patch` captures the input diff for scheduled save (save jobs only).
+  - `.vizier/jobs/runs/<run_id>.json` stores queue-time workflow runtime manifests for compiled template runs.
 - **Scheduler core** lives in `vizier-cli/src/jobs.rs` (`scheduler_tick` and helpers).
 - **CLI orchestration** renders/operates scheduler state through
   `vizier-cli/src/cli/jobs_view.rs`.
 - **Schedule metadata** is stored per job: `after`, `dependencies`, `locks`,
   `artifacts`, `pinned_head`, `approval`, `wait_reason`, and `waited_on`.
 - **Workflow-template compile metadata** is stored per job in `metadata`:
+  `workflow_run_id`,
+  `workflow_node_attempt`,
+  `workflow_node_outcome`,
+  `workflow_payload_refs`,
   `workflow_template_id`, `workflow_template_version`, `workflow_node_id`,
   `workflow_executor_class`, `workflow_executor_operation`,
   `workflow_control_policy`,
   `workflow_policy_snapshot_hash`, and `workflow_gates`.
+- **Workflow runtime entrypoint** is an internal hidden command:
+  `vizier __workflow-node --job-id <id>`. Scheduler jobs materialized from
+  template nodes execute through this entrypoint and are intentionally excluded
+  from help/man/completion surfaces.
 - **Workflow-template compile validation** rejects jobs that reference undeclared
   artifact contracts, unknown template `after` nodes, or invalid `on.<outcome>`
   multiplexers before enqueue.
@@ -139,6 +148,9 @@ Dependencies are checked in order. For each dependency:
   status.
   For built-in artifact kinds this uses repository/job-state probes. Custom artifacts
   use persisted scheduler markers under `.vizier/jobs/artifacts/custom/...`.
+  Prompt-text custom artifacts can additionally persist typed payload JSON under
+  `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; marker
+  existence remains the scheduler readiness source of truth.
 - If the artifact is missing and any producer is active (queued/waiting/running), the
   consumer waits with `waiting_on_deps` and a wait reason of `waiting on <artifact>`.
 - If the artifact is missing and no producer is active:

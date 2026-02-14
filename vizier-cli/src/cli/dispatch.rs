@@ -204,6 +204,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let jobs_root = jobs::ensure_jobs_root(&project_root)?;
             run_jobs_command(&project_root, &jobs_root, cmd, cli.global.no_ansi)
         }
+        Commands::WorkflowNode(cmd) => {
+            let jobs_root = jobs::ensure_jobs_root(&project_root)?;
+            jobs::run_workflow_node_command(&project_root, &jobs_root, &cmd.job_id)
+        }
         Commands::Release(cmd) => run_release(cmd),
     }
 }

@@ -24,6 +24,12 @@ Acceptance criteria
 - `vizier jobs show` surfaces executor identity fields for new records while remaining tolerant of historical records that still include legacy capability metadata.
 
 Status
+- Update (2026-02-14, runtime bridge):
+  - `vizier-cli/src/jobs.rs` now exposes `enqueue_workflow_run` to compile canonical templates into one scheduler job per node with deterministic job IDs, canonical workflow metadata, and hidden `__workflow-node --job-id <id>` child args.
+  - `vizier-cli/src/cli/args.rs` + `vizier-cli/src/cli/dispatch.rs` now wire the internal hidden `__workflow-node` entrypoint for scheduler child execution while keeping public help surfaces unchanged.
+  - Runtime execution now records per-node metadata (`workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, `workflow_payload_refs`), writes run manifests under `.vizier/jobs/runs/<run_id>.json`, and persists prompt payload JSON under `.vizier/jobs/artifacts/data/...` while keeping marker files as scheduler truth.
+  - Runtime routing now maps `on.succeeded` to queue-time `after` dependencies (single-parent constraint) and handles non-success routes via retry-driven target requeue.
+  - Coverage landed in `vizier-cli/src/jobs.rs` for queue-time materialization, prompt payload roundtrip, stop-condition retry-budget blocking, and retry cleanup of marker+payload artifacts.
 - Update (2026-02-14, canonical uses-only hard cut):
   - `vizier-kernel/src/workflow_template.rs` removed legacy alias translation (`vizier.*`, legacy non-env `cap.*`, and alias-window diagnostics), requires explicit non-empty canonical `uses` IDs, and validates workflow semantics by executor operation/control policy.
   - Canonical acceptance is now strict: only `cap.env.*`, `cap.agent.invoke`, and `control.*` compile.

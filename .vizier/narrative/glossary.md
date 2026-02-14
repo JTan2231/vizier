@@ -18,7 +18,7 @@
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
 - **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
-- **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.
+- **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state (for example `D .vizier/implementation-plans/runtime.md` on `draft/runtime`) used as evidence that branch/doc inventories are diverging in a worktree.
 - **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
 - **Man-page taxonomy**: Installed sectioned docs under `man1` (`vizier`, `vizier-jobs`), `man5` (`vizier-config`), `man7` (`vizier-workflow`).
 - **Canonical uses-only contract**: Workflow template identity policy that accepts only `cap.env.*`, `cap.agent.invoke`, and `control.*` `uses` IDs; legacy `vizier.*`, legacy non-env `cap.*`, and unknown labels fail validation immediately.
@@ -31,6 +31,7 @@
 - **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
 - **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.
 - **Prompt artifact contract**: Canonical prompt payload wiring for executor templates: one custom artifact shaped `custom:prompt_text:<key>` produced by prompt-resolve nodes and consumed by canonical invoke nodes.
+- **Prompt payload data store**: Optional typed JSON payload files for custom artifacts under `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; scheduler gating still keys off marker files.
 - **Prompt-resolve node**: Environment executor node (`cap.env.builtin.prompt.resolve` or `cap.env.shell.prompt.resolve`) that outputs exactly one prompt artifact for downstream `cap.agent.invoke`.
 - **Release dry run**: `vizier release --dry-run` preview mode for version bump and notes without commit/tag creation.
 - **Session log**: Per-run artifact at `.vizier/sessions/<id>/session.json` when session logging is enabled.
@@ -40,3 +41,7 @@
 - **Worktree**: Separate checkout under `.vizier/tmp-worktrees/`.
 - **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions to keep legacy drift reporting current.
 - **Workspace commands (`cd`/`clean`)**: Deprecated-but-retained worktree helpers currently still available on the reduced CLI surface.
+- **`__workflow-node` entrypoint**: Hidden scheduler-only CLI command (`vizier __workflow-node --job-id <id>`) that executes one compiled workflow node and finalizes its job record.
+- **Workflow node runtime metadata**: Job metadata fields `workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, and `workflow_payload_refs` used by runtime node execution and retry rewinds.
+- **Workflow run manifest**: Queue-time runtime file `.vizier/jobs/runs/<run_id>.json` containing per-node executor/control identity, args, retry policy, routing targets, and outcome artifact maps.
+- **Workflow runtime bridge**: Internal execution layer that compiles canonical templates to scheduler jobs, dispatches node handlers through `__workflow-node`, and routes outcomes without exposing removed public workflow commands.
