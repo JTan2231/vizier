@@ -1,5 +1,7 @@
 # CI/CD gate for agent-backed commands
 
+Status (2026-02-14): RETIRED. The agent-backed command family this thread targeted was hard-removed from the CLI surface. Keep this document as historical context only.
+
 Thread: Agent workflow orchestration (cross: Outcome summaries, Session logging, stdout/stderr contract, pluggable agent backends)
 
 Tension

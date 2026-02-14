@@ -1,5 +1,7 @@
 # Enforce architecture-doc gate for every code change
 
+Status (2026-02-14): RETIRED. This gate depended on removed save/merge workflow commands; preserve as historical governance context.
+
 Thread: Architecture doc gate + compliance
 
 Tension

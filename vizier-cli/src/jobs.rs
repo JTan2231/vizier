@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use chrono::{DateTime, Duration, Utc};
 use git2::{Oid, Repository, WorktreePruneOptions};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,7 @@ use vizier_core::scheduler::spec::{
     self, AfterDependencyState, JobAfterDependencyStatus, JobPreconditionFact,
     JobPreconditionState, PinnedHeadFact, SchedulerAction, SchedulerFacts,
 };
+#[allow(unused_imports)]
 pub use vizier_core::scheduler::{
     AfterPolicy, JobAfterDependency, JobApprovalFact, JobApprovalState, JobArtifact, JobLock,
     JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,

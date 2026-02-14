@@ -25,6 +25,7 @@ fn test_help_respects_no_ansi_and_quiet() -> TestResult {
     );
     Ok(())
 }
+
 #[test]
 fn test_help_landing_page_is_curated() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -38,40 +39,42 @@ fn test_help_landing_page_is_curated() -> TestResult {
     );
     let stdout = String::from_utf8_lossy(&root.stdout);
     assert!(
-        stdout.contains("Workflow:") && stdout.contains("More help:"),
+        stdout.contains("Core commands:") && stdout.contains("More help:"),
         "expected curated help sections, got: {stdout}"
     );
-    assert!(
-        stdout.contains("vizier build")
-            && stdout.contains("vizier draft")
-            && stdout.contains("vizier merge"),
-        "expected curated workflow commands (including build), got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("Commands:") && !stdout.contains("test-display"),
-        "curated help should not include the full command inventory: {stdout}"
-    );
-    assert!(
-        stdout.lines().count() <= 24,
-        "curated help should fit in ~1 screen (line count <= 24), got {} lines:\n{stdout}",
-        stdout.lines().count()
-    );
-
-    let help_cmd = repo.vizier_output(&["help", "--no-ansi"])?;
-    assert!(
-        help_cmd.status.success(),
-        "`vizier help` failed: {}",
-        String::from_utf8_lossy(&help_cmd.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&help_cmd.stdout),
-        stdout,
-        "`vizier help` should match `vizier --help`"
-    );
+    for required in [
+        "vizier init",
+        "vizier list",
+        "vizier jobs",
+        "vizier release",
+    ] {
+        assert!(
+            stdout.contains(required),
+            "missing curated entry {required}: {stdout}"
+        );
+    }
+    for removed in [
+        "vizier save",
+        "vizier draft",
+        "vizier approve",
+        "vizier review",
+        "vizier merge",
+        "vizier build",
+        "vizier patch",
+        "vizier run",
+        "vizier plan",
+        "test-display",
+    ] {
+        assert!(
+            !stdout.contains(removed),
+            "curated help should not mention removed command {removed}: {stdout}"
+        );
+    }
     Ok(())
 }
+
 #[test]
-fn test_help_all_prints_full_reference() -> TestResult {
+fn test_help_all_prints_reduced_reference() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
@@ -83,98 +86,126 @@ fn test_help_all_prints_full_reference() -> TestResult {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Commands:")
-            && stdout.contains("test-display")
-            && stdout.contains("\n  init "),
-        "full help should include the command inventory (including test-display): {stdout}"
-    );
-    assert!(
-        !stdout.contains("\n  ask ") && !stdout.contains("\n  init-snapshot "),
-        "removed commands should not appear in full help inventory: {stdout}"
-    );
-    assert!(
-        stdout.contains("--no-ansi") && stdout.contains("--follow"),
-        "full help should include global options: {stdout}"
-    );
-    assert!(
-        !stdout.contains("--pager"),
-        "full help should not advertise removed --pager: {stdout}"
-    );
+    for command in [
+        "\n  help ",
+        "\n  init ",
+        "\n  list ",
+        "\n  cd ",
+        "\n  clean ",
+        "\n  jobs ",
+        "\n  completions ",
+        "\n  release ",
+    ] {
+        assert!(
+            stdout.contains(command),
+            "missing command {command}: {stdout}"
+        );
+    }
+    for removed in [
+        "\n  save ",
+        "\n  draft ",
+        "\n  approve ",
+        "\n  review ",
+        "\n  merge ",
+        "\n  build ",
+        "\n  patch ",
+        "\n  run ",
+        "\n  plan ",
+        "\n  test-display ",
+        "\n  __workflow-node ",
+    ] {
+        assert!(
+            !stdout.contains(removed),
+            "removed command should not appear in help inventory: {removed}\n{stdout}"
+        );
+    }
+
+    for removed_flag in [
+        "--agent",
+        "--push",
+        "--no-commit",
+        "--follow",
+        "--background-job-id",
+    ] {
+        assert!(
+            !stdout.contains(removed_flag),
+            "removed global flag should not appear in help output: {stdout}"
+        );
+    }
+
     Ok(())
 }
 
 #[test]
-fn test_removed_ask_command_shows_migration_error() -> TestResult {
+fn test_removed_commands_fail_as_unknown_subcommands() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
-    let output = repo.vizier_output(&["ask", "legacy command should fail"])?;
-    assert!(
-        !output.status.success(),
-        "removed `ask` command should fail"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("`ask` has been removed")
-            && stderr.contains("save")
-            && stderr.contains("draft")
-            && stderr.contains("merge"),
-        "expected migration guidance for removed ask command, got: {stderr}"
-    );
+    for removed in [
+        "save",
+        "draft",
+        "approve",
+        "review",
+        "merge",
+        "test-display",
+        "plan",
+        "build",
+        "patch",
+        "run",
+    ] {
+        let output = repo.vizier_output(&[removed])?;
+        assert!(
+            !output.status.success(),
+            "removed command `{removed}` should fail"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("unrecognized subcommand"),
+            "expected generic Clap unknown-subcommand error for {removed}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("was removed")
+                && !stderr.contains("use supported workflow commands")
+                && !stderr.contains("global `--json` was removed"),
+            "should not emit custom migration guidance for {removed}: {stderr}"
+        );
+    }
+
     Ok(())
 }
+
 #[test]
 fn test_help_command_matches_subcommand_help() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
-    let help_merge = repo.vizier_output(&["help", "merge", "--no-ansi"])?;
+    let help_jobs = repo.vizier_output(&["help", "jobs", "--no-ansi"])?;
     assert!(
-        help_merge.status.success(),
-        "`vizier help merge` failed: {}",
-        String::from_utf8_lossy(&help_merge.stderr)
+        help_jobs.status.success(),
+        "`vizier help jobs` failed: {}",
+        String::from_utf8_lossy(&help_jobs.stderr)
     );
 
-    let merge_help = repo.vizier_output(&["merge", "--help", "--no-ansi"])?;
+    let jobs_help = repo.vizier_output(&["jobs", "--help", "--no-ansi"])?;
     assert!(
-        merge_help.status.success(),
-        "`vizier merge --help` failed: {}",
-        String::from_utf8_lossy(&merge_help.stderr)
+        jobs_help.status.success(),
+        "`vizier jobs --help` failed: {}",
+        String::from_utf8_lossy(&jobs_help.stderr)
     );
 
     assert_eq!(
-        help_merge.stdout, merge_help.stdout,
+        help_jobs.stdout, jobs_help.stdout,
         "`vizier help <command>` should match `<command> --help` output"
     );
     Ok(())
 }
 
 #[test]
-fn test_help_build_subcommand_renders_without_panic() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    clean_workdir(&repo)?;
-
-    let output = repo.vizier_output(&["help", "build", "--no-ansi"])?;
-    assert!(
-        output.status.success(),
-        "`vizier help build` failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Usage: vizier build"),
-        "unexpected help output for build subcommand: {stdout}"
-    );
-    Ok(())
-}
-#[test]
 fn test_manpage_layout_uses_sectioned_real_files() -> TestResult {
     let repo_root = repo_root();
     let required = [
         "docs/man/man1/vizier.1",
         "docs/man/man1/vizier-jobs.1",
-        "docs/man/man1/vizier-build.1",
         "docs/man/man5/vizier-config.5",
         "docs/man/man7/vizier-workflow.7",
     ];
@@ -190,23 +221,31 @@ fn test_manpage_layout_uses_sectioned_real_files() -> TestResult {
         );
     }
 
-    let legacy = repo_root.join("docs/man/vizier.1");
+    let removed = repo_root.join("docs/man/man1/vizier-build.1");
     assert!(
-        !legacy.exists(),
-        "legacy single-page path should not exist: {}",
-        legacy.display()
+        !removed.exists(),
+        "removed build man page should not exist: {}",
+        removed.display()
     );
 
-    let build_page = fs::read_to_string(repo_root.join("docs/man/man1/vizier-build.1"))?;
-    assert!(
-        !build_page.contains("__materialize") && !build_page.contains("__template-node"),
-        "hidden build internals should not appear in generated build man page: {build_page}"
-    );
     let root_page = fs::read_to_string(repo_root.join("docs/man/man1/vizier.1"))?;
-    assert!(
-        !root_page.contains("__complete") && !root_page.contains("__workflow-node"),
-        "hidden root internals should not appear in generated root man page: {root_page}"
-    );
+    for removed in [
+        "\n  save ",
+        "\n  draft ",
+        "\n  approve ",
+        "\n  review ",
+        "\n  merge ",
+        "\n  build ",
+        "\n  patch ",
+        "\n  run ",
+        "\n  test-display ",
+        "\n  plan ",
+    ] {
+        assert!(
+            !root_page.contains(removed),
+            "removed command marker should not appear in generated root man page: {removed}\n{root_page}"
+        );
+    }
     Ok(())
 }
 
@@ -224,6 +263,7 @@ fn test_manpage_generation_check_passes() -> TestResult {
     );
     Ok(())
 }
+
 #[test]
 fn test_help_does_not_invoke_pager_when_not_a_tty() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -252,21 +292,6 @@ fn test_help_does_not_invoke_pager_when_not_a_tty() -> TestResult {
     assert!(
         !stdout.trim().is_empty(),
         "help should still print when pager is suppressed: {stdout}"
-    );
-    Ok(())
-}
-
-#[test]
-fn test_removed_pager_flag_shows_migration_guidance() -> TestResult {
-    let repo = IntegrationRepo::new()?;
-    clean_workdir(&repo)?;
-
-    let output = repo.vizier_output_no_follow(&["--pager", "help"])?;
-    assert!(!output.status.success(), "removed --pager should fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("`--pager` was removed"),
-        "missing removed --pager guidance:\n{stderr}"
     );
     Ok(())
 }

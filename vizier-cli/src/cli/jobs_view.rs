@@ -863,7 +863,6 @@ pub(crate) fn run_jobs_command(
     project_root: &Path,
     jobs_root: &Path,
     cmd: JobsCmd,
-    follow: bool,
     no_ansi: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd.action {
@@ -1304,9 +1303,11 @@ pub(crate) fn run_jobs_command(
             }
             Ok(())
         }
-        JobsAction::Tail { job, stream } => {
-            jobs::tail_job_logs(jobs_root, &job, stream.into(), follow)
-        }
+        JobsAction::Tail {
+            job,
+            stream,
+            follow,
+        } => jobs::tail_job_logs(jobs_root, &job, stream.into(), follow),
         JobsAction::Attach { job } => {
             jobs::tail_job_logs(jobs_root, &job, jobs::LogStream::Both, true)
         }

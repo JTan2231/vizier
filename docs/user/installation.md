@@ -22,7 +22,6 @@ This installs:
 - `"$HOME/.local/share/vizier/agents/*"`
 - `"$HOME/.local/share/man/man1/vizier.1"`
 - `"$HOME/.local/share/man/man1/vizier-jobs.1"`
-- `"$HOME/.local/share/man/man1/vizier-build.1"`
 - `"$HOME/.local/share/man/man5/vizier-config.5"`
 - `"$HOME/.local/share/man/man7/vizier-workflow.7"`
 
@@ -99,7 +98,6 @@ After install, you can open the shipped pages with standard `man` tooling:
 ```sh
 man vizier
 man vizier-jobs
-man vizier-build
 man 5 vizier-config
 man 7 vizier-workflow
 ```

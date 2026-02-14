@@ -1,5 +1,7 @@
 # Coordinate multi-agent workflow checkpoints
 
+Status (2026-02-14): RETIRED. The draft/approve/review/merge orchestration surface was hard-removed from the CLI. This thread remains as historical record only.
+
 ## Goal
 Provide a guided workflow that lets operators orchestrate multi-agent runs where Vizier mediates each checkpoint: high-level discussion, snapshot wording sign-off, architecture doc drafting, implementation, code sign-off, and final `vizier save`. Keep every hop auditable through the Auditor/outcome stack so intent cannot drift between agents. (thread: Agent workflow orchestration)
 

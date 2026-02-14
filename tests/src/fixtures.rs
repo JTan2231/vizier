@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 pub(crate) use git2::{
     BranchType, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
     build::CheckoutBuilder,
@@ -530,13 +532,11 @@ impl IntegrationRepo {
     }
 
     pub(crate) fn vizier_cmd(&self) -> Command {
-        self.vizier_cmd_follow()
+        self.vizier_cmd_base()
     }
 
     pub(crate) fn vizier_cmd_follow(&self) -> Command {
-        let mut cmd = self.vizier_cmd_base();
-        cmd.arg("--follow");
-        cmd
+        self.vizier_cmd_base()
     }
 
     pub(crate) fn vizier_cmd_no_follow(&self) -> Command {
@@ -564,7 +564,7 @@ impl IntegrationRepo {
     }
 
     pub(crate) fn vizier_output(&self, args: &[&str]) -> io::Result<Output> {
-        let mut cmd = self.vizier_cmd_follow();
+        let mut cmd = self.vizier_cmd_no_follow();
         cmd.args(args);
         cmd.output()
     }

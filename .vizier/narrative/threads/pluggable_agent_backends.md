@@ -1,5 +1,7 @@
 # Pluggable agent backends for Vizier CLI
 
+Status (2026-02-14): RETIRED. Agent-backed workflow commands were hard-removed from the CLI surface, so this thread is preserved as historical context.
+
 Thread: Agent backend abstraction + pluggable CLI agents
 
 Tension

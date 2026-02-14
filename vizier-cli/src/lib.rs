@@ -1,11 +1,9 @@
 mod actions;
 mod cli;
 mod completions;
-mod errors;
 mod jobs;
 mod man;
 mod plan;
-mod workflow_templates;
 
 pub use man::generate_man_pages;
 

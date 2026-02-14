@@ -117,8 +117,8 @@ impl WorkspaceStore {
         if !branch_exists(&repo, branch)? {
             return Err(
                 format!(
-                    "branch {} does not exist; create it (for example with `vizier draft {slug}`) before running vizier cd",
-                    branch
+                    "branch {} does not exist; create the branch before running vizier cd",
+                    branch,
                 )
                 .into(),
             );

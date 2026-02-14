@@ -26,25 +26,14 @@ User/global config (\fI$XDG_CONFIG_HOME\fR or platform equivalent).
 \fIVIZIER_CONFIG_FILE\fR, only when no config files are found.
 .SH COMMON TABLES
 .TP
-\fB[agents.default]\fR and \fB[agents.commands.<alias>]\fR
-Select the agent shim (for example \fBcodex\fR or \fBgemini\fR) and per-command
-runtime settings.
+\fB[display]\fR
+List and job rendering defaults (block/table/json formats, visible fields, labels).
 .TP
-\fB[workflow]\fR and \fB[workflow.templates]\fR
-Control workflow defaults such as \fBno_commit_default\fR and per-command
-template selectors.
+\fB[jobs]\fR
+Scheduler/job controls such as cancellation cleanup behavior.
 .TP
-\fB[review.checks]\fR
-Repository check commands used by \fBvizier review\fR.
-.TP
-\fB[merge.cicd_gate]\fR
-Merge CI/CD script, retry policy, and auto-remediation controls.
-.SH PROMPT PROFILES
-Prompt overrides are scoped by command alias and prompt kind.
-Valid kinds include \fBdocumentation\fR, \fBcommit\fR,
-\fBimplementation_plan\fR, \fBreview\fR, and \fBmerge_conflict\fR.
-
-Use \fBvizier plan\fR (or \fBvizier plan --json\fR) to inspect resolved settings.
+\fB[commits]\fR
+Release and commit metadata presentation defaults.
 .SH ENVIRONMENT
 .TP
 \fBVIZIER_CONFIG_FILE\fR
@@ -52,9 +41,6 @@ Fallback config path used only when repository and global config files are absen
 .TP
 \fBVIZIER_CONFIG_DIR\fR
 Override the user-level config directory root.
-.TP
-\fBVIZIER_AGENT_SHIMS_DIR\fR
-Override the directory that contains bundled agent shim labels.
 .TP
 \fBVIZIER_PAGER\fR
 Pager command used for TTY help output.

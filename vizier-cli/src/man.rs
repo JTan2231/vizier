@@ -9,7 +9,6 @@ use crate::cli::help::{render_clap_help_text, render_clap_subcommand_help_text, 
 const MAN1_DIR: &str = "docs/man/man1";
 const VIZIER_MAN1_PATH: &str = "docs/man/man1/vizier.1";
 const VIZIER_JOBS_MAN1_PATH: &str = "docs/man/man1/vizier-jobs.1";
-const VIZIER_BUILD_MAN1_PATH: &str = "docs/man/man1/vizier-build.1";
 
 #[derive(Debug, Clone)]
 struct PageOutput {
@@ -23,14 +22,6 @@ pub fn generate_man_pages(check: bool) -> Result<(), Box<dyn Error>> {
         ColorChoice::Never,
         "jobs",
     )?);
-    let build_help = strip_ansi_codes(&render_clap_subcommand_help_text(
-        ColorChoice::Never,
-        "build",
-    )?);
-    let patch_help = strip_ansi_codes(&render_clap_subcommand_help_text(
-        ColorChoice::Never,
-        "patch",
-    )?);
 
     let outputs = vec![
         PageOutput {
@@ -40,10 +31,6 @@ pub fn generate_man_pages(check: bool) -> Result<(), Box<dyn Error>> {
         PageOutput {
             path: PathBuf::from(VIZIER_JOBS_MAN1_PATH),
             content: render_jobs_page(&jobs_help),
-        },
-        PageOutput {
-            path: PathBuf::from(VIZIER_BUILD_MAN1_PATH),
-            content: render_build_page(&build_help, &patch_help),
         },
     ];
 
@@ -80,7 +67,6 @@ fn render_root_page(help: &str) -> String {
         &sections,
         &[
             ("vizier-jobs", 1),
-            ("vizier-build", 1),
             ("vizier-config", 5),
             ("vizier-workflow", 7),
         ],
@@ -92,19 +78,6 @@ fn render_jobs_page(help: &str) -> String {
     render_command_page(
         "vizier-jobs",
         "scheduler and job operations",
-        &sections,
-        &[("vizier", 1), ("vizier-build", 1), ("vizier-workflow", 7)],
-    )
-}
-
-fn render_build_page(build_help: &str, patch_help: &str) -> String {
-    let sections = [
-        ("BUILD REFERENCE", build_help.to_string()),
-        ("PATCH REFERENCE", patch_help.to_string()),
-    ];
-    render_command_page(
-        "vizier-build",
-        "build and patch orchestration commands",
         &sections,
         &[("vizier", 1), ("vizier-workflow", 7)],
     )

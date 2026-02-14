@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use git2::{BranchType, ErrorCode, Oid, Repository, Sort};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

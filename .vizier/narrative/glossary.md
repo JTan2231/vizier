@@ -1,78 +1,31 @@
 # Glossary
 
-- **A/M/D/R**: The Auditor’s change summary buckets: Added / Modified / Deleted / Renamed.
-- **Agent (backend)**: The external tool Vizier invokes to draft, implement, review, or resolve work (today typically `codex`, with other backends planned).
-- **Agent scope**: Which Vizier command/alias is running (for example `save`, `draft`, `approve`, `review`, `merge`, `patch`, `build_execute`, or `run`-resolved aliases) and therefore which prompts/bounds/config apply.
-- **Auditor**: The component that records what happened (session logs), summarizes repo edits (A/M/D/R), and constructs commit/outcome metadata from observed facts.
-- **CI/CD gate**: A repo-defined check (typically a script) that must pass before a workflow step (especially merge) is treated as successful.
-- **CI gate target-dir fallback**: `./cicd.sh` default that sets `CARGO_TARGET_DIR` to `.vizier/tmp/cargo-target` when unset so permission-restricted repo `target/` directories do not block gate runs.
-- **Capability-contract preflight**: Compile-time validation pass that enforces schedulable capability wiring/arg contracts (for example approve stop-condition loops, merge gate/remediation loops, review gate cardinality, and patch/draft arg shape) before jobs are enqueued.
-- **Patch test helper set**: Local helper functions in `tests/src/patch.rs` (`run_patch_follow`, job-record loading/scope filters) that keep patch integration tests compilable and prevent CI gate failures from dangling helper references.
-- **Change discipline**: The AGENTS.md contract that code changes must update tests/docs and pass `./cicd.sh` before being treated as done.
-- **Changes-only release notes**: `vizier release` note policy where rendered notes always use a single `### Changes` section instead of category buckets.
-- **Code state**: The snapshot slice that captures user-visible behaviors, interfaces, and constraints that matter to users.
-- **Conventional-subject release-note filter**: Release-note inclusion rule that only subjects matching `type:`, `type(scope):`, `type!:`, or `type(scope)!:` (with non-empty descriptions) are listed under `### Changes`.
-- **Commit-style summary**: The only user-facing output for a narrative-maintenance turn: a short, commit-message-like line describing what changed while detailed `snapshotDelta` content stays internal.
-- **Chekhov cue**: Snapshot-entry quality bar where each slice ties a specific tension to a concrete behavior change plus acceptance signal, so the resolution feels necessary rather than speculative.
-- **Snapshot abstraction ladder**: Editorial default levels for snapshot entries: Product level for user-visible behavior + acceptance signals, Pointer level for lightweight file/module anchors, and Implementation level only when explicit technical requests, safety/correctness constraints, or already-chosen blocking technical constraints require specificity.
-- **Config reference**: `docs/user/config-reference.md` — the full configuration catalogue with override examples; pair with `vizier plan` to confirm resolved settings. `docs/config-reference.md` now exists as a compatibility alias that points to this canonical file.
-- **Context recovery**: The response cue to surface relevant snapshot slices and active threads when a user signals they’ve lost context (e.g., “I’m forgetting context”).
-- **Docs path alias drift**: Orientation docs still mix root shorthand (`docs/*.md`) and canonical `docs/user/*.md` paths; root alias files now exist for config/prompt docs, so the remaining risk is alias/canonical content drift rather than missing files.
-- **Gate flake**: A CI/CD gate failure that disappears on rerun; track it as a non-reproducible signal to monitor rather than a confirmed regression.
-- **`gen-man` drift gate**: CI validation step (`cargo run -p vizier --bin gen-man -- --check`) that fails when generated `man1` pages diverge from checked-in command docs.
-- **Background-by-default**: Workflow posture where assistant-backed commands always enqueue scheduler jobs and `--follow` attaches to job logs; legacy `--background`/`--no-background` globals were removed and now hard-error with migration guidance.
-- **Background log flush**: The background job child flushes stdout/stderr before marking the job complete so `vizier jobs tail --follow` captures the final assistant output.
-- **Schedule watch mode**: Interactive scheduler dashboard on `vizier jobs schedule --watch` that refreshes in place with status counts, top-N summary rows, and the latest running-job log line.
-- **Watch-mode hard gate**: `jobs schedule --watch` requirement that stdout/stderr are TTY and ANSI is enabled (no `--no-ansi`), with explicit rejection for `--format dag|json`.
-- **DAG scheduler**: The job scheduler that enqueues every command as a node with dependencies, artifacts, locks, and wait states to control background execution.
-- **Default-Action Posture (DAP)**: Unless explicitly opted out (for example `no-op:`, `discuss-only:`, or “do not update”), every user input is treated as authorization to update the canonical narrative artifacts (snapshot + glossary + threads).
-- **Draft branch (`draft/<slug>`)**: The per-plan branch created by `vizier draft`, implemented by `vizier approve`, reviewed by `vizier review`, and integrated by `vizier merge`.
-- **Docs-path drift**: The remaining mismatch where AGENTS.md/README still use root shorthand paths while canonical content stays under `docs/user/*`; root alias shims now exist for config/prompt docs, and they must stay synchronized with canonical docs.
-- **Explicit-instruction guardrail**: AGENTS.md requirement that narrative edits happen only when explicitly instructed; that authorization covers snapshot/glossary plus supporting thread-doc updates, and remains the prerequisite until DAP precedence is codified.
-- **Explicit update instruction**: The task-level phrase "Update the snapshot, glossary, and supporting narrative docs as needed" that satisfies the explicit-instruction guardrail for narrative edits, whether presented as plain text or wrapped in `<task><instruction>...</instruction></task>`; when absent, narrative updates are treated as opt-out until DAP precedence is codified.
-- **Task envelope**: The prompt payload that includes `<task>`, `<snapshot>`, and `<narrativeDocs>` context for a turn; when it contains the explicit update instruction, narrative upkeep is authorized immediately and should execute in that first response.
-- **Gate**: A policy check that can block a workflow from being considered successful (e.g., pending-commit approval, CI/CD script, required docs).
-- **Initialization contract (`vizier init`)**: The repo bootstrap definition enforced by `vizier init`/`vizier init --check`: durable marker files plus required `.gitignore` rules for Vizier runtime paths.
-- **Durable init markers**: The two files that define durable Vizier initialization state: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
-- **Init check mode**: `vizier init --check`; a non-mutating validation path that prints missing contract items and exits non-zero when the init contract is not satisfied.
-- **Integration test lock**: A poison-tolerant global mutex held for each `IntegrationRepo` fixture lifetime so integration tests serialize temp-repo setup/execution and avoid cross-test `ENOENT` races.
-- **Fixture-local Vizier binary**: Integration-harness pattern where each `IntegrationRepo` copies the cached release `vizier` binary into its own temp repo and executes that local path, avoiding shared-temp binary lookup races.
-- **Job artifact**: A named output that jobs produce/consume (plan docs/branches, plan commits, target branches, ask/save patches) for dependency tracking.
-- **Job after dependency**: A scheduler dependency encoded in `schedule.after` that waits on a specific predecessor job/status, separate from artifact-based `schedule.dependencies`.
-- **Build phase after chain**: `vizier build execute` now compiles template node edges into phase-job `schedule.after` links (`approve <- materialize`, `review <- approve`, `merge <- review`) so phase ordering comes from workflow-template compilation instead of hand-built wiring.
-- **Composed workflow alias**: A repo-defined command alias (for example `develop`) mapped under `[commands]` to a workflow template and executed via `vizier run <alias>`.
-- **Develop alias bundle**: The repo-local composition set required for default `run develop` behavior in this repo: `[commands].develop = "file:.vizier/develop.toml"` plus `.vizier/develop.toml` and `.vizier/workflow/{draft,approve,merge}.toml`; integration fixtures seed this set so `plan --json` and `run develop` coverage remains deterministic.
-- **Develop alias selector mapping**: The specific repo-default `.vizier/config.toml` entry `[commands].develop = "file:.vizier/develop.toml"`; when missing, `vizier plan --json` loses `/commands/develop/template_selector` and plan/run alias coverage drifts from expected defaults.
-- **Template import/link composition**: File-backed workflow feature where a template pulls in stage templates via `imports` and wires stage-to-stage dependencies via `links`, with prefixing/cycle/collision validation before queueing.
-- **Run alias fallback chain**: Resolution order for unmapped `vizier run <alias>` templates: `.vizier/<alias>.toml`, `.vizier/<alias>.json`, `.vizier/workflow/<alias>.toml`, `.vizier/workflow/<alias>.json`.
-- **Job dependency**: An artifact-based prerequisite that keeps a job waiting or blocked until the required artifact exists.
-- **Job lock**: A named shared/exclusive mutex (for example `repo_serial`, `branch:<name>`, `temp_worktree:<id>`, `merge_sentinel:<slug>`) that gates concurrent job execution.
-- **Merge conflict marker**: Git conflict sentinel lines (`<<<<<<<`, `=======`, `>>>>>>>`) that must be removed during resolution; their presence breaks builds/tests.
-- **Merge queue**: Deprecated; the former serialized merge backlog under `.vizier/jobs/merge-queue.json`, replaced by the DAG scheduler and lock-based serialization.
-- **Man-page taxonomy**: The sectioned documentation layout under `docs/man/` (`man1` command references, `man5` configuration reference, `man7` workflow guidance) shipped as real files for source-free installs.
-- **Narrative state**: The snapshot slice that captures active themes, tensions, and open threads explaining why the code exists and where it’s headed.
-- **No-update signal**: An explicit turn-level instruction like `no-op:`, `discuss-only:`, or “do not update” that suppresses narrative edits even when the task envelope otherwise authorizes snapshot upkeep.
-- **Outcome / `outcome.v1`**: The canonical end-of-command result: a compact human epilogue (and, in protocol/JSON mode, a stable machine-readable schema) reflecting Auditor facts and gate state.
-- **Scheduler follow terminal surface**: In `--follow` mode, fast-failing jobs may print either `Outcome: Job started` (enqueued before completion) or `Outcome: Job failed` (already terminal by render time); tests should treat both as valid scheduler surfaces while still asserting the underlying success/failure semantics.
-- **Pending Commit gate**: A workflow posture where agent-applied changes are staged and reviewed before any commits land.
-- **Plan inventory drift**: Divergence between `.vizier/implementation-plans/*.md` artifacts and local `draft/<slug>` branches (for example, current docs are `refactor.md` + `removing-wire.md`, local draft branches include `draft/after`, `draft/approve`, `draft/decompose-md`, and `draft/prompting-md`, `build/patch-740958c5f8bf` sits outside the draft mapping, `.vizier/implementation-plans/decompose-md.md` is tracked as deleted, and there is no on-disk plan doc for `draft/prompting-md`), which makes pending-plan surfaces (`vizier list`, completions, plan status) less trustworthy until reconciled.
-- **Pinned head**: The branch+commit recorded when a job is submitted (especially ask/save); jobs must see the same head before applying changes.
-- **Pinned-head mismatch timing window**: In background ask tests, the interval between a job entering `running` and applying its result where an out-of-band commit should trigger a pinned-head mismatch failure; fixtures now keep that window wider to reduce CI load flakes.
-- **Prompt-config matrix**: `docs/user/prompt-config-matrix.md` — the canonical map of prompt scopes, kinds, and available config levers. `docs/prompt-config-matrix.md` now exists as a compatibility alias that points to this canonical file.
-- **Workflow docs router**: `docs/user/workflows/draft-approve-merge.md` now serves as a stable landing page with a frozen source→target map into focused workflow pages (`alias-run-flow`, `stage-execution`, `gates-and-conflicts`).
-- **Global CLI surface cleanup**: CLI contract change that removed stale globals (`--background`, `--no-background`, global `--json`, `--pager`, `--agent-label`, `--agent-command`) while keeping meaningful globals (`--agent`, `--follow`, verbosity, ANSI/session/config/push/no-commit) and returning migration guidance for removed flags.
-- **Command-local JSON output**: Machine-readable CLI output is selected per command (`vizier plan --json`, `vizier list --format json`, `vizier jobs ... --format json`) instead of a single root `--json` switch.
-- **Protocol mode**: A CLI output mode intended for automation: structured JSON/NDJSON only, no human prose, no ANSI, deterministic ordering.
-- **Repo boundary**: Operational constraint for all agent work: edits stay inside the repository (no parent-directory access) and avoid network access unless explicitly authorized.
-- **Session log**: The per-run JSON artifact under `.vizier/sessions/<id>/session.json` containing transcript, repo state, config snapshot, and outcome.
-- **Snapshot**: `.vizier/narrative/snapshot.md` — the single authoritative “story bible” covering current user-visible code surfaces plus active narrative threads, split into Code state and Narrative state slices and updated directly in-repo with glossary updates whenever the snapshot changes.
-- **snapshotDelta**: Internal, diff-like narrative change output kept inside `.vizier`; it is not emitted in user-facing responses.
-- **Thread doc**: A focused narrative document under `.vizier/narrative/threads/` that expands one tension beyond what fits in the snapshot.
-- **Wait reason**: The recorded explanation for why a job is waiting (dependencies, locks, pinned head) surfaced in job metadata and `vizier jobs` output.
-- **Workflow template**: The declarative orchestration contract for a command run (nodes, edges, gates, retries, artifacts, and policy) compiled into scheduler/job records while preserving wrapper UX (`vizier save/draft/approve/review/merge/patch/build execute`).
-- **Semantic primary-node resolution**: Wrapper/runtime rule that binds the command’s primary node by canonical ID when present, otherwise by a unique capability match (for example review no longer requires node id `review_critique`).
-- **Workflow template ref**: Configurable template selector for a scope (for example `template.review.v1`), parsed from shorthand forms like `id@version` or `.vN`, resolved from `[workflow.templates]`, and surfaced in `vizier plan` plus job metadata.
-- **Workflow policy snapshot**: Deterministic, hashable representation of a compiled workflow policy (template identity, node policies, edges, artifact contracts) used by build resume compatibility checks and audit trails.
-- **Workflow drift diagnostics**: Categorized resume mismatch output (`node`, `edge`, `policy`, `artifact`) that explains why a prior execution state cannot be safely reused after template/policy changes.
-- **Worktree**: A separate checkout under `.vizier/tmp-worktrees/` used to isolate agent-backed edits from the operator’s main checkout.
-- **Workspace**: Deprecated; the former manifest-backed “sticky” worktree under `.vizier/tmp-worktrees/workspace-<slug>`, now superseded by scheduler-managed temp worktrees.
+- **A/M/D/R**: Auditor change buckets: Added / Modified / Deleted / Renamed.
+- **Auditor**: Component that records run facts, summarizes repo edits, and writes session metadata.
+- **Change discipline**: AGENTS.md contract that code changes must update docs/tests and pass `./cicd.sh`.
+- **Clap unknown-subcommand path**: Standard parser failure surface used for removed commands; no custom migration text.
+- **Code state**: Snapshot slice for user-visible behavior, interfaces, and constraints.
+- **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
+- **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
+- **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
+- **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
+- **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
+- **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
+- **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
+- **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
+- **Local `--follow` flag**: Follow mode is command-local on `vizier jobs tail --follow`; no global `--follow` remains.
+- **Man-page taxonomy**: Installed sectioned docs under `man1` (`vizier`, `vizier-jobs`), `man5` (`vizier-config`), `man7` (`vizier-workflow`).
+- **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
+- **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
+- **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `completions`, `release`.
+- **Removed command family**: Hard-removed top-level commands: `save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`, `run`.
+- **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--background-job-id`.
+- **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
+- **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.
+- **Release dry run**: `vizier release --dry-run` preview mode for version bump and notes without commit/tag creation.
+- **Session log**: Per-run artifact at `.vizier/sessions/<id>/session.json` when session logging is enabled.
+- **Snapshot**: Canonical project frame in `.vizier/narrative/snapshot.md`.
+- **snapshotDelta**: Internal narrative-diff artifact not printed in user-facing responses.
+- **Thread doc**: Focused narrative file under `.vizier/narrative/threads/` for one tension.
+- **Worktree**: Separate checkout under `.vizier/tmp-worktrees/`.
+- **Workspace commands (`cd`/`clean`)**: Deprecated-but-retained worktree helpers currently still available on the reduced CLI surface.

@@ -122,7 +122,6 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
     let expected_exe = stage.join("usr/local/bin/vizier");
     let expected_man_pages = [
         "usr/local/share/man/man1/vizier.1",
-        "usr/local/share/man/man1/vizier-build.1",
         "usr/local/share/man/man1/vizier-jobs.1",
         "usr/local/share/man/man5/vizier-config.5",
         "usr/local/share/man/man7/vizier-workflow.7",
@@ -267,7 +266,6 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for rel in [
         "/usr/local/share/man/man1/vizier.1",
-        "/usr/local/share/man/man1/vizier-build.1",
         "/usr/local/share/man/man1/vizier-jobs.1",
         "/usr/local/share/man/man5/vizier-config.5",
         "/usr/local/share/man/man7/vizier-workflow.7",

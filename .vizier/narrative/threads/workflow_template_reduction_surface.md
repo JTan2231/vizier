@@ -1,5 +1,7 @@
 # Workflow-template reduction surface
 
+Status (2026-02-14): RETIRED. Workflow-template expansion targeted removed workflow commands (`plan/build/patch/run` and draft/approve/review/merge family); keep for historical context only.
+
 Thread: Workflow-template reduction surface (cross: Agent workflow orchestration, Configuration posture + defaults, Session logging)
 
 Snapshot anchor

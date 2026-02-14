@@ -49,19 +49,19 @@ pub(crate) fn render_help_with_pager(
 
 pub(crate) fn curated_help_text() -> &'static str {
     concat!(
-        "Vizier — LLM-assisted plan workflow\n",
+        "Vizier — repository maintenance CLI\n",
         "\n",
-        "Workflow:\n",
-        "  vizier draft  --file spec.md --name add-redis\n",
-        "  vizier approve add-redis\n",
-        "  vizier review  add-redis\n",
-        "  vizier merge   add-redis\n",
+        "Core commands:\n",
+        "  vizier init --check\n",
+        "  vizier list\n",
+        "  vizier jobs list\n",
+        "  vizier release --dry-run\n",
         "\n",
         "Examples:\n",
-        "  vizier build --file examples/build/todo.toml\n",
-        "  vizier patch BUG1.md BUG2.md --yes\n",
-        "  vizier draft --name fix-help \"curate root help output\"\n",
-        "  vizier merge fix-help --yes\n",
+        "  vizier jobs schedule --watch\n",
+        "  vizier jobs tail <job-id> --follow\n",
+        "  vizier completions zsh\n",
+        "  vizier help jobs\n",
         "\n",
         "More help:\n",
         "  vizier help --all\n",
@@ -142,18 +142,7 @@ pub(crate) fn strip_ansi_codes(input: &str) -> String {
 }
 
 fn global_arg_takes_value(arg: &str) -> bool {
-    matches!(
-        arg,
-        "-C" | "--config-file"
-            | "-l"
-            | "--load-session"
-            | "--agent"
-            // Legacy removed globals kept here so subcommand extraction can
-            // still skip their values and report better migration guidance.
-            | "--agent-label"
-            | "--agent-command"
-            | "--background-job-id"
-    )
+    matches!(arg, "-C" | "--config-file" | "-l" | "--load-session")
 }
 
 fn try_page_output(command: &str, contents: &str) -> std::io::Result<()> {
@@ -180,12 +169,12 @@ mod tests {
         let raw_args = vec![
             "vizier".to_string(),
             "--config-file=./vizier.toml".to_string(),
-            "save".to_string(),
+            "list".to_string(),
         ];
 
         assert_eq!(
             subcommand_from_raw_args(&raw_args),
-            Some("save".to_string())
+            Some("list".to_string())
         );
     }
 }

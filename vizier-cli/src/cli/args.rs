@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use vizier_core::{config, display};
 
-use crate::actions::SpecSource;
 use crate::jobs;
 
 /// A CLI for LLM project management.
@@ -15,9 +13,7 @@ use crate::jobs;
     version,
     about,
     disable_help_subcommand = true,
-    // Show help when you forget a subcommand
     arg_required_else_help = true,
-    // Make version available to subcommands automatically
     propagate_version = true
 )]
 pub(crate) struct Cli {
@@ -58,50 +54,9 @@ pub(crate) struct GlobalOpts {
     #[arg(short = 'n', long = "no-session", global = true)]
     pub(crate) no_session: bool,
 
-    /// Agent selector to run for assistant-backed commands (e.g., `codex`, `gemini`, or a custom shim name). Overrides config for this run.
-    #[arg(long = "agent", value_name = "SELECTOR", global = true)]
-    pub(crate) agent: Option<String>,
-
     /// Config file to load (supports JSON or TOML); bypasses the normal global+repo layering
     #[arg(short = 'C', long = "config-file", global = true)]
     pub(crate) config_file: Option<String>,
-
-    /// Push the current branch to origin after mutating git history (approve/merge/save flows)
-    #[arg(short = 'P', long, global = true)]
-    pub(crate) push: bool,
-
-    /// Leave changes staged/dirty instead of committing automatically (`[workflow] no_commit_default` sets the default posture)
-    #[arg(long = "no-commit", action = ArgAction::SetTrue, global = true)]
-    pub(crate) no_commit: bool,
-
-    /// Attach to a scheduled job and stream logs until completion (requires MESSAGE/--file when stdin would otherwise be read)
-    #[arg(long = "follow", action = ArgAction::SetTrue, global = true)]
-    pub(crate) follow: bool,
-
-    /// Internal hook for background child processes; do not set manually
-    #[arg(long = "background-job-id", hide = true, global = true)]
-    pub(crate) background_job_id: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ScopeArg {
-    Save,
-    Draft,
-    Approve,
-    Review,
-    Merge,
-}
-
-impl From<ScopeArg> for config::CommandScope {
-    fn from(value: ScopeArg) -> Self {
-        match value {
-            ScopeArg::Save => config::CommandScope::Save,
-            ScopeArg::Draft => config::CommandScope::Draft,
-            ScopeArg::Approve => config::CommandScope::Approve,
-            ScopeArg::Review => config::CommandScope::Review,
-            ScopeArg::Merge => config::CommandScope::Merge,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -126,15 +81,6 @@ impl From<ListFormatArg> for config::ListFormat {
             ListFormatArg::Json => config::ListFormat::Json,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum BuildPipelineArg {
-    Approve,
-    #[value(name = "approve-review")]
-    ApproveReview,
-    #[value(name = "approve-review-merge")]
-    ApproveReviewMerge,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -490,20 +436,11 @@ impl From<JobLogStreamArg> for jobs::LogStream {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Commands {
-    /// Show a short, workflow-oriented help page (or the full reference with --all)
+    /// Show a short, command-oriented help page (or the full reference with --all)
     Help(HelpCmd),
 
     /// Initialize the repository for Vizier usage (idempotent) or validate init state
     Init(InitCmd),
-
-    /// Generate an implementation-plan draft branch from an operator spec in a disposable worktree
-    Draft(DraftCmd),
-
-    /// Create build sessions and execute them through queued materialize/approve/review/merge jobs
-    Build(BuildCmd),
-
-    /// Queue one or more intent/spec files in deterministic order using build execution pipelines
-    Patch(PatchCmd),
 
     /// List pending implementation-plan branches that are ahead of the target branch
     List(ListCmd),
@@ -513,9 +450,6 @@ pub(crate) enum Commands {
 
     /// Remove Vizier-managed plan workspaces
     Clean(CleanCmd),
-
-    /// Print the resolved configuration (global + repo + CLI overrides) and exit
-    Plan(PlanCmd),
 
     /// Inspect detached Vizier background jobs
     Jobs(JobsCmd),
@@ -527,36 +461,8 @@ pub(crate) enum Commands {
     #[command(name = "__complete", hide = true)]
     Complete(HiddenCompleteCmd),
 
-    /// Internal scheduler hook to execute a workflow-template node payload
-    #[command(name = "__workflow-node", hide = true)]
-    WorkflowNode(HiddenWorkflowNodeCmd),
-
-    /// Implement and commit a stored plan on its draft branch using a disposable worktree
-    Approve(ApproveCmd),
-
-    /// Review a plan branch (runs gate/checks first), stream critique, and optionally apply fixes
-    Review(ReviewCmd),
-
-    /// Merge approved plan branches back into the target branch (squash-by-default, CI/CD gate-aware)
-    Merge(MergeCmd),
-
-    /// Run a repo-defined workflow alias/template as one scheduled DAG execution
-    Run(RunCmd),
-
     /// Create a local release commit and optional annotated tag from conventional commits
     Release(ReleaseCmd),
-
-    /// Smoke-test the configured agent/display wiring without touching `.vizier`
-    #[command(name = "test-display")]
-    TestDisplay(TestDisplayCmd),
-
-    /// Commit tracked changes with an LLM-generated message and update snapshot/narrative docs
-    ///
-    /// Examples:
-    ///   vizier save                # defaults to HEAD
-    ///   vizier save HEAD~3..HEAD   # explicit range
-    ///   vizier save main           # single rev compared to workdir/index
-    Save(SaveCmd),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -581,153 +487,6 @@ pub(crate) struct InitCmd {
     /// Validate initialization state without mutating files
     #[arg(long = "check", action = ArgAction::SetTrue)]
     pub(crate) check: bool,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct DraftCmd {
-    /// Operator spec used to seed the implementation plan
-    #[arg(value_name = "SPEC")]
-    pub(crate) spec: Option<String>,
-
-    /// Read the operator spec from a file instead of inline text
-    #[arg(short = 'f', long = "file", value_name = "PATH")]
-    pub(crate) file: Option<PathBuf>,
-
-    /// Override the derived plan/branch slug (letters, numbers, dashes only)
-    #[arg(long = "name", value_name = "NAME")]
-    pub(crate) name: Option<String>,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct BuildCmd {
-    /// Path to the build file (TOML or JSON)
-    #[arg(short = 'f', long = "file", value_name = "PATH")]
-    pub(crate) file: Option<PathBuf>,
-
-    /// Optional stable build id override (letters/numbers/dashes, no leading '.', no '/')
-    #[arg(long = "name", value_name = "NAME", requires = "file")]
-    pub(crate) name: Option<String>,
-
-    #[command(subcommand)]
-    pub(crate) command: Option<BuildActionCmd>,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct PatchCmd {
-    /// One or more intent/spec files to process in the exact CLI order
-    #[arg(value_name = "FILE", required = true)]
-    pub(crate) files: Vec<PathBuf>,
-
-    /// Override the default phase pipeline for each file (default: approve-review-merge)
-    #[arg(long = "pipeline", value_enum)]
-    pub(crate) pipeline: Option<BuildPipelineArg>,
-
-    /// Override the merge target branch used by downstream phases
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: Option<String>,
-
-    /// Resume from prior execution state by enqueueing only missing/non-terminal phases
-    #[arg(long = "resume", action = ArgAction::SetTrue)]
-    pub(crate) resume: bool,
-
-    /// Skip interactive confirmation prompts
-    #[arg(long = "yes", short = 'y')]
-    pub(crate) assume_yes: bool,
-
-    /// Wait for one or more predecessor jobs before the first queued patch root starts
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum BuildActionCmd {
-    /// Execute a succeeded build session by queueing materialize/approve/review/merge jobs
-    Execute(BuildExecuteCmd),
-
-    /// Internal scheduler hook to materialize a build step into a draft branch
-    #[command(name = "__materialize", hide = true)]
-    Materialize(BuildMaterializeCmd),
-
-    /// Internal scheduler hook to execute a generic workflow-template node
-    #[command(name = "__template-node", hide = true)]
-    TemplateNode(BuildTemplateNodeCmd),
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct BuildExecuteCmd {
-    /// Build session id (matches build/<id> and .vizier/implementation-plans/builds/<id>)
-    #[arg(value_name = "BUILD")]
-    pub(crate) build_id: String,
-
-    /// Override the default phase pipeline for each step
-    #[arg(long = "pipeline", value_enum)]
-    pub(crate) pipeline: Option<BuildPipelineArg>,
-
-    /// Resume from execution.json by enqueueing only missing/non-terminal phases
-    #[arg(long = "resume", action = ArgAction::SetTrue)]
-    pub(crate) resume: bool,
-
-    /// Skip interactive confirmation prompt
-    #[arg(long = "yes", short = 'y')]
-    pub(crate) assume_yes: bool,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct BuildMaterializeCmd {
-    /// Build session id
-    #[arg(value_name = "BUILD")]
-    pub(crate) build_id: String,
-
-    /// Build manifest step key (for example 01, 02a)
-    #[arg(long = "step", value_name = "STEP")]
-    pub(crate) step_key: String,
-
-    /// Derived plan slug to materialize
-    #[arg(long = "slug", value_name = "SLUG")]
-    pub(crate) slug: String,
-
-    /// Draft branch to write
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: String,
-
-    /// Branch to use when creating the draft branch base
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: String,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct BuildTemplateNodeCmd {
-    /// Build session id
-    #[arg(value_name = "BUILD")]
-    pub(crate) build_id: String,
-
-    /// Build manifest step key (for example 01, 02a)
-    #[arg(long = "step", value_name = "STEP")]
-    pub(crate) step_key: String,
-
-    /// Workflow template node id to execute
-    #[arg(long = "node", value_name = "NODE")]
-    pub(crate) node_id: String,
-
-    /// Derived plan slug for this step
-    #[arg(long = "slug", value_name = "SLUG")]
-    pub(crate) slug: String,
-
-    /// Derived plan branch for this step
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: String,
-
-    /// Effective target branch for this step
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: String,
-
-    /// Serialized workflow node payload (JSON)
-    #[arg(long = "node-json", value_name = "JSON")]
-    pub(crate) node_json: String,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -769,13 +528,6 @@ pub(crate) struct CleanCmd {
     /// Remove workspaces without prompting for confirmation
     #[arg(long = "yes", short = 'y')]
     pub(crate) assume_yes: bool,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct PlanCmd {
-    /// Emit the resolved configuration as JSON
-    #[arg(short = 'j', long = "json", action = ArgAction::SetTrue)]
-    pub(crate) json: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -886,7 +638,7 @@ pub(crate) enum JobsAction {
         format: JobsActionFormatArg,
     },
 
-    /// Tail logs for a background job (stdout/stderr); add --follow to stream until completion
+    /// Tail logs for a background job (stdout/stderr)
     Tail {
         #[arg(value_name = "JOB")]
         job: String,
@@ -894,6 +646,10 @@ pub(crate) enum JobsAction {
         /// Which log to display
         #[arg(long = "stream", value_enum, default_value_t = JobLogStreamArg::Both)]
         stream: JobLogStreamArg,
+
+        /// Stream until completion
+        #[arg(long = "follow", action = ArgAction::SetTrue)]
+        follow: bool,
     },
 
     /// Attach to both stdout and stderr for a running job
@@ -921,210 +677,6 @@ pub(crate) enum JobsAction {
         #[arg(long = "days", value_name = "DAYS", default_value_t = 7)]
         days: u64,
     },
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct ApproveCmd {
-    /// Plan slug to approve (tab-completes from pending plans)
-    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
-    pub(crate) plan: String,
-
-    /// Destination branch for preview/reference (defaults to detected primary)
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: Option<String>,
-
-    /// Draft branch name when it deviates from draft/<plan>
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: Option<String>,
-
-    /// Skip the confirmation prompt before applying the plan on the draft branch
-    #[arg(long = "yes", short = 'y')]
-    pub(crate) assume_yes: bool,
-
-    /// Path to an approve stop-condition script (defaults to approve.stop_condition.script)
-    #[arg(long = "stop-condition-script", value_name = "PATH")]
-    pub(crate) stop_condition_script: Option<PathBuf>,
-
-    /// Number of stop-condition retries before giving up (`approve.stop_condition.retries` by default)
-    #[arg(long = "stop-condition-retries", value_name = "COUNT")]
-    pub(crate) stop_condition_retries: Option<u32>,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
-
-    /// Queue the job but require explicit `vizier jobs approve <job-id>` before it can start
-    #[arg(long = "require-approval", action = ArgAction::SetTrue, conflicts_with = "no_require_approval")]
-    pub(crate) require_approval: bool,
-
-    /// Explicitly disable scheduler approval gating for this run
-    #[arg(long = "no-require-approval", action = ArgAction::SetTrue, conflicts_with = "require_approval")]
-    pub(crate) no_require_approval: bool,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct ReviewCmd {
-    /// Plan slug to review (tab-completes from pending plans)
-    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
-    pub(crate) plan: Option<String>,
-
-    /// Destination branch for diff context (defaults to detected primary)
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: Option<String>,
-
-    /// Draft branch name when it deviates from draft/<plan>
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: Option<String>,
-
-    /// Skip the fix-up prompt and apply backend fixes automatically
-    #[arg(long = "yes", short = 'y')]
-    pub(crate) assume_yes: bool,
-
-    /// Produce the critique without attempting fixes
-    #[arg(long = "review-only")]
-    pub(crate) review_only: bool,
-
-    /// Write the critique to vizier-review.md in the repo root and skip fixes
-    #[arg(long = "review-file")]
-    pub(crate) review_file: bool,
-
-    /// Skip running configured review checks (e.g., cargo test); merge CI/CD gate still runs once per review
-    #[arg(long = "skip-checks")]
-    pub(crate) skip_checks: bool,
-
-    /// Path to a CI/CD gate script for this review (defaults to merge.cicd_gate.script)
-    #[arg(long = "cicd-script", value_name = "PATH")]
-    pub(crate) cicd_script: Option<PathBuf>,
-
-    /// Force-enable backend remediation when the CI/CD script fails
-    #[arg(long = "auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "no_auto_cicd_fix")]
-    pub(crate) auto_cicd_fix: bool,
-
-    /// Disable backend remediation even if configured
-    #[arg(long = "no-auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "auto_cicd_fix")]
-    pub(crate) no_auto_cicd_fix: bool,
-
-    /// Number of remediation attempts before aborting (`merge.cicd_gate.retries` by default)
-    #[arg(long = "cicd-retries", value_name = "COUNT")]
-    pub(crate) cicd_retries: Option<u32>,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct MergeCmd {
-    /// Plan slug to merge (tab-completes from pending plans)
-    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
-    pub(crate) plan: Option<String>,
-
-    /// Destination branch for merge (defaults to detected primary)
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: Option<String>,
-
-    /// Draft branch name when it deviates from draft/<plan>
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: Option<String>,
-
-    /// Skip the merge confirmation prompt
-    #[arg(long = "yes", short = 'y')]
-    pub(crate) assume_yes: bool,
-
-    /// Keep the draft branch locally after merge (default is to delete)
-    #[arg(long = "keep-branch")]
-    pub(crate) keep_branch: bool,
-
-    /// Optional note appended to the merge commit body
-    #[arg(long = "note", value_name = "TEXT")]
-    pub(crate) note: Option<String>,
-
-    /// Attempt backend-backed auto-resolution when conflicts arise
-    #[arg(long = "auto-resolve-conflicts")]
-    pub(crate) auto_resolve_conflicts: bool,
-
-    /// Skip backend conflict auto-resolution even when configured
-    #[arg(
-        long = "no-auto-resolve-conflicts",
-        action = ArgAction::SetTrue,
-        conflicts_with = "auto_resolve_conflicts"
-    )]
-    pub(crate) no_auto_resolve_conflicts: bool,
-
-    /// Only finalize a previously conflicted merge; fail if no pending Vizier merge exists
-    #[arg(long = "complete-conflict")]
-    pub(crate) complete_conflict: bool,
-
-    /// Path to a CI/CD gate script (defaults to merge.cicd_gate.script)
-    #[arg(long = "cicd-script", value_name = "PATH")]
-    pub(crate) cicd_script: Option<PathBuf>,
-
-    /// Force-enable backend remediation when the CI/CD script fails
-    #[arg(long = "auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "no_auto_cicd_fix")]
-    pub(crate) auto_cicd_fix: bool,
-
-    /// Disable backend remediation even if configured
-    #[arg(long = "no-auto-cicd-fix", action = ArgAction::SetTrue, conflicts_with = "auto_cicd_fix")]
-    pub(crate) no_auto_cicd_fix: bool,
-
-    /// Number of remediation attempts before aborting (`merge.cicd_gate.retries` by default)
-    #[arg(long = "cicd-retries", value_name = "COUNT")]
-    pub(crate) cicd_retries: Option<u32>,
-
-    /// Squash implementation commits before creating the merge commit (default follows `[merge] squash`)
-    #[arg(long = "squash", action = ArgAction::SetTrue, conflicts_with = "no_squash")]
-    pub(crate) squash: bool,
-
-    /// Preserve implementation commits (legacy behavior; overrides `[merge] squash = true`)
-    #[arg(long = "no-squash", action = ArgAction::SetTrue, conflicts_with = "squash")]
-    pub(crate) no_squash: bool,
-
-    /// Parent index to use when cherry-picking merge commits in squash mode (1-based)
-    #[arg(long = "squash-mainline", value_name = "PARENT_INDEX")]
-    pub(crate) squash_mainline: Option<u32>,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct RunCmd {
-    /// Repo-defined command alias/template selector (for example `develop`)
-    #[arg(value_name = "ALIAS")]
-    pub(crate) alias: String,
-
-    /// Optional operator spec text (mapped to spec_text/spec_source runtime params)
-    #[arg(value_name = "SPEC")]
-    pub(crate) spec: Option<String>,
-
-    /// Read the operator spec from a file instead of inline text
-    #[arg(short = 'f', long = "file", value_name = "PATH")]
-    pub(crate) file: Option<PathBuf>,
-
-    /// Optional slug/name hint for draft-style workflows
-    #[arg(long = "name", value_name = "NAME")]
-    pub(crate) name: Option<String>,
-
-    /// Optional draft branch override for workflows that need branch context
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: Option<String>,
-
-    /// Optional target branch override for workflows that need merge context
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: Option<String>,
-
-    /// Additional runtime params passed into template rendering (`KEY=VALUE`)
-    #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
-    pub(crate) set: Vec<String>,
-
-    /// Force assume-yes semantics for workflow nodes that gate on confirmation
-    #[arg(long = "yes", short = 'y')]
-    pub(crate) assume_yes: bool,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1174,41 +726,6 @@ pub(crate) struct CompletionsCmd {
 #[derive(ClapArgs, Debug)]
 pub(crate) struct HiddenCompleteCmd {}
 
-#[derive(ClapArgs, Debug)]
-pub(crate) struct HiddenWorkflowNodeCmd {
-    /// Optional command scope label (`save`, `draft`, `approve`, `review`, `merge`, `patch`, `build_execute`, or a custom run alias)
-    #[arg(long = "scope", value_name = "SCOPE")]
-    pub(crate) scope: Option<String>,
-
-    /// Optional build session id
-    #[arg(long = "build", value_name = "BUILD")]
-    pub(crate) build_id: Option<String>,
-
-    /// Optional build manifest step key
-    #[arg(long = "step", value_name = "STEP")]
-    pub(crate) step_key: Option<String>,
-
-    /// Workflow template node id to execute
-    #[arg(long = "node", value_name = "NODE")]
-    pub(crate) node_id: String,
-
-    /// Optional derived plan slug
-    #[arg(long = "slug", value_name = "SLUG")]
-    pub(crate) slug: Option<String>,
-
-    /// Optional derived plan branch
-    #[arg(long = "branch", value_name = "BRANCH")]
-    pub(crate) branch: Option<String>,
-
-    /// Optional effective target branch
-    #[arg(long = "target", value_name = "BRANCH")]
-    pub(crate) target: Option<String>,
-
-    /// Serialized workflow node payload (JSON)
-    #[arg(long = "node-json", value_name = "JSON")]
-    pub(crate) node_json: String,
-}
-
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub(crate) enum CompletionShell {
     Bash,
@@ -1228,90 +745,6 @@ impl From<CompletionShell> for Shell {
             CompletionShell::Powershell => Shell::PowerShell,
         }
     }
-}
-
-#[derive(ClapArgs, Debug)]
-#[command(
-    group = ArgGroup::new("commit_msg_src")
-        .args(["commit_message", "commit_message_editor"])
-        .multiple(false)
-)]
-pub(crate) struct SaveCmd {
-    /// Commit reference or range; defaults to HEAD if omitted.
-    ///
-    /// Examples: `HEAD`, `HEAD~3..HEAD`, `feature-branch`
-    #[arg(value_name = "REV_OR_RANGE", default_value = "HEAD")]
-    pub(crate) rev_or_range: String,
-
-    /// Developer note to append to the *code* commit message
-    #[arg(short = 'm', long = "message")]
-    pub(crate) commit_message: Option<String>,
-
-    /// Open $EDITOR to compose the commit message
-    #[arg(short = 'M', long = "edit-message")]
-    pub(crate) commit_message_editor: bool,
-
-    /// Wait for one or more predecessor jobs to succeed before this job can run
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
-    pub(crate) after: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedInput {
-    pub(crate) text: String,
-    pub(crate) origin: InputOrigin,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum InputOrigin {
-    Inline,
-    File(PathBuf),
-    Stdin,
-}
-
-impl From<InputOrigin> for SpecSource {
-    fn from(origin: InputOrigin) -> Self {
-        match origin {
-            InputOrigin::Inline => SpecSource::Inline,
-            InputOrigin::File(path) => SpecSource::File(path),
-            InputOrigin::Stdin => SpecSource::Stdin,
-        }
-    }
-}
-
-#[derive(ClapArgs, Debug)]
-pub(crate) struct TestDisplayCmd {
-    /// Command alias to resolve agent settings from (for example: save, draft, approve, review, merge, patch)
-    #[arg(long = "command", value_name = "ALIAS", default_value = "save")]
-    pub(crate) command: String,
-
-    /// Legacy scope alias (deprecated; use --command)
-    #[arg(long = "scope", value_enum, hide = true)]
-    pub(crate) scope: Option<ScopeArg>,
-
-    /// Override the default smoke-test prompt
-    #[arg(long = "prompt", value_name = "TEXT")]
-    pub(crate) prompt: Option<String>,
-
-    /// Dump captured stdout/stderr verbatim instead of a summarized snippet
-    #[arg(long = "raw", action = ArgAction::SetTrue)]
-    pub(crate) raw: bool,
-
-    /// Timeout in seconds before aborting the agent run
-    #[arg(long = "timeout", value_name = "SECONDS")]
-    pub(crate) timeout_secs: Option<u64>,
-
-    /// Disable stdbuf/unbuffer/script wrapping for debugging agent output
-    #[arg(long = "no-wrapper", action = ArgAction::SetTrue)]
-    pub(crate) no_wrapper: bool,
-
-    /// Write a session log for this smoke test (defaults to off)
-    #[arg(long = "session", action = ArgAction::SetTrue, conflicts_with = "no_session")]
-    pub(crate) session: bool,
-
-    /// Explicitly disable session logging (default)
-    #[arg(long = "no-session", action = ArgAction::SetTrue, conflicts_with = "session")]
-    pub(crate) no_session: bool,
 }
 
 pub(crate) fn normalize_field_key(value: &str) -> String {

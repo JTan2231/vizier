@@ -1,5 +1,7 @@
 # Tame configuration surface for draft → approve → merge workflow
 
+Status (2026-02-14): RETIRED. The draft/approve/merge command family was hard-removed; this document is historical only.
+
 ## Thread
 - Agent workflow orchestration
 
