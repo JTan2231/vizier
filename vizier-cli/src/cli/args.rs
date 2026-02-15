@@ -631,7 +631,7 @@ pub(crate) enum JobsAction {
 
     /// Show scheduled jobs and dependency relationships
     Schedule {
-        /// Include succeeded/failed/cancelled jobs (default shows active + blocked states)
+        /// Include succeeded/failed/cancelled jobs (default shows active/blocked plus failed blockers)
         #[arg(long = "all", short = 'a')]
         all: bool,
 

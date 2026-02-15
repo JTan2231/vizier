@@ -308,7 +308,7 @@ Summary behavior (default):
 - Columns: `#`, `Slug`, `Name`, `Status`, `Wait`, `Job`.
 - Ordering is deterministic: `created_at ASC`, then `job_id ASC`.
 - `--job <id>` focuses to the job neighborhood and pins the focused job to row 1.
-- Default visibility includes active statuses plus `blocked_by_dependency`; `--all`
+- Default visibility includes active statuses plus failed jobs that are currently blocking dependency-waiting jobs; `--all`
   additionally includes terminal statuses (`succeeded`, `failed`, `cancelled`).
 
 DAG behavior (`--format dag`):

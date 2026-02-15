@@ -85,6 +85,46 @@ fn schedule_status_visible(status: JobStatus) -> bool {
     )
 }
 
+fn dependency_blocked_status(status: JobStatus) -> bool {
+    matches!(
+        status,
+        JobStatus::WaitingOnDeps | JobStatus::BlockedByDependency
+    )
+}
+
+fn failed_job_blocks_dependents(graph: &jobs::ScheduleGraph, job_id: &str) -> bool {
+    let Some(record) = graph.record(job_id) else {
+        return false;
+    };
+    if record.status != JobStatus::Failed {
+        return false;
+    }
+
+    let mut dependents = graph.after_dependents_for(job_id);
+    for artifact in graph.artifacts_for(job_id) {
+        dependents.extend(graph.consumers_for(&artifact));
+    }
+    dependents.sort();
+    dependents.dedup();
+
+    dependents.into_iter().any(|dependent_id| {
+        graph
+            .record(&dependent_id)
+            .map(|dependent| dependency_blocked_status(dependent.status))
+            .unwrap_or(false)
+    })
+}
+
+fn schedule_job_visible(graph: &jobs::ScheduleGraph, include_all: bool, job_id: &str) -> bool {
+    if include_all {
+        return true;
+    }
+    let Some(record) = graph.record(job_id) else {
+        return false;
+    };
+    schedule_status_visible(record.status) || failed_job_blocks_dependents(graph, job_id)
+}
+
 fn schedule_roots(
     graph: &jobs::ScheduleGraph,
     include_all: bool,
@@ -103,11 +143,7 @@ fn schedule_roots(
             if !focus_set.contains(&job_id) {
                 continue;
             }
-            let record = graph.record(&job_id);
-            let visible = include_all
-                || record
-                    .map(|record| schedule_status_visible(record.status))
-                    .unwrap_or(false);
+            let visible = schedule_job_visible(graph, include_all, &job_id);
             if visible || job_id == focus_id {
                 roots.push(job_id);
             }
@@ -120,12 +156,7 @@ fn schedule_roots(
     }
 
     for job_id in job_order {
-        let record = graph.record(&job_id);
-        if include_all
-            || record
-                .map(|record| schedule_status_visible(record.status))
-                .unwrap_or(false)
-        {
+        if schedule_job_visible(graph, include_all, &job_id) {
             roots.push(job_id);
         }
     }
@@ -1380,6 +1411,43 @@ pub(crate) fn run_jobs_command(
 mod tests {
     use super::*;
 
+    fn make_record(
+        job_id: &str,
+        status: JobStatus,
+        created_at: chrono::DateTime<chrono::Utc>,
+        schedule: Option<jobs::JobSchedule>,
+    ) -> jobs::JobRecord {
+        jobs::JobRecord {
+            id: job_id.to_string(),
+            status,
+            command: vec![
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            child_args: Vec::new(),
+            created_at,
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: format!(".vizier/jobs/{job_id}/stdout.log"),
+            stderr_path: format!(".vizier/jobs/{job_id}/stderr.log"),
+            session_path: None,
+            outcome_path: None,
+            metadata: None,
+            config_snapshot: None,
+            schedule,
+        }
+    }
+
+    fn after_dependency(job_id: &str) -> jobs::JobAfterDependency {
+        jobs::JobAfterDependency {
+            job_id: job_id.to_string(),
+            policy: jobs::AfterPolicy::Success,
+        }
+    }
+
     fn row(order: usize, job_id: &str, status: JobStatus) -> ScheduleSummaryRow {
         ScheduleSummaryRow {
             order,
@@ -1390,6 +1458,75 @@ mod tests {
             job_id: job_id.to_string(),
             created_at: "2026-02-13T00:00:00Z".to_string(),
         }
+    }
+
+    #[test]
+    fn schedule_roots_include_failed_job_when_blocking_waiting_dependents() {
+        let now = chrono::Utc::now();
+        let failed = make_record(
+            "job-failed",
+            JobStatus::Failed,
+            now,
+            Some(jobs::JobSchedule::default()),
+        );
+        let waiting = make_record(
+            "job-waiting",
+            JobStatus::WaitingOnDeps,
+            now + chrono::Duration::seconds(1),
+            Some(jobs::JobSchedule {
+                after: vec![after_dependency("job-failed")],
+                ..jobs::JobSchedule::default()
+            }),
+        );
+        let succeeded = make_record(
+            "job-succeeded",
+            JobStatus::Succeeded,
+            now + chrono::Duration::seconds(2),
+            Some(jobs::JobSchedule::default()),
+        );
+        let graph = jobs::ScheduleGraph::new(vec![succeeded, waiting, failed]);
+
+        let roots = schedule_roots(&graph, false, None, 3);
+        assert!(
+            roots.iter().any(|job| job == "job-failed"),
+            "failed blocker should stay visible: {roots:?}"
+        );
+        assert!(
+            roots.iter().any(|job| job == "job-waiting"),
+            "waiting dependent should stay visible: {roots:?}"
+        );
+        assert!(
+            !roots.iter().any(|job| job == "job-succeeded"),
+            "succeeded jobs should stay hidden by default: {roots:?}"
+        );
+    }
+
+    #[test]
+    fn schedule_roots_hide_unrelated_failed_jobs_without_all() {
+        let now = chrono::Utc::now();
+        let failed = make_record(
+            "job-failed-unrelated",
+            JobStatus::Failed,
+            now,
+            Some(jobs::JobSchedule::default()),
+        );
+        let running = make_record(
+            "job-running",
+            JobStatus::Running,
+            now + chrono::Duration::seconds(1),
+            Some(jobs::JobSchedule::default()),
+        );
+        let graph = jobs::ScheduleGraph::new(vec![running, failed]);
+
+        let roots = schedule_roots(&graph, false, None, 3);
+        assert!(
+            !roots.iter().any(|job| job == "job-failed-unrelated"),
+            "unrelated failed jobs should stay hidden without --all: {roots:?}"
+        );
+        assert!(
+            roots.iter().any(|job| job == "job-running"),
+            "active jobs should remain visible: {roots:?}"
+        );
     }
 
     #[test]

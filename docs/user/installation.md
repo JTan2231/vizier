@@ -38,6 +38,10 @@ vizier init
 
 - `.vizier/narrative/snapshot.md`
 - `.vizier/narrative/glossary.md`
+- `.vizier/config.toml`
+- `.vizier/workflows/{draft,approve,merge}.toml`
+- `.vizier/prompts/{DRAFT,APPROVE,MERGE}_PROMPTS.md`
+- `./ci.sh`
 
 It also ensures `.gitignore` includes Vizier runtime paths that should stay out of
 history:

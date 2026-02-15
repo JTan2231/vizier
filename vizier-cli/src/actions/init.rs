@@ -25,6 +25,10 @@ const CONFIG_STARTER: &str = include_str!("../../templates/init/config.toml");
 const WORKFLOW_DRAFT_STARTER: &str = include_str!("../../templates/init/workflows/draft.toml");
 const WORKFLOW_APPROVE_STARTER: &str = include_str!("../../templates/init/workflows/approve.toml");
 const WORKFLOW_MERGE_STARTER: &str = include_str!("../../templates/init/workflows/merge.toml");
+const PROMPT_DRAFT_STARTER: &str = include_str!("../../templates/init/prompts/DRAFT_PROMPTS.md");
+const PROMPT_APPROVE_STARTER: &str =
+    include_str!("../../templates/init/prompts/APPROVE_PROMPTS.md");
+const PROMPT_MERGE_STARTER: &str = include_str!("../../templates/init/prompts/MERGE_PROMPTS.md");
 const CI_SCRIPT_STARTER: &str = include_str!("../../templates/init/ci.sh");
 
 #[derive(Debug, Clone)]
@@ -206,6 +210,21 @@ fn required_files() -> Vec<RequiredFile> {
         RequiredFile {
             relative_path: format!("{}workflows/merge.toml", tools::VIZIER_DIR),
             starter_template: WORKFLOW_MERGE_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}prompts/DRAFT_PROMPTS.md", tools::VIZIER_DIR),
+            starter_template: PROMPT_DRAFT_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}prompts/APPROVE_PROMPTS.md", tools::VIZIER_DIR),
+            starter_template: PROMPT_APPROVE_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}prompts/MERGE_PROMPTS.md", tools::VIZIER_DIR),
+            starter_template: PROMPT_MERGE_STARTER,
             executable: false,
         },
         RequiredFile {
@@ -428,6 +447,14 @@ mod tests {
                 .any(|rule| rule == ".vizier/implementation-plans"),
             "expected missing implementation-plans ignore rule in evaluation: {:?}",
             evaluation.missing_ignore_rules
+        );
+        assert!(
+            evaluation
+                .missing_files
+                .iter()
+                .any(|path| path == ".vizier/prompts/DRAFT_PROMPTS.md"),
+            "expected missing .vizier/prompts/DRAFT_PROMPTS.md in evaluation: {:?}",
+            evaluation.missing_files
         );
     }
 }

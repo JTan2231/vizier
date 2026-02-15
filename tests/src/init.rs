@@ -8,6 +8,21 @@ const REQUIRED_IGNORE_RULES: [&str; 5] = [
     ".vizier/implementation-plans",
 ];
 
+const REQUIRED_PROMPT_FILES: [(&str, &str); 3] = [
+    (
+        ".vizier/prompts/DRAFT_PROMPTS.md",
+        "vizier-cli/templates/init/prompts/DRAFT_PROMPTS.md",
+    ),
+    (
+        ".vizier/prompts/APPROVE_PROMPTS.md",
+        "vizier-cli/templates/init/prompts/APPROVE_PROMPTS.md",
+    ),
+    (
+        ".vizier/prompts/MERGE_PROMPTS.md",
+        "vizier-cli/templates/init/prompts/MERGE_PROMPTS.md",
+    ),
+];
+
 fn assert_matches_repo_template(
     repo: &IntegrationRepo,
     actual_rel: &str,
@@ -38,6 +53,10 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
     let workflows_dir = repo.path().join(".vizier/workflows");
     if workflows_dir.exists() {
         fs::remove_dir_all(&workflows_dir)?;
+    }
+    let prompts_dir = repo.path().join(".vizier/prompts");
+    if prompts_dir.exists() {
+        fs::remove_dir_all(&prompts_dir)?;
     }
     let ci_path = repo.path().join("ci.sh");
     if ci_path.exists() {
@@ -89,6 +108,9 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
         ".vizier/workflows/merge.toml",
         ".vizier/workflows/merge.toml",
     )?;
+    for (actual_rel, template_rel) in REQUIRED_PROMPT_FILES {
+        assert_matches_repo_template(&repo, actual_rel, template_rel)?;
+    }
     assert!(ci_path.is_file(), "init should create root ci.sh");
     let ci_contents = repo.read("ci.sh")?;
     assert!(
@@ -127,9 +149,11 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
 
     let snapshot_before = repo.read(".vizier/narrative/snapshot.md")?;
     let draft_before = repo.read(".vizier/workflows/draft.toml")?;
+    let merge_prompt_before = repo.read(".vizier/prompts/MERGE_PROMPTS.md")?;
     fs::remove_file(repo.path().join(".vizier/narrative/glossary.md"))?;
     fs::remove_file(repo.path().join(".vizier/config.toml"))?;
     fs::remove_file(repo.path().join(".vizier/workflows/approve.toml"))?;
+    fs::remove_file(repo.path().join(".vizier/prompts/APPROVE_PROMPTS.md"))?;
     let ci_path = repo.path().join("ci.sh");
     if ci_path.exists() {
         fs::remove_file(&ci_path)?;
@@ -168,11 +192,22 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
         repo.path().join(".vizier/workflows/approve.toml").is_file(),
         "init should restore missing approve workflow"
     );
+    assert!(
+        repo.path()
+            .join(".vizier/prompts/APPROVE_PROMPTS.md")
+            .is_file(),
+        "init should restore missing approve prompt companion"
+    );
     assert!(ci_path.is_file(), "init should restore missing ci.sh");
     assert_eq!(
         draft_before,
         repo.read(".vizier/workflows/draft.toml")?,
         "init should not overwrite existing workflow files"
+    );
+    assert_eq!(
+        merge_prompt_before,
+        repo.read(".vizier/prompts/MERGE_PROMPTS.md")?,
+        "init should not overwrite existing prompt files"
     );
 
     let gitignore_after = repo.read(".gitignore")?;
@@ -204,6 +239,10 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     let glossary_before = repo.read(".vizier/narrative/glossary.md")?;
     let config_before = repo.read(".vizier/config.toml")?;
     let draft_before = repo.read(".vizier/workflows/draft.toml")?;
+    let prompts_before = REQUIRED_PROMPT_FILES
+        .iter()
+        .map(|(actual_rel, _)| repo.read(actual_rel))
+        .collect::<Result<Vec<_>, _>>()?;
     let ci_before = repo.read("ci.sh")?;
     let gitignore_before = repo.read(".gitignore")?;
 
@@ -239,6 +278,13 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
         repo.read(".vizier/workflows/draft.toml")?,
         "workflow templates should remain unchanged when init is already satisfied"
     );
+    for ((actual_rel, _), before) in REQUIRED_PROMPT_FILES.iter().zip(prompts_before.iter()) {
+        assert_eq!(
+            before,
+            &repo.read(actual_rel)?,
+            "prompt companion should remain unchanged when init is already satisfied"
+        );
+    }
     assert_eq!(
         ci_before,
         repo.read("ci.sh")?,
@@ -265,6 +311,7 @@ fn test_init_check_reports_missing_and_exits_non_zero() -> TestResult {
     );
 
     fs::remove_file(repo.path().join(".vizier/narrative/glossary.md"))?;
+    fs::remove_file(repo.path().join(".vizier/prompts/DRAFT_PROMPTS.md"))?;
     let mut gitignore = repo.read(".gitignore")?;
     gitignore = gitignore
         .lines()
@@ -287,6 +334,10 @@ fn test_init_check_reports_missing_and_exits_non_zero() -> TestResult {
     assert!(
         stdout.contains("missing: .vizier/narrative/glossary.md"),
         "check output should include missing glossary marker: {stdout}"
+    );
+    assert!(
+        stdout.contains("missing: .vizier/prompts/DRAFT_PROMPTS.md"),
+        "check output should include missing prompt companion: {stdout}"
     );
     assert!(
         stdout.contains("missing: .gitignore: .vizier/jobs/"),
@@ -320,6 +371,10 @@ fn test_init_check_is_non_mutating_on_uninitialized_repo() -> TestResult {
     if workflows.exists() {
         fs::remove_dir_all(&workflows)?;
     }
+    let prompts = repo.path().join(".vizier/prompts");
+    if prompts.exists() {
+        fs::remove_dir_all(&prompts)?;
+    }
     let ci_path = repo.path().join("ci.sh");
     if ci_path.exists() {
         fs::remove_file(&ci_path)?;
@@ -346,6 +401,10 @@ fn test_init_check_is_non_mutating_on_uninitialized_repo() -> TestResult {
     assert!(
         !repo.path().join(".vizier/workflows").exists(),
         "check mode should not create .vizier/workflows"
+    );
+    assert!(
+        !repo.path().join(".vizier/prompts").exists(),
+        "check mode should not create .vizier/prompts"
     );
     assert!(
         !repo.path().join("ci.sh").exists(),
