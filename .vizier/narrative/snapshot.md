@@ -72,7 +72,7 @@ Code state (behaviors that matter)
 - `vizier jobs show` metadata surfaces now include `execution_root` for workflow-node records.
 - Prompt payload transport now has a typed adjunct store at `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; custom marker files under `.vizier/jobs/artifacts/custom/...` remain the scheduler gating truth.
 - Legacy `draft/*` branches and `.vizier/implementation-plans/*.md` files can still appear in non-bijective states in existing worktrees; treat them as historical residue, not an active command surface.
-- Current worktree evidence (`draft/cd`, revalidated 2026-02-15): `.vizier/implementation-plans/` contains `impl.md`, `.vizier/implementation-plans/cd.md` is tracked as deleted, and local draft branch inventory is `draft/cd`; drift remains active because the branch/doc state is still non-bijective.
+- Current worktree evidence (`draft/templates`, revalidated 2026-02-15): `.vizier/implementation-plans/` contains `impl.md`, `.vizier/implementation-plans/templates.md` is tracked as deleted, and local draft branch inventory is `draft/templates`; drift remains active because the branch/doc state is still non-bijective.
 
 Acceptance checkpoints (selected)
 - `vizier --help` / `vizier help --all` list the retained command set (`run` included) and current global flags.
