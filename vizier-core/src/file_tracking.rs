@@ -213,23 +213,50 @@ pub fn is_canonical_story_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::Signature;
     use std::fs;
-    use std::process::Command;
     use tempfile::tempdir;
 
     fn run_git(repo_root: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo_root)
-            .args(args)
-            .output()
-            .expect("run git command");
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let repo = match Repository::open(repo_root) {
+            Ok(repo) => repo,
+            Err(_) => Repository::init(repo_root).expect("init repo"),
+        };
+        match args {
+            ["init"] => {
+                let _ = Repository::open(repo_root).expect("open initialized repo");
+            }
+            ["config", "user.name", value] => {
+                repo.config()
+                    .and_then(|mut cfg| cfg.set_str("user.name", value))
+                    .expect("set user.name");
+            }
+            ["config", "user.email", value] => {
+                repo.config()
+                    .and_then(|mut cfg| cfg.set_str("user.email", value))
+                    .expect("set user.email");
+            }
+            ["add", path] => {
+                let mut index = repo.index().expect("open index");
+                index.add_path(Path::new(path)).expect("add path");
+                index.write().expect("write index");
+            }
+            ["commit", "-m", message] => {
+                let mut index = repo.index().expect("open index");
+                index.write().expect("write index");
+                let tree_id = index.write_tree().expect("write tree");
+                let tree = repo.find_tree(tree_id).expect("find tree");
+                let sig = repo
+                    .signature()
+                    .or_else(|_| Signature::now("Test User", "test@example.com"))
+                    .expect("signature");
+                let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+                let parents = parent.iter().collect::<Vec<_>>();
+                repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+                    .expect("commit");
+            }
+            _ => panic!("unsupported test git operation: {:?}", args),
+        }
     }
 
     #[test]

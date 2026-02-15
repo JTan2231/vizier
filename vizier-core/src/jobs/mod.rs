@@ -2890,49 +2890,18 @@ fn ensure_local_branch(
     execution_root: &Path,
     branch: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let exists = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("show-ref")
-        .arg("--verify")
-        .arg("--quiet")
-        .arg(format!("refs/heads/{branch}"))
-        .status()?;
-    if exists.success() {
+    if crate::vcs::branch_exists_in(execution_root, branch)? {
         return Ok(());
     }
 
-    let created = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("branch")
-        .arg(branch)
-        .status()?;
-    if created.success() {
-        Ok(())
-    } else {
-        Err(format!("unable to create local branch `{branch}`").into())
-    }
+    crate::vcs::create_branch_from_head_in(execution_root, branch)
+        .map_err(|err| format!("unable to create local branch `{branch}`: {err}").into())
 }
 
 fn current_branch_name(execution_root: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("rev-parse")
-        .arg("--abbrev-ref")
-        .arg("HEAD")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if name.is_empty() || name == "HEAD" {
-        None
-    } else {
-        Some(name)
-    }
+    crate::vcs::current_branch_name_in(execution_root)
+        .ok()
+        .flatten()
 }
 
 fn has_unmerged_paths(execution_root: &Path) -> bool {
@@ -2940,29 +2909,7 @@ fn has_unmerged_paths(execution_root: &Path) -> bool {
 }
 
 fn list_unmerged_paths(execution_root: &Path) -> Vec<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("ls-files")
-        .arg("-u")
-        .output();
-    match output {
-        Ok(output) if output.status.success() => {
-            let mut paths = Vec::new();
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some((_prefix, path)) = line.split_once('\t') {
-                    let trimmed = path.trim();
-                    if !trimmed.is_empty() {
-                        paths.push(trimmed.to_string());
-                    }
-                }
-            }
-            paths.sort();
-            paths.dedup();
-            paths
-        }
-        _ => Vec::new(),
-    }
+    crate::vcs::list_conflicted_paths_in(execution_root).unwrap_or_default()
 }
 
 fn parse_non_empty_json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -3155,50 +3102,24 @@ fn merge_commit_message_with_plan(subject: &str, plan_document: Option<&str>) ->
     }
 }
 
-fn git_output_detail(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stderr.is_empty() {
-        stderr
-    } else if !stdout.is_empty() {
-        stdout
-    } else {
-        format!("exit status {}", output.status)
-    }
-}
-
 fn git_blob_exists_at_revision(
     execution_root: &Path,
     revision: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("cat-file")
-        .arg("-e")
-        .arg(revision)
-        .status()?;
-    Ok(status.success())
+    Ok(crate::vcs::blob_exists_at_revision_in(
+        execution_root,
+        revision,
+    )?)
 }
 
 fn git_show_blob_at_revision(
     execution_root: &Path,
     revision: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("show")
-        .arg(revision)
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "git show `{revision}` failed: {}",
-            git_output_detail(&output)
-        )
-        .into());
-    }
-    Ok(String::from_utf8(output.stdout)?)
+    Ok(crate::vcs::read_blob_at_revision_in(
+        execution_root,
+        revision,
+    )?)
 }
 
 fn load_plan_document_for_merge_message(
@@ -3217,23 +3138,11 @@ fn load_plan_document_for_merge_message(
         )?));
     }
 
-    let rev_list = Command::new("git")
-        .arg("-C")
-        .arg(execution_root)
-        .arg("rev-list")
-        .arg(source_branch)
-        .arg("--")
-        .arg(&plan_rel)
-        .output()?;
-    if !rev_list.status.success() {
-        return Err(format!(
-            "git rev-list `{source_branch}` for `{plan_rel}` failed: {}",
-            git_output_detail(&rev_list)
-        )
-        .into());
-    }
-
-    for oid in String::from_utf8_lossy(&rev_list.stdout).lines() {
+    let revisions =
+        crate::vcs::revisions_touching_path_in(execution_root, source_branch, &plan_rel).map_err(
+            |err| format!("unable to inspect revisions for `{source_branch}` `{plan_rel}`: {err}"),
+        )?;
+    for oid in revisions {
         let revision = format!("{oid}:{plan_rel}");
         if !git_blob_exists_at_revision(execution_root, &revision)? {
             continue;
@@ -3259,19 +3168,9 @@ fn ensure_source_plan_doc_removed_before_merge(
 
     let starting_branch = current_branch_name(execution_root);
     if starting_branch.as_deref() != Some(source_branch) {
-        let checkout = Command::new("git")
-            .arg("-C")
-            .arg(execution_root)
-            .arg("checkout")
-            .arg(source_branch)
-            .output()?;
-        if !checkout.status.success() {
-            return Err(format!(
-                "git checkout `{source_branch}` failed while preparing plan doc cleanup: {}",
-                git_output_detail(&checkout)
-            )
-            .into());
-        }
+        crate::vcs::checkout_branch_in(execution_root, source_branch).map_err(|err| {
+            format!("unable to checkout `{source_branch}` while preparing plan doc cleanup: {err}")
+        })?;
     }
 
     let restore_branch = target_branch
@@ -3285,54 +3184,29 @@ fn ensure_source_plan_doc_removed_before_merge(
         });
 
     let cleanup_result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let rm = Command::new("git")
-            .arg("-C")
-            .arg(execution_root)
-            .arg("rm")
-            .arg("-f")
-            .arg("--")
-            .arg(&plan_rel)
-            .output()?;
-        if !rm.status.success() {
-            return Err(format!(
-                "git rm `{plan_rel}` failed on `{source_branch}`: {}",
-                git_output_detail(&rm)
-            )
-            .into());
+        let plan_abs = execution_root.join(&plan_rel);
+        if plan_abs.exists() {
+            fs::remove_file(&plan_abs).map_err(|err| {
+                format!("failed removing `{plan_rel}` on `{source_branch}`: {err}")
+            })?;
         }
 
-        let commit = Command::new("git")
-            .arg("-C")
-            .arg(execution_root)
-            .arg("commit")
-            .arg("-m")
-            .arg(format!("chore: remove implementation plan doc {slug}"))
-            .output()?;
-        if !commit.status.success() {
-            return Err(format!(
-                "git commit plan cleanup failed on `{source_branch}`: {}",
-                git_output_detail(&commit)
-            )
-            .into());
-        }
+        crate::vcs::stage_paths_allow_missing_in(execution_root, &[plan_rel.as_str()])
+            .map_err(|err| format!("failed to stage plan cleanup for `{plan_rel}`: {err}"))?;
+        crate::vcs::commit_staged_in(
+            execution_root,
+            &format!("chore: remove implementation plan doc {slug}"),
+            false,
+        )
+        .map_err(|err| format!("failed to commit plan cleanup on `{source_branch}`: {err}"))?;
 
         Ok(())
     })();
 
     if let Some(branch) = restore_branch.as_ref() {
-        let checkout = Command::new("git")
-            .arg("-C")
-            .arg(execution_root)
-            .arg("checkout")
-            .arg(branch)
-            .output()?;
-        if !checkout.status.success() {
-            return Err(format!(
-                "git checkout `{branch}` failed after plan doc cleanup: {}",
-                git_output_detail(&checkout)
-            )
-            .into());
-        }
+        crate::vcs::checkout_branch_in(execution_root, branch).map_err(|err| {
+            format!("unable to checkout `{branch}` after plan doc cleanup: {err}")
+        })?;
     }
 
     cleanup_result
@@ -3732,26 +3606,14 @@ fn execute_workflow_executor(
                 return Ok(result);
             }
 
-            let add = Command::new("git")
-                .arg("-C")
-                .arg(project_root)
-                .arg("worktree")
-                .arg("add")
-                .arg("--force")
-                .arg(&worktree_path)
-                .arg(&branch)
-                .output()?;
-            if !add.status.success() {
-                let detail = String::from_utf8_lossy(&add.stderr).trim().to_string();
-                let reason = if detail.is_empty() {
-                    "worktree.prepare failed to add worktree".to_string()
-                } else {
-                    format!("worktree.prepare failed to add worktree: {detail}")
-                };
-                return Ok(WorkflowNodeResult::failed(
-                    reason,
-                    Some(add.status.code().unwrap_or(1)),
-                ));
+            if let Err(err) = crate::vcs::add_worktree_for_branch_in(
+                project_root,
+                &dir_name,
+                &worktree_path,
+                &branch,
+            ) {
+                let reason = format!("worktree.prepare failed to add worktree: {err}");
+                return Ok(WorkflowNodeResult::failed(reason, Some(1)));
             }
 
             let mut result = WorkflowNodeResult::succeeded("worktree prepared");
@@ -4293,22 +4155,13 @@ fn execute_workflow_executor(
 
             if let Some(target) = target_branch.as_ref() {
                 let current = current_branch_name(&execution_root);
-                if current.as_deref() != Some(target.as_str()) {
-                    let checkout = Command::new("git")
-                        .arg("-C")
-                        .arg(&execution_root)
-                        .arg("checkout")
-                        .arg(target)
-                        .output()?;
-                    if !checkout.status.success() {
-                        let detail = String::from_utf8_lossy(&checkout.stderr).trim().to_string();
-                        return Ok(WorkflowNodeResult::failed(
-                            format!(
-                                "git.integrate_plan_branch failed checkout `{target}`: {detail}"
-                            ),
-                            Some(checkout.status.code().unwrap_or(1)),
-                        ));
-                    }
+                if current.as_deref() != Some(target.as_str())
+                    && let Err(err) = crate::vcs::checkout_branch_in(&execution_root, target)
+                {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.integrate_plan_branch failed checkout `{target}`: {err}"),
+                        Some(1),
+                    ));
                 }
             }
 
@@ -4343,30 +4196,9 @@ fn execute_workflow_executor(
             let merge_message =
                 merge_commit_message_with_plan(&merge_subject, plan_document.as_deref());
 
-            let merge_output = if squash {
-                Command::new("git")
-                    .arg("-C")
-                    .arg(&execution_root)
-                    .arg("merge")
-                    .arg("--squash")
-                    .arg(&source_branch)
-                    .output()?
-            } else {
-                Command::new("git")
-                    .arg("-C")
-                    .arg(&execution_root)
-                    .arg("merge")
-                    .arg("--no-ff")
-                    .arg("-m")
-                    .arg(&merge_message)
-                    .arg(&source_branch)
-                    .output()?
-            };
-            if !merge_output.status.success() {
-                let detail = String::from_utf8_lossy(&merge_output.stderr)
-                    .trim()
-                    .to_string();
-                if has_unmerged_paths(&execution_root) {
+            let merge_ready = match crate::vcs::prepare_merge_in(&execution_root, &source_branch) {
+                Ok(crate::vcs::MergePreparation::Ready(ready)) => ready,
+                Ok(crate::vcs::MergePreparation::Conflicted(_conflict)) => {
                     if let Some(parent) = sentinel.parent() {
                         fs::create_dir_all(parent)?;
                     }
@@ -4390,39 +4222,51 @@ fn execute_workflow_executor(
                     result.payload_refs = vec![relative_path(project_root, &sentinel)];
                     return Ok(result);
                 }
-                let summary = if detail.is_empty() {
-                    "git.integrate_plan_branch failed".to_string()
-                } else {
-                    format!("git.integrate_plan_branch failed: {detail}")
-                };
-                return Ok(WorkflowNodeResult::failed(
-                    summary,
-                    Some(merge_output.status.code().unwrap_or(1)),
-                ));
-            }
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.integrate_plan_branch failed: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
 
-            if squash {
-                let diff = Command::new("git")
-                    .arg("-C")
-                    .arg(&execution_root)
-                    .arg("diff")
-                    .arg("--cached")
-                    .arg("--quiet")
-                    .status()?;
-                if !diff.success() {
-                    let commit = Command::new("git")
-                        .arg("-C")
-                        .arg(&execution_root)
-                        .arg("commit")
-                        .arg("-m")
-                        .arg(&merge_message)
-                        .status()?;
-                    if !commit.success() {
+            let head_tree_matches = match Repository::open(&execution_root) {
+                Ok(repo) => match repo.head().and_then(|head| head.peel_to_commit()) {
+                    Ok(head_commit) => head_commit.tree_id() == merge_ready.tree_oid,
+                    Err(err) => {
                         return Ok(WorkflowNodeResult::failed(
-                            "git.integrate_plan_branch squash commit failed",
-                            Some(commit.code().unwrap_or(1)),
+                            format!(
+                                "git.integrate_plan_branch could not inspect merge result: {err}"
+                            ),
+                            Some(1),
                         ));
                     }
+                },
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.integrate_plan_branch could not open repository: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+
+            if !head_tree_matches {
+                let commit_result = if squash {
+                    crate::vcs::commit_squashed_merge_in(
+                        &execution_root,
+                        &merge_message,
+                        merge_ready,
+                    )
+                } else {
+                    crate::vcs::commit_ready_merge_in(&execution_root, &merge_message, merge_ready)
+                };
+                if let Err(err) = commit_result {
+                    let summary = if squash {
+                        format!("git.integrate_plan_branch squash commit failed: {err}")
+                    } else {
+                        format!("git.integrate_plan_branch merge commit failed: {err}")
+                    };
+                    return Ok(WorkflowNodeResult::failed(summary, Some(1)));
                 }
             }
 
@@ -4430,13 +4274,7 @@ fn execute_workflow_executor(
             if delete_branch
                 && current_branch_name(&execution_root).as_deref() != Some(source_branch.as_str())
             {
-                let _ = Command::new("git")
-                    .arg("-C")
-                    .arg(&execution_root)
-                    .arg("branch")
-                    .arg("-D")
-                    .arg(&source_branch)
-                    .status();
+                let _ = crate::vcs::delete_branch_in(&execution_root, &source_branch);
             }
 
             Ok(WorkflowNodeResult::succeeded(
@@ -4444,24 +4282,20 @@ fn execute_workflow_executor(
             ))
         }
         Some("git.save_worktree_patch") => {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&execution_root)
-                .arg("diff")
-                .arg("--binary")
-                .arg("HEAD")
-                .output()?;
-            if !output.status.success() {
-                return Ok(WorkflowNodeResult::failed(
-                    "git.save_worktree_patch could not produce patch",
-                    Some(output.status.code().unwrap_or(1)),
-                ));
-            }
+            let patch = match crate::vcs::diff_binary_against_head_in(&execution_root) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        "git.save_worktree_patch could not produce patch",
+                        Some(1),
+                    ));
+                }
+            };
             let patch_path = command_patch_path(jobs_root, &record.id);
             if let Some(parent) = patch_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(&patch_path, output.stdout)?;
+            fs::write(&patch_path, patch)?;
             let mut result = WorkflowNodeResult::succeeded("saved worktree patch");
             result.artifacts_written = vec![JobArtifact::CommandPatch {
                 job_id: record.id.clone(),
@@ -4536,28 +4370,14 @@ fn execute_workflow_executor(
             };
             for file in &files {
                 let path = resolve_path_in_execution_root(&execution_root, file);
-                let apply = Command::new("git")
-                    .arg("-C")
-                    .arg(&execution_root)
-                    .arg("apply")
-                    .arg("--index")
-                    .arg(&path)
-                    .output()?;
-                if !apply.status.success() {
-                    let detail = String::from_utf8_lossy(&apply.stderr).trim().to_string();
-                    let summary = if detail.is_empty() {
-                        format!("patch.execute_pipeline failed applying {}", path.display())
-                    } else {
-                        format!(
-                            "patch.execute_pipeline failed applying {}: {}",
-                            path.display(),
-                            detail
-                        )
-                    };
-                    return Ok(WorkflowNodeResult::failed(
-                        summary,
-                        Some(apply.status.code().unwrap_or(1)),
-                    ));
+                if let Err(err) = crate::vcs::apply_patch_file_with_index_in(&execution_root, &path)
+                {
+                    let summary = format!(
+                        "patch.execute_pipeline failed applying {}: {}",
+                        path.display(),
+                        err
+                    );
+                    return Ok(WorkflowNodeResult::failed(summary, Some(1)));
                 }
             }
             let mut result = WorkflowNodeResult::succeeded("patch pipeline executed");
@@ -4569,24 +4389,20 @@ fn execute_workflow_executor(
             Ok(result)
         }
         Some("patch.pipeline_finalize") => {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&execution_root)
-                .arg("diff")
-                .arg("--binary")
-                .arg("HEAD")
-                .output()?;
-            if !output.status.success() {
-                return Ok(WorkflowNodeResult::failed(
-                    "patch.pipeline_finalize could not capture patch",
-                    Some(output.status.code().unwrap_or(1)),
-                ));
-            }
+            let patch = match crate::vcs::diff_binary_against_head_in(&execution_root) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        "patch.pipeline_finalize could not capture patch",
+                        Some(1),
+                    ));
+                }
+            };
             let patch_path = command_patch_path(jobs_root, &record.id);
             if let Some(parent) = patch_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(&patch_path, &output.stdout)?;
+            fs::write(&patch_path, &patch)?;
 
             let finalize_path = patch_pipeline_finalize_path(jobs_root, &record.id);
             let summary = serde_json::json!({
@@ -6239,24 +6055,46 @@ fn cleanup_worktree(
 ) -> Result<(), String> {
     let repo = Repository::open(project_root).map_err(|err| err.to_string())?;
     let mut errors = Vec::new();
-
+    let mut candidates = Vec::new();
     if let Some(name) = worktree_name
-        .map(|value| value.to_string())
-        .or_else(|| find_worktree_name_by_path(&repo, worktree_path))
-        && let Err(err) = prune_worktree(&repo, &name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
     {
-        let prune_error = err.to_string();
-        if let Err(fallback_err) = run_git_worktree_cleanup_fallback(project_root, worktree_path) {
-            if prune_error_mentions_missing_shallow(&prune_error) {
-                errors.push(format!(
-                    "libgit2 prune for worktree {} could not stat .git/shallow; fallback cleanup failed: {}",
-                    name, fallback_err
-                ));
-            } else {
-                errors.push(format!(
-                    "failed to prune worktree {}: {}; fallback cleanup failed: {}",
-                    name, prune_error, fallback_err
-                ));
+        candidates.push(name.to_string());
+    }
+    if let Some(name) = find_worktree_name_by_path(&repo, worktree_path)
+        && !candidates.iter().any(|candidate| candidate == &name)
+    {
+        candidates.push(name);
+    }
+
+    if !candidates.is_empty() {
+        let mut pruned = false;
+        let mut prune_errors = Vec::new();
+        for candidate in &candidates {
+            match prune_worktree(&repo, candidate) {
+                Ok(()) => {
+                    pruned = true;
+                    break;
+                }
+                Err(err) => prune_errors.push((candidate.clone(), err.to_string())),
+            }
+        }
+
+        if !pruned {
+            let fallback_detail = fallback_cleanup_detail(worktree_path, &candidates);
+            if let Some((name, prune_error)) = prune_errors.last() {
+                if prune_error_mentions_missing_shallow(prune_error) {
+                    errors.push(format!(
+                        "libgit2 prune for worktree {} could not stat .git/shallow; fallback cleanup failed: {}",
+                        name, fallback_detail
+                    ));
+                } else {
+                    errors.push(format!(
+                        "failed to prune worktree {}: {}; fallback cleanup failed: {}",
+                        name, prune_error, fallback_detail
+                    ));
+                }
             }
         }
     }
@@ -6294,83 +6132,19 @@ fn prune_error_mentions_missing_shallow(message: &str) -> bool {
             || lower.contains("to stat"))
 }
 
-fn run_git_worktree_cleanup_fallback(
-    project_root: &Path,
-    worktree_path: &Path,
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    if let Err(err) = run_git_cleanup_command(
-        project_root,
-        &["worktree", "remove", "--force"],
-        Some(worktree_path),
-    ) && worktree_path.exists()
-    {
-        errors.push(err);
-    }
-
-    if let Err(err) = run_git_cleanup_command(
-        project_root,
-        &["worktree", "prune", "--expire", "now"],
-        None,
-    ) {
-        errors.push(err);
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("; "))
-    }
-}
-
-fn run_git_cleanup_command(
-    project_root: &Path,
-    args: &[&str],
-    path_arg: Option<&Path>,
-) -> Result<(), String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(project_root).args(args);
-    if let Some(path) = path_arg {
-        cmd.arg(path);
-    }
-
-    let output = cmd.output().map_err(|err| {
+fn fallback_cleanup_detail(worktree_path: &Path, candidates: &[String]) -> String {
+    if worktree_path.join(".git").is_file() {
         format!(
-            "failed to execute `git {}`: {}",
-            format_git_subcommand(args, path_arg),
-            err
+            "unable to prune worktree metadata via candidates [{}]",
+            candidates.join(", ")
         )
-    })?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if !stderr.is_empty() {
-        stderr
-    } else if !stdout.is_empty() {
-        stdout
     } else {
-        format!("exit status {}", output.status)
-    };
-    Err(format!(
-        "`git {}` failed: {}",
-        format_git_subcommand(args, path_arg),
-        detail
-    ))
-}
-
-fn format_git_subcommand(args: &[&str], path_arg: Option<&Path>) -> String {
-    let mut parts = args
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
-    if let Some(path) = path_arg {
-        parts.push(path.display().to_string());
+        format!(
+            "no registered worktree matched path {} (candidates: [{}])",
+            worktree_path.display(),
+            candidates.join(", ")
+        )
     }
-    parts.join(" ")
 }
 
 fn find_worktree_name_by_path(repo: &Repository, worktree_path: &Path) -> Option<String> {
@@ -6683,27 +6457,87 @@ mod tests {
         }
     }
 
-    fn git_status(project_root: &Path, args: &[&str]) -> std::process::ExitStatus {
-        Command::new("git")
-            .arg("-C")
-            .arg(project_root)
-            .args(args)
-            .status()
-            .expect("run git")
+    fn git_status(project_root: &Path, args: &[&str]) -> Result<(), String> {
+        match args {
+            ["add", "-A"] => crate::vcs::stage_all_in(project_root).map_err(|err| err.to_string()),
+            ["checkout", "-b", branch] => {
+                if !crate::vcs::branch_exists_in(project_root, branch)
+                    .map_err(|err| err.to_string())?
+                {
+                    crate::vcs::create_branch_from_head_in(project_root, branch)
+                        .map_err(|err| err.to_string())?;
+                }
+                crate::vcs::checkout_branch_in(project_root, branch).map_err(|err| err.to_string())
+            }
+            ["checkout", "--", path] => {
+                let repo = Repository::open(project_root).map_err(|err| err.to_string())?;
+                let mut checkout = git2::build::CheckoutBuilder::new();
+                checkout.path(path).force();
+                repo.checkout_head(Some(&mut checkout))
+                    .map_err(|err| err.to_string())
+            }
+            ["checkout", branch] => {
+                crate::vcs::checkout_branch_in(project_root, branch).map_err(|err| err.to_string())
+            }
+            ["merge", "--no-ff", source_branch] => {
+                let merge = crate::vcs::prepare_merge_in(project_root, source_branch)
+                    .map_err(|err| err.to_string())?;
+                match merge {
+                    crate::vcs::MergePreparation::Ready(ready) => {
+                        crate::vcs::commit_ready_merge_in(
+                            project_root,
+                            &format!("Merge branch `{source_branch}`"),
+                            ready,
+                        )
+                        .map(|_| ())
+                        .map_err(|err| err.to_string())
+                    }
+                    crate::vcs::MergePreparation::Conflicted(_conflict) => {
+                        Err("merge conflict".to_string())
+                    }
+                }
+            }
+            ["-c", _user_name, "-c", _email, "commit", "-m", message] => {
+                crate::vcs::commit_staged_in(project_root, message, false)
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            }
+            _ => Err(format!("unsupported git_status args: {:?}", args)),
+        }
     }
 
-    fn git_output(project_root: &Path, args: &[&str]) -> std::process::Output {
-        Command::new("git")
-            .arg("-C")
-            .arg(project_root)
-            .args(args)
-            .output()
-            .expect("run git output")
+    fn git_output(project_root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+        match args {
+            ["log", "-1", "--pretty=%B"] => {
+                let repo = Repository::open(project_root).map_err(|err| err.to_string())?;
+                let commit = repo
+                    .head()
+                    .and_then(|head| head.peel_to_commit())
+                    .map_err(|err| err.to_string())?;
+                Ok(commit.message().unwrap_or_default().as_bytes().to_vec())
+            }
+            ["diff", "--binary", "HEAD"] => {
+                crate::vcs::diff_binary_against_head_in(project_root).map_err(|err| err.to_string())
+            }
+            ["diff", "--cached", "--name-only"] => {
+                let staged = crate::vcs::snapshot_staged(
+                    project_root
+                        .to_str()
+                        .ok_or_else(|| "project root path is not valid utf-8".to_string())?,
+                )
+                .map_err(|err| err.to_string())?;
+                let mut names = staged.into_iter().map(|item| item.path).collect::<Vec<_>>();
+                names.sort();
+                names.dedup();
+                Ok(names.join("\n").into_bytes())
+            }
+            _ => Err(format!("unsupported git_output args: {:?}", args)),
+        }
     }
 
     fn git_commit_all(project_root: &Path, message: &str) {
         let add = git_status(project_root, &["add", "-A"]);
-        assert!(add.success(), "git add failed: {add:?}");
+        assert!(add.is_ok(), "git add failed: {add:?}");
         let commit = git_status(
             project_root,
             &[
@@ -6716,7 +6550,7 @@ mod tests {
                 message,
             ],
         );
-        assert!(commit.success(), "git commit failed: {commit:?}");
+        assert!(commit.is_ok(), "git commit failed: {commit:?}");
     }
 
     #[test]
@@ -8759,19 +8593,14 @@ mod tests {
         if let Some(parent) = worktree_path.parent() {
             fs::create_dir_all(parent).expect("create worktree parent");
         }
-        let add_status = Command::new("git")
-            .arg("-C")
-            .arg(project_root)
-            .arg("worktree")
-            .arg("add")
-            .arg("--detach")
-            .arg(&worktree_path)
-            .status()
-            .expect("run git worktree add");
-        assert!(
-            add_status.success(),
-            "expected git worktree add to succeed (status={add_status})"
-        );
+        let head_branch = current_branch_name(project_root).unwrap_or_else(|| "master".to_string());
+        crate::vcs::add_worktree_for_branch_in(
+            project_root,
+            "retry-fallback",
+            &worktree_path,
+            &head_branch,
+        )
+        .expect("add retry fallback worktree");
 
         let mut record = update_job_record(&jobs_root, "job-retry-fallback", |record| {
             record.status = JobStatus::Failed;
@@ -10203,12 +10032,15 @@ mod tests {
         git_commit_all(project_root, "base conflict");
 
         let checkout = git_status(project_root, &["checkout", "-b", "draft/runtime-conflict"]);
-        assert!(checkout.success(), "create draft branch");
+        assert!(checkout.is_ok(), "create draft branch: {checkout:?}");
         fs::write(project_root.join("conflict.txt"), "draft\n").expect("write draft");
         git_commit_all(project_root, "draft conflict");
 
         let checkout_target = git_status(project_root, &["checkout", &target]);
-        assert!(checkout_target.success(), "checkout target");
+        assert!(
+            checkout_target.is_ok(),
+            "checkout target: {checkout_target:?}"
+        );
         fs::write(project_root.join("conflict.txt"), "target\n").expect("write target");
         git_commit_all(project_root, "target conflict");
 
@@ -10267,12 +10099,15 @@ mod tests {
             project_root,
             &["checkout", "-b", "draft/runtime-slug-merge"],
         );
-        assert!(checkout.success(), "create draft branch");
+        assert!(checkout.is_ok(), "create draft branch: {checkout:?}");
         fs::write(project_root.join("slug-merge.txt"), "from slug source\n")
             .expect("write source file");
         git_commit_all(project_root, "feat: slug merge source");
         let checkout_target = git_status(project_root, &["checkout", &target]);
-        assert!(checkout_target.success(), "checkout target");
+        assert!(
+            checkout_target.is_ok(),
+            "checkout target: {checkout_target:?}"
+        );
 
         enqueue_job(
             project_root,
@@ -10325,7 +10160,7 @@ mod tests {
         );
 
         let checkout = git_status(project_root, &["checkout", "-b", &source_branch]);
-        assert!(checkout.success(), "create draft branch");
+        assert!(checkout.is_ok(), "create draft branch: {checkout:?}");
         fs::create_dir_all(project_root.join(".vizier/implementation-plans"))
             .expect("create plan dir");
         fs::write(project_root.join(&plan_rel), plan_doc).expect("write plan doc");
@@ -10336,7 +10171,21 @@ mod tests {
         .expect("write source file");
         git_commit_all(project_root, "feat: prepare runtime plan merge");
         let checkout_target = git_status(project_root, &["checkout", &target]);
-        assert!(checkout_target.success(), "checkout target");
+        assert!(
+            checkout_target.is_ok(),
+            "checkout target: {checkout_target:?}"
+        );
+        let occupied_worktree = project_root.join(".vizier/tmp-worktrees/plan-cleanup-occupied");
+        if let Some(parent) = occupied_worktree.parent() {
+            fs::create_dir_all(parent).expect("create occupied worktree parent");
+        }
+        crate::vcs::add_worktree_for_branch_in(
+            project_root,
+            "plan-cleanup-occupied",
+            &occupied_worktree,
+            &source_branch,
+        )
+        .expect("add occupied worktree");
 
         enqueue_job(
             project_root,
@@ -10372,9 +10221,9 @@ mod tests {
             execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("integrate");
         assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
 
-        let head = git_output(project_root, &["log", "-1", "--pretty=%B"]);
-        assert!(head.status.success(), "read head commit message");
-        let message = String::from_utf8_lossy(&head.stdout);
+        let head = git_output(project_root, &["log", "-1", "--pretty=%B"])
+            .expect("read head commit message");
+        let message = String::from_utf8_lossy(&head);
         assert!(
             message.contains("feat: merge plan runtime-plan-embed"),
             "expected merge subject in message: {message}"
@@ -10451,11 +10300,11 @@ mod tests {
         git_commit_all(project_root, "seed sample");
         fs::write(project_root.join("sample.txt"), "after\n").expect("edit sample");
         let patch_path = project_root.join("sample.patch");
-        let diff = git_output(project_root, &["diff", "--binary", "HEAD"]);
-        assert!(diff.status.success(), "build patch diff");
-        fs::write(&patch_path, diff.stdout).expect("write patch file");
+        let diff =
+            git_output(project_root, &["diff", "--binary", "HEAD"]).expect("build patch diff");
+        fs::write(&patch_path, diff).expect("write patch file");
         let restore = git_status(project_root, &["checkout", "--", "sample.txt"]);
-        assert!(restore.success(), "restore sample");
+        assert!(restore.is_ok(), "restore sample: {restore:?}");
 
         enqueue_job(
             project_root,
@@ -10496,10 +10345,16 @@ mod tests {
         );
         let execute_result = execute_workflow_executor(project_root, &jobs_root, &record, &execute)
             .expect("execute");
-        assert_eq!(execute_result.outcome, WorkflowNodeOutcome::Succeeded);
-        let staged = git_output(project_root, &["diff", "--cached", "--name-only"]);
+        assert_eq!(
+            execute_result.outcome,
+            WorkflowNodeOutcome::Succeeded,
+            "patch pipeline execute should succeed: {:?}",
+            execute_result.summary
+        );
+        let staged = git_output(project_root, &["diff", "--cached", "--name-only"])
+            .expect("read staged names");
         assert!(
-            String::from_utf8_lossy(&staged.stdout).contains("sample.txt"),
+            String::from_utf8_lossy(&staged).contains("sample.txt"),
             "expected patch application to stage sample.txt"
         );
 
@@ -10699,16 +10554,19 @@ mod tests {
         git_commit_all(project_root, "gate conflict base");
         let target = current_branch_name(project_root).expect("target branch");
         let checkout = git_status(project_root, &["checkout", "-b", "draft/gate-conflict"]);
-        assert!(checkout.success(), "create draft gate branch");
+        assert!(checkout.is_ok(), "create draft gate branch: {checkout:?}");
         fs::write(project_root.join("gate-conflict.txt"), "draft\n").expect("write draft");
         git_commit_all(project_root, "gate draft");
         let checkout_target = git_status(project_root, &["checkout", &target]);
-        assert!(checkout_target.success(), "checkout target");
+        assert!(
+            checkout_target.is_ok(),
+            "checkout target: {checkout_target:?}"
+        );
         fs::write(project_root.join("gate-conflict.txt"), "target\n").expect("write target");
         git_commit_all(project_root, "gate target");
         let merge = git_status(project_root, &["merge", "--no-ff", "draft/gate-conflict"]);
         assert!(
-            !merge.success(),
+            merge.is_err(),
             "expected deliberate merge conflict for gate coverage"
         );
 

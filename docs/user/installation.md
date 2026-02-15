@@ -7,7 +7,7 @@ into a standard prefix layout.
 ## Prerequisites
 
 - Rust toolchain (`cargo`)
-- `git`
+- `git` (for repository setup/inspection and normal developer workflows; Vizier runtime Git operations run through in-process `libgit2` helpers)
 - `jq` (recommended): required by the bundled `filter.sh` scripts used to render agent JSONL progress
 
 ## Quick start (user prefix)

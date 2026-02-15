@@ -63,7 +63,18 @@ pub enum CherryPickOutcome {
 }
 
 pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
-    let repo = Repository::discover(".")?;
+    prepare_merge_in(".", source_branch)
+}
+
+pub fn prepare_merge_in<P: AsRef<Path>>(
+    repo_path: P,
+    source_branch: &str,
+) -> Result<MergePreparation, Error> {
+    let repo = Repository::open(repo_path)?;
+    prepare_merge_impl(&repo, source_branch)
+}
+
+fn prepare_merge_impl(repo: &Repository, source_branch: &str) -> Result<MergePreparation, Error> {
     if repo.state() != RepositoryState::Clean {
         return Err(Error::from_str(
             "cannot start a merge while another git operation is in progress",
@@ -84,7 +95,7 @@ pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
     let mut index = repo.merge_commits(&head_commit, &source_commit, None)?;
     if index.has_conflicts() {
         let conflicts = collect_conflict_paths(&mut index);
-        materialize_conflicts(&repo, source_branch)?;
+        materialize_conflicts(repo, source_branch)?;
         return Ok(MergePreparation::Conflicted(MergeConflict {
             head_oid: head_commit.id(),
             source_oid: source_commit.id(),
@@ -92,7 +103,7 @@ pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
         }));
     }
 
-    let tree_oid = index.write_tree_to(&repo)?;
+    let tree_oid = index.write_tree_to(repo)?;
     Ok(MergePreparation::Ready(MergeReady {
         head_oid: head_commit.id(),
         source_oid: source_commit.id(),
@@ -101,7 +112,18 @@ pub fn prepare_merge(source_branch: &str) -> Result<MergePreparation, Error> {
 }
 
 pub fn build_squash_plan(source_branch: &str) -> Result<SquashPlan, Error> {
-    let repo = Repository::discover(".")?;
+    build_squash_plan_in(".", source_branch)
+}
+
+pub fn build_squash_plan_in<P: AsRef<Path>>(
+    repo_path: P,
+    source_branch: &str,
+) -> Result<SquashPlan, Error> {
+    let repo = Repository::open(repo_path)?;
+    build_squash_plan_impl(&repo, source_branch)
+}
+
+fn build_squash_plan_impl(repo: &Repository, source_branch: &str) -> Result<SquashPlan, Error> {
     let head_ref = repo.head()?;
     if !head_ref.is_branch() {
         return Err(Error::from_str(
@@ -113,7 +135,7 @@ pub fn build_squash_plan(source_branch: &str) -> Result<SquashPlan, Error> {
     let source_ref = repo.find_branch(source_branch, BranchType::Local)?;
     let source_commit = source_ref.get().peel_to_commit()?;
     let merge_base = repo.merge_base(head_commit.id(), source_commit.id())?;
-    let commits_to_apply = collect_commits_from_base(&repo, merge_base, source_commit.id())?;
+    let commits_to_apply = collect_commits_from_base(repo, merge_base, source_commit.id())?;
     let mut merge_commits = Vec::new();
     let mut possible_mainlines: Option<HashSet<u32>> = None;
     let mut ambiguous = false;
@@ -346,7 +368,15 @@ pub fn commit_in_progress_cherry_pick_in<P: AsRef<Path>>(
 }
 
 pub fn commit_ready_merge(message: &str, ready: MergeReady) -> Result<Oid, Error> {
-    let repo = Repository::discover(".")?;
+    commit_ready_merge_in(".", message, ready)
+}
+
+pub fn commit_ready_merge_in<P: AsRef<Path>>(
+    repo_path: P,
+    message: &str,
+    ready: MergeReady,
+) -> Result<Oid, Error> {
+    let repo = Repository::open(repo_path)?;
     let mut checkout = CheckoutBuilder::new();
     let head_commit = repo.find_commit(ready.head_oid)?;
     let source_commit = repo.find_commit(ready.source_oid)?;
@@ -369,7 +399,15 @@ pub fn commit_ready_merge(message: &str, ready: MergeReady) -> Result<Oid, Error
 }
 
 pub fn commit_squashed_merge(message: &str, ready: MergeReady) -> Result<Oid, Error> {
-    let repo = Repository::discover(".")?;
+    commit_squashed_merge_in(".", message, ready)
+}
+
+pub fn commit_squashed_merge_in<P: AsRef<Path>>(
+    repo_path: P,
+    message: &str,
+    ready: MergeReady,
+) -> Result<Oid, Error> {
+    let repo = Repository::open(repo_path)?;
     let mut checkout = CheckoutBuilder::new();
     let head_commit = repo.find_commit(ready.head_oid)?;
     let tree = repo.find_tree(ready.tree_oid)?;
@@ -472,7 +510,11 @@ fn collect_commits_from_base(
 }
 
 pub fn list_conflicted_paths() -> Result<Vec<String>, Error> {
-    let repo = Repository::discover(".")?;
+    list_conflicted_paths_in(".")
+}
+
+pub fn list_conflicted_paths_in<P: AsRef<Path>>(repo_path: P) -> Result<Vec<String>, Error> {
+    let repo = Repository::open(repo_path)?;
     let mut index = repo.index()?;
     if !index.has_conflicts() {
         return Ok(Vec::new());

@@ -12,6 +12,26 @@ fn run_json(repo: &IntegrationRepo, args: &[&str]) -> TestResult<Value> {
     Ok(serde_json::from_slice::<Value>(&output.stdout)?)
 }
 
+fn branch_blob_text(repo: &IntegrationRepo, branch: &str, rel_path: &str) -> TestResult<String> {
+    let repo_handle = repo.repo();
+    let revision = format!("{branch}:{rel_path}");
+    let object = repo_handle.revparse_single(&revision)?;
+    let blob = object.peel_to_blob()?;
+    Ok(String::from_utf8_lossy(blob.content()).to_string())
+}
+
+fn head_subject(repo: &IntegrationRepo) -> TestResult<String> {
+    let repo_handle = repo.repo();
+    let commit = repo_handle.head()?.peel_to_commit()?;
+    Ok(commit.summary().unwrap_or_default().to_string())
+}
+
+fn head_message(repo: &IntegrationRepo) -> TestResult<String> {
+    let repo_handle = repo.repo();
+    let commit = repo_handle.head()?.peel_to_commit()?;
+    Ok(commit.message().unwrap_or_default().to_string())
+}
+
 fn write_single_run_template(repo: &IntegrationRepo, rel: &str, script: &str) -> TestResult {
     repo.write(
         rel,
@@ -227,7 +247,67 @@ fn wait_for_manifest_jobs(
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        statuses.push(format!("{job_id}:{status}"));
+        let detail = record
+            .get("summary")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                record
+                    .pointer("/schedule/wait_reason/detail")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("");
+        if status == "failed" {
+            let mut failure_details = Vec::new();
+            if !detail.is_empty() {
+                failure_details.push(detail.to_string());
+            }
+            if let Some(stderr_path) = record.get("stderr_path").and_then(Value::as_str)
+                && let Ok(stderr) = fs::read_to_string(repo.path().join(stderr_path))
+            {
+                let tail = stderr
+                    .lines()
+                    .rev()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                if !tail.trim().is_empty() {
+                    failure_details.push(format!("stderr_tail={tail}"));
+                }
+            }
+            if let Some(stdout_path) = record.get("stdout_path").and_then(Value::as_str)
+                && let Ok(stdout) = fs::read_to_string(repo.path().join(stdout_path))
+            {
+                let tail = stdout
+                    .lines()
+                    .rev()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                if !tail.trim().is_empty() {
+                    failure_details.push(format!("stdout_tail={tail}"));
+                }
+            }
+            if failure_details.is_empty() {
+                statuses.push(format!("{job_id}:{status}"));
+            } else {
+                statuses.push(format!(
+                    "{job_id}:{status} ({})",
+                    failure_details.join("; ")
+                ));
+            }
+            continue;
+        }
+        if detail.is_empty() {
+            statuses.push(format!("{job_id}:{status}"));
+        } else {
+            statuses.push(format!("{job_id}:{status} ({detail})"));
+        }
     }
     Err(format!(
         "timed out waiting for manifest jobs to reach terminal state: {}",
@@ -891,20 +971,11 @@ fn test_run_draft_stage_persists_agent_output_as_plan_doc() -> TestResult {
         .pointer("/metadata/plan")
         .and_then(Value::as_str)
         .ok_or("persist_plan missing metadata.plan")?;
-    let plan_doc = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args([
-            "show",
-            &format!("{branch}:.vizier/implementation-plans/{plan_slug}.md"),
-        ])
-        .output()?;
-    assert!(
-        plan_doc.status.success(),
-        "expected persisted plan doc on {branch}: {}",
-        String::from_utf8_lossy(&plan_doc.stderr)
-    );
-    let plan_doc_text = String::from_utf8_lossy(&plan_doc.stdout);
+    let plan_doc_text = branch_blob_text(
+        &repo,
+        branch,
+        &format!(".vizier/implementation-plans/{plan_slug}.md"),
+    )?;
     assert!(
         plan_doc_text.contains("## Implementation Plan"),
         "expected implementation plan section in persisted doc: {plan_doc_text}"
@@ -965,18 +1036,14 @@ fn test_run_draft_stage_force_stages_plan_doc_when_ignored() -> TestResult {
         .and_then(Value::as_str)
         .ok_or("persist_plan missing metadata.plan")?;
 
-    let plan_doc = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args([
-            "show",
-            &format!("{branch}:.vizier/implementation-plans/{slug}.md"),
-        ])
-        .output()?;
     assert!(
-        plan_doc.status.success(),
-        "expected ignored plan doc to be committed on {branch}: {}",
-        String::from_utf8_lossy(&plan_doc.stderr)
+        branch_blob_text(
+            &repo,
+            branch,
+            &format!(".vizier/implementation-plans/{slug}.md")
+        )
+        .is_ok(),
+        "expected ignored plan doc to be committed on {branch}"
     );
 
     Ok(())
@@ -1029,18 +1096,14 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
         "--quiet",
         &format!("refs/heads/{persist_branch}"),
     ])?;
-    let draft_plan = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args([
-            "show",
-            &format!("{persist_branch}:.vizier/implementation-plans/{persist_slug}.md"),
-        ])
-        .output()?;
     assert!(
-        draft_plan.status.success(),
-        "expected draft plan doc on draft branch: {}",
-        String::from_utf8_lossy(&draft_plan.stderr)
+        branch_blob_text(
+            &repo,
+            persist_branch,
+            &format!(".vizier/implementation-plans/{persist_slug}.md")
+        )
+        .is_ok(),
+        "expected draft plan doc on draft branch"
     );
 
     seed_plan_branch(&repo, "approve-smoke", "draft/approve-smoke")?;
@@ -1120,13 +1183,7 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
         );
     }
 
-    let head_subject = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["log", "-1", "--pretty=%s"])
-        .output()?;
-    assert!(head_subject.status.success(), "expected git log to succeed");
-    let subject = String::from_utf8_lossy(&head_subject.stdout);
+    let subject = head_subject(&repo)?;
     assert!(
         subject.contains("feat: merge plan merge-smoke"),
         "expected merge commit subject to include slug, got: {subject}"
@@ -1576,13 +1633,7 @@ fn test_run_merge_stage_embeds_plan_content_and_removes_source_plan_doc() -> Tes
         );
     }
 
-    let head = Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["log", "-1", "--pretty=%B"])
-        .output()?;
-    assert!(head.status.success(), "expected git log to succeed");
-    let message = String::from_utf8_lossy(&head.stdout);
+    let message = head_message(&repo)?;
     assert!(
         message.contains("feat: merge plan merge-plan-doc"),
         "expected merge subject in message, got: {message}"

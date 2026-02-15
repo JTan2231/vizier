@@ -1,7 +1,7 @@
 use git2::build::CheckoutBuilder;
 use git2::{
-    Commit, Error, ErrorCode, Index, IndexAddOption, ObjectType, Oid, Repository, Signature, Sort,
-    Status, StatusOptions,
+    Commit, DiffOptions, Error, ErrorCode, Index, IndexAddOption, ObjectType, Oid, Repository,
+    Signature, Sort, Status, StatusOptions,
 };
 use std::path::Path;
 
@@ -342,6 +342,88 @@ pub fn get_log(depth: usize, filters: Option<Vec<String>>) -> Result<Vec<String>
     }
 
     Ok(out)
+}
+
+pub fn blob_exists_at_revision(revision: &str) -> Result<bool, Error> {
+    blob_exists_at_revision_in(".", revision)
+}
+
+pub fn blob_exists_at_revision_in<P: AsRef<Path>>(
+    repo_path: P,
+    revision: &str,
+) -> Result<bool, Error> {
+    let repo = Repository::open(repo_path)?;
+    match repo.revparse_single(revision) {
+        Ok(object) => Ok(object.kind() == Some(ObjectType::Blob)),
+        Err(err) if err.code() == ErrorCode::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+pub fn read_blob_at_revision(revision: &str) -> Result<String, Error> {
+    read_blob_at_revision_in(".", revision)
+}
+
+pub fn read_blob_at_revision_in<P: AsRef<Path>>(
+    repo_path: P,
+    revision: &str,
+) -> Result<String, Error> {
+    let repo = Repository::open(repo_path)?;
+    let object = repo.revparse_single(revision)?;
+    let blob = object.peel_to_blob()?;
+    String::from_utf8(blob.content().to_vec())
+        .map_err(|_| Error::from_str("blob content is not valid UTF-8"))
+}
+
+pub fn revisions_touching_path(branch: &str, path: &str) -> Result<Vec<Oid>, Error> {
+    revisions_touching_path_in(".", branch, path)
+}
+
+pub fn revisions_touching_path_in<P: AsRef<Path>>(
+    repo_path: P,
+    branch: &str,
+    path: &str,
+) -> Result<Vec<Oid>, Error> {
+    let repo = Repository::open(repo_path)?;
+    let mut walk = repo.revwalk()?;
+    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+    walk.push_ref(&format!("refs/heads/{branch}"))?;
+
+    let normalized = normalize_pathspec(path);
+    let mut revisions = Vec::new();
+    for oid in walk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        if commit_touches_path(&repo, &commit, &normalized)? {
+            revisions.push(oid);
+        }
+    }
+
+    Ok(revisions)
+}
+
+fn commit_touches_path(
+    repo: &Repository,
+    commit: &Commit<'_>,
+    pathspec: &str,
+) -> Result<bool, Error> {
+    let tree = commit.tree()?;
+    if commit.parent_count() == 0 {
+        return Ok(tree.get_path(Path::new(pathspec)).is_ok());
+    }
+
+    for idx in 0..commit.parent_count() {
+        let parent = commit.parent(idx)?;
+        let parent_tree = parent.tree()?;
+        let mut opts = DiffOptions::new();
+        opts.pathspec(pathspec);
+        let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut opts))?;
+        if diff.deltas().len() > 0 {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 pub fn commit_paths_in_repo(

@@ -1,8 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 pub(crate) use git2::{
-    BranchType, DiffOptions, IndexAddOption, Oid, Repository, Signature, Sort,
-    build::CheckoutBuilder,
+    BranchType, DiffOptions, IndexAddOption, Oid, Repository, ResetType, Signature, Sort, Status,
+    StatusOptions, StatusShow, WorktreeAddOptions,
+    build::{CheckoutBuilder, CloneLocal, RepoBuilder},
 };
 pub(crate) use serde_json::{Value, json};
 pub(crate) use std::collections::HashSet;
@@ -365,28 +366,22 @@ fn clone_template_repo(template: &Path, dst: &Path) -> io::Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    let status = Command::new("git")
-        .arg("clone")
-        .arg("--local")
-        .arg("--quiet")
-        .arg(template)
-        .arg(dst)
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other(format!(
-            "git clone from fixture template failed with status {status:?}"
-        )));
-    }
+    let mut builder = RepoBuilder::new();
+    builder.clone_local(CloneLocal::Local);
+    builder
+        .clone(
+            template
+                .to_str()
+                .ok_or_else(|| io::Error::other("template path is not utf-8"))?,
+            dst,
+        )
+        .map_err(|err| io::Error::other(format!("clone fixture template: {err}")))?;
 
-    let cleanup_status = Command::new("git")
-        .arg("-C")
-        .arg(dst)
-        .args(["remote", "remove", "origin"])
-        .status()?;
-    if !cleanup_status.success() {
-        return Err(io::Error::other(format!(
-            "git remote cleanup failed with status {cleanup_status:?}"
-        )));
+    let repo = Repository::open(dst)
+        .map_err(|err| io::Error::other(format!("open cloned fixture repo: {err}")))?;
+    if repo.find_remote("origin").is_ok() {
+        repo.remote_delete("origin")
+            .map_err(|err| io::Error::other(format!("remove origin remote: {err}")))?;
     }
     Ok(())
 }
@@ -604,18 +599,284 @@ impl IntegrationRepo {
     }
 
     pub(crate) fn git(&self, args: &[&str]) -> TestResult {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(self.path())
-            .env("GIT_MERGE_AUTOEDIT", "no")
-            .env("GIT_EDITOR", "true")
-            .env("VISUAL", "true")
-            .args(args)
-            .status()?;
-        if !status.success() {
-            return Err(format!("git {:?} failed with status {status:?}", args).into());
+        run_fixture_git(self.path(), args)
+    }
+}
+
+fn run_fixture_git(repo_path: &Path, args: &[&str]) -> TestResult {
+    if args.is_empty() {
+        return Err("fixture git invocation requires at least one argument".into());
+    }
+
+    let repo = Repository::open(repo_path)?;
+    match args[0] {
+        "add" => fixture_git_add(&repo, &args[1..]),
+        "branch" => fixture_git_branch(&repo, &args[1..]),
+        "checkout" => fixture_git_checkout(&repo, &args[1..]),
+        "clean" => fixture_git_clean(&repo, &args[1..]),
+        "commit" => fixture_git_commit(&repo, &args[1..]),
+        "remote" => fixture_git_remote(&repo, &args[1..]),
+        "push" => fixture_git_push(&repo, &args[1..]),
+        "reset" => fixture_git_reset(&repo, &args[1..]),
+        "show-ref" => fixture_git_show_ref(&repo, &args[1..]),
+        "worktree" => fixture_git_worktree(&repo, &args[1..]),
+        other => Err(format!("unsupported fixture git command `{other}`: {:?}", args).into()),
+    }
+}
+
+fn fixture_git_add(repo: &Repository, args: &[&str]) -> TestResult {
+    let mut index = repo.index()?;
+    if args == ["-A"] || args == ["--all"] {
+        index.add_all(["."], IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        return Ok(());
+    }
+
+    for arg in args {
+        if *arg == "--" {
+            continue;
         }
-        Ok(())
+        let path = Path::new(arg);
+        if path.is_dir() {
+            index.add_all([path], IndexAddOption::DEFAULT, None)?;
+        } else {
+            index.add_path(path)?;
+        }
+    }
+    index.write()?;
+    Ok(())
+}
+
+fn fixture_git_branch(repo: &Repository, args: &[&str]) -> TestResult {
+    match args {
+        [name] => {
+            let head = repo.head()?.peel_to_commit()?;
+            repo.branch(name, &head, false)?;
+            Ok(())
+        }
+        ["-D", name] => {
+            if let Ok(mut branch) = repo.find_branch(name, BranchType::Local) {
+                branch.delete()?;
+            }
+            Ok(())
+        }
+        _ => Err(format!("unsupported fixture git branch args: {:?}", args).into()),
+    }
+}
+
+fn fixture_git_checkout(repo: &Repository, args: &[&str]) -> TestResult {
+    match args {
+        ["-b", name] => {
+            let head = repo.head()?.peel_to_commit()?;
+            repo.branch(name, &head, false)?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force();
+            repo.set_head(&format!("refs/heads/{name}"))?;
+            repo.checkout_head(Some(&mut checkout))?;
+            Ok(())
+        }
+        ["--detach", spec] => {
+            let commit = repo.revparse_single(spec)?.peel_to_commit()?;
+            repo.set_head_detached(commit.id())?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force();
+            repo.checkout_head(Some(&mut checkout))?;
+            Ok(())
+        }
+        ["--", path] => {
+            let mut checkout = CheckoutBuilder::new();
+            checkout.path(path).force();
+            repo.checkout_head(Some(&mut checkout))?;
+            Ok(())
+        }
+        [name] => {
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force();
+            repo.set_head(&format!("refs/heads/{name}"))?;
+            repo.checkout_head(Some(&mut checkout))?;
+            Ok(())
+        }
+        _ => Err(format!("unsupported fixture git checkout args: {:?}", args).into()),
+    }
+}
+
+fn fixture_git_clean(repo: &Repository, args: &[&str]) -> TestResult {
+    if args != ["-fd"] {
+        return Err(format!("unsupported fixture git clean args: {:?}", args).into());
+    }
+    let root = repo
+        .workdir()
+        .ok_or("repository has no workdir")?
+        .to_path_buf();
+    let mut opts = StatusOptions::new();
+    opts.show(StatusShow::Workdir)
+        .include_untracked(true)
+        .include_ignored(false)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false);
+    let statuses = repo.statuses(Some(&mut opts))?;
+
+    let mut paths = statuses
+        .iter()
+        .filter_map(|entry| {
+            let status = entry.status();
+            if status.contains(Status::WT_NEW) {
+                entry.path().map(|value| root.join(value)).or_else(|| {
+                    entry.index_to_workdir().and_then(|delta| {
+                        delta
+                            .new_file()
+                            .path()
+                            .or_else(|| delta.old_file().path())
+                            .map(|value| root.join(value))
+                    })
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    paths.dedup();
+    for path in paths {
+        if path.is_dir() {
+            let _ = fs::remove_dir_all(&path);
+        } else {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+fn fixture_git_commit(repo: &Repository, args: &[&str]) -> TestResult {
+    let mut message: Option<&str> = None;
+    let mut auto_stage = false;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx] {
+            "-m" => {
+                if idx + 1 >= args.len() {
+                    return Err("git commit -m requires a message".into());
+                }
+                message = Some(args[idx + 1]);
+                idx += 2;
+            }
+            "-am" => {
+                if idx + 1 >= args.len() {
+                    return Err("git commit -am requires a message".into());
+                }
+                auto_stage = true;
+                message = Some(args[idx + 1]);
+                idx += 2;
+            }
+            "-a" => {
+                auto_stage = true;
+                idx += 1;
+            }
+            other => return Err(format!("unsupported git commit arg `{other}`").into()),
+        }
+    }
+    let message = message.ok_or("git commit requires -m message")?;
+    let mut index = repo.index()?;
+    if auto_stage {
+        index.update_all(["."], None)?;
+    }
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    if let Some(ref parent_commit) = parent
+        && parent_commit.tree_id() == tree_id
+    {
+        return Err("nothing to commit".into());
+    }
+    let signature = repo
+        .signature()
+        .or_else(|_| Signature::now("Vizier", "vizier@test.com"))?;
+    let parents = parent.iter().collect::<Vec<_>>();
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &parents,
+    )?;
+    Ok(())
+}
+
+fn fixture_git_remote(repo: &Repository, args: &[&str]) -> TestResult {
+    match args {
+        ["add", name, url] => {
+            repo.remote(name, url)?;
+            Ok(())
+        }
+        ["remove", name] => {
+            repo.remote_delete(name)?;
+            Ok(())
+        }
+        _ => Err(format!("unsupported fixture git remote args: {:?}", args).into()),
+    }
+}
+
+fn fixture_git_push(repo: &Repository, args: &[&str]) -> TestResult {
+    let (set_upstream, remote_name, branch_name) = match args {
+        ["-u", remote, branch] => (true, *remote, *branch),
+        [remote, branch] => (false, *remote, *branch),
+        _ => return Err(format!("unsupported fixture git push args: {:?}", args).into()),
+    };
+
+    let mut remote = repo.find_remote(remote_name)?;
+    let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
+    remote.push(&[refspec.as_str()], None)?;
+    if set_upstream {
+        let mut branch = repo.find_branch(branch_name, BranchType::Local)?;
+        branch.set_upstream(Some(&format!("{remote_name}/{branch_name}")))?;
+    }
+    Ok(())
+}
+
+fn fixture_git_reset(repo: &Repository, args: &[&str]) -> TestResult {
+    match args {
+        ["--hard"] => {
+            let head = repo.head()?.peel_to_commit()?;
+            let object = repo.find_object(head.id(), None)?;
+            repo.reset(&object, ResetType::Hard, None)?;
+            Ok(())
+        }
+        ["--hard", spec] => {
+            let object = repo.revparse_single(spec)?;
+            repo.reset(&object, ResetType::Hard, None)?;
+            Ok(())
+        }
+        _ => Err(format!("unsupported fixture git reset args: {:?}", args).into()),
+    }
+}
+
+fn fixture_git_show_ref(repo: &Repository, args: &[&str]) -> TestResult {
+    match args {
+        ["--verify", "--quiet", reference] => {
+            repo.find_reference(reference)?;
+            Ok(())
+        }
+        _ => Err(format!("unsupported fixture git show-ref args: {:?}", args).into()),
+    }
+}
+
+fn fixture_git_worktree(repo: &Repository, args: &[&str]) -> TestResult {
+    match args {
+        ["add", "--detach", path] => {
+            let worktree_path = Path::new(path);
+            let worktree_name = worktree_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or("worktree path must include a final directory name")?;
+            let mut opts = WorktreeAddOptions::new();
+            opts.checkout_existing(true);
+            repo.worktree(worktree_name, worktree_path, Some(&opts))?;
+            Ok(())
+        }
+        _ => Err(format!("unsupported fixture git worktree args: {:?}", args).into()),
     }
 }
 

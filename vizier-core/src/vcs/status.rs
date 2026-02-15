@@ -1,16 +1,31 @@
 use git2::{
-    BranchType, Diff, DiffDelta, DiffFindOptions, DiffFormat, DiffLine, DiffOptions,
+    ApplyLocation, BranchType, Diff, DiffDelta, DiffFindOptions, DiffFormat, DiffLine, DiffOptions,
     DiffStatsFormat, Error, ErrorCode, Oid, Repository, RepositoryState, Status, StatusEntry,
     StatusOptions, StatusShow, Tree,
 };
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::normalize_pathspec;
 
+fn append_patch_line(buf: &mut Vec<u8>, line: DiffLine<'_>) {
+    let origin = line.origin();
+    if matches!(origin, '+' | '-' | ' ') {
+        buf.push(origin as u8);
+    }
+    buf.extend_from_slice(line.content());
+}
+
 fn configure_diff_options(pathspec: Option<&str>) -> DiffOptions {
+    configure_diff_options_with_binary(pathspec, false)
+}
+
+fn configure_diff_options_with_binary(pathspec: Option<&str>, show_binary: bool) -> DiffOptions {
     let mut opts = DiffOptions::new();
 
-    opts.ignore_submodules(true).id_abbrev(40);
+    opts.ignore_submodules(true)
+        .id_abbrev(40)
+        .show_binary(show_binary);
 
     if let Some(spec) = pathspec {
         opts.pathspec(spec);
@@ -24,13 +39,22 @@ fn diff_tree_to_workdir_tolerant<'repo>(
     base: Option<&Tree<'repo>>,
     pathspec: Option<&str>,
 ) -> Result<Diff<'repo>, Error> {
-    let mut opts = configure_diff_options(pathspec);
+    diff_tree_to_workdir_tolerant_with_binary(repo, base, pathspec, false)
+}
+
+fn diff_tree_to_workdir_tolerant_with_binary<'repo>(
+    repo: &'repo Repository,
+    base: Option<&Tree<'repo>>,
+    pathspec: Option<&str>,
+    show_binary: bool,
+) -> Result<Diff<'repo>, Error> {
+    let mut opts = configure_diff_options_with_binary(pathspec, show_binary);
 
     match repo.diff_tree_to_workdir_with_index(base, Some(&mut opts)) {
         Ok(diff) => Ok(diff),
         Err(err) if err.code() == ErrorCode::NotFound => {
-            let mut staged_opts = configure_diff_options(pathspec);
-            let mut workdir_opts = configure_diff_options(pathspec);
+            let mut staged_opts = configure_diff_options_with_binary(pathspec, show_binary);
+            let mut workdir_opts = configure_diff_options_with_binary(pathspec, show_binary);
 
             let index = repo.index()?;
             let mut staged_diff =
@@ -130,7 +154,7 @@ pub fn get_diff(
 
                     diff_path.starts_with(exclude_path)
                 }) {
-                    buf.extend_from_slice(line.content());
+                    append_patch_line(&mut buf, line);
                 }
             }
             true
@@ -138,6 +162,34 @@ pub fn get_diff(
     )?;
 
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+pub fn diff_binary_against_head_in<P: AsRef<Path>>(repo_path: P) -> Result<Vec<u8>, Error> {
+    let repo = Repository::open(repo_path)?;
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let diff = diff_tree_to_workdir_tolerant_with_binary(&repo, head_tree.as_ref(), None, true)?;
+
+    let mut patch = Vec::new();
+    diff.print(DiffFormat::Patch, |_, _, line| {
+        append_patch_line(&mut patch, line);
+        true
+    })?;
+
+    Ok(patch)
+}
+
+pub fn apply_patch_with_index_in<P: AsRef<Path>>(repo_path: P, patch: &[u8]) -> Result<(), Error> {
+    let repo = Repository::open(repo_path)?;
+    let diff = Diff::from_buffer(patch)?;
+    repo.apply(&diff, ApplyLocation::Both, None)
+}
+
+pub fn apply_patch_file_with_index_in<P: AsRef<Path>, Q: AsRef<Path>>(
+    repo_path: P,
+    patch_path: Q,
+) -> Result<(), Error> {
+    let patch = fs::read(patch_path).map_err(|err| Error::from_str(&err.to_string()))?;
+    apply_patch_with_index_in(repo_path, &patch)
 }
 
 fn repo_state_label(state: RepositoryState) -> Option<&'static str> {

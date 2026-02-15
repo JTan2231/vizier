@@ -803,17 +803,7 @@ fn test_scheduler_retry_merge_recovers_plan_doc_from_history() -> TestResult {
 
     let origin_dir = repo.path().join(".vizier/tmp/retry-merge-origin.git");
     fs::create_dir_all(origin_dir.parent().ok_or("origin parent missing")?)?;
-    let init_status = Command::new("git")
-        .args(["init", "--bare"])
-        .arg(&origin_dir)
-        .status()?;
-    if !init_status.success() {
-        return Err(format!(
-            "failed to initialize bare origin at {} (status={init_status:?})",
-            origin_dir.display()
-        )
-        .into());
-    }
+    Repository::init_bare(&origin_dir)?;
     let origin = origin_dir.to_string_lossy().to_string();
     repo.git(&["remote", "add", "origin", &origin])?;
     repo.git(&["push", "-u", "origin", "master"])?;

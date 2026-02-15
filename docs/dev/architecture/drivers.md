@@ -6,7 +6,7 @@ Drivers host all side effects and environment-specific behavior. They wire the p
 - Resolve configuration precedence (global + repo + CLI overrides) and load prompt files.
 - Load snapshot/narrative context from the filesystem.
 - Execute agents and stream progress/output to the display layer.
-- Perform Git/VCS operations (status, diffs, commits, worktrees, merge/conflict handling).
+- Perform Git/VCS operations (status, diffs, commits, worktrees, merge/conflict handling) via in-process `libgit2` helpers under `vizier-core/src/vcs/` rather than shelling out to the Git CLI.
 - Render TTY output, manage pagers, and apply verbosity rules.
 - Persist session logs, job records, and other artifacts.
 

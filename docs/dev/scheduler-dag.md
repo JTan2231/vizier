@@ -152,9 +152,9 @@ Safety and rewind behavior:
 - Retry truncates `stdout.log`/`stderr.log`, removes stale `outcome.json`,
   `command.patch`, and custom-artifact markers owned by rewound jobs, and performs best-effort
   cleanup of owned temp worktrees when ownership/safety checks pass.
-- Retry cleanup first attempts libgit2 prune and falls back to `git worktree remove --force <path>`
-  plus `git worktree prune --expire now` when prune fails (including known `.git/shallow` stat
-  failures).
+- Retry cleanup uses libgit2-only worktree pruning: it attempts configured/derived worktree-name
+  candidates, records degraded cleanup when no registered worktree matches, and still performs
+  best-effort filesystem removal of the owned worktree directory.
 - Retry clears `worktree_*` metadata only when cleanup is confirmed done/skipped; degraded cleanup
   retains worktree ownership metadata and records
   `retry_cleanup_status`/`retry_cleanup_error` for later recovery via retry/cancel.

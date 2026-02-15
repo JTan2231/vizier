@@ -18,6 +18,11 @@
 - **Execution-root metadata**: Job metadata field `execution_root` representing the logical filesystem root for workflow-node runtime (`.` = repo root).
 - **Execution-root edge propagation**: Runtime behavior that copies execution context (`execution_root` + worktree ownership fields) along explicit workflow routes before downstream queue/retry handling.
 - **Execution-root reset contract**: Cleanup/retry rule where successful worktree cleanup resets `execution_root` to `.` and clears `worktree_*` ownership fields; degraded cleanup preserves context for recovery.
+- **Git CLI invocation guard**: Codebase invariant that `rg -n 'Command::new\\(\"git\"\\)' vizier-core/src vizier-cli/src vizier-kernel/src tests/src` stays empty so runtime/test Git behavior cannot regress to shelling out.
+- **Libgit2-only workflow Git runtime**: Runtime/test posture where worktree/merge/stage/patch/retry-cleanup Git flows execute through `vizier-core/src/vcs/*` helpers and `git2` APIs instead of `git` subprocesses.
+- **Linked-worktree checkout fallback**: Branch-switch behavior that detaches HEAD before reattaching to a target branch when libgit2 rejects direct checkout because the branch is already the HEAD of a linked worktree.
+- **Force-equivalent shared-branch worktree add**: `worktree.prepare` parity path that creates a temporary-branch worktree and repoints its HEAD to the requested branch so multiple linked worktrees can intentionally track the same branch.
+- **Patch hunk-origin reconstruction**: Diff-print rule that re-adds `+`, `-`, and space origins to emitted patch lines so generated patches remain parseable by libgit2 patch-apply APIs.
 - **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
 - **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
 - **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
