@@ -3229,22 +3229,21 @@ fn execute_agent_request_blocking(
 }
 
 fn workflow_prompt_text_from_record(
+    project_root: &Path,
     execution_root: &Path,
     record: &JobRecord,
     node: &WorkflowRuntimeNodeManifest,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(text) = node.args.get("prompt_text")
+    let raw_prompt_text = if let Some(text) = node.args.get("prompt_text")
         && !text.trim().is_empty()
     {
-        return Ok(text.clone());
-    }
-    if let Some(path) = node.args.get("prompt_file")
+        text.clone()
+    } else if let Some(path) = node.args.get("prompt_file")
         && !path.trim().is_empty()
     {
         let abs = resolve_path_in_execution_root(execution_root, path);
-        return Ok(fs::read_to_string(abs)?);
-    }
-    if let Some(command) = node.args.get("command")
+        fs::read_to_string(abs)?
+    } else if let Some(command) = node.args.get("command")
         && !command.trim().is_empty()
     {
         let (status, stdout, stderr) = run_shell_text_command(execution_root, command)?;
@@ -3255,9 +3254,8 @@ fn workflow_prompt_text_from_record(
             )
             .into());
         }
-        return Ok(stdout);
-    }
-    if let Some(script) = node.args.get("script")
+        stdout
+    } else if let Some(script) = node.args.get("script")
         && !script.trim().is_empty()
     {
         let (status, stdout, stderr) = run_shell_text_command(execution_root, script)?;
@@ -3268,10 +3266,8 @@ fn workflow_prompt_text_from_record(
             )
             .into());
         }
-        return Ok(stdout);
-    }
-
-    let from_config = record
+        stdout
+    } else if let Some(text) = record
         .config_snapshot
         .as_ref()
         .and_then(|snapshot| {
@@ -3284,18 +3280,111 @@ fn workflow_prompt_text_from_record(
                         .and_then(|value| value.as_str())
                 })
         })
-        .map(|value| value.to_string());
-    if let Some(text) = from_config {
-        return Ok(text);
-    }
-
-    if let Ok(value) = std::env::var("VIZIER_WORKFLOW_PROMPT_TEXT")
+        .map(|value| value.to_string())
+    {
+        text
+    } else if let Ok(value) = std::env::var("VIZIER_WORKFLOW_PROMPT_TEXT")
         && !value.trim().is_empty()
     {
-        return Ok(value);
+        value
+    } else {
+        return Err("prompt.resolve missing prompt_text source (args.prompt_text/prompt_file/command/script, config workflow.prompt_text, or VIZIER_WORKFLOW_PROMPT_TEXT)".into());
+    };
+
+    let variables = collect_prompt_template_variables(project_root, execution_root, record, node)?;
+    render_prompt_template(&raw_prompt_text, &variables, execution_root)
+}
+
+fn collect_prompt_template_variables(
+    project_root: &Path,
+    execution_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let mut variables = BTreeMap::new();
+    for (key, value) in &node.args {
+        variables.insert(key.clone(), value.clone());
     }
 
-    Err("prompt.resolve missing prompt_text source (args.prompt_text/prompt_file/command/script, config workflow.prompt_text, or VIZIER_WORKFLOW_PROMPT_TEXT)".into())
+    if let Some(run_id) = record
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.workflow_run_id.as_deref())
+    {
+        let manifest = load_workflow_run_manifest(project_root, run_id).map_err(|err| {
+            format!("prompt.resolve could not load workflow run manifest `{run_id}`: {err}")
+        })?;
+        for runtime_node in manifest.nodes.values() {
+            for (arg_key, arg_value) in &runtime_node.args {
+                variables
+                    .entry(format!("{}.{}", runtime_node.node_id, arg_key))
+                    .or_insert_with(|| arg_value.clone());
+            }
+        }
+    }
+
+    variables
+        .entry("execution_root".to_string())
+        .or_insert_with(|| execution_root.to_string_lossy().to_string());
+    Ok(variables)
+}
+
+fn render_prompt_template(
+    template: &str,
+    variables: &BTreeMap<String, String>,
+    execution_root: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut rendered = String::with_capacity(template.len());
+    let mut cursor = 0usize;
+
+    while let Some(open_rel) = template[cursor..].find("{{") {
+        let open = cursor + open_rel;
+        rendered.push_str(&template[cursor..open]);
+        let key_start = open + 2;
+        let Some(close_rel) = template[key_start..].find("}}") else {
+            return Err("prompt.resolve found unclosed placeholder; expected `}}`".into());
+        };
+        let close = key_start + close_rel;
+        let key = template[key_start..close].trim();
+        if key.is_empty() {
+            return Err("prompt.resolve found empty placeholder `{{}}`".into());
+        }
+
+        let replacement = resolve_prompt_template_placeholder(key, variables, execution_root)?;
+        rendered.push_str(&replacement);
+        cursor = close + 2;
+    }
+
+    rendered.push_str(&template[cursor..]);
+    Ok(rendered)
+}
+
+fn resolve_prompt_template_placeholder(
+    key: &str,
+    variables: &BTreeMap<String, String>,
+    execution_root: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(path) = key.strip_prefix("file:") {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("prompt.resolve placeholder `file:` requires a non-empty path".into());
+        }
+        let abs = resolve_path_in_execution_root(execution_root, trimmed);
+        return fs::read_to_string(&abs).map_err(|err| {
+            format!(
+                "prompt.resolve could not read placeholder file `{}`: {}",
+                abs.display(),
+                err
+            )
+            .into()
+        });
+    }
+
+    if let Some(value) = variables.get(key) {
+        return Ok(value.clone());
+    }
+
+    Err(format!("prompt.resolve unresolved placeholder `{{{{{key}}}}}`").into())
 }
 
 fn prompt_output_artifact(node: &WorkflowRuntimeNodeManifest) -> Option<JobArtifact> {
@@ -3494,7 +3583,8 @@ fn execute_workflow_executor(
                 }
             };
 
-            let prompt_text = workflow_prompt_text_from_record(&execution_root, record, node)?;
+            let prompt_text =
+                workflow_prompt_text_from_record(project_root, &execution_root, record, node)?;
             let payload = serde_json::json!({
                 "type_id": type_id,
                 "key": key,
@@ -8632,6 +8722,222 @@ mod tests {
                 .expect("execute agent.invoke");
         assert_eq!(invoke_result.outcome, WorkflowNodeOutcome::Succeeded);
         assert_eq!(invoke_result.payload_refs.len(), 1);
+    }
+
+    #[test]
+    fn workflow_runtime_prompt_resolve_renders_template_placeholders() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let narrative_dir = project_root.join(".vizier/narrative");
+        fs::create_dir_all(&narrative_dir).expect("create narrative dir");
+        fs::write(
+            narrative_dir.join("snapshot.md"),
+            "Snapshot focus: scheduler runtime.\n",
+        )
+        .expect("write snapshot");
+
+        let template = WorkflowTemplate {
+            id: "template.runtime.prompt_placeholders".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::from([
+                        (
+                            "prompt_text".to_string(),
+                            "slug={{persist_plan.name_override}}\nlocal={{local_value}}\nsnapshot={{file:.vizier/narrative/snapshot.md}}\nspec={{persist_plan.spec_text}}\n".to_string(),
+                        ),
+                        ("local_value".to_string(), "from-resolve".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![JobArtifact::Custom {
+                            type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                            key: "draft_main".to_string(),
+                        }],
+                        ..WorkflowOutcomeArtifacts::default()
+                    },
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "persist_plan".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.plan.persist".to_string(),
+                    args: BTreeMap::from([
+                        ("spec_source".to_string(), "inline".to_string()),
+                        ("spec_text".to_string(), "Spec body from node".to_string()),
+                        ("name_override".to_string(), "jobs".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-prompt-placeholders",
+            "template.runtime.prompt_placeholders@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let manifest = load_workflow_run_manifest(project_root, "run-prompt-placeholders")
+            .expect("workflow manifest");
+
+        let resolve_job = result
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        let resolve_node = manifest
+            .nodes
+            .get("resolve_prompt")
+            .expect("resolve node manifest");
+        let resolve_result =
+            execute_workflow_executor(project_root, &jobs_root, &resolve_record, resolve_node)
+                .expect("execute prompt.resolve");
+        assert_eq!(resolve_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert_eq!(resolve_result.payload_refs.len(), 1);
+
+        let payload_ref = project_root.join(resolve_result.payload_refs[0].as_str());
+        let payload_raw = fs::read_to_string(payload_ref).expect("read payload");
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload_raw).expect("parse payload json");
+        assert_eq!(
+            payload.get("text").and_then(|value| value.as_str()),
+            Some(
+                "slug=jobs\nlocal=from-resolve\nsnapshot=Snapshot focus: scheduler runtime.\n\nspec=Spec body from node\n"
+            )
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_prompt_resolve_fails_on_unresolved_placeholder() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = WorkflowTemplate {
+            id: "template.runtime.prompt_unresolved".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::from([(
+                        "prompt_text".to_string(),
+                        "missing={{persist_plan.missing_value}}".to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![JobArtifact::Custom {
+                            type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                            key: "draft_main".to_string(),
+                        }],
+                        ..WorkflowOutcomeArtifacts::default()
+                    },
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "persist_plan".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.plan.persist".to_string(),
+                    args: BTreeMap::from([
+                        ("spec_source".to_string(), "inline".to_string()),
+                        ("spec_text".to_string(), "Spec body".to_string()),
+                        ("name_override".to_string(), "jobs".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-prompt-unresolved",
+            "template.runtime.prompt_unresolved@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let manifest = load_workflow_run_manifest(project_root, "run-prompt-unresolved")
+            .expect("workflow manifest");
+
+        let resolve_job = result
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        let resolve_node = manifest
+            .nodes
+            .get("resolve_prompt")
+            .expect("resolve node manifest");
+        let err =
+            execute_workflow_executor(project_root, &jobs_root, &resolve_record, resolve_node)
+                .expect_err("expected unresolved placeholder failure");
+        assert!(
+            err.to_string().contains("unresolved placeholder"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

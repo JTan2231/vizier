@@ -54,6 +54,9 @@ merge = "file:.vizier/workflows/merge.toml"
   - draft: `.vizier/prompts/DRAFT_PROMPTS.md`
   - approve: `.vizier/prompts/APPROVE_PROMPTS.md`
   - merge companion: `.vizier/prompts/MERGE_PROMPTS.md`
+- `prompt.resolve` now renders `{{placeholder}}` tokens found in prompt text and requires every placeholder to resolve.
+- Placeholder resolution sources are generic: current node args (`{{key}}`), any run-manifest node arg (`{{node_id.arg_key}}`), and file includes (`{{file:relative/or/absolute/path}}`).
+- Unresolved prompt placeholders fail the `resolve_prompt` node with an explicit error.
 - Entry-node preflight now reports missing root inputs before enqueue, including actionable examples derived from `[cli].positional`/`[cli].named`.
 - Stage `worktree_prepare` defaults to `draft/<slug>` when `branch` is unset; provide `branch` explicitly to override.
 - Stage `merge_integrate` also defaults to `draft/<slug>` when source branch args are unset; `vizier run merge <slug>` can run without explicitly setting `branch`.
