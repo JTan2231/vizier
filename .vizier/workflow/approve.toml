@@ -10,8 +10,6 @@ name = "slug"
 [params]
 branch = ""
 commit_message = "chore: workflow stage commit"
-prompt_file = ""
-prompt_text = ""
 slug = ""
 stop_condition_retries = "3"
 stop_condition_script = ""
@@ -39,8 +37,7 @@ kind = "builtin"
 uses = "cap.env.builtin.prompt.resolve"
 
 [nodes.args]
-prompt_file = "${prompt_file}"
-prompt_text = "${prompt_text}"
+prompt_file = ".vizier/prompts/APPROVE_PROMPTS.md"
 
 [nodes.produces]
 succeeded = [{ custom = { type_id = "prompt_text", key = "approve_main" } }]

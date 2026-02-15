@@ -340,6 +340,7 @@ Watch behavior (`--watch`):
   - status bucket counts (`queued`, `waiting`, `running`, `blocked`, `terminal`)
   - top-N summary table (`--top`, default `10`, minimum `1`)
   - running-job pane showing the selected job and latest `[stdout]`/`[stderr]` line
+- Workflow node runtime errors are finalized as terminal `failed` jobs (exit `1`) so watch does not leave those nodes in a stale `running` state.
 - Running job selection:
   - if `--job <id>` is set and that job is `running`, watch pins to that job
   - otherwise watch uses the first visible `running` summary row (after top-N truncation)

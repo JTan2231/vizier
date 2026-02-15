@@ -46,6 +46,7 @@ uses = "control.gate.conflict_resolution"
 [nodes.args]
 auto_resolve = "${conflict_auto_resolve}"
 slug = "${slug}"
+prompt_file = ".vizier/prompts/MERGE_PROMPTS.md"
 
 [nodes.on]
 succeeded = ["merge_integrate"]

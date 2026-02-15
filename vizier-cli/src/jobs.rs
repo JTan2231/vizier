@@ -4530,12 +4530,52 @@ pub fn run_workflow_node_command(
     jobs_root: &Path,
     job_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let code = execute_workflow_node_job(project_root, jobs_root, job_id)?;
-    if code == 0 {
-        Ok(())
-    } else {
-        Err(format!("workflow node {job_id} failed (exit {code})").into())
+    match execute_workflow_node_job(project_root, jobs_root, job_id) {
+        Ok(code) => {
+            if code == 0 {
+                Ok(())
+            } else {
+                Err(format!("workflow node {job_id} failed (exit {code})").into())
+            }
+        }
+        Err(err) => {
+            if let Err(finalize_err) =
+                finalize_failed_workflow_node_if_active(project_root, jobs_root, job_id)
+            {
+                display::warn(format!(
+                    "unable to finalize failed workflow node job {} after runtime error: {}",
+                    job_id, finalize_err
+                ));
+            }
+            Err(err)
+        }
     }
+}
+
+fn finalize_failed_workflow_node_if_active(
+    project_root: &Path,
+    jobs_root: &Path,
+    job_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let record = read_record(jobs_root, job_id)?;
+    if !job_is_active(record.status) {
+        return Ok(());
+    }
+
+    let metadata = JobMetadata {
+        workflow_node_outcome: Some(WorkflowNodeOutcome::Failed.as_str().to_string()),
+        ..JobMetadata::default()
+    };
+    let _ = finalize_job(
+        project_root,
+        jobs_root,
+        job_id,
+        JobStatus::Failed,
+        1,
+        None,
+        Some(metadata),
+    )?;
+    Ok(())
 }
 
 fn note_waited(waited_on: &mut Vec<JobWaitKind>, kind: JobWaitKind) {
@@ -8352,6 +8392,89 @@ mod tests {
                 .expect("execute agent.invoke");
         assert_eq!(invoke_result.outcome, WorkflowNodeOutcome::Succeeded);
         assert_eq!(invoke_result.payload_refs.len(), 1);
+    }
+
+    #[test]
+    fn run_workflow_node_command_finalizes_job_when_executor_errors() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = WorkflowTemplate {
+            id: "template.runtime.prompt_missing_file".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![WorkflowNode {
+                id: "resolve_prompt".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.prompt.resolve".to_string(),
+                args: BTreeMap::from([(
+                    "prompt_file".to_string(),
+                    "__missing_prompt__.md".to_string(),
+                )]),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts {
+                    succeeded: vec![JobArtifact::Custom {
+                        type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                        key: "draft_main".to_string(),
+                    }],
+                    ..WorkflowOutcomeArtifacts::default()
+                },
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: Default::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let enqueue = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-runtime-error",
+            "template.runtime.prompt_missing_file@v1",
+            &template,
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let resolve_job = enqueue
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+
+        update_job_record(&jobs_root, &resolve_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("mark running");
+
+        let err = run_workflow_node_command(project_root, &jobs_root, &resolve_job)
+            .expect_err("missing prompt file should fail workflow node");
+        let err_text = err.to_string();
+        assert!(
+            err_text.contains("No such file or directory")
+                || err_text.contains("__missing_prompt__.md")
+                || err_text.contains("prompt.resolve"),
+            "expected executor error details: {err_text}"
+        );
+
+        let record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        assert_eq!(record.status, JobStatus::Failed);
+        assert_eq!(record.exit_code, Some(1));
+        assert!(record.finished_at.is_some());
+        let metadata = record.metadata.as_ref().expect("metadata");
+        assert_eq!(metadata.workflow_node_outcome.as_deref(), Some("failed"));
     }
 
     #[test]

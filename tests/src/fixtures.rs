@@ -432,6 +432,11 @@ fn seed_vizier_dir(source_repo_root: &Path, target_repo_root: &Path) -> io::Resu
         copy_dir_recursive(&source_workflow, &target_vizier.join("workflow"))?;
     }
 
+    let source_prompts = source_vizier.join("prompts");
+    if source_prompts.is_dir() {
+        copy_dir_recursive(&source_prompts, &target_vizier.join("prompts"))?;
+    }
+
     let source_narrative = source_vizier.join("narrative");
     if source_narrative.is_dir() {
         copy_dir_recursive(&source_narrative, &target_vizier.join("narrative"))?;
@@ -1498,6 +1503,7 @@ mod tests {
 
         fs::create_dir_all(source.join(".vizier/narrative/threads"))?;
         fs::create_dir_all(source.join(".vizier/workflow"))?;
+        fs::create_dir_all(source.join(".vizier/prompts"))?;
         fs::create_dir_all(source.join(".vizier/tmp/cargo-target/debug"))?;
         fs::create_dir_all(source.join(".vizier/jobs/job-1"))?;
         fs::create_dir_all(source.join(".vizier/sessions/s1"))?;
@@ -1515,6 +1521,10 @@ mod tests {
         fs::write(
             source.join(".vizier/workflow/draft.toml"),
             "id = \"template.stage.draft\"\n",
+        )?;
+        fs::write(
+            source.join(".vizier/prompts/DRAFT_PROMPTS.md"),
+            "# draft prompt\n",
         )?;
         fs::write(source.join(".vizier/narrative/snapshot.md"), "snapshot\n")?;
         fs::write(source.join(".vizier/narrative/glossary.md"), "glossary\n")?;
@@ -1555,6 +1565,10 @@ mod tests {
         assert!(
             target.join(".vizier/workflow/draft.toml").is_file(),
             "expected workflow stage templates to be copied"
+        );
+        assert!(
+            target.join(".vizier/prompts/DRAFT_PROMPTS.md").is_file(),
+            "expected stage prompt files to be copied"
         );
         assert!(
             target.join(".vizier/implementation-plans").is_dir(),
