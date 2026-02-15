@@ -801,9 +801,15 @@ pub(crate) fn wait_for_job_completion(
         .join(job_id)
         .join("job.json");
     let start = Instant::now();
+    let mut last_status = "unknown".to_string();
+    let mut last_wait_reason = None::<String>;
     loop {
         if start.elapsed() > timeout {
-            return Err(format!("timed out waiting for job {job_id}").into());
+            let detail = match last_wait_reason {
+                Some(reason) => format!("status={last_status}, wait_reason={reason}"),
+                None => format!("status={last_status}"),
+            };
+            return Err(format!("timed out waiting for job {job_id} ({detail})").into());
         }
         let Ok(contents) = fs::read_to_string(&job_path) else {
             std::thread::sleep(poll_interval);
@@ -814,6 +820,11 @@ pub(crate) fn wait_for_job_completion(
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        last_status = status.to_string();
+        last_wait_reason = record
+            .pointer("/schedule/wait_reason/detail")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string());
         if !matches!(
             status,
             "queued" | "waiting_on_deps" | "waiting_on_approval" | "waiting_on_locks" | "running"

@@ -29,8 +29,17 @@ Out of scope:
 - Required sections:
   - `## Operator Spec`
   - `## Implementation Plan`
-- Owner flows: historical draft/approve/merge workflows (command family removed) plus retained plan visibility surfaces (`vizier list`, `vizier cd`, `vizier clean`).
+- Owner flows: stage templates executed through `vizier run draft|approve|merge` plus retained plan visibility surfaces (`vizier list`, `vizier cd`, `vizier clean`).
 - Durability: durable repository artifact; plan/branch bijection can drift in legacy worktrees.
+
+### 2a) Stage template material
+- Paths:
+  - `.vizier/workflow/draft.toml`
+  - `.vizier/workflow/approve.toml`
+  - `.vizier/workflow/merge.toml`
+  - optional composed flows such as `.vizier/develop.toml`
+- Owner flows: `vizier run <alias|selector>` queue-time template resolution and compilation.
+- Durability: durable repository orchestration contract.
 
 ### 3) Build session material
 - Root: `.vizier/implementation-plans/builds/<build_id>/`.
@@ -214,7 +223,6 @@ Ephemeral operational artifacts:
     worktree ownership metadata.
 - Terminal policy nodes are sink-only runtime contracts and are invalid when
   configured with outgoing routes.
-- `vizier merge --complete-conflict` only operates on existing Vizier-managed sentinel state.
 - Clean-worktree checks ignore ephemeral Vizier paths:
   - `.vizier/jobs`
   - `.vizier/sessions`

@@ -9,6 +9,7 @@
 - **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
 - **Current worktree evidence**: Snapshot code-state line that records the latest local `draft/*` branch inventory plus on-disk and deleted `.vizier/implementation-plans/*.md` evidence for the active worktree slug.
+- **Worktree evidence label**: Parenthetical in the current-worktree-evidence snapshot bullet (`draft/<slug>`, `revalidated <date>`) that identifies which live branch inventory the evidence was sampled from.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
 - **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree (including when the directory itself is absent); used with branch inventory to quantify legacy drift.
@@ -23,6 +24,10 @@
 - **Help pager contract**: Help text auto-pages only on TTY via `$VIZIER_PAGER` (or fallback pager), prints directly on non-TTY, and can be internally suppressed with hidden `--no-pager`.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
+- **Stage alias map**: Repo-local `[commands]` config mapping (for example `draft`, `approve`, `merge`) that resolves `vizier run <alias>` to workflow file selectors.
+- **Stage-template drift repair**: Repo-local recovery where `.vizier/config.toml` re-adds `[commands].draft|approve|merge` alias selectors and `.vizier/workflow/{draft,approve,merge}.toml` is restored from legacy `vizier.*` `uses` labels to canonical `cap.env.*`/`cap.agent.invoke`/`control.*` DAGs, including draft cleanup via explicit `after` from `stage_commit` and merge CI gate terminal settling for operator-driven retries.
+- **Merge gate settle path**: Merge-stage template posture where `merge_gate_cicd` failures end as terminal `failed` jobs (no self-loop retry edge), so recovery uses explicit `vizier jobs retry <job_id>`.
+- **Primitive stage templates**: Canonical stage DAG files (`.vizier/workflow/draft.toml`, `.vizier/workflow/approve.toml`, `.vizier/workflow/merge.toml`) executed through `vizier run` + scheduler jobs; no wrapper commands.
 - **`vizier run` orchestrator**: Public workflow front-door that resolves a flow source, compiles/validates template nodes, enqueues scheduler jobs, and optionally follows to terminal state.
 - **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
 - **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.

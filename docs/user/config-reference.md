@@ -29,6 +29,17 @@ Legacy workflow-global flags are no longer supported.
 - `[jobs]`: cancellation and retention behavior for job operations.
 - `[commits]`: release/commit metadata formatting controls.
 - `[commands]`: alias-to-template mapping consumed by `vizier run <alias>`.
+- `[workflow.templates]`: compatibility fallback for legacy selector lookups.
+
+Recommended stage aliases:
+
+```toml
+[commands]
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
+develop = "file:.vizier/develop.toml"
+```
 
 ## Operational Commands
 

@@ -25,10 +25,23 @@ Use `vizier jobs` for scheduler/job records:
 
 Use `vizier run <flow>` to compile and enqueue repo-local workflow templates through scheduler primitives:
 
+- `vizier run draft --set slug=my-change --set spec_text="..." --follow`
+- `vizier run approve --set slug=my-change --set branch=draft/my-change --follow`
+- `vizier run merge --set slug=my-change --set branch=draft/my-change --set target_branch=master --follow`
 - `vizier run develop`
 - `vizier run file:.vizier/workflow/custom.toml --set key=value`
 - `vizier run develop --after <job-id> --require-approval`
 - `vizier run develop --follow --format json`
+
+Recommended repo alias map:
+
+```toml
+[commands]
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
+develop = "file:.vizier/develop.toml"
+```
 
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
 

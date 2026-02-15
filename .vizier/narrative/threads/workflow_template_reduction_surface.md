@@ -27,6 +27,23 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-15, templates gate retry stabilization):
+  - Repaired the gate-breaking regression in repo-local stage artifacts: `.vizier/config.toml` now restores `[commands].draft|approve|merge`, and `.vizier/workflow/{draft,approve,merge}.toml` is back on canonical `template.stage.*@v2` `cap.env.*`/`cap.agent.invoke`/`control.*` labels.
+  - Draft-stage cleanup now uses an explicit `after` dependency from `stage_commit` (instead of a non-stop-gate `on.succeeded` route) to satisfy the `git.stage_commit` capability contract.
+  - Merge-stage CI/CD gating now sources script config from the `cicd` gate definition only and removes the self-loop failed route, so gate failures settle as `failed` and operator recovery flows through `vizier jobs retry`.
+  - Merge-stage runtime shape currently uses integrate/conflict/cicd gate node terminal statuses without an explicit template sink node.
+  - Validation signal: previously failing run-stage tests (`stage_aliases`, `stage_jobs_control_paths`, `merge_stage_conflict_gate`) now pass, and `./cicd.sh` is green.
+- Update (2026-02-15, templates worktree drift repair):
+  - Repaired repo-local drift where `.vizier/config.toml` had dropped `[commands].draft|approve|merge` and stage aliases could fall back to unresolved legacy selectors.
+  - Restored `.vizier/workflow/{draft,approve,merge}.toml` from legacy `template.stage.*@v1` + `vizier.*` labels to canonical `template.stage.*@v2` DAGs (`cap.env.*`, `cap.agent.invoke`, `control.*`) while keeping stage smoke node IDs (`persist_plan`, `stage_commit`, `stop_gate`, `merge_integrate`, `merge_gate_cicd`, `merge_conflict_resolution`).
+  - Added explicit `slug` args on merge-stage nodes so conflict sentinels stay keyed to `.vizier/tmp/merge-conflicts/<slug>.json`.
+  - Validation signal: targeted run-stage failures reproduced from gate output now pass, and `./cicd.sh` is green again.
+- Update (2026-02-15, primitive stage-template cutover):
+  - Repo-local stage templates `.vizier/workflow/{draft,approve,merge}.toml` now ship as canonical primitive DAGs (`template.stage.*@v2`) using only `cap.env.*`, `cap.agent.invoke`, and `control.*` identities.
+  - Stage orchestration aliases are now explicit in repo config (`[commands].draft|approve|merge = "file:.vizier/workflow/<stage>.toml"`), with composed `develop` left as an optional higher-level flow.
+  - Docs now describe stage execution as `vizier run` + `vizier jobs` only (`docs/user/workflows/alias-run-flow.md`, `docs/user/workflows/stage-execution.md`, `docs/dev/scheduler-dag.md`, `docs/dev/vizier-material-model.md`, `docs/user/config-reference.md`, `example-config.toml`).
+  - Integration coverage in `tests/src/run.rs` now asserts stage alias smoke runs, approve stop-condition retry-loop attempts, stage job control paths (`approve/cancel/tail/attach/retry`), and merge conflict-gate sentinel behavior.
+  - Validation gates were re-run and are green (`cargo check --all --all-targets`, `cargo test --all --all-targets`, `./cicd.sh`).
 - Update (2026-02-15, execution-root propagation):
   - `vizier-cli/src/jobs.rs` now carries additive workflow metadata `execution_root` and resolves runtime roots by precedence (`execution_root` -> legacy `worktree_path` -> repo root) with repo-boundary canonicalization checks.
   - Runtime route handling now keeps `on.succeeded` topology unchanged (`after:success` bridge) while using explicit route metadata to propagate execution context edge-locally to downstream queued nodes; non-success retry routes now inject propagated context before scheduler requeue.
