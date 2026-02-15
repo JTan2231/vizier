@@ -30,9 +30,20 @@ script = \"{}\"\n",
 }
 
 fn write_stage_alias_test_config(repo: &IntegrationRepo) -> TestResult {
+    write_stage_alias_test_config_with_agent_command(
+        repo,
+        "cat >/dev/null; printf '%s\\n' 'mock agent response'",
+    )
+}
+
+fn write_stage_alias_test_config_with_agent_command(
+    repo: &IntegrationRepo,
+    command: &str,
+) -> TestResult {
     repo.write(
         ".vizier/config.toml",
-        r#"[commands]
+        &format!(
+            r#"[commands]
 draft = "file:.vizier/workflow/draft.toml"
 approve = "file:.vizier/workflow/approve.toml"
 merge = "file:.vizier/workflow/merge.toml"
@@ -42,8 +53,10 @@ develop = "file:.vizier/develop.toml"
 selector = "mock"
 
 [agents.default.agent]
-command = ["sh", "-lc", "cat >/dev/null; printf '%s\n' 'mock agent response'"]
+command = ["sh", "-lc", "{}"]
 "#,
+            command.replace('\\', "\\\\").replace('"', "\\\"")
+        ),
     )?;
     Ok(())
 }
@@ -665,6 +678,52 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 contents
             );
         }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_run_draft_stage_commits_plan_before_agent_invocation() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    let slug = "draft-plan-visible";
+    write_stage_alias_test_config_with_agent_command(
+        &repo,
+        &format!(
+            "cat >/dev/null; test -f .vizier/implementation-plans/{slug}.md && git cat-file -e HEAD:.vizier/implementation-plans/{slug}.md && printf '%s\\n' 'verified draft plan visibility'"
+        ),
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            &format!("slug={slug}"),
+            "--set",
+            "spec_text=Ensure plan file exists before agent runs.",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing draft run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    for node in ["persist_plan", "stage_commit", "invoke_agent", "stop_gate"] {
+        let job_id = manifest_node_job_id(&manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "draft node `{node}` should succeed: {record}"
+        );
     }
 
     Ok(())

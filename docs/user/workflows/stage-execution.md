@@ -41,7 +41,7 @@ merge = "file:.vizier/workflows/merge.toml"
 
 ## Canonical Stage Shapes
 
-- `draft`: `worktree_prepare -> resolve_prompt -> invoke_agent -> persist_plan -> stage_commit -> stop_gate -> worktree_cleanup -> terminal`
+- `draft`: `worktree_prepare -> resolve_prompt -> persist_plan -> stage_commit -> stop_gate -> invoke_agent -> worktree_cleanup -> terminal`
 - `approve`: `worktree_prepare -> resolve_prompt -> invoke_agent -> stage_commit -> stop_gate -> worktree_cleanup -> terminal`
 - `merge`: `merge_integrate -> merge_gate_cicd -> terminal`, with `merge_integrate.on.blocked -> merge_conflict_resolution`
 

@@ -45,7 +45,7 @@ prompt_file = ".vizier/prompts/DRAFT_PROMPTS.md"
 succeeded = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
 
 [nodes.on]
-succeeded = ["invoke_agent"]
+succeeded = ["persist_plan"]
 
 [[nodes.after]]
 node_id = "worktree_prepare"
@@ -59,7 +59,10 @@ uses = "cap.agent.invoke"
 custom = { type_id = "prompt_text", key = "draft_main" }
 
 [nodes.on]
-succeeded = ["persist_plan"]
+succeeded = ["worktree_cleanup"]
+
+[[nodes.after]]
+node_id = "stop_gate"
 
 [[nodes.after]]
 node_id = "resolve_prompt"
@@ -80,7 +83,7 @@ spec_text = "${spec_text}"
 succeeded = ["stage_commit"]
 
 [[nodes.after]]
-node_id = "invoke_agent"
+node_id = "resolve_prompt"
 
 [[nodes]]
 id = "stage_commit"
@@ -102,7 +105,7 @@ kind = "gate"
 uses = "control.gate.stop_condition"
 
 [nodes.on]
-succeeded = ["worktree_cleanup"]
+succeeded = ["invoke_agent"]
 
 [[nodes.after]]
 node_id = "stage_commit"
@@ -116,7 +119,7 @@ uses = "cap.env.builtin.worktree.cleanup"
 succeeded = ["terminal"]
 
 [[nodes.after]]
-node_id = "stop_gate"
+node_id = "invoke_agent"
 
 [[nodes]]
 id = "terminal"
