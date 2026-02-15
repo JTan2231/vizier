@@ -5,3 +5,4 @@ Cargo.lock
 .vizier/tmp/
 .vizier/sessions/
 .vizier/jobs/
+.vizier/implementation-plans
