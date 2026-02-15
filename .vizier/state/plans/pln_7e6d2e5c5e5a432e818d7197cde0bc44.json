@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_7e6d2e5c5e5a432e818d7197cde0bc44",
+  "slug": "templates",
+  "branch": "draft/templates",
+  "source": "draft",
+  "intent": "file:specs/PRIMITIVE_STAGE_TEMPLATES.md",
+  "target_branch": "master",
+  "work_ref": "draft/templates",
+  "status": "draft",
+  "summary": "# Feature Spec: Primitive Stage Templates (`draft` / `approve` / `merge`)",
+  "created_at": "2026-02-15T02:29:35.193160+00:00",
+  "updated_at": "2026-02-15T02:29:35.193160+00:00",
+  "job_ids": {}
+}
