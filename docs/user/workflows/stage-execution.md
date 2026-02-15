@@ -1,17 +1,38 @@
 # Stage Execution
 
-The current CLI executes composed workflow stages through `vizier run` plus scheduler/runtime primitives.
+Stage orchestration runs through repo-local workflow templates plus scheduler primitives:
 
-## What Runs Now
+- `vizier run draft`
+- `vizier run approve`
+- `vizier run merge`
+- `vizier jobs ...` (status/tail/attach/approve/retry/cancel/gc)
 
-- `init`: validates or writes repository bootstrap markers.
-- `list`: reads pending plan metadata from git branches and plan docs.
-- `jobs`: reads and operates on persisted job records.
-- `run`: resolves a flow source, compiles workflow nodes, enqueues scheduler jobs, and optionally follows terminal state.
-- `release`: computes release bump/notes and writes release artifacts.
+No top-level `vizier draft|approve|merge` wrappers are part of the active CLI surface.
+
+## Stage Template Contracts
+
+Stage templates live at:
+
+- `.vizier/workflow/draft.toml`
+- `.vizier/workflow/approve.toml`
+- `.vizier/workflow/merge.toml`
+
+Each template must use canonical `uses` IDs only:
+
+- executor nodes: `cap.env.*`, `cap.agent.invoke`
+- control nodes: `control.*`
+
+Legacy `vizier.*` labels fail queue-time validation before any jobs or run manifests are created.
+
+## Canonical Stage Shapes
+
+- `draft`: `worktree.prepare -> prompt.resolve -> agent.invoke -> plan.persist -> git.stage_commit -> worktree.cleanup -> terminal`
+- `approve`: `worktree.prepare -> prompt.resolve -> agent.invoke -> git.stage_commit -> gate.stop_condition -> worktree.cleanup -> terminal`
+- `merge`: `git.integrate_plan_branch` plus optional `gate.conflict_resolution` and `gate.cicd` routing before `terminal`
 
 ## Operational Notes
 
-- Job log streaming is command-local: use `vizier jobs tail <job> --follow`.
+- `vizier run --set` applies queue-time interpolation and typed coercion before enqueue.
+- `vizier run --after`, `--require-approval`, and `--follow` are the stage orchestration controls.
+- Job log streaming is command-local: `vizier jobs tail <job> --follow`.
 - Help output is pager-aware on TTY and plain in non-TTY contexts.
-- Removed workflow-global runtime flags are no longer supported.

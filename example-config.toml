@@ -196,25 +196,19 @@ enabled = true
 # Silence progress chatter for detached jobs unless the caller set verbosity
 quiet = true
 
-# Optional workflow-template mapping used when scheduler jobs are compiled from wrapper commands.
-# `[commands]` is the new primary surface; `[workflow.templates]` remains as compatibility fallback.
+# Optional alias mapping for `vizier run <alias>` stage orchestration.
+# Stage aliases can point directly to repo-local workflow templates.
 [commands]
-save = "template.save.v1"
-draft = "template.draft.v1"
-approve = "template.approve.v1"
-review = "template.review.v1"
-merge = "template.merge.v1"
-build_execute = "template.build_execute.v1"
-patch = "template.patch.v1"
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
+develop = "file:.vizier/develop.toml"
 
+# Compatibility fallback for legacy callers that still read `[workflow.templates]`.
 [workflow.templates]
-save = "template.save.v1"
-draft = "template.draft.v1"
-approve = "template.approve.v1"
-review = "template.review.v1"
-merge = "template.merge.v1"
-build_execute = "template.build_execute.v1"
-patch = "template.patch.v1"
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
 
 # Optional cleanup for cancelled background jobs (never runs on failures)
 [jobs.cancel]
@@ -224,24 +218,20 @@ cleanup_worktree = false
 [agents.default]
 agent = "codex"
 
-# Example: route review through Gemini instead of Codex via a script shim
-# [agents.commands.review]
+# Example: route approve through Gemini instead of Codex via a script shim
+# [agents.commands.approve]
 # agent = "gemini"
-# [agents.commands.review.agent]
+# [agents.commands.approve.agent]
 # command = ["./examples/agents/gemini/agent.sh"]
 
-# Keep save flows on the codex stack so narrative edits always use the same selector
-[agents.commands.save]
-agent = "codex"
-
-# The remaining plan workflow commands stay on the codex stack and inherit the defaults
+# Stage workflow aliases stay on the codex stack by default.
 [agents.commands.draft]
 agent = "codex"
 
 [agents.commands.approve]
 agent = "codex"
 
-[agents.commands.review]
+[agents.commands.develop]
 agent = "codex"
 
 # Allow merge-time agents to skip documentation prompt + narrative context when auto-resolving conflicts

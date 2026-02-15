@@ -23,6 +23,8 @@
 - **Help pager contract**: Help text auto-pages only on TTY via `$VIZIER_PAGER` (or fallback pager), prints directly on non-TTY, and can be internally suppressed with hidden `--no-pager`.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
+- **Stage alias map**: Repo-local `[commands]` config mapping (for example `draft`, `approve`, `merge`) that resolves `vizier run <alias>` to workflow file selectors.
+- **Primitive stage templates**: Canonical stage DAG files (`.vizier/workflow/draft.toml`, `.vizier/workflow/approve.toml`, `.vizier/workflow/merge.toml`) executed through `vizier run` + scheduler jobs; no wrapper commands.
 - **`vizier run` orchestrator**: Public workflow front-door that resolves a flow source, compiles/validates template nodes, enqueues scheduler jobs, and optionally follows to terminal state.
 - **Legacy plan artifact drift**: Residual mismatch where `draft/*` branches and `.vizier/implementation-plans/*.md` files no longer align after workflow-command removal.
 - **Live plan-doc deletion signal**: A tracked `D .vizier/implementation-plans/<slug>.md` state used as evidence that branch/doc inventories are diverging in a worktree.

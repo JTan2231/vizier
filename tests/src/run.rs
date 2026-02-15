@@ -4,9 +4,10 @@ fn run_json(repo: &IntegrationRepo, args: &[&str]) -> TestResult<Value> {
     let output = repo.vizier_output(args)?;
     assert!(
         output.status.success(),
-        "command {:?} failed: {}",
+        "command {:?} failed: stderr={}\nstdout={}",
         args,
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
     Ok(serde_json::from_slice::<Value>(&output.stdout)?)
 }
@@ -26,6 +27,121 @@ script = \"{}\"\n",
         ),
     )?;
     Ok(())
+}
+
+fn write_stage_alias_test_config(repo: &IntegrationRepo) -> TestResult {
+    repo.write(
+        ".vizier/config.toml",
+        r#"[commands]
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
+develop = "file:.vizier/develop.toml"
+
+[agents.default]
+selector = "mock"
+
+[agents.default.agent]
+command = ["sh", "-lc", "cat >/dev/null; printf '%s\n' 'mock agent response'"]
+"#,
+    )?;
+    Ok(())
+}
+
+fn seed_plan_branch(repo: &IntegrationRepo, slug: &str, branch: &str) -> TestResult {
+    repo.git(&["checkout", "-b", branch])?;
+    let plan_rel = format!(".vizier/implementation-plans/{slug}.md");
+    let plan_doc = format!(
+        "---\nplan_id: pln_{slug}\nplan: {slug}\nbranch: {branch}\n---\n\n## Operator Spec\nSeeded plan for integration tests.\n\n## Implementation Plan\n- Seeded step\n"
+    );
+    repo.write(&plan_rel, &plan_doc)?;
+    repo.git(&["add", &plan_rel])?;
+    repo.git(&["commit", "-m", &format!("docs: seed plan {slug}")])?;
+    repo.git(&["checkout", "master"])?;
+    Ok(())
+}
+
+fn load_run_manifest(repo: &IntegrationRepo, run_id: &str) -> TestResult<Value> {
+    let manifest_path = repo.path().join(format!(".vizier/jobs/runs/{run_id}.json"));
+    Ok(serde_json::from_str(&fs::read_to_string(manifest_path)?)?)
+}
+
+fn manifest_node_job_id(manifest: &Value, node_id: &str) -> TestResult<String> {
+    Ok(manifest
+        .pointer(&format!("/nodes/{node_id}/job_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing node job id for {node_id}"))?
+        .to_string())
+}
+
+fn wait_for_manifest_jobs(
+    repo: &IntegrationRepo,
+    manifest: &Value,
+    timeout: Duration,
+) -> TestResult {
+    let Some(nodes) = manifest.get("nodes").and_then(Value::as_object) else {
+        return Err("manifest is missing nodes map".into());
+    };
+    let mut job_ids = Vec::with_capacity(nodes.len());
+    for node in nodes.values() {
+        let job_id = node
+            .get("job_id")
+            .and_then(Value::as_str)
+            .ok_or("manifest node missing job_id")?;
+        job_ids.push(job_id.to_string());
+    }
+    job_ids.sort();
+
+    let max_ticks = ((timeout.as_millis() / 100) as usize).max(1);
+    for _ in 0..max_ticks {
+        let tick = repo.vizier_output(&["jobs", "schedule"])?;
+        assert!(
+            tick.status.success(),
+            "jobs schedule failed while waiting for manifest jobs: stderr={}\nstdout={}",
+            String::from_utf8_lossy(&tick.stderr),
+            String::from_utf8_lossy(&tick.stdout)
+        );
+
+        let mut all_terminal = true;
+        for job_id in &job_ids {
+            let record = read_job_record(repo, job_id)?;
+            let status = record
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if matches!(
+                status,
+                "queued"
+                    | "waiting_on_deps"
+                    | "waiting_on_approval"
+                    | "waiting_on_locks"
+                    | "running"
+            ) {
+                all_terminal = false;
+            }
+        }
+
+        if all_terminal {
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let mut statuses = Vec::with_capacity(job_ids.len());
+    for job_id in &job_ids {
+        let record = read_job_record(repo, job_id)?;
+        let status = record
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        statuses.push(format!("{job_id}:{status}"));
+    }
+    Err(format!(
+        "timed out waiting for manifest jobs to reach terminal state: {}",
+        statuses.join(", ")
+    )
+    .into())
 }
 
 #[test]
@@ -304,6 +420,472 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
     assert!(
         manifest_path.exists(),
         "missing run manifest: {manifest_path:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let draft_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            "slug=stage-draft-smoke",
+            "--set",
+            "branch=draft/stage-draft-smoke",
+            "--set",
+            "spec_text=Ship the stage smoke path.",
+            "--set",
+            "prompt_text=Draft a smoke implementation plan.",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let draft_run_id = draft_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing draft run_id")?;
+    let draft_manifest = load_run_manifest(&repo, draft_run_id)?;
+
+    let persist_job = manifest_node_job_id(&draft_manifest, "persist_plan")?;
+    let persist_record = read_job_record(&repo, &persist_job)?;
+    assert_eq!(
+        persist_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "draft persist_plan should succeed: {persist_record}"
+    );
+    repo.git(&[
+        "show-ref",
+        "--verify",
+        "--quiet",
+        "refs/heads/draft/stage-draft-smoke",
+    ])?;
+    let draft_plan = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args([
+            "show",
+            "draft/stage-draft-smoke:.vizier/implementation-plans/stage-draft-smoke.md",
+        ])
+        .output()?;
+    assert!(
+        draft_plan.status.success(),
+        "expected draft plan doc on draft branch: {}",
+        String::from_utf8_lossy(&draft_plan.stderr)
+    );
+
+    seed_plan_branch(&repo, "approve-smoke", "draft/approve-smoke")?;
+
+    let approve_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "approve",
+            "--set",
+            "slug=approve-smoke",
+            "--set",
+            "branch=draft/approve-smoke",
+            "--set",
+            "prompt_text=Apply the stage smoke plan.",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let approve_run_id = approve_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing approve run_id")?;
+    let approve_manifest = load_run_manifest(&repo, approve_run_id)?;
+
+    for node in ["stage_commit", "stop_gate"] {
+        let job_id = manifest_node_job_id(&approve_manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "approve node `{node}` should succeed: {record}"
+        );
+    }
+
+    repo.git(&["checkout", "-b", "draft/merge-smoke"])?;
+    repo.write("merge-smoke.txt", "merge smoke branch change\n")?;
+    repo.git(&["add", "merge-smoke.txt"])?;
+    repo.git(&["commit", "-m", "feat: merge smoke branch"])?;
+    repo.git(&["checkout", "master"])?;
+
+    let merge_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=merge-smoke",
+            "--set",
+            "branch=draft/merge-smoke",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: merge plan merge-smoke",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let merge_run_id = merge_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing merge run_id")?;
+    let merge_manifest = load_run_manifest(&repo, merge_run_id)?;
+
+    for node in ["merge_integrate", "merge_gate_cicd"] {
+        let job_id = manifest_node_job_id(&merge_manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "merge node `{node}` should succeed: {record}"
+        );
+    }
+
+    let head_subject = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["log", "-1", "--pretty=%s"])
+        .output()?;
+    assert!(head_subject.status.success(), "expected git log to succeed");
+    let subject = String::from_utf8_lossy(&head_subject.stdout);
+    assert!(
+        subject.contains("feat: merge plan merge-smoke"),
+        "expected merge commit subject to include slug, got: {subject}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_approve_stage_stop_condition_retry_loop() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/approve-retry.toml",
+        "id = \"template.approve.retry\"\n\
+version = \"v1\"\n\
+[params]\n\
+stop_condition_script = \"\"\n\
+stop_condition_retries = \"3\"\n\
+[[nodes]]\n\
+id = \"seed_change\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"echo seed >> retry-smoke-seed.txt\"\n\
+[nodes.on]\n\
+succeeded = [\"stage_commit\"]\n\
+[[nodes]]\n\
+id = \"stage_commit\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.git.stage_commit\"\n\
+[nodes.args]\n\
+message = \"feat: retry smoke\"\n\
+[nodes.on]\n\
+succeeded = [\"stop_gate\"]\n\
+[[nodes]]\n\
+id = \"stop_gate\"\n\
+kind = \"gate\"\n\
+uses = \"control.gate.stop_condition\"\n\
+[[nodes.gates]]\n\
+kind = \"script\"\n\
+script = \"${stop_condition_script}\"\n\
+policy = \"retry\"\n\
+[nodes.retry]\n\
+mode = \"until_gate\"\n\
+budget = \"${stop_condition_retries}\"\n\
+[nodes.on]\n\
+failed = [\"stage_commit\"]\n\
+succeeded = [\"terminal\"]\n\
+[[nodes]]\n\
+id = \"terminal\"\n\
+kind = \"gate\"\n\
+uses = \"control.terminal\"\n",
+    )?;
+
+    let stop_script = "attempt_file=.retry-gate-attempt; n=$(cat \"$attempt_file\" 2>/dev/null || echo 0); n=$((n+1)); echo \"$n\" > \"$attempt_file\"; [ \"$n\" -ge 2 ]";
+    let stop_set = format!("stop_condition_script={stop_script}");
+    let approve_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflow/approve-retry.toml",
+            "--set",
+            stop_set.as_str(),
+            "--set",
+            "stop_condition_retries=3",
+            "--format",
+            "json",
+        ],
+    )?;
+    let approve_run_id = approve_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing retry run_id")?;
+    let approve_manifest = load_run_manifest(&repo, approve_run_id)?;
+    wait_for_manifest_jobs(&repo, &approve_manifest, Duration::from_secs(20))?;
+
+    let stage_commit_job = manifest_node_job_id(&approve_manifest, "stage_commit")?;
+    let stop_gate_job = manifest_node_job_id(&approve_manifest, "stop_gate")?;
+    let stage_commit = read_job_record(&repo, &stage_commit_job)?;
+    let stop_gate = read_job_record(&repo, &stop_gate_job)?;
+    assert_eq!(
+        stop_gate.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "stop gate should eventually pass: {stop_gate}"
+    );
+    let stage_attempt = stage_commit
+        .pointer("/metadata/workflow_node_attempt")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let gate_attempt = stop_gate
+        .pointer("/metadata/workflow_node_attempt")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    assert!(
+        stage_attempt >= 2,
+        "stage commit should have been retried at least once: {stage_commit}"
+    );
+    assert!(
+        gate_attempt >= 2,
+        "stop gate should have been retried at least once: {stop_gate}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let draft_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            "slug=control-smoke",
+            "--set",
+            "branch=draft/control-smoke",
+            "--set",
+            "spec_text=Control-path smoke plan.",
+            "--set",
+            "prompt_text=Draft control-path plan.",
+            "--require-approval",
+            "--format",
+            "json",
+        ],
+    )?;
+    let draft_root = draft_payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing draft root job id")?;
+
+    let tail = repo.vizier_output(&["jobs", "tail", draft_root])?;
+    assert!(
+        tail.status.success(),
+        "jobs tail should succeed for staged run job: {}",
+        String::from_utf8_lossy(&tail.stderr)
+    );
+
+    let approve = repo.vizier_output(&["jobs", "approve", draft_root, "--format", "json"])?;
+    assert!(
+        approve.status.success(),
+        "jobs approve should succeed for stage root: {}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+    wait_for_job_completion(&repo, draft_root, Duration::from_secs(15))?;
+
+    let attach = repo.vizier_output(&["jobs", "attach", draft_root])?;
+    assert!(
+        attach.status.success(),
+        "jobs attach should succeed for completed stage root: {}",
+        String::from_utf8_lossy(&attach.stderr)
+    );
+
+    let draft_blocked = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            "slug=cancel-smoke",
+            "--set",
+            "branch=draft/cancel-smoke",
+            "--set",
+            "spec_text=Cancel-path smoke plan.",
+            "--set",
+            "prompt_text=Draft cancel-path plan.",
+            "--require-approval",
+            "--format",
+            "json",
+        ],
+    )?;
+    let cancel_root = draft_blocked
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing cancel root job id")?;
+    let cancel = repo.vizier_output(&["jobs", "cancel", cancel_root])?;
+    assert!(
+        cancel.status.success(),
+        "jobs cancel should succeed for waiting stage root: {}",
+        String::from_utf8_lossy(&cancel.stderr)
+    );
+    let cancelled = read_job_record(&repo, cancel_root)?;
+    assert_eq!(
+        cancelled.get("status").and_then(Value::as_str),
+        Some("cancelled"),
+        "cancelled stage root should be terminal cancelled: {cancelled}"
+    );
+
+    let retry_repo = IntegrationRepo::new()?;
+    clean_workdir(&retry_repo)?;
+    write_stage_alias_test_config(&retry_repo)?;
+    retry_repo.git(&["checkout", "-b", "draft/retry-smoke"])?;
+    retry_repo.write("retry-smoke.txt", "retry smoke branch change\n")?;
+    retry_repo.git(&["add", "retry-smoke.txt"])?;
+    retry_repo.git(&["commit", "-m", "feat: retry smoke branch"])?;
+    retry_repo.git(&["checkout", "master"])?;
+
+    let merge_payload = run_json(
+        &retry_repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=retry-smoke",
+            "--set",
+            "branch=draft/retry-smoke",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=exit 7",
+            "--format",
+            "json",
+        ],
+    )?;
+    let merge_run_id = merge_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing merge run_id")?;
+    let merge_manifest = load_run_manifest(&retry_repo, merge_run_id)?;
+    wait_for_manifest_jobs(&retry_repo, &merge_manifest, Duration::from_secs(20))?;
+    let cicd_job = manifest_node_job_id(&merge_manifest, "merge_gate_cicd")?;
+    let first_cicd = read_job_record(&retry_repo, &cicd_job)?;
+    assert_eq!(
+        first_cicd.get("status").and_then(Value::as_str),
+        Some("failed"),
+        "expected merge cicd gate failure before retry: {first_cicd}"
+    );
+
+    let retry = retry_repo.vizier_output(&["jobs", "retry", &cicd_job])?;
+    assert!(
+        retry.status.success(),
+        "jobs retry should succeed for failed stage node: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    wait_for_job_completion(&retry_repo, &cicd_job, Duration::from_secs(20))?;
+    let retried = read_job_record(&retry_repo, &cicd_job)?;
+    assert!(
+        retried
+            .pointer("/metadata/workflow_node_attempt")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            >= 2,
+        "retry should increment workflow node attempt: {retried}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_merge_stage_conflict_gate_blocks_and_preserves_sentinel() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.git(&["checkout", "-b", "draft/conflict-smoke"])?;
+    repo.write("a", "draft conflict content\n")?;
+    repo.git(&["add", "a"])?;
+    repo.git(&["commit", "-m", "feat: conflict branch change"])?;
+    repo.git(&["checkout", "master"])?;
+    repo.write("a", "master conflict content\n")?;
+    repo.git(&["add", "a"])?;
+    repo.git(&["commit", "-m", "feat: master conflict change"])?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=conflict-smoke",
+            "--set",
+            "branch=draft/conflict-smoke",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    let integrate_job = manifest_node_job_id(&manifest, "merge_integrate")?;
+    let conflict_job = manifest_node_job_id(&manifest, "merge_conflict_resolution")?;
+    wait_for_job_completion(&repo, &integrate_job, Duration::from_secs(20))?;
+    wait_for_job_completion(&repo, &conflict_job, Duration::from_secs(20))?;
+    let integrate_record = read_job_record(&repo, &integrate_job)?;
+    let conflict_record = read_job_record(&repo, &conflict_job)?;
+    assert_eq!(
+        integrate_record.get("status").and_then(Value::as_str),
+        Some("blocked_by_dependency"),
+        "merge integrate should block on conflict: {integrate_record}"
+    );
+    let conflict_status = conflict_record.get("status").and_then(Value::as_str);
+    assert!(
+        matches!(
+            conflict_status,
+            Some("blocked_by_dependency") | Some("succeeded")
+        ),
+        "conflict gate should either block or no-op succeed while integrate remains blocked: {conflict_record}"
+    );
+
+    let sentinel = repo
+        .path()
+        .join(".vizier/tmp/merge-conflicts/conflict-smoke.json");
+    assert!(
+        sentinel.exists(),
+        "merge conflict sentinel should remain for operator recovery: {}",
+        sentinel.display()
     );
 
     Ok(())

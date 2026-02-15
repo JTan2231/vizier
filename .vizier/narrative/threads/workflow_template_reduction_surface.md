@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-15, primitive stage-template cutover):
+  - Repo-local stage templates `.vizier/workflow/{draft,approve,merge}.toml` now ship as canonical primitive DAGs (`template.stage.*@v2`) using only `cap.env.*`, `cap.agent.invoke`, and `control.*` identities.
+  - Stage orchestration aliases are now explicit in repo config (`[commands].draft|approve|merge = "file:.vizier/workflow/<stage>.toml"`), with composed `develop` left as an optional higher-level flow.
+  - Docs now describe stage execution as `vizier run` + `vizier jobs` only (`docs/user/workflows/alias-run-flow.md`, `docs/user/workflows/stage-execution.md`, `docs/dev/scheduler-dag.md`, `docs/dev/vizier-material-model.md`, `docs/user/config-reference.md`, `example-config.toml`).
+  - Integration coverage in `tests/src/run.rs` now asserts stage alias smoke runs, approve stop-condition retry-loop attempts, stage job control paths (`approve/cancel/tail/attach/retry`), and merge conflict-gate sentinel behavior.
+  - Validation gates were re-run and are green (`cargo check --all --all-targets`, `cargo test --all --all-targets`, `./cicd.sh`).
 - Update (2026-02-15, execution-root propagation):
   - `vizier-cli/src/jobs.rs` now carries additive workflow metadata `execution_root` and resolves runtime roots by precedence (`execution_root` -> legacy `worktree_path` -> repo root) with repo-boundary canonicalization checks.
   - Runtime route handling now keeps `on.succeeded` topology unchanged (`after:success` bridge) while using explicit route metadata to propagate execution context edge-locally to downstream queued nodes; non-success retry routes now inject propagated context before scheduler requeue.
