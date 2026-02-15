@@ -48,6 +48,7 @@ merge = "file:.vizier/workflow/merge.toml"
 - `vizier run` accepts template params via `--set key=value`, named flags (`--spec-file`, `--slug`, ...), or ordered positional inputs declared by template `[cli].positional`.
 - Named flags map kebab-case to snake_case (`--spec-file` -> `spec_file`).
 - Stage `worktree_prepare` defaults to `draft/<slug>` when `branch` is unset; provide `branch` explicitly to override.
+- Queue-time capability validation now enforces executor arg contracts before any jobs are enqueued. Examples: `worktree.prepare` requires one of `args.branch|args.slug|args.plan`; `git.integrate_plan_branch` requires one of `args.branch|args.source_branch|args.plan_branch|args.slug|args.plan`; `cicd.run` requires `args.command`/`args.script` or a non-empty `cicd` gate script; `patch.pipeline_prepare` and `patch.execute_pipeline` require `args.files_json`.
 - `vizier run --set` still applies queue-time interpolation and typed coercion before enqueue.
 - `vizier run --after`, `--require-approval`, and `--follow` are the stage orchestration controls.
 - Job log streaming is command-local: `vizier jobs tail <job> --follow`.

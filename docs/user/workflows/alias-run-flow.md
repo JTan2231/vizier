@@ -51,6 +51,7 @@ Workflow parameter input styles:
 - Ordered inputs: extra positional values after `<flow>` map using template `[cli].positional` order.
 - Explicit `--set key=value` remains supported and keeps last-write-wins behavior.
 - For stage templates, `worktree_prepare` derives `branch=draft/<slug>` when `branch` is omitted.
+- Executor arg contracts are validated before enqueue; current required-input checks include `worktree.prepare` (`branch|slug|plan`), `git.integrate_plan_branch` (`branch|source_branch|plan_branch|slug|plan`), `cicd.run` (`command/script` or a non-empty cicd gate script), and `patch.pipeline_prepare`/`patch.execute_pipeline` (`files_json`).
 
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
 

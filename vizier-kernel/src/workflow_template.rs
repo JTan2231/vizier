@@ -792,6 +792,12 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
             )
         })?;
 
+        validate_executor_arg_requirements(
+            template,
+            node,
+            resolution.identity.executor_operation.as_deref(),
+        )?;
+
         match resolution.identity.executor_operation.as_deref() {
             Some("agent.invoke") => validate_agent_invoke_contract(template, node)?,
             Some("prompt.resolve") => {
@@ -800,11 +806,17 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
                 }
             }
             Some("command.run") => validate_exec_custom_command_contract(template, node)?,
+            Some("cicd.run") => validate_cicd_run_contract(template, node)?,
             Some("git.save_worktree_patch") => {
                 validate_save_worktree_patch_contract(template, node)?
             }
             Some("plan.persist") => validate_generate_draft_plan_contract(template, node)?,
-            Some("patch.execute_pipeline") => validate_patch_execute_contract(template, node)?,
+            Some("patch.pipeline_prepare") => {
+                validate_patch_files_contract(template, node, "patch.pipeline_prepare")?
+            }
+            Some("patch.execute_pipeline") => {
+                validate_patch_files_contract(template, node, "patch.execute_pipeline")?
+            }
             Some("build.materialize_step") => validate_build_materialize_contract(template, node)?,
             Some("git.stage_commit") => validate_plan_apply_once_contract(template, &by_id, node)?,
             Some("git.integrate_plan_branch") => {
@@ -825,6 +837,60 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
             }
             _ => {}
         }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NonEmptyAnyOfArgRequirement {
+    operation: &'static str,
+    keys: &'static [&'static str],
+}
+
+const NON_EMPTY_ANY_OF_ARG_REQUIREMENTS: &[NonEmptyAnyOfArgRequirement] = &[
+    NonEmptyAnyOfArgRequirement {
+        operation: "worktree.prepare",
+        keys: &["branch", "slug", "plan"],
+    },
+    NonEmptyAnyOfArgRequirement {
+        operation: "git.integrate_plan_branch",
+        keys: &["branch", "source_branch", "plan_branch", "slug", "plan"],
+    },
+];
+
+fn validate_executor_arg_requirements(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+    operation: Option<&str>,
+) -> Result<(), String> {
+    let Some(operation) = operation else {
+        return Ok(());
+    };
+
+    for requirement in NON_EMPTY_ANY_OF_ARG_REQUIREMENTS
+        .iter()
+        .filter(|entry| entry.operation == operation)
+    {
+        if requirement
+            .keys
+            .iter()
+            .any(|key| has_nonempty_arg(node, key))
+        {
+            continue;
+        }
+        let expected = requirement
+            .keys
+            .iter()
+            .map(|key| format!("args.{key}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(executor_contract_error(
+            template,
+            operation,
+            node,
+            &format!("requires at least one non-empty argument: {expected}"),
+        ));
     }
 
     Ok(())
@@ -1377,6 +1443,26 @@ fn validate_exec_custom_command_contract(
     Ok(())
 }
 
+fn validate_cicd_run_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let has_command = has_nonempty_arg(node, "command") || has_nonempty_arg(node, "script");
+    let has_gate_script = node
+        .gates
+        .iter()
+        .any(|gate| matches!(gate, WorkflowGate::Cicd { script, .. } if !script.trim().is_empty()));
+    if has_command || has_gate_script {
+        return Ok(());
+    }
+    Err(contract_error(
+        template,
+        "cicd.run",
+        node,
+        "requires args.command/args.script or a non-empty cicd gate script",
+    ))
+}
+
 fn validate_save_worktree_patch_contract(
     template: &WorkflowTemplate,
     node: &WorkflowNode,
@@ -1438,22 +1524,19 @@ fn validate_generate_draft_plan_contract(
     }
 }
 
-fn validate_patch_execute_contract(
+fn validate_patch_files_contract(
     template: &WorkflowTemplate,
     node: &WorkflowNode,
+    operation: &str,
 ) -> Result<(), String> {
-    let files_json = node.args.get("files_json").ok_or_else(|| {
-        contract_error(
-            template,
-            "patch.execute_pipeline",
-            node,
-            "requires files_json",
-        )
-    })?;
+    let files_json = node
+        .args
+        .get("files_json")
+        .ok_or_else(|| contract_error(template, operation, node, "requires files_json"))?;
     let files: Vec<String> = serde_json::from_str(files_json).map_err(|err| {
         contract_error(
             template,
-            "patch.execute_pipeline",
+            operation,
             node,
             &format!("has invalid files_json payload: {err}"),
         )
@@ -1461,7 +1544,7 @@ fn validate_patch_execute_contract(
     if files.is_empty() {
         return Err(contract_error(
             template,
-            "patch.execute_pipeline",
+            operation,
             node,
             "requires at least one patch file in files_json",
         ));
@@ -2888,6 +2971,215 @@ mod tests {
     }
 
     #[test]
+    fn validate_capability_contracts_enforces_registered_non_empty_arg_requirements() {
+        let template = WorkflowTemplate {
+            id: "template.worktree".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "worktree_prepare".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.worktree.prepare".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("worktree.prepare without args should fail queue-time validation");
+        assert!(
+            error.contains("executor `worktree.prepare`"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("requires at least one non-empty argument"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("args.branch")
+                && error.contains("args.slug")
+                && error.contains("args.plan"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_accepts_registered_non_empty_arg_requirements() {
+        let template = WorkflowTemplate {
+            id: "template.worktree".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "worktree_prepare".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.worktree.prepare".to_string(),
+                args: BTreeMap::from([("slug".to_string(), "example-change".to_string())]),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        validate_workflow_capability_contracts(&template)
+            .expect("worktree.prepare with slug should satisfy arg requirement");
+    }
+
+    #[test]
+    fn validate_capability_contracts_enforces_registered_non_empty_args_for_integrate_plan_branch()
+    {
+        let template = WorkflowTemplate {
+            id: "template.merge".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "merge_integrate".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.git.integrate_plan_branch".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("git.integrate_plan_branch without source args should fail");
+        assert!(
+            error.contains("executor `git.integrate_plan_branch`"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("requires at least one non-empty argument"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_cicd_run_without_command_or_gate_script() {
+        let template = WorkflowTemplate {
+            id: "template.cicd".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "cicd_run".to_string(),
+                kind: WorkflowNodeKind::Shell,
+                uses: "cap.env.shell.cicd.run".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: vec![WorkflowGate::Cicd {
+                    script: "".to_string(),
+                    auto_resolve: false,
+                    policy: WorkflowGatePolicy::Retry,
+                }],
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("cicd.run without script source should fail");
+        assert!(
+            error.contains("contract `cicd.run`"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("requires args.command/args.script or a non-empty cicd gate script"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_capability_contracts_accepts_cicd_run_with_gate_script() {
+        let template = WorkflowTemplate {
+            id: "template.cicd".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "cicd_run".to_string(),
+                kind: WorkflowNodeKind::Shell,
+                uses: "cap.env.shell.cicd.run".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: vec![WorkflowGate::Cicd {
+                    script: "./cicd.sh".to_string(),
+                    auto_resolve: false,
+                    policy: WorkflowGatePolicy::Retry,
+                }],
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        validate_workflow_capability_contracts(&template)
+            .expect("cicd.run should accept non-empty cicd gate script");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_patch_prepare_without_files() {
+        let template = WorkflowTemplate {
+            id: "template.patch".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "patch_prepare".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.patch.pipeline_prepare".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("patch prepare without files_json should fail");
+        assert!(
+            error.contains("patch.pipeline_prepare"),
+            "unexpected error: {error}"
+        );
+        assert!(error.contains("files_json"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn validate_capability_contracts_allow_intent_as_non_critical_metadata() {
         let template = WorkflowTemplate {
             id: "template.invoke".to_string(),
@@ -3072,7 +3364,7 @@ mod tests {
                     id: "merge_integrate".to_string(),
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.git.integrate_plan_branch".to_string(),
-                    args: BTreeMap::new(),
+                    args: BTreeMap::from([("slug".to_string(), "merge-plan".to_string())]),
                     after: Vec::new(),
                     needs: Vec::new(),
                     produces: WorkflowOutcomeArtifacts::default(),
