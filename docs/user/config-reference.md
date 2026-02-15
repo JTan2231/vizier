@@ -32,6 +32,8 @@ Legacy workflow-global flags are no longer supported.
 - `[workflow.global_workflows]`: default-on implicit alias lookup for global workflow files.
 - `[workflow.templates]`: compatibility fallback for legacy selector lookups.
 
+`[workflow.templates]` accepts both canonical selectors (`template.name@vN`) and legacy dotted selectors (`template.name.vN`). When a compatibility selector does not resolve to a readable template file, `vizier run <flow>` continues to repo/global flow-name fallback.
+
 Recommended stage aliases:
 
 ```toml

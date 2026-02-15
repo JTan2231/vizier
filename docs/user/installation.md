@@ -74,6 +74,7 @@ sudo ./install.sh
 
 By default `install.sh` uses `PREFIX=/usr/local`, so a system install typically requires elevated privileges. The script never invokes `sudo` itself.
 `install.sh` also checks that the target directories are writable and exits early with guidance if they are not.
+When run as root with no explicit `CARGO_TARGET_DIR`, the installer now builds in a temporary directory under `${TMPDIR:-/tmp}` and removes it on exit so it does not leave root-owned `./target` artifacts in the clone.
 
 ## Packaging / staging with `DESTDIR`
 
@@ -120,6 +121,7 @@ MANPATH="$HOME/.local/share/man:${MANPATH:-}" man vizier-jobs
 
 `install.sh` supports the usual packaging overrides:
 
+- `CARGO_TARGET_DIR` (default: `target`; root defaults to a temporary target dir unless explicitly set)
 - `BINDIR` (default: `"$PREFIX/bin"`)
 - `DATADIR` (default: `"$PREFIX/share"`)
 - `MANDIR` (default: `"$PREFIX/share/man"`)
@@ -148,6 +150,7 @@ For staged installs, pass the same `DESTDIR`/`PREFIX` you used during install.
 - `no bundled agent shim named ...`: install the relevant agent CLI (for example `codex`, `gemini`, `claude`) or configure Vizier to use a custom shim via `.vizier/config.toml` / `~/.config/vizier/config.toml`.
 - `permission denied`: install into a user prefix (for example `PREFIX="$HOME/.local"`) or rerun the install as root.
 - `install destination is not writable`: rerun with `sudo`, set `PREFIX` to a writable directory, or stage with `DESTDIR`.
+- `./target` became root-owned after older sudo installs: remove or `chown` it once, then rerun install; current `install.sh` avoids this by using a temporary Cargo target directory when running as root without `CARGO_TARGET_DIR`.
 
 ## Development validation
 

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use vizier_core::tools;
 
 const SNAPSHOT_STARTER: &str = "\
@@ -19,30 +21,33 @@ const GLOSSARY_STARTER: &str = "\
 - Add high-signal terms here.
 ";
 
+const CONFIG_STARTER: &str = include_str!("../../templates/init/config.toml");
+const WORKFLOW_DRAFT_STARTER: &str = include_str!("../../templates/init/workflows/draft.toml");
+const WORKFLOW_APPROVE_STARTER: &str = include_str!("../../templates/init/workflows/approve.toml");
+const WORKFLOW_MERGE_STARTER: &str = include_str!("../../templates/init/workflows/merge.toml");
+const CI_SCRIPT_STARTER: &str = include_str!("../../templates/init/ci.sh");
+
 #[derive(Debug, Clone)]
-struct DurableMarker {
+struct RequiredFile {
     relative_path: String,
     starter_template: &'static str,
+    executable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InitEvaluation {
-    missing_markers: Vec<String>,
+    missing_files: Vec<String>,
     missing_ignore_rules: Vec<String>,
 }
 
 impl InitEvaluation {
-    fn durable_initialized(&self) -> bool {
-        self.missing_markers.is_empty()
-    }
-
     fn contract_satisfied(&self) -> bool {
-        self.durable_initialized() && self.missing_ignore_rules.is_empty()
+        self.missing_files.is_empty() && self.missing_ignore_rules.is_empty()
     }
 
     fn missing_items(&self) -> Vec<String> {
         let mut items = Vec::new();
-        items.extend(self.missing_markers.iter().cloned());
+        items.extend(self.missing_files.iter().cloned());
         items.extend(
             self.missing_ignore_rules
                 .iter()
@@ -93,24 +98,25 @@ fn apply_initialization(repo_root: &Path) -> Result<(), Box<dyn std::error::Erro
     std::fs::create_dir_all(&narrative_dir)
         .map_err(|err| io_error("create directory", &narrative_dir, err))?;
 
-    for marker in durable_markers() {
-        let marker_path = repo_root.join(&marker.relative_path);
-        if marker_path.is_file() {
+    for required_file in required_files() {
+        let path = repo_root.join(&required_file.relative_path);
+        if path.is_file() {
             continue;
         }
-        if marker_path.exists() {
+        if path.exists() {
             return Err(format!(
-                "failed to create marker {}: path exists and is not a file",
-                marker_path.display()
+                "failed to create required file {}: path exists and is not a file",
+                path.display()
             )
             .into());
         }
-        if let Some(parent) = marker_path.parent() {
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|err| io_error("create directory", parent, err))?;
         }
-        std::fs::write(&marker_path, marker.starter_template)
-            .map_err(|err| io_error("write file", &marker_path, err))?;
+        std::fs::write(&path, required_file.starter_template)
+            .map_err(|err| io_error("write file", &path, err))?;
+        set_executable_if_requested(&path, required_file.executable)?;
     }
 
     ensure_gitignore_rules(repo_root)?;
@@ -118,11 +124,11 @@ fn apply_initialization(repo_root: &Path) -> Result<(), Box<dyn std::error::Erro
 }
 
 fn evaluate_init_state(repo_root: &Path) -> Result<InitEvaluation, Box<dyn std::error::Error>> {
-    let mut missing_markers = Vec::new();
-    for marker in durable_markers() {
-        let marker_path = repo_root.join(&marker.relative_path);
-        if !marker_path.is_file() {
-            missing_markers.push(marker.relative_path);
+    let mut missing_files = Vec::new();
+    for required_file in required_files() {
+        let path = repo_root.join(&required_file.relative_path);
+        if !path.is_file() {
+            missing_files.push(required_file.relative_path);
         }
     }
 
@@ -132,7 +138,7 @@ fn evaluate_init_state(repo_root: &Path) -> Result<InitEvaluation, Box<dyn std::
     let missing_ignore_rules = missing_ignore_rules(&gitignore_contents, &required_rules);
 
     Ok(InitEvaluation {
-        missing_markers,
+        missing_files,
         missing_ignore_rules,
     })
 }
@@ -160,9 +166,9 @@ fn read_text_lossy(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     }
 }
 
-fn durable_markers() -> Vec<DurableMarker> {
+fn required_files() -> Vec<RequiredFile> {
     vec![
-        DurableMarker {
+        RequiredFile {
             relative_path: format!(
                 "{}{}{}",
                 tools::VIZIER_DIR,
@@ -170,8 +176,9 @@ fn durable_markers() -> Vec<DurableMarker> {
                 tools::SNAPSHOT_FILE
             ),
             starter_template: SNAPSHOT_STARTER,
+            executable: false,
         },
-        DurableMarker {
+        RequiredFile {
             relative_path: format!(
                 "{}{}{}",
                 tools::VIZIER_DIR,
@@ -179,16 +186,43 @@ fn durable_markers() -> Vec<DurableMarker> {
                 tools::GLOSSARY_FILE
             ),
             starter_template: GLOSSARY_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}config.toml", tools::VIZIER_DIR),
+            starter_template: CONFIG_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}workflows/draft.toml", tools::VIZIER_DIR),
+            starter_template: WORKFLOW_DRAFT_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}workflows/approve.toml", tools::VIZIER_DIR),
+            starter_template: WORKFLOW_APPROVE_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}workflows/merge.toml", tools::VIZIER_DIR),
+            starter_template: WORKFLOW_MERGE_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: "ci.sh".to_string(),
+            starter_template: CI_SCRIPT_STARTER,
+            executable: true,
         },
     ]
 }
 
 fn required_ignore_rules() -> Vec<String> {
     vec![
-        format!("{}tmp/", tools::VIZIER_DIR),
         format!("{}tmp-worktrees/", tools::VIZIER_DIR),
-        format!("{}jobs/", tools::VIZIER_DIR),
+        format!("{}tmp/", tools::VIZIER_DIR),
         format!("{}sessions/", tools::VIZIER_DIR),
+        format!("{}jobs/", tools::VIZIER_DIR),
+        format!("{}implementation-plans", tools::VIZIER_DIR),
     ]
 }
 
@@ -279,6 +313,32 @@ fn append_missing_rules(existing_contents: &str, missing_rules: &[String]) -> St
     updated
 }
 
+fn set_executable_if_requested(
+    path: &Path,
+    executable: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !executable {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(path)
+            .map_err(|err| io_error("read metadata", path, err))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms)
+            .map_err(|err| io_error("set file permissions", path, err))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+
+    Ok(())
+}
+
 fn io_error(action: &str, path: &Path, err: std::io::Error) -> Box<dyn std::error::Error> {
     format!("failed to {action} {}: {err}", path.display()).into()
 }
@@ -312,6 +372,7 @@ mod tests {
 ./.vizier/tmp-worktrees/**
 .vizier/jobs/*
 **/.vizier/sessions/
+.vizier/implementation-plans/**
 ";
         let missing = missing_ignore_rules(existing, &required_ignore_rules());
         assert!(
@@ -340,27 +401,33 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_init_state_requires_markers_for_durable_initialized() {
+    fn evaluate_init_state_detects_missing_required_files_and_ignore_rules() {
         let temp = tempfile::tempdir().expect("create tempdir");
         let repo_root = temp.path();
-        let markers = durable_markers();
 
         std::fs::create_dir_all(repo_root.join(".vizier/narrative")).expect("create narrative dir");
         std::fs::write(repo_root.join(".gitignore"), ".vizier/tmp/\n").expect("write gitignore");
 
-        std::fs::write(repo_root.join(&markers[0].relative_path), "snapshot\n")
-            .expect("write snapshot marker");
-        std::fs::write(repo_root.join(&markers[1].relative_path), "glossary\n")
-            .expect("write glossary marker");
-
         let evaluation = evaluate_init_state(repo_root).expect("evaluate init state");
         assert!(
-            evaluation.durable_initialized(),
-            "durable init should require only marker files"
+            !evaluation.contract_satisfied(),
+            "contract should fail when required files and ignore rules are missing"
         );
         assert!(
-            !evaluation.contract_satisfied(),
-            "contract should still fail when ignore rules are missing"
+            evaluation
+                .missing_files
+                .iter()
+                .any(|path| path == ".vizier/config.toml"),
+            "expected missing .vizier/config.toml in evaluation: {:?}",
+            evaluation.missing_files
+        );
+        assert!(
+            evaluation
+                .missing_ignore_rules
+                .iter()
+                .any(|rule| rule == ".vizier/implementation-plans"),
+            "expected missing implementation-plans ignore rule in evaluation: {:?}",
+            evaluation.missing_ignore_rules
         );
     }
 }

@@ -9,7 +9,7 @@ fn write_cargo_stub(dir: &Path) -> io::Result<PathBuf> {
 set -eu
 
 if [ -n \"${CARGO_INVOCATIONS_LOG:-}\" ]; then
-  printf \"%s\\n\" \"$*\" >>\"${CARGO_INVOCATIONS_LOG}\"
+  printf \"%s|%s\\n\" \"${CARGO_TARGET_DIR:-}\" \"$*\" >>\"${CARGO_INVOCATIONS_LOG}\"
 fi
 
 subcommand=\"$1\"
@@ -50,12 +50,41 @@ fn run_install_sh(
 ) -> io::Result<Output> {
     let mut cmd = Command::new("sh");
     cmd.current_dir(root);
+    cmd.env_remove("CARGO_TARGET_DIR");
     cmd.arg("install.sh");
     cmd.args(args);
     for (key, value) in envs {
         cmd.env(key, value);
     }
     cmd.output()
+}
+
+fn write_id_stub(dir: &Path, uid: u32) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join("id");
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh
+set -eu
+
+if [ \"${{1:-}}\" = \"-u\" ]; then
+  printf '%s\\n' '{uid}'
+  exit 0
+fi
+
+printf '%s\\n' \"unsupported id invocation: $*\" 1>&2
+exit 1
+"
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(path)
 }
 #[cfg(unix)]
 fn is_root_user() -> bool {
@@ -391,6 +420,94 @@ fn test_install_sh_requires_writable_prefix() -> TestResult {
     assert!(
         stderr.contains("sudo ./install.sh"),
         "expected sudo suggestion in stderr: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn test_install_sh_root_defaults_to_temp_cargo_target_dir() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("src");
+    fs::create_dir_all(&root)?;
+
+    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
+    copy_dir_recursive(
+        &repo_root().join("examples/agents"),
+        &root.join("examples/agents"),
+    )?;
+    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+    copy_dir_recursive(
+        &repo_root().join(".vizier/workflows"),
+        &root.join(".vizier/workflows"),
+    )?;
+
+    let bin_dir = tmp.path().join("bin");
+    write_cargo_stub(&bin_dir)?;
+    write_id_stub(&bin_dir, 0)?;
+
+    let cargo_log = tmp.path().join("cargo.log");
+    let stage = tmp.path().join("stage");
+    fs::create_dir_all(&stage)?;
+
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    let joined_path = env::join_paths(paths)?;
+
+    let output = run_install_sh(
+        &root,
+        &[],
+        &[
+            ("PATH", joined_path.as_os_str()),
+            ("CARGO_INVOCATIONS_LOG", cargo_log.as_os_str()),
+            ("DESTDIR", stage.as_os_str()),
+            ("PREFIX", Path::new("/usr/local").as_os_str()),
+            (
+                "WORKFLOWSDIR",
+                Path::new("/usr/local/share/vizier/workflows").as_os_str(),
+            ),
+        ],
+    )?;
+    assert!(
+        output.status.success(),
+        "install.sh failed for root-like install: status={:?}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo_invocations = fs::read_to_string(&cargo_log)?;
+    let mut targets = HashSet::new();
+    for line in cargo_invocations.lines() {
+        let Some((target, _command)) = line.split_once('|') else {
+            panic!("missing target separator in cargo log entry: {line:?}");
+        };
+        assert!(
+            !target.is_empty(),
+            "expected CARGO_TARGET_DIR for root-like install: {line:?}"
+        );
+        assert_ne!(
+            target, "target",
+            "root-like install should not build into default ./target: {line:?}"
+        );
+        targets.insert(target.to_string());
+    }
+
+    assert_eq!(
+        targets.len(),
+        1,
+        "expected all cargo invocations to share one temp target dir: {cargo_invocations}"
+    );
+    let target_dir = targets.into_iter().next().expect("temp target dir");
+    assert!(
+        !Path::new(&target_dir).exists(),
+        "expected temp target dir to be cleaned up: {target_dir}"
+    );
+    assert!(
+        !root.join("target").exists(),
+        "root-like install should not create ./target"
     );
     Ok(())
 }

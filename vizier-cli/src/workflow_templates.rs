@@ -220,17 +220,21 @@ pub(crate) fn resolve_workflow_source(
         && let Some(selector) = cfg.template_selector_for_alias(&alias)
     {
         let selector_text = selector.to_string();
-        let path = resolve_selector_path(project_root, cfg, &selector_text)?.ok_or_else(|| {
-            format!(
+        if let Some(path) = resolve_selector_path(project_root, cfg, &selector_text)? {
+            return Ok(ResolvedWorkflowSource {
+                selector: selector_text,
+                path,
+                command_alias: Some(alias),
+            });
+        }
+
+        if cfg.commands.contains_key(&alias) {
+            return Err(format!(
                 "alias `{}` resolves to `{}` but no readable template source was found",
                 alias, selector_text
             )
-        })?;
-        return Ok(ResolvedWorkflowSource {
-            selector: selector_text,
-            path,
-            command_alias: Some(alias),
-        });
+            .into());
+        }
     }
 
     if let Some(path) = resolve_selector_path(project_root, cfg, flow)? {
@@ -1076,12 +1080,40 @@ fn resolve_selector_path(
 }
 
 fn parse_selector_identity(selector: &str) -> Option<(String, String)> {
-    let (id, version) = selector.rsplit_once('@')?;
+    let trimmed = selector.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((id, version)) = trimmed.rsplit_once('@') {
+        let id = id.trim();
+        let version = version.trim();
+        if id.is_empty() || version.is_empty() {
+            return None;
+        }
+        return Some((id.to_string(), version.to_string()));
+    }
+
+    parse_legacy_selector_identity(trimmed)
+}
+
+fn parse_legacy_selector_identity(selector: &str) -> Option<(String, String)> {
+    let version_marker = selector.rfind(".v")?;
+    let (id, version_with_dot) = selector.split_at(version_marker);
     let id = id.trim();
-    let version = version.trim();
+    let version = version_with_dot.trim_start_matches('.');
+
     if id.is_empty() || version.is_empty() {
         return None;
     }
+    if !version.starts_with('v') {
+        return None;
+    }
+    let digits = &version[1..];
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+
     Some((id.to_string(), version.to_string()))
 }
 
@@ -1655,6 +1687,86 @@ mode = \"${mode}\"\n",
         assert!(
             err.to_string()
                 .contains("invalid retry mode value `sometimes` for nodes[n1].retry.mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn legacy_selector_identity_resolves_matching_repo_template() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/workflows/draft.toml"),
+            "id = \"template.draft\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let cfg = config::Config::default();
+        let resolved = resolve_workflow_source(root.path(), "draft", &cfg)
+            .expect("resolve draft via legacy selector identity");
+
+        assert_eq!(resolved.selector, "template.draft.v1");
+        assert!(
+            resolved.path.ends_with(".vizier/workflows/draft.toml"),
+            "legacy selector should resolve repo template identity: {}",
+            resolved.path.display()
+        );
+        assert_eq!(
+            resolved.command_alias.as_ref().map(|alias| alias.as_str()),
+            Some("draft")
+        );
+    }
+
+    #[test]
+    fn unresolved_legacy_alias_selector_falls_through_to_global_alias_lookup() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let global_dir = root.path().join("global-workflows");
+        write(
+            &global_dir.join("draft.toml"),
+            "id = \"template.stage.draft\"\nversion = \"v2\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.workflow.global_workflows.enabled = true;
+        cfg.workflow.global_workflows.dir = global_dir.clone();
+
+        let resolved = resolve_workflow_source(root.path(), "draft", &cfg)
+            .expect("legacy alias miss should fall through to global alias lookup");
+        assert_eq!(
+            resolved.path,
+            fs::canonicalize(global_dir.join("draft.toml"))
+                .expect("canonical global draft workflow path")
+        );
+        assert!(
+            resolved.selector.starts_with("file:"),
+            "global alias should normalize to file selector: {}",
+            resolved.selector
+        );
+    }
+
+    #[test]
+    fn unresolved_explicit_command_alias_errors_before_flow_fallback() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let global_dir = root.path().join("global-workflows");
+        write(
+            &global_dir.join("draft.toml"),
+            "id = \"template.stage.draft\"\nversion = \"v2\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.workflow.global_workflows.enabled = true;
+        cfg.workflow.global_workflows.dir = global_dir;
+        cfg.commands.insert(
+            config::CommandAlias::parse("draft").expect("parse draft alias"),
+            "template.missing@v99"
+                .parse()
+                .expect("parse explicit selector"),
+        );
+
+        let err = resolve_workflow_source(root.path(), "draft", &cfg)
+            .expect_err("explicit alias with missing selector should fail");
+        assert!(
+            err.to_string().contains(
+                "alias `draft` resolves to `template.missing@v99` but no readable template source was found"
+            ),
             "unexpected error: {err}"
         );
     }

@@ -25,12 +25,20 @@ Primary user-facing commands are:
 .IP "\(bu" 2
 \fBvizier completions\fR
 .PP
+\fBvizier init\fR creates (or validates) the default repo scaffold:
+\fI.vizier/narrative/{snapshot,glossary}.md\fR, \fI.vizier/config.toml\fR,
+\fI.vizier/workflows/{draft,approve,merge}.toml\fR, root \fIci.sh\fR, and
+required \fI.gitignore\fR runtime entries.
+.PP
 \fBvizier cd\fR and \fBvizier clean\fR remain exposed but return deprecation
 errors in scheduler-managed environments.
 .PP
 \fBvizier run <flow>\fR resolves in this order: explicit file path, configured
 \fB[commands]\fR alias, selector identity, repo fallback files, then implicit
 global workflow aliases from \fB[workflow.global_workflows]\fR when enabled.
+Compatibility selectors from \fB[workflow.templates]\fR accept both
+\fBtemplate.name@vN\fR and legacy \fBtemplate.name.vN\fR forms; unresolved
+compatibility selectors continue to repo/global flow-name fallback.
 .SH JOB OPERATIONS
 Use \fBvizier jobs\fR to inspect and control background job records:
 .IP "\(bu" 2

@@ -10,6 +10,7 @@ Build and install Vizier from a clone.
 Environment variables:
   PREFIX   Install prefix (default: /usr/local)
   DESTDIR  Staging root for packaging (default: empty)
+  CARGO_TARGET_DIR  Cargo build target dir (default: target; root uses a temp dir)
   BINDIR   Install dir for the vizier binary (default: $PREFIX/bin)
   DATADIR  Install dir for shared data (default: $PREFIX/share)
   MANDIR   Install dir for man pages (default: $PREFIX/share/man)
@@ -116,6 +117,7 @@ workflow_seed_files="draft.toml approve.toml merge.toml"
 
 manifest_rel="$DATADIR/vizier/install-manifest.txt"
 manifest_path="$DESTDIR$manifest_rel"
+temp_target_dir=""
 
 is_writable_parent() {
   target="$1"
@@ -169,6 +171,33 @@ run() {
   fi
   "$@"
 }
+
+setup_cargo_target_dir() {
+  target_dir=${CARGO_TARGET_DIR:-target}
+
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    if [ "$dry_run" -eq 1 ]; then
+      target_dir="${TMPDIR:-/tmp}/vizier-install-target.XXXXXX"
+      return 0
+    fi
+
+    temp_target_dir=$(mktemp -d "${TMPDIR:-/tmp}/vizier-install-target.XXXXXX")
+    target_dir="$temp_target_dir"
+    export CARGO_TARGET_DIR="$target_dir"
+  fi
+}
+
+cleanup_temp_target_dir() {
+  if [ -n "$temp_target_dir" ] && [ -d "$temp_target_dir" ]; then
+    rm -rf "$temp_target_dir"
+  fi
+}
+
+trap cleanup_temp_target_dir EXIT
 
 install_dir() {
   run install -d "$1"
@@ -237,7 +266,7 @@ fi
 
 check_install_permissions
 
-target_dir=${CARGO_TARGET_DIR:-target}
+setup_cargo_target_dir
 bin_src="$target_dir/release/vizier"
 
 if [ "$dry_run" -eq 1 ]; then

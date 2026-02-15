@@ -4,7 +4,7 @@ This page summarizes command entry points, including the restored orchestration 
 
 ## Repository Setup
 
-Run `vizier init` once per repository (or `vizier init --check` in CI) to ensure required marker files and `.gitignore` coverage exist.
+Run `vizier init` once per repository (or `vizier init --check` in CI) to ensure required scaffold files and `.gitignore` coverage exist. The scaffold includes `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge}.toml`, and a root `ci.sh` stub used by the default merge gate config.
 
 ## Pending Plan Visibility
 
@@ -45,6 +45,8 @@ approve = "file:.vizier/workflows/approve.toml"
 merge = "file:.vizier/workflows/merge.toml"
 develop = "file:.vizier/develop.toml"
 ```
+
+Resolution order for `vizier run <flow>` is: explicit file source, configured `[commands]` alias, selector identity lookup, repo fallback files, then implicit global workflow aliases. Compatibility selectors from `[workflow.templates]` can use `template.name@vN` or legacy `template.name.vN`; unresolved compatibility selectors fall through to repo/global flow-name lookup.
 
 Workflow parameter input styles:
 

@@ -1,0 +1,9 @@
+[merge.cicd_gate]
+script = "./ci.sh"
+auto_resolve = true
+retries = 2
+
+[commands]
+draft = "file:.vizier/workflows/draft.toml"
+approve = "file:.vizier/workflows/approve.toml"
+merge = "file:.vizier/workflows/merge.toml"

@@ -1,20 +1,47 @@
 use crate::fixtures::*;
 
-const REQUIRED_IGNORE_RULES: [&str; 4] = [
-    ".vizier/tmp/",
+const REQUIRED_IGNORE_RULES: [&str; 5] = [
     ".vizier/tmp-worktrees/",
-    ".vizier/jobs/",
+    ".vizier/tmp/",
     ".vizier/sessions/",
+    ".vizier/jobs/",
+    ".vizier/implementation-plans",
 ];
 
+fn assert_matches_repo_template(
+    repo: &IntegrationRepo,
+    actual_rel: &str,
+    template_rel: &str,
+) -> TestResult {
+    let expected = fs::read_to_string(repo_root().join(template_rel))?;
+    let actual = repo.read(actual_rel)?;
+    assert_eq!(
+        actual, expected,
+        "{actual_rel} should match template {template_rel}"
+    );
+    Ok(())
+}
+
 #[test]
-fn test_init_creates_durable_markers_and_required_ignore_rules() -> TestResult {
+fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
     let narrative_dir = repo.path().join(".vizier/narrative");
     if narrative_dir.exists() {
         fs::remove_dir_all(&narrative_dir)?;
+    }
+    let config_path = repo.path().join(".vizier/config.toml");
+    if config_path.exists() {
+        fs::remove_file(&config_path)?;
+    }
+    let workflows_dir = repo.path().join(".vizier/workflows");
+    if workflows_dir.exists() {
+        fs::remove_dir_all(&workflows_dir)?;
+    }
+    let ci_path = repo.path().join("ci.sh");
+    if ci_path.exists() {
+        fs::remove_file(&ci_path)?;
     }
     repo.write(".gitignore", "/target\nCargo.lock\n")?;
 
@@ -38,6 +65,41 @@ fn test_init_creates_durable_markers_and_required_ignore_rules() -> TestResult {
         repo.path().join(".vizier/narrative/glossary.md").is_file(),
         "init should create glossary marker"
     );
+    assert!(
+        config_path.is_file(),
+        "init should create .vizier/config.toml"
+    );
+    let config = repo.read(".vizier/config.toml")?;
+    assert!(
+        config.contains("script = \"./ci.sh\""),
+        "init config should point merge ci gate to ./ci.sh:\n{config}"
+    );
+    assert_matches_repo_template(
+        &repo,
+        ".vizier/workflows/draft.toml",
+        ".vizier/workflows/draft.toml",
+    )?;
+    assert_matches_repo_template(
+        &repo,
+        ".vizier/workflows/approve.toml",
+        ".vizier/workflows/approve.toml",
+    )?;
+    assert_matches_repo_template(
+        &repo,
+        ".vizier/workflows/merge.toml",
+        ".vizier/workflows/merge.toml",
+    )?;
+    assert!(ci_path.is_file(), "init should create root ci.sh");
+    let ci_contents = repo.read("ci.sh")?;
+    assert!(
+        ci_contents.contains("vizier ci stub"),
+        "init should write the ci.sh stub:\n{ci_contents}"
+    );
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&ci_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "init should mark ci.sh executable");
+    }
 
     let gitignore = repo.read(".gitignore")?;
     assert!(
@@ -64,7 +126,14 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
     clean_workdir(&repo)?;
 
     let snapshot_before = repo.read(".vizier/narrative/snapshot.md")?;
+    let draft_before = repo.read(".vizier/workflows/draft.toml")?;
     fs::remove_file(repo.path().join(".vizier/narrative/glossary.md"))?;
+    fs::remove_file(repo.path().join(".vizier/config.toml"))?;
+    fs::remove_file(repo.path().join(".vizier/workflows/approve.toml"))?;
+    let ci_path = repo.path().join("ci.sh");
+    if ci_path.exists() {
+        fs::remove_file(&ci_path)?;
+    }
 
     let mut gitignore = repo.read(".gitignore")?;
     gitignore = gitignore
@@ -91,6 +160,20 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
         repo.path().join(".vizier/narrative/glossary.md").is_file(),
         "init should restore missing glossary marker"
     );
+    assert!(
+        repo.path().join(".vizier/config.toml").is_file(),
+        "init should restore missing .vizier/config.toml"
+    );
+    assert!(
+        repo.path().join(".vizier/workflows/approve.toml").is_file(),
+        "init should restore missing approve workflow"
+    );
+    assert!(ci_path.is_file(), "init should restore missing ci.sh");
+    assert_eq!(
+        draft_before,
+        repo.read(".vizier/workflows/draft.toml")?,
+        "init should not overwrite existing workflow files"
+    );
 
     let gitignore_after = repo.read(".gitignore")?;
     assert!(
@@ -110,8 +193,18 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+
     let snapshot_before = repo.read(".vizier/narrative/snapshot.md")?;
     let glossary_before = repo.read(".vizier/narrative/glossary.md")?;
+    let config_before = repo.read(".vizier/config.toml")?;
+    let draft_before = repo.read(".vizier/workflows/draft.toml")?;
+    let ci_before = repo.read("ci.sh")?;
     let gitignore_before = repo.read(".gitignore")?;
 
     let output = repo.vizier_output_no_follow(&["init"])?;
@@ -137,6 +230,21 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
         "glossary should remain unchanged when init is already satisfied"
     );
     assert_eq!(
+        config_before,
+        repo.read(".vizier/config.toml")?,
+        "config should remain unchanged when init is already satisfied"
+    );
+    assert_eq!(
+        draft_before,
+        repo.read(".vizier/workflows/draft.toml")?,
+        "workflow templates should remain unchanged when init is already satisfied"
+    );
+    assert_eq!(
+        ci_before,
+        repo.read("ci.sh")?,
+        "ci.sh should remain unchanged when init is already satisfied"
+    );
+    assert_eq!(
         gitignore_before,
         repo.read(".gitignore")?,
         ".gitignore should remain unchanged when init is already satisfied"
@@ -148,6 +256,13 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
 fn test_init_check_reports_missing_and_exits_non_zero() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
+
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
 
     fs::remove_file(repo.path().join(".vizier/narrative/glossary.md"))?;
     let mut gitignore = repo.read(".gitignore")?;
@@ -197,6 +312,18 @@ fn test_init_check_is_non_mutating_on_uninitialized_repo() -> TestResult {
     if sessions_dir.exists() {
         fs::remove_dir_all(&sessions_dir)?;
     }
+    let config = repo.path().join(".vizier/config.toml");
+    if config.exists() {
+        fs::remove_file(&config)?;
+    }
+    let workflows = repo.path().join(".vizier/workflows");
+    if workflows.exists() {
+        fs::remove_dir_all(&workflows)?;
+    }
+    let ci_path = repo.path().join("ci.sh");
+    if ci_path.exists() {
+        fs::remove_file(&ci_path)?;
+    }
     repo.write(".gitignore", "/target\n")?;
 
     let output = repo.vizier_output_no_follow(&["init", "--check"])?;
@@ -211,6 +338,18 @@ fn test_init_check_is_non_mutating_on_uninitialized_repo() -> TestResult {
     assert!(
         !repo.path().join(".vizier/sessions").exists(),
         "check mode should not create .vizier/sessions"
+    );
+    assert!(
+        !repo.path().join(".vizier/config.toml").exists(),
+        "check mode should not create .vizier/config.toml"
+    );
+    assert!(
+        !repo.path().join(".vizier/workflows").exists(),
+        "check mode should not create .vizier/workflows"
+    );
+    assert!(
+        !repo.path().join("ci.sh").exists(),
+        "check mode should not create ci.sh"
     );
     Ok(())
 }
@@ -240,6 +379,13 @@ fn test_init_fails_outside_git_repo() -> TestResult {
 fn test_init_reports_path_specific_permission_error() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
+
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
 
     let gitignore_path = repo.path().join(".gitignore");
     let mut gitignore = repo.read(".gitignore")?;
