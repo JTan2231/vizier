@@ -47,12 +47,15 @@
 - **Steady-state inventory refresh**: Worktree inventory refresh where branch/doc/deletion evidence is unchanged from the previous reading; records freshness without introducing a new drift shape.
 - **Thread doc**: Focused narrative file under `.vizier/narrative/threads/` for one tension.
 - **Worktree**: Separate checkout under `.vizier/tmp-worktrees/`.
-- **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions to keep legacy drift reporting current.
+- **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions for the current worktree slug so legacy drift reporting stays current.
 - **Workspace commands (`cd`/`clean`)**: Deprecated-but-retained worktree helpers currently still available on the reduced CLI surface.
 - **`__workflow-node` entrypoint**: Hidden scheduler-only CLI command (`vizier __workflow-node --job-id <id>`) that executes one compiled workflow node and finalizes its job record.
 - **Workflow node runtime metadata**: Job metadata fields `workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, and `workflow_payload_refs` used by runtime node execution and retry rewinds.
 - **Workflow run manifest**: Queue-time runtime file `.vizier/jobs/runs/<run_id>.json` containing per-node executor/control identity, args, retry policy, routing targets, and outcome artifact maps.
 - **Workflow runtime bridge**: Internal execution layer that compiles canonical templates to scheduler jobs, dispatches node handlers through `__workflow-node`, and routes outcomes without exposing removed public workflow commands.
 - **Run flow resolution order**: `FLOW` lookup contract: explicit `file:`/path, then `[commands]` alias, then selector lookup, then repo fallback files (`.vizier/<flow>.{toml,json}`, `.vizier/workflow/<flow>.{toml,json}`).
+- **Run `--set` Phase 1 surface**: Queue-time interpolation coverage for `vizier run --set` across `nodes.args`, artifact payloads (`needs`/`produces`), lock keys, custom precondition args, gate script/custom fields, gate bools, retry mode/budget, and artifact-contract IDs/versions.
+- **Run `--set` strict coercion**: Queue-time typed coercion for expanded placeholders: bool tokens (`true|false|1|0|yes|no|on|off`), retry budget as decimal `u32`, and retry mode via canonical enum parsing; failures are field-path errors that prevent enqueue.
+- **Run `--set` topology deferral**: Explicitly deferred interpolation scope for topology/identity fields (`after`, `on`, template `id/version`, imports, links) pending deterministic-graph policy decisions.
 - **Run root overrides**: `vizier run` queue-time root-job schedule overrides: external `--after` dependencies and approval policy toggles (`--require-approval` / `--no-require-approval`).
 - **Run follow exit contract**: `vizier run --follow` aggregate terminal mapping: `0` all succeeded, `10` blocked-only terminal set, non-zero when any failed/cancelled job is terminal.

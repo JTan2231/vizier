@@ -5,8 +5,12 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use vizier_core::{
     config,
+    scheduler::{JobArtifact, JobLock},
     workflow_template::{
-        WorkflowArtifactContract, WorkflowNode, WorkflowTemplate, WorkflowTemplatePolicy,
+        WorkflowAfterDependency, WorkflowArtifactContract, WorkflowGate, WorkflowGatePolicy,
+        WorkflowNode, WorkflowNodeKind, WorkflowOutcomeArtifacts, WorkflowOutcomeEdges,
+        WorkflowPrecondition, WorkflowRetryMode, WorkflowRetryPolicy, WorkflowTemplate,
+        WorkflowTemplatePolicy,
     },
 };
 
@@ -28,7 +32,7 @@ struct WorkflowTemplateFile {
     #[serde(default)]
     artifact_contracts: Vec<WorkflowArtifactContract>,
     #[serde(default)]
-    nodes: Vec<WorkflowNode>,
+    nodes: Vec<WorkflowNodeFile>,
     #[serde(default)]
     imports: Vec<WorkflowTemplateImport>,
     #[serde(default)]
@@ -47,11 +51,130 @@ struct WorkflowTemplateLink {
     to: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct WorkflowNodeFile {
+    id: String,
+    #[serde(default)]
+    kind: WorkflowNodeKind,
+    uses: String,
+    #[serde(default)]
+    args: BTreeMap<String, String>,
+    #[serde(default)]
+    after: Vec<WorkflowAfterDependency>,
+    #[serde(default)]
+    needs: Vec<JobArtifact>,
+    #[serde(default)]
+    produces: WorkflowOutcomeArtifacts,
+    #[serde(default)]
+    locks: Vec<JobLock>,
+    #[serde(default)]
+    preconditions: Vec<WorkflowPrecondition>,
+    #[serde(default)]
+    gates: Vec<WorkflowGateFile>,
+    #[serde(default)]
+    retry: WorkflowRetryPolicyFile,
+    #[serde(default)]
+    on: WorkflowOutcomeEdges,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WorkflowGateFile {
+    Approval {
+        #[serde(default)]
+        required: TemplateBoolValue,
+        #[serde(default)]
+        policy: WorkflowGatePolicy,
+    },
+    Script {
+        script: String,
+        #[serde(default)]
+        policy: WorkflowGatePolicy,
+    },
+    Cicd {
+        script: String,
+        #[serde(default)]
+        auto_resolve: TemplateBoolValue,
+        #[serde(default)]
+        policy: WorkflowGatePolicy,
+    },
+    Custom {
+        id: String,
+        #[serde(default)]
+        policy: WorkflowGatePolicy,
+        #[serde(default)]
+        args: BTreeMap<String, String>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum TemplateBoolValue {
+    Bool(bool),
+    String(String),
+    I64(i64),
+    U64(u64),
+    F64(f64),
+}
+
+impl Default for TemplateBoolValue {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct WorkflowRetryPolicyFile {
+    #[serde(default)]
+    mode: WorkflowRetryModeValue,
+    #[serde(default)]
+    budget: WorkflowRetryBudgetValue,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum WorkflowRetryModeValue {
+    Mode(WorkflowRetryMode),
+    String(String),
+}
+
+impl Default for WorkflowRetryModeValue {
+    fn default() -> Self {
+        Self::Mode(WorkflowRetryMode::Never)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum WorkflowRetryBudgetValue {
+    U32(u32),
+    U64(u64),
+    I64(i64),
+    String(String),
+    F64(f64),
+}
+
+impl Default for WorkflowRetryBudgetValue {
+    fn default() -> Self {
+        Self::U32(0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ComposedWorkflowTemplate {
+    id: String,
+    version: String,
+    params: BTreeMap<String, String>,
+    policy: WorkflowTemplatePolicy,
+    artifact_contracts: Vec<WorkflowArtifactContract>,
+    nodes: Vec<WorkflowNodeFile>,
+}
+
 #[derive(Debug, Clone)]
 struct ImportedStage {
     params: BTreeMap<String, String>,
     artifact_contracts: Vec<WorkflowArtifactContract>,
-    nodes: Vec<WorkflowNode>,
+    nodes: Vec<WorkflowNodeFile>,
     terminal_nodes: Vec<String>,
     entry_nodes: Vec<String>,
 }
@@ -124,15 +247,14 @@ pub(crate) fn load_template_with_params(
     set_overrides: &BTreeMap<String, String>,
 ) -> Result<WorkflowTemplate, Box<dyn std::error::Error>> {
     let mut stack = Vec::<PathBuf>::new();
-    let mut template = load_template_recursive(&source.path, &mut stack)?;
-    apply_parameter_expansion(&mut template, set_overrides)?;
-    Ok(template)
+    let template = load_template_recursive(&source.path, &mut stack)?;
+    apply_parameter_expansion(template, set_overrides)
 }
 
 fn load_template_recursive(
     path: &Path,
     stack: &mut Vec<PathBuf>,
-) -> Result<WorkflowTemplate, Box<dyn std::error::Error>> {
+) -> Result<ComposedWorkflowTemplate, Box<dyn std::error::Error>> {
     let canonical = fs::canonicalize(path)
         .map_err(|err| format!("unable to read template source {}: {err}", path.display()))?;
 
@@ -148,7 +270,7 @@ fn load_template_recursive(
     stack.push(canonical.clone());
     let parsed = parse_template_file(&canonical)?;
     let result = if parsed.imports.is_empty() {
-        Ok(WorkflowTemplate {
+        Ok(ComposedWorkflowTemplate {
             id: parsed.id,
             version: parsed.version,
             params: parsed.params,
@@ -167,7 +289,7 @@ fn compose_template(
     source_path: &Path,
     parsed: WorkflowTemplateFile,
     stack: &mut Vec<PathBuf>,
-) -> Result<WorkflowTemplate, Box<dyn std::error::Error>> {
+) -> Result<ComposedWorkflowTemplate, Box<dyn std::error::Error>> {
     let mut imported = HashMap::<String, ImportedStage>::new();
     let mut import_order = Vec::<String>::new();
     let mut link_graph = HashMap::<String, Vec<String>>::new();
@@ -277,7 +399,7 @@ fn compose_template(
         }
     }
 
-    Ok(WorkflowTemplate {
+    Ok(ComposedWorkflowTemplate {
         id: parsed.id,
         version: parsed.version,
         params,
@@ -289,7 +411,7 @@ fn compose_template(
 
 fn prefix_stage(
     stage_name: &str,
-    template: &WorkflowTemplate,
+    template: &ComposedWorkflowTemplate,
 ) -> Result<ImportedStage, Box<dyn std::error::Error>> {
     if template.nodes.is_empty() {
         return Err(format!("imported stage `{stage_name}` has no nodes").into());
@@ -545,29 +667,303 @@ fn parse_template_file(path: &Path) -> Result<WorkflowTemplateFile, Box<dyn std:
 }
 
 fn apply_parameter_expansion(
-    template: &mut WorkflowTemplate,
+    mut template: ComposedWorkflowTemplate,
     set_overrides: &BTreeMap<String, String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<WorkflowTemplate, Box<dyn std::error::Error>> {
     let mut params = template.params.clone();
     for (key, value) in set_overrides {
         params.insert(key.clone(), value.clone());
     }
 
-    for node in &mut template.nodes {
-        for (arg_key, arg_value) in &mut node.args {
-            let expanded = expand_arg_value(&node.id, arg_key, arg_value, &params)?;
-            *arg_value = expanded;
+    for (index, contract) in template.artifact_contracts.iter_mut().enumerate() {
+        let id_path = format!("artifact_contracts[{index}].id");
+        contract.id = expand_string_value(&contract.id, &id_path, &params)?;
+        let version_path = format!("artifact_contracts[{index}].version");
+        contract.version = expand_string_value(&contract.version, &version_path, &params)?;
+    }
+
+    let mut expanded_nodes = Vec::with_capacity(template.nodes.len());
+    for node in template.nodes {
+        expanded_nodes.push(expand_node(node, &params)?);
+    }
+
+    Ok(WorkflowTemplate {
+        id: template.id,
+        version: template.version,
+        params,
+        policy: template.policy,
+        artifact_contracts: template.artifact_contracts,
+        nodes: expanded_nodes,
+    })
+}
+
+fn expand_node(
+    mut node: WorkflowNodeFile,
+    params: &BTreeMap<String, String>,
+) -> Result<WorkflowNode, Box<dyn std::error::Error>> {
+    let node_id = node.id.clone();
+
+    for (arg_key, arg_value) in &mut node.args {
+        let path = format!("nodes[{node_id}].args.{arg_key}");
+        *arg_value = expand_string_value(arg_value, &path, params)?;
+    }
+
+    expand_artifact_list(&mut node.needs, &format!("nodes[{node_id}].needs"), params)?;
+    expand_artifact_list(
+        &mut node.produces.succeeded,
+        &format!("nodes[{node_id}].produces.succeeded"),
+        params,
+    )?;
+    expand_artifact_list(
+        &mut node.produces.failed,
+        &format!("nodes[{node_id}].produces.failed"),
+        params,
+    )?;
+    expand_artifact_list(
+        &mut node.produces.blocked,
+        &format!("nodes[{node_id}].produces.blocked"),
+        params,
+    )?;
+    expand_artifact_list(
+        &mut node.produces.cancelled,
+        &format!("nodes[{node_id}].produces.cancelled"),
+        params,
+    )?;
+
+    for (index, lock) in node.locks.iter_mut().enumerate() {
+        let path = format!("nodes[{node_id}].locks[{index}].key");
+        lock.key = expand_string_value(&lock.key, &path, params)?;
+    }
+
+    for (index, precondition) in node.preconditions.iter_mut().enumerate() {
+        if let WorkflowPrecondition::Custom { args, .. } = precondition {
+            for (arg_key, arg_value) in args.iter_mut() {
+                let path = format!("nodes[{node_id}].preconditions[{index}].custom.args.{arg_key}");
+                *arg_value = expand_string_value(arg_value, &path, params)?;
+            }
         }
     }
 
-    template.params = params;
+    let mut gates = Vec::with_capacity(node.gates.len());
+    for (index, gate) in node.gates.into_iter().enumerate() {
+        gates.push(expand_gate(
+            gate,
+            &format!("nodes[{node_id}].gates[{index}]"),
+            params,
+        )?);
+    }
+
+    let retry = expand_retry_policy(node.retry, &format!("nodes[{node_id}].retry"), params)?;
+
+    Ok(WorkflowNode {
+        id: node.id,
+        kind: node.kind,
+        uses: node.uses,
+        args: node.args,
+        after: node.after,
+        needs: node.needs,
+        produces: node.produces,
+        locks: node.locks,
+        preconditions: node.preconditions,
+        gates,
+        retry,
+        on: node.on,
+    })
+}
+
+fn expand_artifact_list(
+    artifacts: &mut [JobArtifact],
+    path_prefix: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (index, artifact) in artifacts.iter_mut().enumerate() {
+        expand_artifact(artifact, &format!("{path_prefix}[{index}]"), params)?;
+    }
     Ok(())
 }
 
-fn expand_arg_value(
-    node_id: &str,
-    arg_key: &str,
+fn expand_artifact(
+    artifact: &mut JobArtifact,
+    path_prefix: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match artifact {
+        JobArtifact::PlanBranch { slug, branch } => {
+            let slug_path = format!("{path_prefix}.plan_branch.slug");
+            *slug = expand_string_value(slug, &slug_path, params)?;
+            let branch_path = format!("{path_prefix}.plan_branch.branch");
+            *branch = expand_string_value(branch, &branch_path, params)?;
+        }
+        JobArtifact::PlanDoc { slug, branch } => {
+            let slug_path = format!("{path_prefix}.plan_doc.slug");
+            *slug = expand_string_value(slug, &slug_path, params)?;
+            let branch_path = format!("{path_prefix}.plan_doc.branch");
+            *branch = expand_string_value(branch, &branch_path, params)?;
+        }
+        JobArtifact::PlanCommits { slug, branch } => {
+            let slug_path = format!("{path_prefix}.plan_commits.slug");
+            *slug = expand_string_value(slug, &slug_path, params)?;
+            let branch_path = format!("{path_prefix}.plan_commits.branch");
+            *branch = expand_string_value(branch, &branch_path, params)?;
+        }
+        JobArtifact::TargetBranch { name } => {
+            let name_path = format!("{path_prefix}.target_branch.name");
+            *name = expand_string_value(name, &name_path, params)?;
+        }
+        JobArtifact::MergeSentinel { slug } => {
+            let slug_path = format!("{path_prefix}.merge_sentinel.slug");
+            *slug = expand_string_value(slug, &slug_path, params)?;
+        }
+        JobArtifact::CommandPatch { job_id } => {
+            let path = format!("{path_prefix}.command_patch.job_id");
+            *job_id = expand_string_value(job_id, &path, params)?;
+        }
+        JobArtifact::Custom { type_id, key } => {
+            let type_path = format!("{path_prefix}.custom.type_id");
+            *type_id = expand_string_value(type_id, &type_path, params)?;
+            let key_path = format!("{path_prefix}.custom.key");
+            *key = expand_string_value(key, &key_path, params)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn expand_gate(
+    gate: WorkflowGateFile,
+    path_prefix: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<WorkflowGate, Box<dyn std::error::Error>> {
+    match gate {
+        WorkflowGateFile::Approval { required, policy } => Ok(WorkflowGate::Approval {
+            required: coerce_bool(
+                required,
+                &format!("{path_prefix}.approval.required"),
+                params,
+            )?,
+            policy,
+        }),
+        WorkflowGateFile::Script { script, policy } => Ok(WorkflowGate::Script {
+            script: expand_string_value(&script, &format!("{path_prefix}.script"), params)?,
+            policy,
+        }),
+        WorkflowGateFile::Cicd {
+            script,
+            auto_resolve,
+            policy,
+        } => Ok(WorkflowGate::Cicd {
+            script: expand_string_value(&script, &format!("{path_prefix}.cicd.script"), params)?,
+            auto_resolve: coerce_bool(
+                auto_resolve,
+                &format!("{path_prefix}.cicd.auto_resolve"),
+                params,
+            )?,
+            policy,
+        }),
+        WorkflowGateFile::Custom {
+            id,
+            policy,
+            mut args,
+        } => {
+            let id = expand_string_value(&id, &format!("{path_prefix}.custom.id"), params)?;
+            for (arg_key, arg_value) in &mut args {
+                let path = format!("{path_prefix}.custom.args.{arg_key}");
+                *arg_value = expand_string_value(arg_value, &path, params)?;
+            }
+            Ok(WorkflowGate::Custom { id, policy, args })
+        }
+    }
+}
+
+fn expand_retry_policy(
+    retry: WorkflowRetryPolicyFile,
+    path_prefix: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<WorkflowRetryPolicy, Box<dyn std::error::Error>> {
+    let mode = coerce_retry_mode(retry.mode, &format!("{path_prefix}.mode"), params)?;
+    let budget = coerce_retry_budget(retry.budget, &format!("{path_prefix}.budget"), params)?;
+    Ok(WorkflowRetryPolicy { mode, budget })
+}
+
+fn coerce_bool(
+    value: TemplateBoolValue,
+    field_path: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let raw_value = match value {
+        TemplateBoolValue::Bool(value) => return Ok(value),
+        TemplateBoolValue::String(value) => expand_string_value(&value, field_path, params)?,
+        TemplateBoolValue::I64(value) => value.to_string(),
+        TemplateBoolValue::U64(value) => value.to_string(),
+        TemplateBoolValue::F64(value) => value.to_string(),
+    };
+
+    let normalized = raw_value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("invalid bool value `{raw_value}` for {field_path}").into()),
+    }
+}
+
+fn coerce_retry_mode(
+    value: WorkflowRetryModeValue,
+    field_path: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<WorkflowRetryMode, Box<dyn std::error::Error>> {
+    match value {
+        WorkflowRetryModeValue::Mode(mode) => Ok(mode),
+        WorkflowRetryModeValue::String(raw) => {
+            let expanded = expand_string_value(&raw, field_path, params)?;
+            parse_retry_mode(&expanded, field_path)
+        }
+    }
+}
+
+fn parse_retry_mode(
     value: &str,
+    field_path: &str,
+) -> Result<WorkflowRetryMode, Box<dyn std::error::Error>> {
+    let raw_value = value.trim();
+    serde_json::from_value::<WorkflowRetryMode>(serde_json::Value::String(raw_value.to_string()))
+        .map_err(|_| format!("invalid retry mode value `{raw_value}` for {field_path}").into())
+}
+
+fn coerce_retry_budget(
+    value: WorkflowRetryBudgetValue,
+    field_path: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    match value {
+        WorkflowRetryBudgetValue::U32(value) => Ok(value),
+        WorkflowRetryBudgetValue::U64(value) => u32::try_from(value)
+            .map_err(|_| format!("invalid u32 value `{value}` for {field_path}").into()),
+        WorkflowRetryBudgetValue::I64(value) => {
+            if value < 0 {
+                return Err(format!("invalid u32 value `{value}` for {field_path}").into());
+            }
+            u32::try_from(value)
+                .map_err(|_| format!("invalid u32 value `{value}` for {field_path}").into())
+        }
+        WorkflowRetryBudgetValue::String(raw) => {
+            let expanded = expand_string_value(&raw, field_path, params)?;
+            let trimmed = expanded.trim();
+            if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+                return Err(format!("invalid u32 value `{expanded}` for {field_path}").into());
+            }
+            trimmed
+                .parse::<u32>()
+                .map_err(|_| format!("invalid u32 value `{expanded}` for {field_path}").into())
+        }
+        WorkflowRetryBudgetValue::F64(value) => {
+            Err(format!("invalid u32 value `{value}` for {field_path}").into())
+        }
+    }
+}
+
+fn expand_string_value(
+    value: &str,
+    field_path: &str,
     params: &BTreeMap<String, String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut out = String::with_capacity(value.len());
@@ -579,22 +975,17 @@ fn expand_arg_value(
 
         let body_start = start + 2;
         let Some(end_rel) = value[body_start..].find('}') else {
-            return Err(format!(
-                "unclosed parameter placeholder in node `{node_id}` arg `{arg_key}`"
-            )
-            .into());
+            return Err(format!("unclosed parameter placeholder in {field_path}").into());
         };
         let end = body_start + end_rel;
         let key = value[body_start..end].trim();
         if key.is_empty() {
-            return Err(
-                format!("empty parameter placeholder in node `{node_id}` arg `{arg_key}`").into(),
-            );
+            return Err(format!("empty parameter placeholder in {field_path}").into());
         }
 
-        let replacement = params.get(key).ok_or_else(|| {
-            format!("unresolved parameter `{key}` in node `{node_id}` arg `{arg_key}`")
-        })?;
+        let replacement = params
+            .get(key)
+            .ok_or_else(|| format!("unresolved parameter `{key}` in {field_path}"))?;
         out.push_str(replacement);
         cursor = end + 1;
     }
@@ -898,6 +1289,272 @@ mod tests {
             .expect_err("expected unresolved param failure");
         assert!(
             err.to_string().contains("unresolved parameter `missing`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parameter_expansion_covers_phase_one_fields() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/flow.json"),
+            "{\n\
+  \"id\": \"template.flow\",\n\
+  \"version\": \"v1\",\n\
+  \"params\": {\n\
+    \"slug\": \"alpha\",\n\
+    \"branch\": \"draft/alpha\",\n\
+    \"lock_key\": \"alpha\",\n\
+    \"gate_script\": \"test -f README.md\",\n\
+    \"retry_mode\": \"on_failure\",\n\
+    \"retry_budget\": \"3\",\n\
+    \"approval_required\": \"yes\",\n\
+    \"auto_resolve\": \"off\",\n\
+    \"custom_gate_id\": \"conflict_handler\",\n\
+    \"contract_version\": \"v2\"\n\
+  },\n\
+  \"artifact_contracts\": [\n\
+    {\"id\": \"custom:prompt_text:${slug}\", \"version\": \"${contract_version}\"}\n\
+  ],\n\
+  \"nodes\": [\n\
+    {\n\
+      \"id\": \"n1\",\n\
+      \"kind\": \"shell\",\n\
+      \"uses\": \"cap.env.shell.command.run\",\n\
+      \"args\": {\"script\": \"echo ${slug}\"},\n\
+      \"needs\": [\n\
+        {\"plan_doc\": {\"slug\": \"${slug}\", \"branch\": \"${branch}\"}}\n\
+      ],\n\
+      \"produces\": {\n\
+        \"succeeded\": [\n\
+          {\"custom\": {\"type_id\": \"prompt_text\", \"key\": \"${slug}\"}}\n\
+        ]\n\
+      },\n\
+      \"locks\": [\n\
+        {\"key\": \"plan:${lock_key}\", \"mode\": \"exclusive\"}\n\
+      ],\n\
+      \"preconditions\": [\n\
+        {\"kind\": \"custom\", \"id\": \"check_branch\", \"args\": {\"branch\": \"${branch}\"}}\n\
+      ],\n\
+      \"gates\": [\n\
+        {\"kind\": \"script\", \"script\": \"${gate_script}\"},\n\
+        {\"kind\": \"approval\", \"required\": \"${approval_required}\"},\n\
+        {\"kind\": \"cicd\", \"script\": \"echo gate\", \"auto_resolve\": \"${auto_resolve}\"},\n\
+        {\"kind\": \"custom\", \"id\": \"${custom_gate_id}\", \"args\": {\"branch\": \"${branch}\"}}\n\
+      ],\n\
+      \"retry\": {\"mode\": \"${retry_mode}\", \"budget\": \"${retry_budget}\"}\n\
+    }\n\
+  ]\n\
+}\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/flow.json".to_string(),
+            path: root.path().join(".vizier/flow.json"),
+            command_alias: None,
+        };
+
+        let set_overrides = BTreeMap::from([
+            ("slug".to_string(), "beta".to_string()),
+            ("branch".to_string(), "draft/beta".to_string()),
+            ("retry_budget".to_string(), "7".to_string()),
+        ]);
+        let template =
+            load_template_with_params(&source, &set_overrides).expect("load expanded template");
+        let node = template.nodes.first().expect("node");
+
+        assert_eq!(
+            node.args.get("script").map(String::as_str),
+            Some("echo beta")
+        );
+        assert_eq!(template.artifact_contracts.len(), 1);
+        assert_eq!(
+            template.artifact_contracts[0].id,
+            "custom:prompt_text:beta".to_string()
+        );
+        assert_eq!(template.artifact_contracts[0].version, "v2".to_string());
+
+        match &node.needs[0] {
+            JobArtifact::PlanDoc { slug, branch } => {
+                assert_eq!(slug, "beta");
+                assert_eq!(branch, "draft/beta");
+            }
+            other => panic!("unexpected needs artifact: {other:?}"),
+        }
+        match &node.produces.succeeded[0] {
+            JobArtifact::Custom { type_id, key } => {
+                assert_eq!(type_id, "prompt_text");
+                assert_eq!(key, "beta");
+            }
+            other => panic!("unexpected produced artifact: {other:?}"),
+        }
+        assert_eq!(node.locks[0].key, "plan:alpha");
+
+        match &node.preconditions[0] {
+            WorkflowPrecondition::Custom { args, .. } => {
+                assert_eq!(args.get("branch").map(String::as_str), Some("draft/beta"));
+            }
+            other => panic!("unexpected precondition: {other:?}"),
+        }
+
+        assert_eq!(node.gates.len(), 4);
+        match &node.gates[0] {
+            WorkflowGate::Script { script, .. } => assert_eq!(script, "test -f README.md"),
+            other => panic!("unexpected gate[0]: {other:?}"),
+        }
+        match &node.gates[1] {
+            WorkflowGate::Approval { required, .. } => assert!(*required),
+            other => panic!("unexpected gate[1]: {other:?}"),
+        }
+        match &node.gates[2] {
+            WorkflowGate::Cicd { auto_resolve, .. } => assert!(!auto_resolve),
+            other => panic!("unexpected gate[2]: {other:?}"),
+        }
+        match &node.gates[3] {
+            WorkflowGate::Custom { id, args, .. } => {
+                assert_eq!(id, "conflict_handler");
+                assert_eq!(args.get("branch").map(String::as_str), Some("draft/beta"));
+            }
+            other => panic!("unexpected gate[3]: {other:?}"),
+        }
+
+        assert_eq!(node.retry.mode, WorkflowRetryMode::OnFailure);
+        assert_eq!(node.retry.budget, 7);
+    }
+
+    #[test]
+    fn parameter_expansion_fails_for_unresolved_non_args_field() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/flow.json"),
+            "{\n\
+  \"id\": \"template.flow\",\n\
+  \"version\": \"v1\",\n\
+  \"nodes\": [\n\
+    {\n\
+      \"id\": \"n1\",\n\
+      \"kind\": \"shell\",\n\
+      \"uses\": \"cap.env.shell.command.run\",\n\
+      \"args\": {\"script\": \"true\"},\n\
+      \"needs\": [\n\
+        {\"plan_doc\": {\"slug\": \"${missing}\", \"branch\": \"main\"}}\n\
+      ]\n\
+    }\n\
+  ]\n\
+}\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/flow.json".to_string(),
+            path: root.path().join(".vizier/flow.json"),
+            command_alias: None,
+        };
+
+        let err = load_template_with_params(&source, &BTreeMap::new())
+            .expect_err("expected unresolved non-args placeholder");
+        assert!(
+            err.to_string().contains("nodes[n1].needs[0].plan_doc.slug"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parameter_expansion_rejects_invalid_bool_coercion() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/flow.toml"),
+            "id = \"template.flow\"\n\
+version = \"v1\"\n\
+[params]\n\
+required = \"maybe\"\n\
+[[nodes]]\n\
+id = \"gate\"\n\
+kind = \"gate\"\n\
+uses = \"control.gate.approval\"\n\
+[[nodes.gates]]\n\
+kind = \"approval\"\n\
+required = \"${required}\"\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/flow.toml".to_string(),
+            path: root.path().join(".vizier/flow.toml"),
+            command_alias: None,
+        };
+
+        let err = load_template_with_params(&source, &BTreeMap::new())
+            .expect_err("expected invalid bool coercion");
+        assert!(
+            err.to_string()
+                .contains("invalid bool value `maybe` for nodes[gate].gates[0].approval.required"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parameter_expansion_rejects_invalid_retry_budget_coercion() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/flow.toml"),
+            "id = \"template.flow\"\n\
+version = \"v1\"\n\
+[params]\n\
+budget = \"-1\"\n\
+[[nodes]]\n\
+id = \"n1\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"true\"\n\
+[nodes.retry]\n\
+budget = \"${budget}\"\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/flow.toml".to_string(),
+            path: root.path().join(".vizier/flow.toml"),
+            command_alias: None,
+        };
+
+        let err = load_template_with_params(&source, &BTreeMap::new())
+            .expect_err("expected invalid retry budget coercion");
+        assert!(
+            err.to_string()
+                .contains("invalid u32 value `-1` for nodes[n1].retry.budget"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parameter_expansion_rejects_invalid_retry_mode_coercion() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/flow.toml"),
+            "id = \"template.flow\"\n\
+version = \"v1\"\n\
+[params]\n\
+mode = \"sometimes\"\n\
+[[nodes]]\n\
+id = \"n1\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"true\"\n\
+[nodes.retry]\n\
+mode = \"${mode}\"\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/flow.toml".to_string(),
+            path: root.path().join(".vizier/flow.toml"),
+            command_alias: None,
+        };
+
+        let err = load_template_with_params(&source, &BTreeMap::new())
+            .expect_err("expected invalid retry mode coercion");
+        assert!(
+            err.to_string()
+                .contains("invalid retry mode value `sometimes` for nodes[n1].retry.mode"),
             "unexpected error: {err}"
         );
     }

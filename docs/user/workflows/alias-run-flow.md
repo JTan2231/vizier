@@ -30,6 +30,8 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 - `vizier run develop --after <job-id> --require-approval`
 - `vizier run develop --follow --format json`
 
+Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
+
 ## Release Flow
 
 Use `vizier release --dry-run` to preview version/tag/notes and `vizier release --yes` to create artifacts.

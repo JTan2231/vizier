@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-15, `--set` Phase 1 expansion surface):
+  - `vizier-cli/src/workflow_templates.rs` now expands `--set` queue-time across Phase 1 fields instead of args-only: artifact payload strings (`needs`/`produces`), lock keys, custom precondition args, gate script/custom fields, gate bool fields (`approval.required`, `cicd.auto_resolve`), retry mode/budget, and artifact-contract IDs/versions.
+  - Queue-time coercion now validates expanded typed fields with field-path errors (bool tokens, retry budget `u32`, retry mode enum parse) before enqueue, preserving all-or-nothing manifest/job materialization.
+  - Coverage expanded in `vizier-cli` unit tests and `tests/src/run.rs` integration tests for non-args expansion success and unresolved non-args no-partial-enqueue failure.
+  - Phase 2 topology/identity interpolation (`after`/`on`, template `id/version`, imports, links) remains intentionally deferred pending a determinism decision.
 - Update (2026-02-14, run front-door restoration):
   - `vizier-cli` now exposes `vizier run <flow>` with flow resolution (`file:`/path, `[commands]` alias, selector lookup, repo fallback files), composed-template support (`imports` + `links`), `${key}` parameter expansion via `--set`, root scheduling overrides (`--after`, approval toggles), and follow-mode terminal exit semantics.
   - Queue-time orchestration now calls `enqueue_workflow_run` from the new `run` action, preserving canonical runtime execution through hidden `__workflow-node`.

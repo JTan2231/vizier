@@ -142,6 +142,144 @@ script = \"test -f compose.txt\"\n",
 }
 
 #[test]
+fn test_run_set_expands_non_args_runtime_fields() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/set-surface.json",
+        "{\n\
+  \"id\": \"template.set.surface\",\n\
+  \"version\": \"v1\",\n\
+  \"params\": {\n\
+    \"slug\": \"alpha\",\n\
+    \"branch\": \"draft/alpha\",\n\
+    \"lock_key\": \"alpha\",\n\
+    \"gate_script\": \"test -f README.md\",\n\
+    \"retry_mode\": \"on_failure\",\n\
+    \"retry_budget\": \"2\"\n\
+  },\n\
+  \"artifact_contracts\": [\n\
+    {\"id\": \"plan_doc\", \"version\": \"v1\"},\n\
+    {\"id\": \"prompt_text\", \"version\": \"v1\"}\n\
+  ],\n\
+  \"nodes\": [\n\
+    {\n\
+      \"id\": \"single\",\n\
+      \"kind\": \"shell\",\n\
+      \"uses\": \"cap.env.shell.command.run\",\n\
+      \"args\": {\"script\": \"true\"},\n\
+      \"needs\": [\n\
+        {\"plan_doc\": {\"slug\": \"${slug}\", \"branch\": \"${branch}\"}}\n\
+      ],\n\
+      \"produces\": {\n\
+        \"succeeded\": [\n\
+          {\"custom\": {\"type_id\": \"prompt_text\", \"key\": \"${slug}\"}}\n\
+        ]\n\
+      },\n\
+      \"locks\": [\n\
+        {\"key\": \"plan:${lock_key}\", \"mode\": \"exclusive\"}\n\
+      ],\n\
+      \"preconditions\": [\n\
+        {\"kind\": \"custom\", \"id\": \"branch_ready\", \"args\": {\"branch\": \"${branch}\"}}\n\
+      ],\n\
+      \"gates\": [\n\
+        {\"kind\": \"script\", \"script\": \"${gate_script}\"}\n\
+      ],\n\
+      \"retry\": {\"mode\": \"${retry_mode}\", \"budget\": \"${retry_budget}\"}\n\
+    }\n\
+  ]\n\
+}\n",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflow/set-surface.json",
+            "--set",
+            "slug=beta",
+            "--set",
+            "branch=draft/beta",
+            "--set",
+            "lock_key=beta",
+            "--set",
+            "gate_script=echo expanded-gate",
+            "--set",
+            "retry_budget=5",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let root_job = payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing root job id")?;
+
+    let manifest_path = repo.path().join(format!(".vizier/jobs/runs/{run_id}.json"));
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    assert_eq!(
+        manifest
+            .pointer("/nodes/single/gates/0/script")
+            .and_then(Value::as_str),
+        Some("echo expanded-gate")
+    );
+    assert_eq!(
+        manifest
+            .pointer("/nodes/single/retry/mode")
+            .and_then(Value::as_str),
+        Some("on_failure")
+    );
+    assert_eq!(
+        manifest
+            .pointer("/nodes/single/retry/budget")
+            .and_then(Value::as_u64),
+        Some(5)
+    );
+    assert_eq!(
+        manifest
+            .pointer("/nodes/single/artifacts_by_outcome/succeeded/0/custom/key")
+            .and_then(Value::as_str),
+        Some("beta")
+    );
+
+    let root_record = read_job_record(&repo, root_job)?;
+    assert_eq!(
+        root_record
+            .pointer("/schedule/dependencies/0/artifact/plan_doc/slug")
+            .and_then(Value::as_str),
+        Some("beta")
+    );
+    assert_eq!(
+        root_record
+            .pointer("/schedule/dependencies/0/artifact/plan_doc/branch")
+            .and_then(Value::as_str),
+        Some("draft/beta")
+    );
+    assert_eq!(
+        root_record
+            .pointer("/schedule/locks/0/key")
+            .and_then(Value::as_str),
+        Some("plan:beta")
+    );
+    assert_eq!(
+        root_record
+            .pointer("/schedule/preconditions/0/args/branch")
+            .and_then(Value::as_str),
+        Some("draft/beta")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_run_file_selector_enqueues_workflow() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
@@ -166,6 +304,62 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
     assert!(
         manifest_path.exists(),
         "missing run manifest: {manifest_path:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_set_rejects_unresolved_non_args_without_partial_enqueue() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/unresolved-needs.json",
+        "{\n\
+  \"id\": \"template.unresolved.needs\",\n\
+  \"version\": \"v1\",\n\
+  \"nodes\": [\n\
+    {\n\
+      \"id\": \"single\",\n\
+      \"kind\": \"shell\",\n\
+      \"uses\": \"cap.env.shell.command.run\",\n\
+      \"args\": {\"script\": \"true\"},\n\
+      \"needs\": [\n\
+        {\"plan_doc\": {\"slug\": \"${missing}\", \"branch\": \"main\"}}\n\
+      ]\n\
+    }\n\
+  ]\n\
+}\n",
+    )?;
+
+    let runs_dir = repo.path().join(".vizier/jobs/runs");
+    let before_count = if runs_dir.is_dir() {
+        fs::read_dir(&runs_dir)?.count()
+    } else {
+        0
+    };
+
+    let output = repo.vizier_output(&["run", "file:.vizier/workflow/unresolved-needs.json"])?;
+    assert!(
+        !output.status.success(),
+        "run should fail on unresolved non-args placeholder"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unresolved parameter `missing`")
+            && stderr.contains("nodes[single].needs[0].plan_doc.slug"),
+        "expected unresolved placeholder error with field path, got: {stderr}"
+    );
+
+    let after_count = if runs_dir.is_dir() {
+        fs::read_dir(&runs_dir)?.count()
+    } else {
+        0
+    };
+    assert_eq!(
+        before_count, after_count,
+        "queue-time interpolation failure should not materialize run manifests"
     );
 
     Ok(())

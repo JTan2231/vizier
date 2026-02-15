@@ -43,6 +43,26 @@ Current user-facing commands are:
 - `vizier completions`
 - `vizier release`
 
+## `vizier run --set` Expansion Surface
+
+`vizier run <flow> --set key=value` applies queue-time interpolation after template composition (`imports` + `links`) and after defaults from `[params]` are merged.
+
+- `--set` remains last-write-wins by key.
+- Phase 1 interpolation coverage includes:
+  - `nodes.args.*`
+  - artifact payload strings in `nodes.needs` and `nodes.produces.*`
+  - `nodes.locks[].key`
+  - `nodes.preconditions` custom-arg string values
+  - gate script/custom string values and gate bool fields (`approval.required`, `cicd.auto_resolve`)
+  - `nodes.retry.mode` / `nodes.retry.budget`
+  - `artifact_contracts[].id` / `artifact_contracts[].version`
+- Typed coercion is strict at queue time:
+  - bool accepts `true|false|1|0|yes|no|on|off` (case-insensitive)
+  - retry budget accepts decimal `u32` only
+  - retry mode accepts canonical enum values (for example `never`, `on_failure`, `until_gate`)
+- Unresolved placeholders or invalid coercions fail before enqueue; no run manifest or node jobs are created.
+- Phase 2 topology/identity expansion (`nodes.after`, `nodes.on.*`, template `id/version`, `imports`, `links`) is intentionally deferred.
+
 ## Canonical Companion Docs
 
 - `docs/user/prompt-config-matrix.md`
