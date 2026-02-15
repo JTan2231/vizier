@@ -46,7 +46,9 @@ merge = "file:.vizier/workflows/merge.toml"
 develop = "file:.vizier/develop.toml"
 ```
 
-Resolution order for `vizier run <flow>` is: explicit file source, configured `[commands]` alias, selector identity lookup, repo fallback files, then implicit global workflow aliases. Compatibility selectors from `[workflow.templates]` can use `template.name@vN` or legacy `template.name.vN`; unresolved compatibility selectors fall through to repo/global flow-name lookup.
+Resolution order for `vizier run <flow>` is: explicit file source, configured `[commands]` alias, then selector identity lookup (`template.name@vN`). There is no implicit repo/global `<flow>` fallback discovery.
+
+`[workflow.global_workflows]` only controls whether explicit file selectors are allowed to resolve outside the repo root under the configured global workflows directory.
 
 Workflow parameter input styles:
 

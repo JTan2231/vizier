@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-15, hard-cut compatibility removal):
+  - `vizier run <flow>` resolver is now canonical-only: explicit file/path, configured `[commands]` alias, or canonical selector (`template.name@vN`); implicit repo/global flow-name fallback discovery is removed.
+  - Legacy selector/config bridges are hard-failed with migration guidance: dotted selectors (`template.name.vN`), `[workflow.templates]`, and legacy `[agents.<scope>]`.
+  - Runtime/job bridges are hard-cut: `metadata.scope` and `workflow_capability_id` are no longer active metadata, runtime root resolution no longer falls back to `metadata.worktree_path`, and patch artifact handling is `command.patch`/`command_patch` only.
+  - Snapshot path handling is canonical-only at `.vizier/narrative/snapshot.md`; legacy `.vizier/.snapshot` alias discovery is removed.
+  - Docs and tests now target canonical-only behavior (`.vizier/workflows/*.toml`, selector `@vN`, explicit migration failures for legacy inputs).
 - Update (2026-02-15, global default workflows):
   - `vizier run` flow resolution now includes implicit global alias lookup after repo-local sources, using `[workflow.global_workflows]` (`enabled` default true, optional `dir` override) and repo-bounded path safety that only allows out-of-repo file selectors under the resolved global workflow directory.
   - Repo fallback discovery now treats `.vizier/workflows/<flow>.{toml,json}` as canonical while retaining legacy `.vizier/workflow/*` compatibility.

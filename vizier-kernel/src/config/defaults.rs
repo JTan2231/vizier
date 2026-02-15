@@ -253,13 +253,13 @@ impl Default for BackgroundConfig {
 impl Default for WorkflowTemplateConfig {
     fn default() -> Self {
         Self {
-            save: "template.save.v1".to_string(),
-            draft: "template.draft.v1".to_string(),
-            approve: "template.approve.v1".to_string(),
-            review: "template.review.v1".to_string(),
-            merge: "template.merge.v1".to_string(),
-            build_execute: "template.build_execute.v1".to_string(),
-            patch: "template.patch.v1".to_string(),
+            save: "template.save@v1".to_string(),
+            draft: "template.draft@v1".to_string(),
+            approve: "template.approve@v1".to_string(),
+            review: "template.review@v1".to_string(),
+            merge: "template.merge@v1".to_string(),
+            build_execute: "template.build_execute@v1".to_string(),
+            patch: "template.patch@v1".to_string(),
         }
     }
 }

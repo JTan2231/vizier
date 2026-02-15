@@ -222,12 +222,6 @@ fn resolve_agent_settings_with_context(
         builder.apply(&cfg.agent_defaults);
     }
 
-    if let Some(scope) = legacy_scope
-        && let Some(scope_overrides) = cfg.agent_scopes.get(&scope)
-    {
-        builder.apply(scope_overrides);
-    }
-
     if let Some(alias) = command_alias
         && let Some(alias_overrides) = cfg.agent_commands.get(alias)
     {
@@ -243,15 +237,6 @@ fn resolve_agent_settings_with_context(
     if let Some(kind) = prompt_kind {
         if let Some(default_prompt) = cfg.agent_defaults.prompt_overrides.get(&kind) {
             builder.apply_prompt_overrides(default_prompt);
-        }
-
-        if let Some(scope) = legacy_scope
-            && let Some(scope_prompt) = cfg
-                .agent_scopes
-                .get(&scope)
-                .and_then(|scope_overrides| scope_overrides.prompt_overrides.get(&kind))
-        {
-            builder.apply_prompt_overrides(scope_prompt);
         }
 
         if let Some(alias) = command_alias
@@ -467,17 +452,11 @@ fn bundled_agent_shim_dir_candidates() -> Vec<PathBuf> {
 }
 
 fn bundled_agent_command(label: &str) -> Option<PathBuf> {
-    find_first_in_shim_dirs(vec![
-        format!("{label}/agent.sh"),
-        format!("{label}.sh"), // backward compatibility
-    ])
+    find_first_in_shim_dirs(vec![format!("{label}/agent.sh")])
 }
 
 fn bundled_progress_filter(label: &str) -> Option<PathBuf> {
-    find_first_in_shim_dirs(vec![
-        format!("{label}/filter.sh"),
-        format!("{label}-filter.sh"), // backward compatibility
-    ])
+    find_first_in_shim_dirs(vec![format!("{label}/filter.sh")])
 }
 
 fn find_in_shim_dirs(filename: &str) -> Option<PathBuf> {

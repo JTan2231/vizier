@@ -44,9 +44,9 @@ fn write_stage_alias_test_config_with_agent_command(
         ".vizier/config.toml",
         &format!(
             r#"[commands]
-draft = "file:.vizier/workflow/draft.toml"
-approve = "file:.vizier/workflow/approve.toml"
-merge = "file:.vizier/workflow/merge.toml"
+draft = "file:.vizier/workflows/draft.toml"
+approve = "file:.vizier/workflows/approve.toml"
+merge = "file:.vizier/workflows/merge.toml"
 develop = "file:.vizier/develop.toml"
 
 [agents.default]
@@ -168,16 +168,16 @@ fn test_run_alias_composes_and_applies_set_overrides() -> TestResult {
 version = \"v1\"\n\
 [[imports]]\n\
 name = \"stage_one\"\n\
-path = \"workflow/stage_one.toml\"\n\
+path = \"workflows/stage_one.toml\"\n\
 [[imports]]\n\
 name = \"stage_two\"\n\
-path = \"workflow/stage_two.toml\"\n\
+path = \"workflows/stage_two.toml\"\n\
 [[links]]\n\
 from = \"stage_one\"\n\
 to = \"stage_two\"\n",
     )?;
     repo.write(
-        ".vizier/workflow/stage_one.toml",
+        ".vizier/workflows/stage_one.toml",
         "id = \"template.stage_one\"\n\
 version = \"v1\"\n\
 [params]\n\
@@ -190,7 +190,7 @@ uses = \"cap.env.shell.command.run\"\n\
 script = \"echo ${message} > compose.txt\"\n",
     )?;
     repo.write(
-        ".vizier/workflow/stage_two.toml",
+        ".vizier/workflows/stage_two.toml",
         "id = \"template.stage_two\"\n\
 version = \"v1\"\n\
 [[nodes]]\n\
@@ -256,12 +256,6 @@ script = \"test -f compose.txt\"\n",
     );
     assert_eq!(
         root_record
-            .pointer("/metadata/scope")
-            .and_then(Value::as_str),
-        Some("develop")
-    );
-    assert_eq!(
-        root_record
             .pointer("/metadata/workflow_template_selector")
             .and_then(Value::as_str),
         Some("file:.vizier/develop.toml")
@@ -276,7 +270,7 @@ fn test_run_set_expands_non_args_runtime_fields() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/set-surface.json",
+        ".vizier/set-surface.json",
         "{\n\
   \"id\": \"template.set.surface\",\n\
   \"version\": \"v1\",\n\
@@ -325,7 +319,7 @@ fn test_run_set_expands_non_args_runtime_fields() -> TestResult {
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/set-surface.json",
+            "file:.vizier/set-surface.json",
             "--set",
             "slug=beta",
             "--set",
@@ -413,13 +407,13 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
-    write_single_run_template(&repo, ".vizier/workflow/single.toml", "true")?;
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
 
     let payload = run_json(
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/single.toml",
+            "file:.vizier/workflows/single.toml",
             "--format",
             "json",
         ],
@@ -444,7 +438,7 @@ fn test_run_dynamic_named_flags_expand_to_set_overrides() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/named-flags.toml",
+        ".vizier/workflows/named-flags.toml",
         "id = \"template.named.flags\"\n\
 version = \"v1\"\n\
 [params]\n\
@@ -461,7 +455,7 @@ script = \"echo ${message} > named-flags.txt\"\n",
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/named-flags.toml",
+            "file:.vizier/workflows/named-flags.toml",
             "--message",
             "overridden",
             "--format",
@@ -492,7 +486,7 @@ fn test_run_positional_inputs_follow_cli_positional_mapping() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/positional.toml",
+        ".vizier/workflows/positional.toml",
         "id = \"template.positional\"\n\
 version = \"v1\"\n\
 [cli]\n\
@@ -512,7 +506,7 @@ script = \"echo ${first}-${second} > positional.txt\"\n",
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/positional.toml",
+            "file:.vizier/workflows/positional.toml",
             "alpha",
             "beta",
             "--format",
@@ -662,7 +656,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
 
     let checks: [(&str, &[&str]); 3] = [
         (
-            ".vizier/workflow/draft.toml",
+            ".vizier/workflows/draft.toml",
             &[
                 "version = \"v2\"",
                 "positional = [\"spec_file\", \"slug\", \"branch\"]",
@@ -679,7 +673,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             ],
         ),
         (
-            ".vizier/workflow/approve.toml",
+            ".vizier/workflows/approve.toml",
             &[
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\"]",
@@ -695,7 +689,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             ],
         ),
         (
-            ".vizier/workflow/merge.toml",
+            ".vizier/workflows/merge.toml",
             &[
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\", \"target_branch\"]",
@@ -813,18 +807,26 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
         Some("succeeded"),
         "draft persist_plan should succeed: {persist_record}"
     );
+    let persist_branch = persist_record
+        .pointer("/metadata/branch")
+        .and_then(Value::as_str)
+        .ok_or("persist_plan missing metadata.branch")?;
+    let persist_slug = persist_record
+        .pointer("/metadata/plan")
+        .and_then(Value::as_str)
+        .ok_or("persist_plan missing metadata.plan")?;
     repo.git(&[
         "show-ref",
         "--verify",
         "--quiet",
-        "refs/heads/draft/stage-draft-smoke",
+        &format!("refs/heads/{persist_branch}"),
     ])?;
     let draft_plan = Command::new("git")
         .arg("-C")
         .arg(repo.path())
         .args([
             "show",
-            "draft/stage-draft-smoke:.vizier/implementation-plans/stage-draft-smoke.md",
+            &format!("{persist_branch}:.vizier/implementation-plans/{persist_slug}.md"),
         ])
         .output()?;
     assert!(
@@ -1066,7 +1068,7 @@ fn test_run_approve_stage_stop_condition_retry_loop() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/approve-retry.toml",
+        ".vizier/workflows/approve-retry.toml",
         "id = \"template.approve.retry\"\n\
 version = \"v1\"\n\
 [params]\n\
@@ -1114,7 +1116,7 @@ uses = \"control.terminal\"\n",
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/approve-retry.toml",
+            "file:.vizier/workflows/approve-retry.toml",
             "--set",
             stop_set.as_str(),
             "--set",
@@ -1426,7 +1428,7 @@ fn test_run_set_rejects_unresolved_non_args_without_partial_enqueue() -> TestRes
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/unresolved-needs.json",
+        ".vizier/unresolved-needs.json",
         "{\n\
   \"id\": \"template.unresolved.needs\",\n\
   \"version\": \"v1\",\n\
@@ -1451,7 +1453,7 @@ fn test_run_set_rejects_unresolved_non_args_without_partial_enqueue() -> TestRes
         0
     };
 
-    let output = repo.vizier_output(&["run", "file:.vizier/workflow/unresolved-needs.json"])?;
+    let output = repo.vizier_output(&["run", "file:.vizier/unresolved-needs.json"])?;
     assert!(
         !output.status.success(),
         "run should fail on unresolved non-args placeholder"
@@ -1482,7 +1484,7 @@ fn test_run_rejects_legacy_uses_without_partial_enqueue() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/legacy.toml",
+        ".vizier/workflows/legacy.toml",
         "id = \"template.legacy\"\n\
 version = \"v1\"\n\
 [[nodes]]\n\
@@ -1498,7 +1500,7 @@ uses = \"vizier.merge.integrate\"\n",
         0
     };
 
-    let output = repo.vizier_output(&["run", "file:.vizier/workflow/legacy.toml"])?;
+    let output = repo.vizier_output(&["run", "file:.vizier/workflows/legacy.toml"])?;
     assert!(
         !output.status.success(),
         "legacy uses should fail queue-time"
@@ -1527,7 +1529,7 @@ fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
-    write_single_run_template(&repo, ".vizier/workflow/single.toml", "true")?;
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
 
     write_job_record_simple(
         &repo,
@@ -1542,7 +1544,7 @@ fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/single.toml",
+            "file:.vizier/workflows/single.toml",
             "--after",
             "dep-running",
             "--format",
@@ -1576,7 +1578,7 @@ fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/single.toml",
+            "file:.vizier/workflows/single.toml",
             "--require-approval",
             "--format",
             "json",
@@ -1621,10 +1623,10 @@ fn test_run_follow_exit_codes_cover_success_blocked_and_failed() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
 
-    write_single_run_template(&repo, ".vizier/workflow/follow-success.toml", "true")?;
-    write_single_run_template(&repo, ".vizier/workflow/follow-fail.toml", "exit 2")?;
+    write_single_run_template(&repo, ".vizier/workflows/follow-success.toml", "true")?;
+    write_single_run_template(&repo, ".vizier/workflows/follow-fail.toml", "exit 2")?;
     repo.write(
-        ".vizier/workflow/follow-blocked.toml",
+        ".vizier/workflows/follow-blocked.toml",
         "id = \"template.follow.blocked\"\n\
 version = \"v1\"\n\
 [[nodes]]\n\
@@ -1635,7 +1637,7 @@ uses = \"control.gate.approval\"\n",
 
     let success = repo.vizier_output(&[
         "run",
-        "file:.vizier/workflow/follow-success.toml",
+        "file:.vizier/workflows/follow-success.toml",
         "--follow",
     ])?;
     assert!(
@@ -1647,7 +1649,7 @@ uses = \"control.gate.approval\"\n",
 
     let blocked = repo.vizier_output(&[
         "run",
-        "file:.vizier/workflow/follow-blocked.toml",
+        "file:.vizier/workflows/follow-blocked.toml",
         "--follow",
     ])?;
     assert_eq!(
@@ -1659,7 +1661,7 @@ uses = \"control.gate.approval\"\n",
     );
 
     let failed =
-        repo.vizier_output(&["run", "file:.vizier/workflow/follow-fail.toml", "--follow"])?;
+        repo.vizier_output(&["run", "file:.vizier/workflows/follow-fail.toml", "--follow"])?;
     assert!(
         !failed.status.success(),
         "failed follow run should be non-zero"
@@ -1679,7 +1681,7 @@ fn test_run_execution_root_propagates_to_successor_nodes() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/workflow/execution-root.toml",
+        ".vizier/workflows/execution-root.toml",
         "id = \"template.execution.root\"\n\
 version = \"v1\"\n\
 [[nodes]]\n\
@@ -1702,7 +1704,7 @@ script = \"pwd\"\n",
         &repo,
         &[
             "run",
-            "file:.vizier/workflow/execution-root.toml",
+            "file:.vizier/workflows/execution-root.toml",
             "--format",
             "json",
         ],
@@ -1746,20 +1748,16 @@ script = \"pwd\"\n",
         .pointer("/metadata/execution_root")
         .and_then(Value::as_str)
         .ok_or("prepare missing execution_root metadata")?;
-    let prepare_worktree = prepare
-        .pointer("/metadata/worktree_path")
-        .and_then(Value::as_str)
-        .ok_or("prepare missing worktree_path metadata")?;
-    assert_eq!(
-        prepare_execution_root, prepare_worktree,
-        "prepare should set execution_root to prepared worktree"
-    );
     assert_eq!(
         in_worktree
             .pointer("/metadata/execution_root")
             .and_then(Value::as_str),
         Some(prepare_execution_root),
         "success-edge propagation should carry worktree execution_root to in_worktree node"
+    );
+    assert!(
+        prepare_execution_root.starts_with(".vizier/tmp-worktrees/"),
+        "prepare should set execution_root to a worktree path: {prepare_execution_root}"
     );
 
     let worktree_stdout = fs::read_to_string(

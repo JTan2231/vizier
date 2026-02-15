@@ -29,10 +29,15 @@ Legacy workflow-global flags are no longer supported.
 - `[jobs]`: cancellation and retention behavior for job operations.
 - `[commits]`: release/commit metadata formatting controls.
 - `[commands]`: alias-to-template mapping consumed by `vizier run <alias>`.
-- `[workflow.global_workflows]`: default-on implicit alias lookup for global workflow files.
-- `[workflow.templates]`: compatibility fallback for legacy selector lookups.
+- `[workflow.global_workflows]`: allowlist for explicit workflow file selectors outside the repo root.
+- `[agents.default]`, `[agents.commands.<alias>]`, `[agents.templates."<selector>"]`: agent/prompt/runtime overrides.
 
-`[workflow.templates]` accepts both canonical selectors (`template.name@vN`) and legacy dotted selectors (`template.name.vN`). When a compatibility selector does not resolve to a readable template file, `vizier run <flow>` continues to repo/global flow-name fallback.
+`vizier run <flow>` accepts only:
+- explicit `file:<path>` or direct `.toml`/`.json` path inputs,
+- configured `[commands]` aliases,
+- canonical selectors (`template.name@vN`).
+
+Legacy dotted selectors (`template.name.vN`), legacy `[workflow.templates]`, and implicit repo/global `<flow>` fallback discovery are unsupported and fail with migration guidance.
 
 Recommended stage aliases:
 
@@ -51,6 +56,8 @@ Global workflow defaults:
 enabled = true
 dir = ""  # optional override; empty = <base_config_dir>/vizier/workflows
 ```
+
+`[workflow.global_workflows]` does not add implicit alias discovery; it only allows explicit file selectors that resolve under that directory.
 
 `<base_config_dir>` resolution order: `VIZIER_CONFIG_DIR`, `XDG_CONFIG_HOME`, `APPDATA`, `HOME/.config`, `USERPROFILE/AppData/Roaming`.
 

@@ -5,7 +5,6 @@ use crate::{config, observer::CaptureGuard, vcs};
 pub const VIZIER_DIR: &str = ".vizier/";
 pub const NARRATIVE_DIR: &str = "narrative/";
 pub const SNAPSHOT_FILE: &str = "snapshot.md";
-pub const LEGACY_SNAPSHOT_FILE: &str = ".snapshot";
 pub const GLOSSARY_FILE: &str = "glossary.md";
 
 #[derive(Clone, Debug, Default)]
@@ -61,11 +60,6 @@ pub fn snapshot_path() -> PathBuf {
 
 pub fn try_snapshot_path() -> Option<PathBuf> {
     let vizier_root = try_get_vizier_dir().map(PathBuf::from)?;
-
-    if let Some(existing) = discover_snapshot_path(&vizier_root) {
-        return Some(existing);
-    }
-
     Some(vizier_root.join(NARRATIVE_DIR).join(SNAPSHOT_FILE))
 }
 
@@ -91,7 +85,7 @@ pub fn is_snapshot_file(path: &str) -> bool {
         .and_then(|n| n.to_str())
         .unwrap_or_default();
 
-    matches!(file_name, SNAPSHOT_FILE | LEGACY_SNAPSHOT_FILE)
+    file_name.eq_ignore_ascii_case(SNAPSHOT_FILE)
 }
 
 pub fn is_glossary_file(path: &str) -> bool {
@@ -105,74 +99,7 @@ pub fn is_glossary_file(path: &str) -> bool {
 }
 
 pub fn story_diff_targets() -> Vec<String> {
-    let mut targets = vec![get_narrative_dir()];
-
-    if let Some(snapshot) = try_get_vizier_dir()
-        .map(PathBuf::from)
-        .and_then(|root| discover_snapshot_path(&root))
-    {
-        let normalized = snapshot.to_string_lossy().replace('\\', "/");
-        let narrative_dir = get_narrative_dir();
-
-        if !normalized.starts_with(&narrative_dir) {
-            targets.push(normalized);
-        }
-    }
-
-    targets
-}
-
-fn discover_snapshot_path(vizier_root: &Path) -> Option<PathBuf> {
-    for candidate in [
-        vizier_root.join(NARRATIVE_DIR).join(SNAPSHOT_FILE),
-        vizier_root.join(LEGACY_SNAPSHOT_FILE),
-    ] {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    find_snapshot_anywhere(vizier_root)
-}
-
-fn find_snapshot_anywhere(vizier_root: &Path) -> Option<PathBuf> {
-    let mut stack = vec![vizier_root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => continue,
-            };
-
-            if file_type.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && matches!(name, "tmp" | "tmp-worktrees" | "tmp_worktrees" | "sessions")
-                {
-                    continue;
-                }
-
-                stack.push(path);
-                continue;
-            }
-
-            if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(is_snapshot_file)
-            {
-                return Some(path);
-            }
-        }
-    }
-
-    None
+    vec![get_narrative_dir()]
 }
 
 pub fn is_action(name: &str) -> bool {
@@ -316,46 +243,39 @@ pub fn active_tooling_for(agent: &config::AgentSettings) -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{env, fs, path::PathBuf};
     use tempfile::tempdir;
 
-    #[test]
-    fn discover_snapshot_prefers_canonical_location() {
-        let temp = tempdir().unwrap();
-        let vizier_root = temp.path().join(".vizier");
-        fs::create_dir_all(vizier_root.join("narrative")).unwrap();
-        fs::write(
-            vizier_root.join("narrative").join(SNAPSHOT_FILE),
-            "canonical",
-        )
-        .unwrap();
-        fs::write(vizier_root.join(LEGACY_SNAPSHOT_FILE), "legacy").unwrap();
+    struct CwdGuard {
+        previous: PathBuf,
+    }
 
-        let found = discover_snapshot_path(&vizier_root).unwrap();
-        assert_eq!(found, vizier_root.join("narrative").join(SNAPSHOT_FILE));
+    impl CwdGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let previous = env::current_dir().expect("current dir");
+            env::set_current_dir(path).expect("set current dir");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.previous);
+        }
     }
 
     #[test]
-    fn discover_snapshot_falls_back_to_legacy_file() {
+    fn try_snapshot_path_uses_canonical_location() {
         let temp = tempdir().unwrap();
-        let vizier_root = temp.path().join(".vizier");
-        fs::create_dir_all(&vizier_root).unwrap();
-        fs::write(vizier_root.join(LEGACY_SNAPSHOT_FILE), "legacy").unwrap();
-
-        let found = discover_snapshot_path(&vizier_root).unwrap();
-        assert_eq!(found, vizier_root.join(LEGACY_SNAPSHOT_FILE));
+        let _cwd = CwdGuard::enter(temp.path());
+        fs::create_dir_all(".vizier/narrative").unwrap();
+        let found = try_snapshot_path().expect("snapshot path");
+        assert_eq!(found, PathBuf::from(".vizier/narrative/snapshot.md"));
     }
 
     #[test]
-    fn discover_snapshot_scans_nested_paths() {
-        let temp = tempdir().unwrap();
-        let vizier_root = temp.path().join(".vizier");
-        let nested = vizier_root.join("nested/deeper");
-        fs::create_dir_all(&nested).unwrap();
-        let nested_snapshot = nested.join(SNAPSHOT_FILE);
-        fs::write(&nested_snapshot, "content").unwrap();
-
-        let found = discover_snapshot_path(&vizier_root).unwrap();
-        assert_eq!(found, nested_snapshot);
+    fn snapshot_file_detection_is_canonical_only() {
+        assert!(is_snapshot_file(".vizier/narrative/snapshot.md"));
+        assert!(!is_snapshot_file(".vizier/.snapshot"));
     }
 }

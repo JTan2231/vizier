@@ -108,7 +108,7 @@ fn test_list_includes_inline_job_commands() -> TestResult {
             "metadata": {
                 "plan": "alpha",
                 "branch": "draft/alpha",
-                "scope": "approve"
+                "command_alias": "approve"
             }
         }),
     )?;

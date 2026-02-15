@@ -216,7 +216,7 @@ fn test_jobs_approve_advances_waiting_approval_job() -> TestResult {
             "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
             "session_path": null,
             "outcome_path": null,
-            "metadata": { "scope": "approve", "plan": "approval-plan" },
+            "metadata": { "command_alias": "approve", "plan": "approval-plan" },
             "config_snapshot": null,
             "schedule": {
                 "dependencies": [
@@ -282,7 +282,7 @@ fn test_jobs_reject_marks_blocked_by_approval_and_records_reason() -> TestResult
             "stderr_path": format!(".vizier/jobs/{job_id}/stderr.log"),
             "session_path": null,
             "outcome_path": null,
-            "metadata": { "scope": "approve", "plan": "reject-plan" },
+            "metadata": { "command_alias": "approve", "plan": "reject-plan" },
             "config_snapshot": null,
             "schedule": {
                 "approval": {
@@ -939,7 +939,7 @@ fn test_jobs_schedule_dag_and_json_output() -> TestResult {
     let repo = IntegrationRepo::new()?;
     repo.git(&["branch", "present-branch"])?;
 
-    let artifact = json!({ "ask_save_patch": { "job_id": "producer-artifact" } });
+    let artifact = json!({ "command_patch": { "job_id": "producer-artifact" } });
     let producer_schedule = json!({
         "artifacts": [artifact.clone()]
     });
@@ -1333,7 +1333,7 @@ fn test_jobs_schedule_summary_orders_by_created_at_then_job_id() -> TestResult {
 fn test_jobs_schedule_job_focus_includes_neighbors() -> TestResult {
     let repo = IntegrationRepo::new()?;
 
-    let artifact = json!({ "ask_save_patch": { "job_id": "root-artifact" } });
+    let artifact = json!({ "command_patch": { "job_id": "root-artifact" } });
     let root_schedule = json!({ "artifacts": [artifact.clone()] });
     let consumer_schedule = json!({
         "dependencies": [
@@ -1397,8 +1397,8 @@ fn test_jobs_schedule_job_focus_includes_neighbors() -> TestResult {
 fn test_jobs_schedule_max_depth_limits_expansion() -> TestResult {
     let repo = IntegrationRepo::new()?;
 
-    let artifact_b = json!({ "ask_save_patch": { "job_id": "artifact-b" } });
-    let artifact_c = json!({ "ask_save_patch": { "job_id": "artifact-c" } });
+    let artifact_b = json!({ "command_patch": { "job_id": "artifact-b" } });
+    let artifact_c = json!({ "command_patch": { "job_id": "artifact-c" } });
 
     let job_c_schedule = json!({ "artifacts": [artifact_c.clone()] });
     let job_b_schedule = json!({
@@ -1786,7 +1786,7 @@ fn test_jobs_show_format_json() -> TestResult {
         "session_path": ".vizier/sessions/session.json",
         "outcome_path": format!(".vizier/jobs/{job_id}/outcome.json"),
         "metadata": {
-            "scope": "save",
+            "command_alias": "save",
             "plan": "alpha",
             "target": "main",
             "branch": "draft/alpha",
@@ -2445,7 +2445,6 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
             "session_path": ".vizier/sessions/retry/session.json",
             "outcome_path": format!(".vizier/jobs/{job_id}/outcome.json"),
             "metadata": {
-                "scope": "save",
                 "command_alias": "save",
                 "workflow_template_selector": "template.save@v1",
                 "execution_root": worktree_rel,
@@ -2470,8 +2469,7 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
     fs::write(job_dir.join("stdout.log"), "old stdout\n")?;
     fs::write(job_dir.join("stderr.log"), "old stderr\n")?;
     fs::write(job_dir.join("outcome.json"), "{}")?;
-    fs::write(job_dir.join("ask-save.patch"), "old ask patch\n")?;
-    fs::write(job_dir.join("save-input.patch"), "old save patch\n")?;
+    fs::write(job_dir.join("command.patch"), "old command patch\n")?;
 
     let output = repo
         .vizier_cmd_background()
@@ -2519,11 +2517,6 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
     assert_eq!(metadata.get("cancel_cleanup_status"), Some(&Value::Null));
     assert_eq!(metadata.get("cancel_cleanup_error"), Some(&Value::Null));
     assert_eq!(
-        metadata.get("scope"),
-        Some(&Value::String("save".to_string())),
-        "retry should preserve legacy scope metadata"
-    );
-    assert_eq!(
         metadata.get("command_alias"),
         Some(&Value::String("save".to_string())),
         "retry should preserve command_alias metadata"
@@ -2548,12 +2541,8 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
         "expected retry cleanup to remove stale outcome.json"
     );
     assert!(
-        !job_dir.join("ask-save.patch").exists(),
-        "expected retry cleanup to remove stale ask-save.patch"
-    );
-    assert!(
-        !job_dir.join("save-input.patch").exists(),
-        "expected retry cleanup to remove stale save-input.patch"
+        !job_dir.join("command.patch").exists(),
+        "expected retry cleanup to remove stale command.patch"
     );
     assert_eq!(fs::read_to_string(job_dir.join("stdout.log"))?, "");
     assert_eq!(fs::read_to_string(job_dir.join("stderr.log"))?, "");

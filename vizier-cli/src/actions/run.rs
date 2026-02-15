@@ -560,7 +560,6 @@ fn annotate_alias_metadata(
         jobs::update_job_record(jobs_root, job_id, |record| {
             let metadata = record.metadata.get_or_insert_with(Default::default);
             metadata.command_alias = Some(alias.to_string());
-            metadata.scope = Some(alias.to_string());
         })?;
     }
     Ok(())
@@ -853,7 +852,7 @@ mod tests {
     fn test_source() -> ResolvedWorkflowSource {
         ResolvedWorkflowSource {
             selector: "draft".to_string(),
-            path: std::path::PathBuf::from(".vizier/workflow/draft.toml"),
+            path: std::path::PathBuf::from(".vizier/workflows/draft.toml"),
             command_alias: None,
         }
     }

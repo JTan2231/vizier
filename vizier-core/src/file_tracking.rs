@@ -234,7 +234,6 @@ mod tests {
 
     #[test]
     fn snapshot_paths_are_treated_as_canonical_story_paths() {
-        assert!(is_canonical_story_path(".vizier/.snapshot"));
         assert!(is_canonical_story_path(".vizier/narrative/snapshot.md"));
         assert!(is_canonical_story_path("./.vizier/custom/snapshot.md"));
     }

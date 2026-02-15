@@ -103,7 +103,8 @@ agent = "codex"
             Err(err) => err,
         };
         assert!(
-            err.to_string().contains("unknown [agents.refine] section"),
+            err.to_string()
+                .contains("legacy [agents.refine] sections are unsupported"),
             "error message should mention unknown scope: {err}"
         );
     }
@@ -123,7 +124,8 @@ agent = "codex"
             Err(err) => err,
         };
         assert!(
-            err.to_string().contains("unknown [agents.ask] section"),
+            err.to_string()
+                .contains("legacy [agents.ask] sections are unsupported"),
             "error message should mention removed ask scope: {err}"
         );
     }
@@ -136,7 +138,7 @@ enabled = false
 include_snapshot = false
 include_narrative_docs = false
 
-[agents.save.documentation]
+[agents.commands.save.documentation]
 enabled = true
 include_snapshot = true
 include_narrative_docs = true
@@ -218,7 +220,7 @@ fallback_backend = "wire"
     #[test]
     fn test_fallback_backend_rejected_in_agent_scope() {
         let toml = r#"
-[agents.save]
+[agents.commands.save]
 agent = "codex"
 fallback_backend = "codex"
 "#;
@@ -260,7 +262,7 @@ backend = "gemini"
     #[test]
     fn test_backend_key_rejected_in_agent_scope() {
         let toml = r#"
-[agents.save]
+[agents.commands.save]
 backend = "gemini"
 "#;
         let mut file = NamedTempFile::new().expect("temp toml");
@@ -1086,7 +1088,7 @@ profile = "deprecated"
     }
 
     #[test]
-    fn agent_command_precedence_prefers_cli_then_scope_then_default() {
+    fn agent_command_precedence_prefers_cli_then_alias_then_default() {
         let mut cfg = Config::default();
         cfg.agent_runtime.command = vec!["base-cmd".to_string()];
 
@@ -1112,14 +1114,15 @@ profile = "deprecated"
             }),
             ..Default::default()
         };
-        cfg.agent_scopes.insert(CommandScope::Save, scoped);
+        cfg.agent_commands
+            .insert("save".parse::<CommandAlias>().expect("save alias"), scoped);
 
         let save = resolve_agent_settings(&cfg, CommandScope::Save, None)
             .expect("save scope should resolve");
         assert_eq!(
             save.agent_runtime.command,
             vec!["scoped-cmd".to_string()],
-            "scoped command should override defaults and base config"
+            "alias command should override defaults and base config"
         );
         assert_eq!(save.agent_runtime.label, "scoped");
 
@@ -1163,8 +1166,8 @@ profile = "deprecated"
             output: None,
             enable_script_wrapper: None,
         });
-        cfg.agent_scopes.insert(
-            CommandScope::Save,
+        cfg.agent_commands.insert(
+            "save".parse::<CommandAlias>().expect("save alias"),
             AgentOverrides {
                 agent_runtime: Some(AgentRuntimeOverride {
                     label: Some("ask".to_string()),
@@ -1204,8 +1207,8 @@ profile = "deprecated"
                 agent: None,
             },
         );
-        cfg.agent_scopes.insert(
-            CommandScope::Save,
+        cfg.agent_commands.insert(
+            "save".parse::<CommandAlias>().expect("save alias"),
             AgentOverrides {
                 prompt_overrides: {
                     let mut overrides = std::collections::HashMap::new();
@@ -1280,6 +1283,69 @@ text = "template scoped prompt"
     }
 
     #[test]
+    fn config_rejects_legacy_workflow_templates_table() {
+        let toml = r#"
+[workflow.templates]
+draft = "template.draft@v1"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("legacy [workflow.templates] should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("legacy [workflow.templates] is unsupported"),
+            "error should explain [workflow.templates] removal: {err}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_legacy_dotted_command_selector() {
+        let toml = r#"
+[commands]
+save = "template.save.v1"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("legacy dotted selector should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("legacy dotted selector `template.save.v1` is unsupported"),
+            "error should explain selector migration: {err}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_legacy_dotted_agents_template_key() {
+        let toml = r#"
+[agents.templates."template.save.v1"]
+agent = "codex"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes())
+            .expect("failed to write toml temp file");
+
+        let err = match load_config_from_toml(file.path().to_path_buf()) {
+            Ok(_) => panic!("legacy dotted agents template key should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("legacy dotted selector `template.save.v1` is unsupported"),
+            "error should explain template key migration: {err}"
+        );
+    }
+
+    #[test]
     fn config_rejects_empty_command_selector() {
         let toml = r#"
 [commands]
@@ -1344,24 +1410,10 @@ agent = "codex"
     }
 
     #[test]
-    fn alias_resolution_prefers_template_then_alias_then_legacy_scope() {
+    fn alias_resolution_prefers_template_then_alias() {
         let mut cfg = Config::default();
         cfg.agent_runtime.command = vec!["/bin/echo".to_string()];
         cfg.agent_runtime.label = Some("base".to_string());
-
-        cfg.agent_scopes.insert(
-            CommandScope::Save,
-            AgentOverrides {
-                agent_runtime: Some(AgentRuntimeOverride {
-                    label: Some("legacy".to_string()),
-                    command: Some(vec!["legacy-cmd".to_string()]),
-                    progress_filter: None,
-                    output: None,
-                    enable_script_wrapper: None,
-                }),
-                ..Default::default()
-            },
-        );
 
         let alias = "save".parse::<CommandAlias>().expect("parse alias");
         cfg.agent_commands.insert(
@@ -1413,13 +1465,13 @@ agent = "codex"
             .expect("resolve alias settings");
         assert_eq!(without_template.agent_runtime.label, "alias");
 
-        let compatibility = resolve_agent_settings(&cfg, CommandScope::Save, None)
-            .expect("resolve legacy scope settings");
-        assert_eq!(compatibility.agent_runtime.label, "template");
+        let save = resolve_agent_settings(&cfg, CommandScope::Save, None)
+            .expect("resolve save scope settings");
+        assert_eq!(save.agent_runtime.label, "template");
     }
 
     #[test]
-    fn alias_prompt_resolution_prefers_template_prompt_over_alias_and_scope() {
+    fn alias_prompt_resolution_prefers_template_prompt_over_alias() {
         let mut cfg = Config::default();
         cfg.agent_runtime.command = vec!["/bin/echo".to_string()];
         cfg.agent_runtime.label = Some("prompt".to_string());
@@ -1431,25 +1483,6 @@ agent = "codex"
                 agent: None,
             },
         );
-        cfg.agent_scopes.insert(
-            CommandScope::Save,
-            AgentOverrides {
-                prompt_overrides: {
-                    let mut map = std::collections::HashMap::new();
-                    map.insert(
-                        PromptKind::Documentation,
-                        PromptOverrides {
-                            text: Some("legacy".to_string()),
-                            source_path: None,
-                            agent: None,
-                        },
-                    );
-                    map
-                },
-                ..Default::default()
-            },
-        );
-
         let alias = "save".parse::<CommandAlias>().expect("parse alias");
         cfg.agent_commands.insert(
             alias.clone(),

@@ -410,7 +410,7 @@ fn list_pending_plans(opts: ListOptions) -> Result<(), Box<dyn std::error::Error
                         ListJobField::JobScope => record
                             .metadata
                             .as_ref()
-                            .and_then(|meta| meta.scope.as_ref())
+                            .and_then(|meta| meta.command_alias.as_ref())
                             .map(|scope| scope.to_string()),
                         ListJobField::JobStarted => {
                             record.started_at.map(|value| value.to_rfc3339())
@@ -527,7 +527,7 @@ fn list_pending_plans(opts: ListOptions) -> Result<(), Box<dyn std::error::Error
                         ListJobField::JobScope => record
                             .metadata
                             .as_ref()
-                            .and_then(|meta| meta.scope.as_ref())
+                            .and_then(|meta| meta.command_alias.as_ref())
                             .map(|scope| scope.to_string()),
                         ListJobField::JobStarted => {
                             record.started_at.map(|value| value.to_rfc3339())
@@ -581,7 +581,7 @@ fn list_pending_plans(opts: ListOptions) -> Result<(), Box<dyn std::error::Error
                             ListJobField::JobScope => record
                                 .metadata
                                 .as_ref()
-                                .and_then(|meta| meta.scope.as_ref())
+                                .and_then(|meta| meta.command_alias.as_ref())
                                 .map(|scope| scope.to_string()),
                             ListJobField::JobStarted => {
                                 record.started_at.map(|value| value.to_rfc3339())
@@ -647,7 +647,7 @@ mod tests {
             metadata: Some(JobMetadata {
                 plan: Some("alpha".to_string()),
                 branch: Some("draft/alpha".to_string()),
-                scope: Some("approve".to_string()),
+                command_alias: Some("approve".to_string()),
                 ..JobMetadata::default()
             }),
             config_snapshot: None,

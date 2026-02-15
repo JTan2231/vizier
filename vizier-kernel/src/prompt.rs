@@ -4,7 +4,7 @@ use crate::config::{DocumentationSettings, PromptKind, PromptSelection};
 
 // Default bounds applied when no per-agent bounds prompt is configured.
 pub const DEFAULT_AGENT_BOUNDS: &str = r#"You are operating inside the current Git repository working tree.
-- Edit files directly (especially the snapshot under `.vizier/` (default `.vizier/narrative/snapshot.md`, legacy `.vizier/.snapshot`) and any narrative docs under `.vizier/narrative/`) instead of calling Vizier CLI commands.
+- Edit files directly (especially `.vizier/narrative/snapshot.md` and other narrative docs under `.vizier/narrative/`) instead of calling Vizier CLI commands.
 - Do not invoke Vizier tools; you have full shell/file access already.
 - Stay within the repo boundaries; never access parent directories or network resources unless the prompt explicitly authorizes it.
 - Aggressively make changes--the story is continuously evolving.

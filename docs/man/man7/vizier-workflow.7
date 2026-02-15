@@ -35,11 +35,10 @@ required \fI.gitignore\fR runtime entries.
 errors in scheduler-managed environments.
 .PP
 \fBvizier run <flow>\fR resolves in this order: explicit file path, configured
-\fB[commands]\fR alias, selector identity, repo fallback files, then implicit
-global workflow aliases from \fB[workflow.global_workflows]\fR when enabled.
-Compatibility selectors from \fB[workflow.templates]\fR accept both
-\fBtemplate.name@vN\fR and legacy \fBtemplate.name.vN\fR forms; unresolved
-compatibility selectors continue to repo/global flow-name fallback.
+\fB[commands]\fR alias, then canonical selector identity (\fBtemplate.name@vN\fR).
+There is no implicit repo/global flow-name fallback.
+\fB[workflow.global_workflows]\fR only controls whether explicit file selectors
+outside the repo are allowed under the configured global workflows directory.
 .SH JOB OPERATIONS
 Use \fBvizier jobs\fR to inspect and control background job records:
 .IP "\(bu" 2

@@ -218,7 +218,7 @@ fn resolve_schedule_slug(graph: &jobs::ScheduleGraph, job_id: &str) -> Option<St
 fn resolve_schedule_name(record: &jobs::JobRecord) -> String {
     let metadata = record.metadata.as_ref();
     let scope = metadata
-        .and_then(|meta| meta.command_alias.as_deref().or(meta.scope.as_deref()))
+        .and_then(|meta| meta.command_alias.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let plan = metadata
@@ -334,7 +334,7 @@ fn format_schedule_job_line(record: &jobs::JobRecord) -> String {
 
     let mut metadata_parts = Vec::new();
     if let Some(metadata) = record.metadata.as_ref() {
-        if let Some(scope) = metadata.command_alias.as_ref().or(metadata.scope.as_ref()) {
+        if let Some(scope) = metadata.command_alias.as_ref() {
             metadata_parts.push(scope.clone());
         }
         if let Some(plan) = metadata.plan.as_ref() {
@@ -723,9 +723,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::Stderr => Some(record.stderr_path.clone()),
         JobsShowField::Session => record.session_path.clone(),
         JobsShowField::Outcome => record.outcome_path.clone(),
-        JobsShowField::Scope => {
-            metadata.and_then(|meta| meta.command_alias.clone().or(meta.scope.clone()))
-        }
+        JobsShowField::Scope => metadata.and_then(|meta| meta.command_alias.clone()),
         JobsShowField::Plan => metadata.and_then(|meta| meta.plan.clone()),
         JobsShowField::Target => metadata.and_then(|meta| meta.target.clone()),
         JobsShowField::Branch => metadata.and_then(|meta| meta.branch.clone()),
@@ -875,7 +873,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         JobsShowField::Artifacts => schedule
             .map(|sched| join_or_none(sched.artifacts.iter().map(jobs::format_artifact).collect())),
         JobsShowField::ExecutionRoot => metadata.and_then(|meta| meta.execution_root.clone()),
-        JobsShowField::Worktree => metadata.and_then(|meta| meta.worktree_path.clone()),
+        JobsShowField::Worktree => metadata.and_then(|meta| meta.execution_root.clone()),
         JobsShowField::WorktreeName => metadata.and_then(|meta| meta.worktree_name.clone()),
         JobsShowField::AgentBackend => metadata.and_then(|meta| meta.agent_backend.clone()),
         JobsShowField::AgentLabel => metadata.and_then(|meta| meta.agent_label.clone()),

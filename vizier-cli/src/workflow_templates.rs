@@ -245,29 +245,8 @@ pub(crate) fn resolve_workflow_source(
         });
     }
 
-    if let Some(path) = resolve_repo_fallback_path(project_root, flow) {
-        return Ok(ResolvedWorkflowSource {
-            selector: format!(
-                "file:{}",
-                path.strip_prefix(project_root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-            ),
-            path,
-            command_alias: None,
-        });
-    }
-
-    if let Some(path) = resolve_global_fallback_path(project_root, flow, cfg) {
-        return Ok(ResolvedWorkflowSource {
-            selector: format!("file:{}", path.display()),
-            path,
-            command_alias: None,
-        });
-    }
-
     Err(format!(
-        "unable to resolve FLOW `{flow}`; pass file:<path>, a direct .toml/.json path, a configured [commands] alias, a known template selector, or an implicit global workflow alias"
+        "unable to resolve FLOW `{flow}`; pass file:<path>, a direct .toml/.json path, a configured [commands] alias, or a canonical template selector (`template.name@vN`)"
     )
     .into())
 }
@@ -1060,6 +1039,12 @@ fn resolve_selector_path(
         return Ok(Some(path));
     }
 
+    if let Some(canonical) = normalize_legacy_selector(selector) {
+        return Err(
+            format!("legacy selector `{selector}` is unsupported; use `{canonical}`").into(),
+        );
+    }
+
     if let Some((id, version)) = parse_selector_identity(selector) {
         let matches = find_selector_file_candidates(project_root, &id, &version)?;
         if matches.len() > 1 {
@@ -1093,28 +1078,7 @@ fn parse_selector_identity(selector: &str) -> Option<(String, String)> {
         }
         return Some((id.to_string(), version.to_string()));
     }
-
-    parse_legacy_selector_identity(trimmed)
-}
-
-fn parse_legacy_selector_identity(selector: &str) -> Option<(String, String)> {
-    let version_marker = selector.rfind(".v")?;
-    let (id, version_with_dot) = selector.split_at(version_marker);
-    let id = id.trim();
-    let version = version_with_dot.trim_start_matches('.');
-
-    if id.is_empty() || version.is_empty() {
-        return None;
-    }
-    if !version.starts_with('v') {
-        return None;
-    }
-    let digits = &version[1..];
-    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-
-    Some((id.to_string(), version.to_string()))
+    None
 }
 
 fn find_selector_file_candidates(
@@ -1141,7 +1105,6 @@ fn candidate_template_paths(
     for root in [
         project_root.join(".vizier"),
         project_root.join(".vizier/workflows"),
-        project_root.join(".vizier/workflow"),
     ] {
         if !root.is_dir() {
             continue;
@@ -1194,39 +1157,6 @@ fn read_template_identity(
         }
         _ => Ok(None),
     }
-}
-
-fn resolve_repo_fallback_path(project_root: &Path, flow: &str) -> Option<PathBuf> {
-    let candidates = [
-        project_root.join(format!(".vizier/{flow}.toml")),
-        project_root.join(format!(".vizier/{flow}.json")),
-        project_root.join(format!(".vizier/workflows/{flow}.toml")),
-        project_root.join(format!(".vizier/workflows/{flow}.json")),
-        project_root.join(format!(".vizier/workflow/{flow}.toml")),
-        project_root.join(format!(".vizier/workflow/{flow}.json")),
-    ];
-
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .and_then(|path| fs::canonicalize(path).ok())
-}
-
-fn resolve_global_fallback_path(
-    project_root: &Path,
-    flow: &str,
-    cfg: &config::Config,
-) -> Option<PathBuf> {
-    let root = resolved_global_workflow_dir(cfg)?;
-    let candidates = [
-        root.join(format!("{flow}.toml")),
-        root.join(format!("{flow}.json")),
-    ];
-
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .and_then(|path| resolve_source_path(project_root, cfg, &path.to_string_lossy()).ok())
 }
 
 fn resolved_global_workflow_dir(cfg: &config::Config) -> Option<PathBuf> {
@@ -1285,6 +1215,31 @@ fn resolve_source_path(
         fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let in_repo = canonical.starts_with(&canonical_root) || canonical.starts_with(project_root);
     if in_repo {
+        let canonical_relative = canonical
+            .strip_prefix(&canonical_root)
+            .or_else(|_| canonical.strip_prefix(project_root))
+            .ok()
+            .map(|path| path.to_string_lossy().replace('\\', "/"));
+        if let Some(relative) = canonical_relative {
+            if relative.starts_with(".vizier/workflow/") {
+                return Err(
+                    "legacy workflow path `.vizier/workflow/*` is unsupported; migrate to `.vizier/workflows/*.toml`"
+                        .into(),
+                );
+            }
+            if relative.starts_with(".vizier/workflows/")
+                && canonical
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.eq_ignore_ascii_case("json"))
+                    .unwrap_or(false)
+            {
+                return Err(
+                    "legacy JSON stage workflows are unsupported; use `.vizier/workflows/*.toml`"
+                        .into(),
+                );
+            }
+        }
         return Ok(canonical);
     }
 
@@ -1311,6 +1266,22 @@ fn resolve_source_path(
         project_root.display()
     )
     .into())
+}
+
+fn normalize_legacy_selector(selector: &str) -> Option<String> {
+    let trimmed = selector.trim();
+    let version_marker = trimmed.rfind(".v")?;
+    let (id, version_with_dot) = trimmed.split_at(version_marker);
+    let id = id.trim();
+    let version = version_with_dot.trim_start_matches('.');
+    if id.is_empty() || version.is_empty() || !version.starts_with('v') {
+        return None;
+    }
+    let digits = &version[1..];
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("{id}@{version}"))
 }
 
 fn normalize_selector_from_path(project_root: &Path, raw: &str, path: &Path) -> String {
@@ -1370,16 +1341,16 @@ mod tests {
     fn composes_import_links_with_prefixed_nodes() {
         let root = tempfile::tempdir().expect("tempdir");
         write(
-            &root.path().join(".vizier/workflow/a.toml"),
+            &root.path().join(".vizier/workflows/a.toml"),
             "id = \"template.a\"\nversion = \"v1\"\n[[nodes]]\nid = \"a1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
         );
         write(
-            &root.path().join(".vizier/workflow/b.toml"),
+            &root.path().join(".vizier/workflows/b.toml"),
             "id = \"template.b\"\nversion = \"v1\"\n[[nodes]]\nid = \"b1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
         );
         write(
             &root.path().join(".vizier/develop.toml"),
-            "id = \"template.develop\"\nversion = \"v1\"\n[[imports]]\nname = \"stage_a\"\npath = \"workflow/a.toml\"\n[[imports]]\nname = \"stage_b\"\npath = \"workflow/b.toml\"\n[[links]]\nfrom = \"stage_a\"\nto = \"stage_b\"\n",
+            "id = \"template.develop\"\nversion = \"v1\"\n[[imports]]\nname = \"stage_a\"\npath = \"workflows/a.toml\"\n[[imports]]\nname = \"stage_b\"\npath = \"workflows/b.toml\"\n[[links]]\nfrom = \"stage_a\"\nto = \"stage_b\"\n",
         );
 
         let source = ResolvedWorkflowSource {
@@ -1692,7 +1663,7 @@ mode = \"${mode}\"\n",
     }
 
     #[test]
-    fn legacy_selector_identity_resolves_matching_repo_template() {
+    fn canonical_selector_identity_resolves_matching_repo_template() {
         let root = tempfile::tempdir().expect("tempdir");
         write(
             &root.path().join(".vizier/workflows/draft.toml"),
@@ -1700,60 +1671,59 @@ mode = \"${mode}\"\n",
         );
 
         let cfg = config::Config::default();
-        let resolved = resolve_workflow_source(root.path(), "draft", &cfg)
-            .expect("resolve draft via legacy selector identity");
+        let resolved = resolve_workflow_source(root.path(), "template.draft@v1", &cfg)
+            .expect("resolve draft via canonical selector identity");
 
-        assert_eq!(resolved.selector, "template.draft.v1");
+        assert_eq!(resolved.selector, "template.draft@v1");
         assert!(
             resolved.path.ends_with(".vizier/workflows/draft.toml"),
-            "legacy selector should resolve repo template identity: {}",
+            "canonical selector should resolve repo template identity: {}",
             resolved.path.display()
         );
-        assert_eq!(
-            resolved.command_alias.as_ref().map(|alias| alias.as_str()),
-            Some("draft")
-        );
+        assert!(resolved.command_alias.is_none());
     }
 
     #[test]
-    fn unresolved_legacy_alias_selector_falls_through_to_global_alias_lookup() {
+    fn legacy_dotted_selector_is_rejected_with_migration_hint() {
         let root = tempfile::tempdir().expect("tempdir");
-        let global_dir = root.path().join("global-workflows");
         write(
-            &global_dir.join("draft.toml"),
-            "id = \"template.stage.draft\"\nversion = \"v2\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+            &root.path().join(".vizier/workflows/draft.toml"),
+            "id = \"template.draft\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
         );
-
-        let mut cfg = config::Config::default();
-        cfg.workflow.global_workflows.enabled = true;
-        cfg.workflow.global_workflows.dir = global_dir.clone();
-
-        let resolved = resolve_workflow_source(root.path(), "draft", &cfg)
-            .expect("legacy alias miss should fall through to global alias lookup");
-        assert_eq!(
-            resolved.path,
-            fs::canonicalize(global_dir.join("draft.toml"))
-                .expect("canonical global draft workflow path")
+        let cfg = config::Config::default();
+        let err = resolve_workflow_source(root.path(), "template.draft.v1", &cfg)
+            .expect_err("legacy dotted selector should be rejected");
+        assert!(
+            err.to_string()
+                .contains("legacy selector `template.draft.v1` is unsupported"),
+            "unexpected error: {err}"
         );
         assert!(
-            resolved.selector.starts_with("file:"),
-            "global alias should normalize to file selector: {}",
-            resolved.selector
+            err.to_string().contains("template.draft@v1"),
+            "error should suggest canonical selector: {err}"
         );
     }
 
     #[test]
-    fn unresolved_explicit_command_alias_errors_before_flow_fallback() {
+    fn unconfigured_flow_alias_is_rejected_without_repo_or_global_fallback() {
         let root = tempfile::tempdir().expect("tempdir");
-        let global_dir = root.path().join("global-workflows");
         write(
-            &global_dir.join("draft.toml"),
-            "id = \"template.stage.draft\"\nversion = \"v2\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+            &root.path().join(".vizier/workflows/draft.toml"),
+            "id = \"template.draft\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
         );
+        let cfg = config::Config::default();
+        let err = resolve_workflow_source(root.path(), "draft", &cfg)
+            .expect_err("missing alias config should fail");
+        assert!(
+            err.to_string().contains("unable to resolve FLOW"),
+            "unexpected error: {err}"
+        );
+    }
 
+    #[test]
+    fn unresolved_explicit_command_alias_errors_without_flow_fallback() {
+        let root = tempfile::tempdir().expect("tempdir");
         let mut cfg = config::Config::default();
-        cfg.workflow.global_workflows.enabled = true;
-        cfg.workflow.global_workflows.dir = global_dir;
         cfg.commands.insert(
             config::CommandAlias::parse("draft").expect("parse draft alias"),
             "template.missing@v99"
@@ -1772,54 +1742,36 @@ mode = \"${mode}\"\n",
     }
 
     #[test]
-    fn resolves_global_workflow_alias_when_repo_sources_are_missing() {
+    fn legacy_repo_workflow_path_is_rejected() {
         let root = tempfile::tempdir().expect("tempdir");
-        let global_dir = root.path().join("global-workflows");
         write(
-            &global_dir.join("global-only.toml"),
-            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+            &root.path().join(".vizier/workflow/legacy.toml"),
+            "id = \"template.legacy\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
         );
-
-        let mut cfg = config::Config::default();
-        cfg.workflow.global_workflows.enabled = true;
-        cfg.workflow.global_workflows.dir = global_dir.clone();
-
-        let resolved = resolve_workflow_source(root.path(), "global-only", &cfg)
-            .expect("resolve global workflow alias");
-        assert_eq!(
-            resolved.path,
-            fs::canonicalize(global_dir.join("global-only.toml")).expect("canonical global path")
-        );
+        let cfg = config::Config::default();
+        let err = resolve_workflow_source(root.path(), "file:.vizier/workflow/legacy.toml", &cfg)
+            .expect_err("legacy workflow path should be rejected");
         assert!(
-            resolved.selector.starts_with("file:"),
-            "global alias should normalize to file selector: {}",
-            resolved.selector
+            err.to_string()
+                .contains("legacy workflow path `.vizier/workflow/*` is unsupported"),
+            "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn repo_fallback_precedes_global_workflow_alias() {
+    fn legacy_json_stage_workflow_is_rejected() {
         let root = tempfile::tempdir().expect("tempdir");
-        let global_dir = root.path().join("global-workflows");
         write(
-            &global_dir.join("shared.toml"),
-            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"global\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+            &root.path().join(".vizier/workflows/legacy.json"),
+            "{\n  \"id\": \"template.legacy\",\n  \"version\": \"v1\",\n  \"nodes\": [\n    {\n      \"id\": \"n1\",\n      \"kind\": \"shell\",\n      \"uses\": \"cap.env.shell.command.run\",\n      \"args\": {\"script\": \"true\"}\n    }\n  ]\n}\n",
         );
-        write(
-            &root.path().join(".vizier/workflows/shared.toml"),
-            "id = \"template.repo\"\nversion = \"v1\"\n[[nodes]]\nid = \"repo\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
-        );
-
-        let mut cfg = config::Config::default();
-        cfg.workflow.global_workflows.enabled = true;
-        cfg.workflow.global_workflows.dir = global_dir;
-
-        let resolved =
-            resolve_workflow_source(root.path(), "shared", &cfg).expect("resolve shared alias");
+        let cfg = config::Config::default();
+        let err = resolve_workflow_source(root.path(), "file:.vizier/workflows/legacy.json", &cfg)
+            .expect_err("legacy JSON stage workflow should be rejected");
         assert!(
-            resolved.path.ends_with(".vizier/workflows/shared.toml"),
-            "repo fallback should win before global fallback: {}",
-            resolved.path.display()
+            err.to_string()
+                .contains("legacy JSON stage workflows are unsupported"),
+            "unexpected error: {err}"
         );
     }
 
@@ -1861,27 +1813,6 @@ mode = \"${mode}\"\n",
             .expect_err("outside path should be rejected");
         assert!(
             err.to_string().contains("outside repository root"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn disabled_global_workflows_do_not_resolve_implicit_aliases() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let global_dir = root.path().join("global-workflows");
-        write(
-            &global_dir.join("global-only.toml"),
-            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
-        );
-
-        let mut cfg = config::Config::default();
-        cfg.workflow.global_workflows.enabled = false;
-        cfg.workflow.global_workflows.dir = global_dir;
-
-        let err = resolve_workflow_source(root.path(), "global-only", &cfg)
-            .expect_err("disabled global workflows should skip implicit alias lookup");
-        assert!(
-            err.to_string().contains("unable to resolve FLOW"),
             "unexpected error: {err}"
         );
     }

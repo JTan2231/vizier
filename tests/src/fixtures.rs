@@ -1513,7 +1513,7 @@ mod tests {
         let target = temp_root.path().join("target");
 
         fs::create_dir_all(source.join(".vizier/narrative/threads"))?;
-        fs::create_dir_all(source.join(".vizier/workflow"))?;
+        fs::create_dir_all(source.join(".vizier/workflows"))?;
         fs::create_dir_all(source.join(".vizier/prompts"))?;
         fs::create_dir_all(source.join(".vizier/tmp/cargo-target/debug"))?;
         fs::create_dir_all(source.join(".vizier/jobs/job-1"))?;
@@ -1530,7 +1530,7 @@ mod tests {
             "id = \"template.develop\"\n",
         )?;
         fs::write(
-            source.join(".vizier/workflow/draft.toml"),
+            source.join(".vizier/workflows/draft.toml"),
             "id = \"template.stage.draft\"\n",
         )?;
         fs::write(
@@ -1574,7 +1574,7 @@ mod tests {
             "expected develop workflow composition template to be copied"
         );
         assert!(
-            target.join(".vizier/workflow/draft.toml").is_file(),
+            target.join(".vizier/workflows/draft.toml").is_file(),
             "expected workflow stage templates to be copied"
         );
         assert!(

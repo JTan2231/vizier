@@ -41,7 +41,7 @@ pub enum JobArtifact {
     MergeSentinel {
         slug: String,
     },
-    #[serde(rename = "command_patch", alias = "ask_save_patch")]
+    #[serde(rename = "command_patch")]
     CommandPatch {
         job_id: String,
     },

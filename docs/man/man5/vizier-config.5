@@ -36,7 +36,7 @@ Scheduler/job controls such as cancellation cleanup behavior.
 Release and commit metadata presentation defaults.
 .TP
 \fB[workflow.global_workflows]\fR
-Controls default-on implicit global workflow alias discovery (\fI<base_config_dir>/vizier/workflows\fR by default) for \fBvizier run <flow>\fR.
+Controls whether explicit workflow file selectors outside the repo root are allowed under the configured global workflows directory (\fI<base_config_dir>/vizier/workflows\fR by default).
 .SH ENVIRONMENT
 .TP
 \fBVIZIER_CONFIG_FILE\fR
@@ -53,12 +53,6 @@ For the complete key catalogue and examples, see:
 \fIdocs/user/config-reference.md\fR
 .IP "\(bu" 2
 \fIdocs/user/prompt-config-matrix.md\fR
-.PP
-Compatibility aliases for root-level doc pointers:
-.IP "\(bu" 2
-\fIdocs/config-reference.md\fR
-.IP "\(bu" 2
-\fIdocs/prompt-config-matrix.md\fR
 .SH SEE ALSO
 .BR vizier (1),
 .BR vizier-workflow (7)

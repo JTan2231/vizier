@@ -17,8 +17,6 @@ Stage templates live at:
 - `.vizier/workflows/approve.toml`
 - `.vizier/workflows/merge.toml`
 
-Compatibility note: resolver fallback still accepts legacy `.vizier/workflow/*.toml` paths.
-
 The repository-shipped stage templates are `template.stage.*@v2`.
 
 Each template must use canonical `uses` IDs only:

@@ -251,8 +251,6 @@ pub fn compatibility_scope_for_alias(alias: &CommandAlias) -> Option<CommandScop
         "approve" => Some(CommandScope::Approve),
         "review" => Some(CommandScope::Review),
         "merge" => Some(CommandScope::Merge),
-        "patch" => Some(CommandScope::Draft),
-        "build_execute" => Some(CommandScope::Draft),
         _ => None,
     }
 }
@@ -1234,22 +1232,7 @@ impl Config {
     }
 
     pub fn template_selector_for_alias(&self, alias: &CommandAlias) -> Option<TemplateSelector> {
-        if let Some(selector) = self.commands.get(alias) {
-            return Some(selector.clone());
-        }
-
-        let legacy = match alias.as_str() {
-            "save" => Some(self.workflow.templates.save.as_str()),
-            "draft" => Some(self.workflow.templates.draft.as_str()),
-            "approve" => Some(self.workflow.templates.approve.as_str()),
-            "review" => Some(self.workflow.templates.review.as_str()),
-            "merge" => Some(self.workflow.templates.merge.as_str()),
-            "build_execute" => Some(self.workflow.templates.build_execute.as_str()),
-            "patch" => Some(self.workflow.templates.patch.as_str()),
-            _ => None,
-        }?;
-
-        TemplateSelector::parse(legacy)
+        self.commands.get(alias).cloned()
     }
 
     fn prompt_for_identity(
@@ -1294,7 +1277,7 @@ impl Config {
     fn prompt_from_agent_override(
         &self,
         requested_scope: &ProfileScope,
-        legacy_scope: Option<CommandScope>,
+        _legacy_scope: Option<CommandScope>,
         alias: Option<&CommandAlias>,
         template_selector: Option<&TemplateSelector>,
         kind: PromptKind,
@@ -1324,21 +1307,6 @@ impl Config {
                 kind,
                 alias_overrides,
                 ProfileScope::Alias(alias.clone()),
-            )
-        {
-            return Some(selection);
-        }
-
-        if let Some(scope) = legacy_scope
-            && let Some(scoped) = self
-                .agent_scopes
-                .get(&scope)
-                .and_then(|value| value.prompt_overrides.get(&kind))
-            && let Some(selection) = Self::selection_from_override(
-                requested_scope,
-                kind,
-                scoped,
-                ProfileScope::Command(scope),
             )
         {
             return Some(selection);
@@ -1470,8 +1438,8 @@ mod tests {
                 agent: None,
             },
         );
-        cfg.agent_scopes.insert(
-            CommandScope::Save,
+        cfg.agent_commands.insert(
+            CommandAlias::parse("save").expect("parse save alias"),
             AgentOverrides {
                 prompt_overrides: {
                     let mut map = HashMap::new();
@@ -1511,8 +1479,8 @@ mod tests {
                 agent: None,
             },
         );
-        cfg.agent_scopes.insert(
-            CommandScope::Save,
+        cfg.agent_commands.insert(
+            CommandAlias::parse("save").expect("parse save alias"),
             AgentOverrides {
                 prompt_overrides: {
                     let mut map = HashMap::new();
@@ -1539,7 +1507,7 @@ mod tests {
         assert_eq!(
             selection.origin,
             PromptOrigin::ScopedConfig {
-                scope: ProfileScope::Command(CommandScope::Save)
+                scope: ProfileScope::Alias(CommandAlias::parse("save").expect("parse save alias"))
             }
         );
     }

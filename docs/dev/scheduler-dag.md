@@ -9,7 +9,7 @@ job process.
 
 Stage orchestration is front-doored through `vizier run` aliases (for example
 `draft`, `approve`, `merge`) that resolve repo-local templates under
-`.vizier/workflow/*.toml` and materialize one scheduler job per template node.
+`.vizier/workflows/*.toml` and materialize one scheduler job per template node.
 
 For the full non-agent `.vizier/*` material contract (including jobs/build/sessions/sentinels
 durability and compatibility notes), see `docs/dev/vizier-material-model.md`.
@@ -41,8 +41,6 @@ exactly one such artifact as input.
   - `outcome.json` is written on finalization.
   - `command.patch` stores runtime patch outputs (`git.save_worktree_patch` and
     patch-pipeline finalize flows).
-  - `save-input.patch` remains historical compatibility material from removed
-    command families.
   - `.vizier/jobs/runs/<run_id>.json` stores queue-time workflow runtime manifests for compiled template runs.
 - **Scheduler core** lives in `vizier-core/src/jobs/mod.rs` (`scheduler_tick` and helpers).
 - **CLI jobs module** (`vizier-cli/src/jobs.rs`) is a compatibility re-export shim over `vizier_core::jobs`.
@@ -110,8 +108,7 @@ Control policies:
 
 Runtime notes:
 - handlers resolve execution root in metadata precedence order:
-  `metadata.execution_root` -> `metadata.worktree_path` (compat fallback) ->
-  repo root, and reject out-of-repo paths.
+  `metadata.execution_root` -> repo root, and reject out-of-repo paths.
 - `agent.invoke` uses resolved configured runner settings (no prompt-echo
   facade path).
 - `git.integrate_plan_branch` now embeds the loaded plan document markdown in
@@ -153,13 +150,13 @@ Safety and rewind behavior:
   `session_path`, `outcome_path`, `schedule.wait_reason`, and
   `schedule.waited_on`.
 - Retry truncates `stdout.log`/`stderr.log`, removes stale `outcome.json`,
-  `command.patch`, legacy `ask-save.patch`, `save-input.patch`, and custom-artifact markers owned by rewound jobs, and performs best-effort
+  `command.patch`, and custom-artifact markers owned by rewound jobs, and performs best-effort
   cleanup of owned temp worktrees when ownership/safety checks pass.
 - Retry cleanup first attempts libgit2 prune and falls back to `git worktree remove --force <path>`
   plus `git worktree prune --expire now` when prune fails (including known `.git/shallow` stat
   failures).
 - Retry clears `worktree_*` metadata only when cleanup is confirmed done/skipped; degraded cleanup
-  retains `worktree_name`/`worktree_path`/`worktree_owned` and records
+  retains worktree ownership metadata and records
   `retry_cleanup_status`/`retry_cleanup_error` for later recovery via retry/cancel.
 - When retry cleanup is done/skipped, `metadata.execution_root` resets to `.`
   (repo-root marker). Degraded cleanup preserves `execution_root`.
@@ -263,7 +260,7 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `plan_commits` (draft branch exists)
 - `target_branch` (target branch exists)
 - `merge_sentinel` (merge conflict sentinel exists)
-- `command_patch` (command patch file exists, or the referenced job finished `succeeded`; historical build-execute pipelines used this as a phase sentinel; legacy `ask_save_patch` records still deserialize)
+- `command_patch` (command patch file exists, or the referenced job finished `succeeded`; historical build-execute pipelines used this as a phase sentinel)
 - `custom` (`custom:<type_id>:<key>`; extension artifact kind for template-defined producer/consumer wiring)
 
 ## Failure modes and exit codes

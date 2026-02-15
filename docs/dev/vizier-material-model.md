@@ -7,7 +7,7 @@ It describes what exists under `.vizier/`, which flows own it, how state is repr
 
 In scope:
 - Workflow/scheduler/auditor artifacts that Vizier creates, updates, or consumes.
-- User-visible material for retained commands (`init`, `list`, `cd`, `clean`, `jobs`, `release`) plus historical workflow artifacts that can still exist on disk.
+- User-visible material for retained commands (`init`, `list`, `cd`, `clean`, `jobs`, `release`) plus canonical workflow artifacts.
 
 Out of scope:
 - Agent runtime internals (shim protocol details, provider request/response payloads, backend transport mechanics).
@@ -15,7 +15,7 @@ Out of scope:
 ## Canonical Entities
 
 ### 1) Narrative material
-- Paths: `.vizier/narrative/**/*.md`, plus legacy `.vizier/.snapshot` compatibility handling.
+- Paths: `.vizier/narrative/**/*.md`.
 - Primary files: `.vizier/narrative/snapshot.md`, `.vizier/narrative/glossary.md`, and thread docs under `.vizier/narrative/threads/`.
 - Owner flows: narrative upkeep, repository initialization bootstrap, and documentation maintenance.
 - Durability: durable repository material.
@@ -34,9 +34,9 @@ Out of scope:
 
 ### 2a) Stage template material
 - Paths:
-  - `.vizier/workflow/draft.toml`
-  - `.vizier/workflow/approve.toml`
-  - `.vizier/workflow/merge.toml`
+  - `.vizier/workflows/draft.toml`
+  - `.vizier/workflows/approve.toml`
+  - `.vizier/workflows/merge.toml`
   - optional composed flows such as `.vizier/develop.toml`
 - Owner flows: `vizier run <alias|selector>` queue-time template resolution and compilation.
 - Durability: durable repository orchestration contract.
@@ -76,7 +76,7 @@ Out of scope:
   - `stdout.log`
   - `stderr.log`
   - `outcome.json` (written on finalization)
-  - optional `command.patch` (legacy `ask-save.patch` still recognized for retries) and `save-input.patch`
+  - optional `command.patch`
 - Workflow-run manifests:
   - `.vizier/jobs/runs/<workflow_run_id>.json`
   - captures compiled node runtime metadata (`job_id`, `uses`, args, outcome routing, retry policy, per-outcome artifact sets) for internal `__workflow-node` execution.
@@ -103,7 +103,7 @@ Out of scope:
   - `workflow_policy_snapshot_hash`
   - `workflow_gates`
   - `execution_root` (logical runtime root marker; `.` means repo root)
-  - `worktree_path` / `worktree_name` / `worktree_owned` (worktree lifecycle ownership/context)
+  - `worktree_name` / `worktree_owned` (worktree lifecycle ownership/context)
 - Owner flows: all scheduler-backed commands.
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
 
@@ -244,10 +244,9 @@ Ephemeral operational artifacts:
 
 ## Compatibility and Reconciliation
 
-### Legacy snapshot alias vs snapshot-first narrative posture
-- Snapshot-first posture treats `.vizier/narrative/snapshot.md` as canonical.
-- Compatibility still exists for legacy `.vizier/.snapshot` discovery/path checks in core utilities and file tracking.
-- Operational guidance: new updates should target `.vizier/narrative/snapshot.md`; legacy alias exists for backward compatibility, not as preferred storage.
+### Snapshot path posture
+- Snapshot posture is canonical-only: `.vizier/narrative/snapshot.md`.
+- Legacy `.vizier/.snapshot` discovery/path compatibility is removed.
 
 ### Plan doc durability vs merge-time plan removal
 - Plan docs remain durable workflow artifacts in retained plan-visibility surfaces.

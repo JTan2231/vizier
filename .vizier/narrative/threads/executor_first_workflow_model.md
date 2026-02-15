@@ -20,7 +20,7 @@ Desired behavior (Product-level)
 Acceptance criteria
 - Validator rejects unknown implicit `uses` labels and kind/class mismatches with deterministic errors.
 - Validator coverage confirms legacy `vizier.*` and legacy non-env `cap.*` labels are hard-rejected.
-- Maintained `.vizier/workflow/*.toml` artifacts express env/agent/control boundaries explicitly without reintroducing removed top-level workflow commands.
+- Maintained `.vizier/workflows/*.toml` artifacts express env/agent/control boundaries explicitly without reintroducing removed top-level workflow commands.
 - `vizier jobs show` surfaces executor identity fields for new records while remaining tolerant of historical records that still include legacy capability metadata.
 
 Status
@@ -56,9 +56,9 @@ Status
 
 Pointers
 - `vizier-kernel/src/workflow_template.rs`
-- `.vizier/workflow/draft.toml`
-- `.vizier/workflow/approve.toml`
-- `.vizier/workflow/merge.toml`
+- `.vizier/workflows/draft.toml`
+- `.vizier/workflows/approve.toml`
+- `.vizier/workflows/merge.toml`
 - `.vizier/develop.toml`
 - `vizier-core/src/jobs/mod.rs`
 - `vizier-cli/src/jobs.rs` (compatibility shim)

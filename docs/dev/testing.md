@@ -29,19 +29,19 @@ Keep overlap minimal: rules should be validated in spec tests, and integration t
 ## Config migration matrix
 Scope-decoupling work (alias/template identity) should keep integration coverage in three config modes:
 
-- `tests/fixtures/config/legacy-scope-only.toml`: legacy `[agents.<scope>]` compatibility path.
+- `tests/fixtures/config/legacy-scope-only.toml`: negative path; legacy `[agents.<scope>]` must fail with migration guidance.
 - `tests/fixtures/config/alias-template-only.toml`: new `[commands]`, `[agents.commands.<alias>]`, and `[agents.templates."<selector>"]` path.
 - `tests/fixtures/config/mixed-precedence.toml`: explicit precedence conflicts and CLI override precedence checks.
 
 When touching config resolution or reporting:
 
 - Update `tests/src/plan.rs` assertions for `vizier plan --json` under `commands.<alias>.*` fields.
-- Ensure precedence checks cover: CLI override -> template override -> alias override -> legacy scope bridge -> default.
-- Keep fallback coverage for aliases that do not have explicit template mappings.
+- Ensure precedence checks cover: CLI override -> template override -> alias override -> default.
+- Keep rejection coverage for unsupported dotted selectors and legacy config tables.
 
 When touching scheduler metadata:
 
-- Keep dual-write assertions for migration windows (`metadata.scope` plus `metadata.command_alias`/`metadata.workflow_template_selector`).
+- Keep canonical metadata assertions (`metadata.command_alias`, `metadata.workflow_template_selector`, `metadata.execution_root`) and ensure legacy-only records fail where required by the runtime contract.
 - Verify retry/status/show flows preserve alias/template metadata while clearing runtime-only fields.
 - Verify `jobs show` prioritizes executor-first fields (`workflow_executor_class`, `workflow_executor_operation`, `workflow_control_policy`) and that historical records with legacy fields still deserialize safely.
 - Include runtime metadata assertions for workflow-node jobs (`workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, `workflow_payload_refs`, `execution_root`) and ensure retry rewind clears outcome/payload while bumping node attempt counters.

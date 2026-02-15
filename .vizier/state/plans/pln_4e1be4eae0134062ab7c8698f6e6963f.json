@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_4e1be4eae0134062ab7c8698f6e6963f",
+  "slug": "migrate",
+  "branch": "draft/migrate",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_f1101e0c0fd3489cb6d22ceaf635bccb-persist_plan",
+  "status": "proposed",
+  "summary": "# MIGRATE: Hard-Cut Compatibility Removal Spec",
+  "created_at": "2026-02-15T18:57:02.120435+00:00",
+  "updated_at": "2026-02-15T18:57:02.120435+00:00",
+  "job_ids": {
+    "persist": "wf-run_f1101e0c0fd3489cb6d22ceaf635bccb-persist_plan"
+  }
+}
