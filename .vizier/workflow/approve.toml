@@ -1,21 +1,113 @@
 id = "template.stage.approve"
-version = "v1"
+version = "v2"
 
 [params]
-assume_yes = "true"
-commit_mode = "auto"
-push_after = "false"
+branch = ""
+commit_message = "chore: workflow stage commit"
+prompt_file = ""
+prompt_text = ""
+slug = ""
 stop_condition_retries = "3"
 stop_condition_script = ""
 
+[[artifact_contracts]]
+id = "prompt_text"
+version = "v1"
+
 [[nodes]]
-id = "approve_apply_once"
+id = "worktree_prepare"
 kind = "builtin"
-uses = "vizier.approve.apply_once"
+uses = "cap.env.builtin.worktree.prepare"
 
 [nodes.args]
-assume_yes = "${assume_yes}"
-commit_mode = "${commit_mode}"
-push_after = "${push_after}"
-stop_condition_retries = "${stop_condition_retries}"
-stop_condition_script = "${stop_condition_script}"
+branch = "${branch}"
+purpose = "stage-approve"
+
+[nodes.on]
+succeeded = ["resolve_prompt"]
+
+[[nodes]]
+id = "resolve_prompt"
+kind = "builtin"
+uses = "cap.env.builtin.prompt.resolve"
+
+[nodes.args]
+prompt_file = "${prompt_file}"
+prompt_text = "${prompt_text}"
+
+[nodes.produces]
+succeeded = [{ custom = { type_id = "prompt_text", key = "approve_main" } }]
+
+[nodes.on]
+succeeded = ["invoke_agent"]
+
+[[nodes.after]]
+node_id = "worktree_prepare"
+
+[[nodes]]
+id = "invoke_agent"
+kind = "agent"
+uses = "cap.agent.invoke"
+
+[[nodes.needs]]
+custom = { type_id = "prompt_text", key = "approve_main" }
+
+[nodes.on]
+succeeded = ["stage_commit"]
+
+[[nodes.after]]
+node_id = "resolve_prompt"
+
+[[nodes]]
+id = "stage_commit"
+kind = "builtin"
+uses = "cap.env.builtin.git.stage_commit"
+
+[nodes.args]
+message = "${commit_message}"
+
+[[nodes.after]]
+node_id = "invoke_agent"
+
+[nodes.on]
+succeeded = ["stop_gate"]
+
+[[nodes]]
+id = "stop_gate"
+kind = "gate"
+uses = "control.gate.stop_condition"
+
+[[nodes.gates]]
+kind = "script"
+script = "${stop_condition_script}"
+policy = "retry"
+
+[nodes.retry]
+mode = "until_gate"
+budget = "${stop_condition_retries}"
+
+[[nodes.after]]
+node_id = "stage_commit"
+
+[nodes.on]
+succeeded = ["worktree_cleanup"]
+failed = ["stage_commit"]
+
+[[nodes]]
+id = "worktree_cleanup"
+kind = "builtin"
+uses = "cap.env.builtin.worktree.cleanup"
+
+[nodes.on]
+succeeded = ["terminal"]
+
+[[nodes.after]]
+node_id = "stop_gate"
+
+[[nodes]]
+id = "terminal"
+kind = "gate"
+uses = "control.terminal"
+
+[[nodes.after]]
+node_id = "worktree_cleanup"

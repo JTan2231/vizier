@@ -1,21 +1,122 @@
 id = "template.stage.draft"
-version = "v1"
+version = "v2"
 
 [params]
-commit_mode = "auto"
-name_override = "${slug}"
+branch = ""
+commit_message = "chore: workflow stage commit"
+prompt_file = ""
+prompt_text = ""
+slug = ""
 spec_file = ""
 spec_source = "inline"
 spec_text = ""
 
+[[artifact_contracts]]
+id = "prompt_text"
+version = "v1"
+
 [[nodes]]
-id = "draft_generate_plan"
+id = "worktree_prepare"
 kind = "builtin"
-uses = "vizier.draft.generate_plan"
+uses = "cap.env.builtin.worktree.prepare"
 
 [nodes.args]
-commit_mode = "${commit_mode}"
-name_override = "${name_override}"
+branch = "${branch}"
+purpose = "stage-draft"
+
+[nodes.on]
+succeeded = ["resolve_prompt"]
+
+[[nodes]]
+id = "resolve_prompt"
+kind = "builtin"
+uses = "cap.env.builtin.prompt.resolve"
+
+[nodes.args]
+prompt_file = "${prompt_file}"
+prompt_text = "${prompt_text}"
+
+[nodes.produces]
+succeeded = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
+
+[nodes.on]
+succeeded = ["invoke_agent"]
+
+[[nodes.after]]
+node_id = "worktree_prepare"
+
+[[nodes]]
+id = "invoke_agent"
+kind = "agent"
+uses = "cap.agent.invoke"
+
+[[nodes.needs]]
+custom = { type_id = "prompt_text", key = "draft_main" }
+
+[nodes.on]
+succeeded = ["persist_plan"]
+
+[[nodes.after]]
+node_id = "resolve_prompt"
+
+[[nodes]]
+id = "persist_plan"
+kind = "builtin"
+uses = "cap.env.builtin.plan.persist"
+
+[nodes.args]
+branch = "${branch}"
+name_override = "${slug}"
 spec_file = "${spec_file}"
 spec_source = "${spec_source}"
 spec_text = "${spec_text}"
+
+[nodes.on]
+succeeded = ["stage_commit"]
+
+[[nodes.after]]
+node_id = "invoke_agent"
+
+[[nodes]]
+id = "stage_commit"
+kind = "builtin"
+uses = "cap.env.builtin.git.stage_commit"
+
+[nodes.args]
+message = "${commit_message}"
+
+[[nodes.after]]
+node_id = "persist_plan"
+
+[nodes.on]
+succeeded = ["stop_gate"]
+
+[[nodes]]
+id = "stop_gate"
+kind = "gate"
+uses = "control.gate.stop_condition"
+
+[nodes.on]
+succeeded = ["worktree_cleanup"]
+
+[[nodes.after]]
+node_id = "stage_commit"
+
+[[nodes]]
+id = "worktree_cleanup"
+kind = "builtin"
+uses = "cap.env.builtin.worktree.cleanup"
+
+[nodes.on]
+succeeded = ["terminal"]
+
+[[nodes.after]]
+node_id = "stop_gate"
+
+[[nodes]]
+id = "terminal"
+kind = "gate"
+uses = "control.terminal"
+
+[[nodes.after]]
+node_id = "worktree_cleanup"

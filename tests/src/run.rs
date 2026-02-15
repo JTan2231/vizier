@@ -426,6 +426,68 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
 }
 
 #[test]
+fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let checks: [(&str, &[&str]); 3] = [
+        (
+            ".vizier/workflow/draft.toml",
+            &[
+                "version = \"v2\"",
+                "cap.env.builtin.worktree.prepare",
+                "cap.env.builtin.prompt.resolve",
+                "cap.agent.invoke",
+                "cap.env.builtin.plan.persist",
+                "cap.env.builtin.git.stage_commit",
+            ],
+        ),
+        (
+            ".vizier/workflow/approve.toml",
+            &[
+                "version = \"v2\"",
+                "cap.env.builtin.worktree.prepare",
+                "cap.env.builtin.prompt.resolve",
+                "cap.agent.invoke",
+                "cap.env.builtin.git.stage_commit",
+                "control.gate.stop_condition",
+            ],
+        ),
+        (
+            ".vizier/workflow/merge.toml",
+            &[
+                "version = \"v2\"",
+                "cap.env.builtin.git.integrate_plan_branch",
+                "control.gate.conflict_resolution",
+                "control.gate.cicd",
+                "control.terminal",
+            ],
+        ),
+    ];
+
+    for (relative_path, expected_tokens) in checks {
+        let path = repo.path().join(relative_path);
+        let contents = fs::read_to_string(&path)?;
+        assert!(
+            !contents.contains("uses = \"vizier."),
+            "legacy uses label should not appear in {}:\n{}",
+            path.display(),
+            contents
+        );
+        for token in expected_tokens {
+            assert!(
+                contents.contains(token),
+                "expected token `{token}` in {}:\n{}",
+                path.display(),
+                contents
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;

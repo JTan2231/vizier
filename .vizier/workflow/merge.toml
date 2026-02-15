@@ -1,35 +1,66 @@
 id = "template.stage.merge"
-version = "v1"
+version = "v2"
 
 [params]
-assume_yes = "true"
+branch = ""
 cicd_auto_resolve = "false"
-cicd_retries = "1"
+cicd_auto_resolve_script = ""
 cicd_script = ""
-commit_mode = "auto"
-complete_conflict = "false"
 conflict_auto_resolve = "false"
-conflict_auto_resolve_source = "workflow template"
 delete_branch = "true"
-push_after = "false"
+merge_message = ""
+slug = ""
 squash = "true"
-squash_mainline = ""
+target_branch = ""
 
 [[nodes]]
 id = "merge_integrate"
 kind = "builtin"
-uses = "vizier.merge.integrate"
+uses = "cap.env.builtin.git.integrate_plan_branch"
 
 [nodes.args]
-assume_yes = "${assume_yes}"
-cicd_auto_resolve = "${cicd_auto_resolve}"
-cicd_retries = "${cicd_retries}"
-cicd_script = "${cicd_script}"
-commit_mode = "${commit_mode}"
-complete_conflict = "${complete_conflict}"
-conflict_auto_resolve = "${conflict_auto_resolve}"
-conflict_auto_resolve_source = "${conflict_auto_resolve_source}"
+branch = "${branch}"
 delete_branch = "${delete_branch}"
-push_after = "${push_after}"
+message = "${merge_message}"
+slug = "${slug}"
 squash = "${squash}"
-squash_mainline = "${squash_mainline}"
+target_branch = "${target_branch}"
+
+[nodes.on]
+succeeded = ["merge_gate_cicd"]
+blocked = ["merge_conflict_resolution"]
+
+[[nodes]]
+id = "merge_conflict_resolution"
+kind = "gate"
+uses = "control.gate.conflict_resolution"
+
+[nodes.args]
+auto_resolve = "${conflict_auto_resolve}"
+slug = "${slug}"
+
+[nodes.on]
+succeeded = ["merge_integrate"]
+
+[[nodes]]
+id = "merge_gate_cicd"
+kind = "gate"
+uses = "control.gate.cicd"
+
+[nodes.args]
+auto_resolve = "${cicd_auto_resolve}"
+auto_resolve_script = "${cicd_auto_resolve_script}"
+
+[[nodes.gates]]
+kind = "cicd"
+script = "${cicd_script}"
+auto_resolve = false
+policy = "retry"
+
+[nodes.on]
+succeeded = ["terminal"]
+
+[[nodes]]
+id = "terminal"
+kind = "gate"
+uses = "control.terminal"

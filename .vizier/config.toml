@@ -4,4 +4,7 @@ auto_resolve = true
 retries = 2
 
 [commands]
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
 develop = "file:.vizier/develop.toml"

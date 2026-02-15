@@ -17,6 +17,8 @@ Stage templates live at:
 - `.vizier/workflow/approve.toml`
 - `.vizier/workflow/merge.toml`
 
+The repository-shipped stage templates are `template.stage.*@v2`.
+
 Each template must use canonical `uses` IDs only:
 
 - executor nodes: `cap.env.*`, `cap.agent.invoke`
@@ -37,9 +39,9 @@ merge = "file:.vizier/workflow/merge.toml"
 
 ## Canonical Stage Shapes
 
-- `draft`: `worktree.prepare -> prompt.resolve -> agent.invoke -> plan.persist -> git.stage_commit -> worktree.cleanup -> terminal`
-- `approve`: `worktree.prepare -> prompt.resolve -> agent.invoke -> git.stage_commit -> gate.stop_condition -> worktree.cleanup -> terminal`
-- `merge`: `git.integrate_plan_branch` plus optional `gate.conflict_resolution` and `gate.cicd` routing before `terminal`
+- `draft`: `worktree_prepare -> resolve_prompt -> invoke_agent -> persist_plan -> stage_commit -> stop_gate -> worktree_cleanup -> terminal`
+- `approve`: `worktree_prepare -> resolve_prompt -> invoke_agent -> stage_commit -> stop_gate -> worktree_cleanup -> terminal`
+- `merge`: `merge_integrate -> merge_gate_cicd -> terminal`, with `merge_integrate.on.blocked -> merge_conflict_resolution`
 
 ## Operational Notes
 
