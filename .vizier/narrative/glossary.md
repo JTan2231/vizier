@@ -8,7 +8,7 @@
 - **Code state**: Snapshot slice for user-visible behavior, interfaces, and constraints.
 - **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
-- **Current worktree evidence**: Snapshot code-state line that records the latest local `draft/*` branch inventory plus on-disk and deleted `.vizier/implementation-plans/*.md` evidence for the active worktree slug.
+- **Current worktree evidence**: Snapshot code-state line that records the latest local `draft/*` branch inventory plus on-disk and tracked-deletion `.vizier/implementation-plans/*.md` evidence for the active worktree slug (including explicit no-deletion states).
 - **Worktree evidence label**: Parenthetical in the current-worktree-evidence snapshot bullet (`draft/<slug>`, `revalidated <date>`) that identifies which live branch inventory the evidence was sampled from.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.

@@ -24,6 +24,17 @@ Each template must use canonical `uses` IDs only:
 
 Legacy `vizier.*` labels fail queue-time validation before any jobs or run manifests are created.
 
+## Alias Mapping
+
+Stage aliases should be mapped in `.vizier/config.toml` so `vizier run <alias>` resolves to repo-local stage files:
+
+```toml
+[commands]
+draft = "file:.vizier/workflow/draft.toml"
+approve = "file:.vizier/workflow/approve.toml"
+merge = "file:.vizier/workflow/merge.toml"
+```
+
 ## Canonical Stage Shapes
 
 - `draft`: `worktree.prepare -> prompt.resolve -> agent.invoke -> plan.persist -> git.stage_commit -> worktree.cleanup -> terminal`
