@@ -466,27 +466,33 @@ pub(crate) struct IntegrationRepo {
 
 impl IntegrationRepo {
     pub(crate) fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_binary_and_mock(vizier_binary().clone(), true)
+        Self::with_binary_and_mock(vizier_binary().clone(), true, false)
+    }
+
+    pub(crate) fn new_serial() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_binary_and_mock(vizier_binary().clone(), true, true)
     }
 
     pub(crate) fn new_without_mock() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_binary_and_mock(vizier_binary().clone(), false)
+        Self::with_binary_and_mock(vizier_binary().clone(), false, false)
     }
 
     fn with_binary_and_mock(
         bin: PathBuf,
         mock_agent: bool,
+        force_serial: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let template = template_repo().clone();
-        let serial_guard = if env_flag_enabled(env::var(SERIAL_TEST_ENV).ok().as_deref()) {
-            Some(
-                integration_test_lock()
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            )
-        } else {
-            None
-        };
+        let serial_guard =
+            if force_serial || env_flag_enabled(env::var(SERIAL_TEST_ENV).ok().as_deref()) {
+                Some(
+                    integration_test_lock()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                )
+            } else {
+                None
+            };
         ensure_fixture_temp_hygiene();
         let dir = tempfile::Builder::new()
             .prefix(REPO_ROOT_PREFIX)

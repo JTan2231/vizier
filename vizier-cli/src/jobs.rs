@@ -2893,6 +2893,213 @@ fn has_unmerged_paths(execution_root: &Path) -> bool {
     }
 }
 
+fn merge_plan_slug_from_context(
+    source_branch: &str,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Option<String> {
+    first_non_empty_arg(&node.args, &["slug", "plan"])
+        .or_else(|| record.metadata.as_ref().and_then(|meta| meta.plan.clone()))
+        .or_else(|| {
+            source_branch
+                .strip_prefix("draft/")
+                .map(|value| value.to_string())
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn merge_commit_message_with_plan(subject: &str, plan_document: Option<&str>) -> String {
+    let subject = subject.trim();
+    match plan_document.map(str::trim) {
+        Some(plan) if !plan.is_empty() => format!("{subject}\n\n{plan}"),
+        _ => subject.to_string(),
+    }
+}
+
+fn git_output_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    }
+}
+
+fn git_blob_exists_at_revision(
+    execution_root: &Path,
+    revision: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("cat-file")
+        .arg("-e")
+        .arg(revision)
+        .status()?;
+    Ok(status.success())
+}
+
+fn git_show_blob_at_revision(
+    execution_root: &Path,
+    revision: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("show")
+        .arg(revision)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "git show `{revision}` failed: {}",
+            git_output_detail(&output)
+        )
+        .into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn load_plan_document_for_merge_message(
+    execution_root: &Path,
+    source_branch: &str,
+    slug: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let plan_rel = crate::plan::plan_rel_path(slug)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let tip_revision = format!("{source_branch}:{plan_rel}");
+    if git_blob_exists_at_revision(execution_root, &tip_revision)? {
+        return Ok(Some(git_show_blob_at_revision(
+            execution_root,
+            &tip_revision,
+        )?));
+    }
+
+    let rev_list = Command::new("git")
+        .arg("-C")
+        .arg(execution_root)
+        .arg("rev-list")
+        .arg(source_branch)
+        .arg("--")
+        .arg(&plan_rel)
+        .output()?;
+    if !rev_list.status.success() {
+        return Err(format!(
+            "git rev-list `{source_branch}` for `{plan_rel}` failed: {}",
+            git_output_detail(&rev_list)
+        )
+        .into());
+    }
+
+    for oid in String::from_utf8_lossy(&rev_list.stdout).lines() {
+        let revision = format!("{oid}:{plan_rel}");
+        if !git_blob_exists_at_revision(execution_root, &revision)? {
+            continue;
+        }
+        return Ok(Some(git_show_blob_at_revision(execution_root, &revision)?));
+    }
+    Ok(None)
+}
+
+fn ensure_source_plan_doc_removed_before_merge(
+    execution_root: &Path,
+    source_branch: &str,
+    target_branch: Option<&str>,
+    slug: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plan_rel = crate::plan::plan_rel_path(slug)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let tip_revision = format!("{source_branch}:{plan_rel}");
+    if !git_blob_exists_at_revision(execution_root, &tip_revision)? {
+        return Ok(());
+    }
+
+    let starting_branch = current_branch_name(execution_root);
+    if starting_branch.as_deref() != Some(source_branch) {
+        let checkout = Command::new("git")
+            .arg("-C")
+            .arg(execution_root)
+            .arg("checkout")
+            .arg(source_branch)
+            .output()?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "git checkout `{source_branch}` failed while preparing plan doc cleanup: {}",
+                git_output_detail(&checkout)
+            )
+            .into());
+        }
+    }
+
+    let restore_branch = target_branch
+        .filter(|target| *target != source_branch)
+        .map(|target| target.to_string())
+        .or_else(|| {
+            starting_branch
+                .as_ref()
+                .filter(|name| name.as_str() != source_branch)
+                .cloned()
+        });
+
+    let cleanup_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let rm = Command::new("git")
+            .arg("-C")
+            .arg(execution_root)
+            .arg("rm")
+            .arg("-f")
+            .arg("--")
+            .arg(&plan_rel)
+            .output()?;
+        if !rm.status.success() {
+            return Err(format!(
+                "git rm `{plan_rel}` failed on `{source_branch}`: {}",
+                git_output_detail(&rm)
+            )
+            .into());
+        }
+
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(execution_root)
+            .arg("commit")
+            .arg("-m")
+            .arg(format!("chore: remove implementation plan doc {slug}"))
+            .output()?;
+        if !commit.status.success() {
+            return Err(format!(
+                "git commit plan cleanup failed on `{source_branch}`: {}",
+                git_output_detail(&commit)
+            )
+            .into());
+        }
+
+        Ok(())
+    })();
+
+    if let Some(branch) = restore_branch.as_ref() {
+        let checkout = Command::new("git")
+            .arg("-C")
+            .arg(execution_root)
+            .arg("checkout")
+            .arg(branch)
+            .output()?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "git checkout `{branch}` failed after plan doc cleanup: {}",
+                git_output_detail(&checkout)
+            )
+            .into());
+        }
+    }
+
+    cleanup_result
+}
+
 fn parse_files_json(
     node: &WorkflowRuntimeNodeManifest,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -3638,6 +3845,10 @@ fn execute_workflow_executor(
             let delete_branch = bool_arg(&node.args, "delete_branch").unwrap_or(false);
             let slug = workflow_slug_from_record(record, node);
             let sentinel = merge_sentinel_path(project_root, &slug);
+            let merge_slug =
+                merge_plan_slug_from_context(&source_branch, record, node).unwrap_or(slug.clone());
+            let merge_subject = first_non_empty_arg(&node.args, &["message"])
+                .unwrap_or_else(|| format!("feat: merge plan {merge_slug}"));
 
             if let Some(target) = target_branch.as_ref() {
                 let current = current_branch_name(&execution_root);
@@ -3660,6 +3871,37 @@ fn execute_workflow_executor(
                 }
             }
 
+            let plan_document = match load_plan_document_for_merge_message(
+                &execution_root,
+                &source_branch,
+                &merge_slug,
+            ) {
+                Ok(doc) => doc,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.integrate_plan_branch could not load plan document: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            if plan_document.is_some()
+                && let Err(err) = ensure_source_plan_doc_removed_before_merge(
+                    &execution_root,
+                    &source_branch,
+                    target_branch.as_deref(),
+                    &merge_slug,
+                )
+            {
+                return Ok(WorkflowNodeResult::failed(
+                    format!(
+                        "git.integrate_plan_branch failed removing plan doc from source branch: {err}"
+                    ),
+                    Some(1),
+                ));
+            }
+            let merge_message =
+                merge_commit_message_with_plan(&merge_subject, plan_document.as_deref());
+
             let merge_output = if squash {
                 Command::new("git")
                     .arg("-C")
@@ -3674,7 +3916,8 @@ fn execute_workflow_executor(
                     .arg(&execution_root)
                     .arg("merge")
                     .arg("--no-ff")
-                    .arg("--no-edit")
+                    .arg("-m")
+                    .arg(&merge_message)
                     .arg(&source_branch)
                     .output()?
             };
@@ -3726,19 +3969,12 @@ fn execute_workflow_executor(
                     .arg("--quiet")
                     .status()?;
                 if !diff.success() {
-                    let message =
-                        first_non_empty_arg(&node.args, &["message"]).unwrap_or_else(|| {
-                            format!(
-                                "feat: merge plan {}",
-                                workflow_slug_from_record(record, node)
-                            )
-                        });
                     let commit = Command::new("git")
                         .arg("-C")
                         .arg(&execution_root)
                         .arg("commit")
                         .arg("-m")
-                        .arg(&message)
+                        .arg(&merge_message)
                         .status()?;
                     if !commit.success() {
                         return Ok(WorkflowNodeResult::failed(
@@ -9091,6 +9327,101 @@ mod tests {
                 .as_deref(),
             Some("from slug source\n"),
             "expected merge to include source branch changes"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_integrate_plan_branch_embeds_plan_and_cleans_source_plan_doc() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        let target = current_branch_name(project_root).expect("target branch");
+        let slug = "runtime-plan-embed";
+        let source_branch = format!("draft/{slug}");
+        let plan_rel = format!(".vizier/implementation-plans/{slug}.md");
+        let plan_doc = format!(
+            "---\nplan: {slug}\nbranch: {source_branch}\n---\n\n## Operator Spec\nRuntime merge test\n\n## Implementation Plan\n- Runtime merge step\n"
+        );
+
+        let checkout = git_status(project_root, &["checkout", "-b", &source_branch]);
+        assert!(checkout.success(), "create draft branch");
+        fs::create_dir_all(project_root.join(".vizier/implementation-plans"))
+            .expect("create plan dir");
+        fs::write(project_root.join(&plan_rel), plan_doc).expect("write plan doc");
+        fs::write(
+            project_root.join("runtime-plan-merge.txt"),
+            "from runtime plan merge\n",
+        )
+        .expect("write source file");
+        git_commit_all(project_root, "feat: prepare runtime plan merge");
+        let checkout_target = git_status(project_root, &["checkout", &target]);
+        assert!(checkout_target.success(), "checkout target");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-integrate-plan-embed",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            Some(JobMetadata {
+                plan: Some(slug.to_string()),
+                branch: Some(source_branch.clone()),
+                target: Some(target.clone()),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-integrate-plan-embed").expect("record");
+        let node = runtime_executor_node(
+            "integrate",
+            "job-integrate-plan-embed",
+            "cap.env.builtin.git.integrate_plan_branch",
+            "git.integrate_plan_branch",
+            BTreeMap::from([
+                ("branch".to_string(), source_branch.clone()),
+                ("slug".to_string(), slug.to_string()),
+                ("target_branch".to_string(), target),
+                ("squash".to_string(), "true".to_string()),
+                ("delete_branch".to_string(), "false".to_string()),
+            ]),
+        );
+        let result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("integrate");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+
+        let head = git_output(project_root, &["log", "-1", "--pretty=%B"]);
+        assert!(head.status.success(), "read head commit message");
+        let message = String::from_utf8_lossy(&head.stdout);
+        assert!(
+            message.contains("feat: merge plan runtime-plan-embed"),
+            "expected merge subject in message: {message}"
+        );
+        assert!(
+            message.contains("## Implementation Plan"),
+            "expected plan markdown embedded in merge message: {message}"
+        );
+        assert!(
+            message.contains("- Runtime merge step"),
+            "expected plan steps embedded in merge message: {message}"
+        );
+
+        let draft_tip = repo
+            .find_branch(&source_branch, BranchType::Local)
+            .expect("source branch exists")
+            .get()
+            .peel_to_commit()
+            .expect("source tip");
+        assert!(
+            draft_tip
+                .tree()
+                .expect("source tree")
+                .get_path(Path::new(&plan_rel))
+                .is_err(),
+            "expected source branch tip to remove plan doc before merge finalization"
         );
     }
 

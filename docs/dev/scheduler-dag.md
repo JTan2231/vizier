@@ -113,6 +113,9 @@ Runtime notes:
   repo root, and reject out-of-repo paths.
 - `agent.invoke` uses resolved configured runner settings (no prompt-echo
   facade path).
+- `git.integrate_plan_branch` now embeds the loaded plan document markdown in
+  the merge commit message and commits source-branch plan-doc removal before
+  merge finalization when a plan slug is available.
 - `terminal` is an explicit sink policy and fails when outgoing routes are
   configured.
 - conflict/cicd/approval gates route as `succeeded`/`failed`/`blocked` outcomes

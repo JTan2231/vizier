@@ -672,7 +672,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
 
 #[test]
 fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
 
@@ -858,6 +858,93 @@ fn test_run_merge_stage_default_slug_derives_source_branch() -> TestResult {
     assert_eq!(
         fs::read_to_string(repo.path().join("merge-default.txt"))?.as_str(),
         "merge default branch change\n"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_merge_stage_embeds_plan_content_and_removes_source_plan_doc() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    seed_plan_branch(&repo, "merge-plan-doc", "draft/merge-plan-doc")?;
+    repo.git(&["checkout", "draft/merge-plan-doc"])?;
+    repo.write("merge-plan-doc.txt", "merge branch payload\n")?;
+    repo.git(&["add", "merge-plan-doc.txt"])?;
+    repo.git(&["commit", "-m", "feat: merge branch payload"])?;
+    repo.git(&["checkout", "master"])?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=merge-plan-doc",
+            "--set",
+            "branch=draft/merge-plan-doc",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "delete_branch=false",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: merge plan merge-plan-doc",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    for node in ["merge_integrate", "merge_gate_cicd"] {
+        let job_id = manifest_node_job_id(&manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "merge node `{node}` should succeed: {record}"
+        );
+    }
+
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["log", "-1", "--pretty=%B"])
+        .output()?;
+    assert!(head.status.success(), "expected git log to succeed");
+    let message = String::from_utf8_lossy(&head.stdout);
+    assert!(
+        message.contains("feat: merge plan merge-plan-doc"),
+        "expected merge subject in message, got: {message}"
+    );
+    assert!(
+        message.contains("## Implementation Plan"),
+        "expected plan markdown in merge message, got: {message}"
+    );
+    assert!(
+        message.contains("- Seeded step"),
+        "expected seeded plan step in merge message, got: {message}"
+    );
+
+    let repo_handle = repo.repo();
+    let draft_tip = repo_handle
+        .find_branch("draft/merge-plan-doc", BranchType::Local)?
+        .get()
+        .peel_to_commit()?;
+    assert!(
+        draft_tip
+            .tree()?
+            .get_path(Path::new(".vizier/implementation-plans/merge-plan-doc.md"))
+            .is_err(),
+        "merge should remove the plan doc from the source branch tip before finalization"
     );
 
     Ok(())
