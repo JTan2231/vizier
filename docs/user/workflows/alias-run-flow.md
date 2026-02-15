@@ -50,6 +50,7 @@ Workflow parameter input styles:
 - Named flags: unknown `--long-flag` inputs on `vizier run` are treated as template params (`--spec-file` maps to `spec_file`).
 - Ordered inputs: extra positional values after `<flow>` map using template `[cli].positional` order.
 - Explicit `--set key=value` remains supported and keeps last-write-wins behavior.
+- For stage templates, `worktree_prepare` derives `branch=draft/<slug>` when `branch` is omitted.
 
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
 

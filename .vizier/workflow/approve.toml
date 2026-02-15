@@ -24,6 +24,7 @@ uses = "cap.env.builtin.worktree.prepare"
 
 [nodes.args]
 branch = "${branch}"
+slug = "${slug}"
 purpose = "stage-approve"
 
 [nodes.on]

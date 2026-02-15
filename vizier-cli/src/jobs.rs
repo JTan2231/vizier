@@ -3134,15 +3134,28 @@ fn execute_workflow_executor(
                         .and_then(|meta| meta.branch.as_ref().cloned())
                 })
                 .or_else(|| {
+                    first_non_empty_arg(&node.args, &["slug", "plan"])
+                        .map(|slug| crate::plan::default_branch_for_slug(&slug))
+                })
+                .or_else(|| {
                     record
                         .metadata
                         .as_ref()
                         .and_then(|meta| meta.plan.as_ref())
                         .map(|slug| crate::plan::default_branch_for_slug(slug))
-                })
-                .or_else(|| current_branch_name(project_root))
-                .ok_or_else(|| "worktree.prepare could not determine branch".to_string())?;
-            ensure_local_branch(project_root, &branch)?;
+                });
+            let Some(branch) = branch else {
+                return Ok(WorkflowNodeResult::failed(
+                    "worktree.prepare could not determine branch (set branch or slug/plan)",
+                    Some(1),
+                ));
+            };
+            if let Err(err) = ensure_local_branch(project_root, &branch) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("worktree.prepare could not ensure branch `{branch}`: {err}"),
+                    Some(1),
+                ));
+            }
 
             let purpose = first_non_empty_arg(&node.args, &["purpose"])
                 .unwrap_or_else(|| sanitize_workflow_component(&node.node_id));
@@ -8403,6 +8416,106 @@ mod tests {
         assert!(
             !worktree_abs.exists(),
             "expected owned worktree directory to be removed"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_worktree_prepare_derives_branch_from_slug_when_branch_missing() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-worktree-slug-derived",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-worktree-slug-derived").expect("record");
+
+        let prepare = runtime_executor_node(
+            "prepare",
+            "job-worktree-slug-derived",
+            "cap.env.builtin.worktree.prepare",
+            "worktree.prepare",
+            BTreeMap::from([("slug".to_string(), "worktree-slug-derived".to_string())]),
+        );
+        let prepare_result = execute_workflow_executor(project_root, &jobs_root, &record, &prepare)
+            .expect("prepare");
+        assert_eq!(prepare_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let prepare_meta = prepare_result.metadata.clone().expect("worktree metadata");
+        assert_eq!(
+            prepare_meta.branch.as_deref(),
+            Some("draft/worktree-slug-derived")
+        );
+
+        let worktree_rel = prepare_meta
+            .worktree_path
+            .as_deref()
+            .expect("worktree path metadata");
+        let worktree_abs = resolve_recorded_path(project_root, worktree_rel);
+        assert!(worktree_abs.exists(), "expected worktree path to exist");
+
+        let mut cleanup_record = record.clone();
+        cleanup_record.metadata = Some(prepare_meta);
+        let cleanup = runtime_executor_node(
+            "cleanup",
+            "job-worktree-slug-derived",
+            "cap.env.builtin.worktree.cleanup",
+            "worktree.cleanup",
+            BTreeMap::new(),
+        );
+        let cleanup_result =
+            execute_workflow_executor(project_root, &jobs_root, &cleanup_record, &cleanup)
+                .expect("cleanup");
+        assert_eq!(cleanup_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            !worktree_abs.exists(),
+            "expected owned worktree directory to be removed"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_worktree_prepare_fails_without_branch_or_slug() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-worktree-no-branch",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-worktree-no-branch").expect("record");
+
+        let prepare = runtime_executor_node(
+            "prepare",
+            "job-worktree-no-branch",
+            "cap.env.builtin.worktree.prepare",
+            "worktree.prepare",
+            BTreeMap::new(),
+        );
+        let prepare_result = execute_workflow_executor(project_root, &jobs_root, &record, &prepare)
+            .expect("prepare");
+        assert_eq!(prepare_result.outcome, WorkflowNodeOutcome::Failed);
+        assert_eq!(
+            prepare_result.summary.as_deref(),
+            Some("worktree.prepare could not determine branch (set branch or slug/plan)")
         );
     }
 

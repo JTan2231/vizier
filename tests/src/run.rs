@@ -536,6 +536,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "version = \"v2\"",
                 "positional = [\"spec_file\", \"slug\", \"branch\"]",
                 "cap.env.builtin.worktree.prepare",
+                "slug = \"${slug}\"",
                 "cap.env.builtin.prompt.resolve",
                 "cap.agent.invoke",
                 "cap.env.builtin.plan.persist",
@@ -548,6 +549,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\"]",
                 "cap.env.builtin.worktree.prepare",
+                "slug = \"${slug}\"",
                 "cap.env.builtin.prompt.resolve",
                 "cap.agent.invoke",
                 "cap.env.builtin.git.stage_commit",
@@ -602,8 +604,6 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
             "draft",
             "--set",
             "slug=stage-draft-smoke",
-            "--set",
-            "branch=draft/stage-draft-smoke",
             "--set",
             "spec_text=Ship the stage smoke path.",
             "--set",
@@ -866,6 +866,11 @@ fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry(
         .and_then(|values| values.first())
         .and_then(Value::as_str)
         .ok_or("missing draft root job id")?;
+    let draft_run_id = draft_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing draft run_id")?;
+    let draft_manifest = load_run_manifest(&repo, draft_run_id)?;
 
     let tail = repo.vizier_output(&["jobs", "tail", draft_root])?;
     assert!(
@@ -880,7 +885,7 @@ fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry(
         "jobs approve should succeed for stage root: {}",
         String::from_utf8_lossy(&approve.stderr)
     );
-    wait_for_job_completion(&repo, draft_root, Duration::from_secs(15))?;
+    wait_for_manifest_jobs(&repo, &draft_manifest, Duration::from_secs(20))?;
 
     let attach = repo.vizier_output(&["jobs", "attach", draft_root])?;
     assert!(
@@ -889,30 +894,67 @@ fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry(
         String::from_utf8_lossy(&attach.stderr)
     );
 
-    let draft_blocked = run_json(
+    let draft_gate = run_json(
         &repo,
         &[
             "run",
             "draft",
             "--set",
-            "slug=cancel-smoke",
+            "slug=cancel-gate-smoke",
             "--set",
-            "branch=draft/cancel-smoke",
+            "branch=draft/cancel-gate-smoke",
             "--set",
-            "spec_text=Cancel-path smoke plan.",
+            "spec_text=Cancel gate smoke plan.",
             "--set",
-            "prompt_text=Draft cancel-path plan.",
+            "prompt_text=Draft cancel gate plan.",
             "--require-approval",
             "--format",
             "json",
         ],
     )?;
+    let cancel_gate_root = draft_gate
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing cancel gate root job id")?;
+    wait_for_job_status(
+        &repo,
+        cancel_gate_root,
+        "waiting_on_approval",
+        Duration::from_secs(5),
+    )?;
+
+    let cancel_args = vec![
+        "run".to_string(),
+        "draft".to_string(),
+        "--set".to_string(),
+        "slug=cancel-smoke".to_string(),
+        "--set".to_string(),
+        "branch=draft/cancel-smoke".to_string(),
+        "--set".to_string(),
+        "spec_text=Cancel-path smoke plan.".to_string(),
+        "--set".to_string(),
+        "prompt_text=Draft cancel-path plan.".to_string(),
+        "--after".to_string(),
+        cancel_gate_root.to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    let cancel_refs = cancel_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let draft_blocked = run_json(&repo, &cancel_refs)?;
     let cancel_root = draft_blocked
         .get("root_job_ids")
         .and_then(Value::as_array)
         .and_then(|values| values.first())
         .and_then(Value::as_str)
         .ok_or("missing cancel root job id")?;
+    wait_for_job_status(
+        &repo,
+        cancel_root,
+        "waiting_on_deps",
+        Duration::from_secs(5),
+    )?;
     let cancel = repo.vizier_output(&["jobs", "cancel", cancel_root])?;
     assert!(
         cancel.status.success(),
@@ -924,6 +966,12 @@ fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry(
         cancelled.get("status").and_then(Value::as_str),
         Some("cancelled"),
         "cancelled stage root should be terminal cancelled: {cancelled}"
+    );
+    let cancel_gate = repo.vizier_output(&["jobs", "cancel", cancel_gate_root])?;
+    assert!(
+        cancel_gate.status.success(),
+        "jobs cancel should succeed for approval-gated stage root: {}",
+        String::from_utf8_lossy(&cancel_gate.stderr)
     );
 
     let retry_repo = IntegrationRepo::new()?;
