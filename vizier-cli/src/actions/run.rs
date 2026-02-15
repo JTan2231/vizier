@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -10,7 +10,7 @@ use vizier_core::display;
 use crate::actions::shared::format_block;
 use crate::cli::args::{RunCmd, RunFormatArg};
 use crate::jobs;
-use crate::workflow_templates::{self, ResolvedWorkflowSource};
+use crate::workflow_templates::{self, ResolvedWorkflowSource, WorkflowTemplateInputSpec};
 
 pub(crate) fn run_workflow(
     project_root: &Path,
@@ -19,7 +19,9 @@ pub(crate) fn run_workflow(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = vizier_core::config::get_config();
     let source = workflow_templates::resolve_workflow_source(project_root, &cmd.flow, &cfg)?;
-    let set_overrides = parse_set_overrides(&cmd.set)?;
+    let input_spec = workflow_templates::load_template_input_spec(&source)?;
+    let mut set_overrides = parse_set_overrides(&cmd.set)?;
+    apply_positional_inputs(&source, &input_spec, &cmd.inputs, &mut set_overrides)?;
     let template = workflow_templates::load_template_with_params(&source, &set_overrides)?;
 
     let run_id = format!("run_{}", Uuid::new_v4().simple());
@@ -105,6 +107,71 @@ fn parse_set_overrides(
         out.insert(key.to_string(), value.to_string());
     }
     Ok(out)
+}
+
+fn apply_positional_inputs(
+    source: &ResolvedWorkflowSource,
+    input_spec: &WorkflowTemplateInputSpec,
+    positional_values: &[String],
+    set_overrides: &mut BTreeMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if positional_values.is_empty() {
+        return Ok(());
+    }
+
+    if input_spec.positional.is_empty() {
+        return Err(format!(
+            "workflow `{}` does not define positional inputs; use named flags (for example `--param value`) or `--set key=value`",
+            source.selector
+        )
+        .into());
+    }
+
+    if positional_values.len() > input_spec.positional.len() {
+        return Err(format!(
+            "workflow `{}` accepts at most {} positional input(s): {}",
+            source.selector,
+            input_spec.positional.len(),
+            input_spec.positional.join(", ")
+        )
+        .into());
+    }
+
+    let declared_params = input_spec
+        .params
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    for key in &input_spec.positional {
+        if key.trim().is_empty() {
+            return Err(format!(
+                "workflow `{}` has an empty positional mapping entry",
+                source.selector
+            )
+            .into());
+        }
+        if !declared_params.contains(key.as_str()) {
+            return Err(format!(
+                "workflow `{}` positional input `{key}` is not declared in [params]",
+                source.selector
+            )
+            .into());
+        }
+    }
+
+    for (index, value) in positional_values.iter().enumerate() {
+        let key = &input_spec.positional[index];
+        if set_overrides.contains_key(key) {
+            return Err(format!(
+                "workflow parameter `{key}` was provided multiple ways (positional input {} and named override)",
+                index + 1
+            )
+            .into());
+        }
+        set_overrides.insert(key.clone(), value.clone());
+    }
+
+    Ok(())
 }
 
 fn resolve_root_jobs(

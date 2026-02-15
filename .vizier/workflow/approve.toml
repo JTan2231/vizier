@@ -1,6 +1,9 @@
 id = "template.stage.approve"
 version = "v2"
 
+[cli]
+positional = ["slug", "branch"]
+
 [params]
 branch = ""
 commit_message = "chore: workflow stage commit"

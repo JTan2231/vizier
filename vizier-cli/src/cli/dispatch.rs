@@ -15,7 +15,7 @@ use crate::cli::help::{
 };
 use crate::cli::jobs_view::run_jobs_command;
 use crate::cli::resolve::{resolve_cd_options, resolve_clean_options, resolve_list_options};
-use crate::cli::util::flag_present;
+use crate::cli::util::{flag_present, normalize_run_invocation_args};
 use crate::jobs;
 
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,6 +31,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let quiet_requested = flag_present(&raw_args, Some('q'), "--quiet");
     let no_ansi_requested = flag_present(&raw_args, None, "--no-ansi");
     let pager_mode = pager_mode_from_args(&raw_args);
+    let normalized_args = normalize_run_invocation_args(&raw_args);
 
     let color_choice = if !no_ansi_requested && stdout_is_tty && stderr_is_tty {
         ColorChoice::Auto
@@ -39,7 +40,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let command = Cli::command().color(color_choice);
-    let matches = match command.try_get_matches_from(&raw_args) {
+    let matches = match command.try_get_matches_from(&normalized_args) {
         Ok(matches) => matches,
         Err(err) => match err.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {

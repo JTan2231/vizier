@@ -583,6 +583,10 @@ pub(crate) struct RunCmd {
     #[arg(value_name = "FLOW")]
     pub(crate) flow: String,
 
+    /// Ordered workflow inputs; mapped by template [cli].positional before enqueue
+    #[arg(value_name = "INPUT")]
+    pub(crate) inputs: Vec<String>,
+
     /// Template parameter override (KEY=VALUE); repeatable
     #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
     pub(crate) set: Vec<String>,

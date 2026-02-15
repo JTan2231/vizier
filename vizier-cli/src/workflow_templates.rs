@@ -37,6 +37,14 @@ struct WorkflowTemplateFile {
     imports: Vec<WorkflowTemplateImport>,
     #[serde(default)]
     links: Vec<WorkflowTemplateLink>,
+    #[serde(default)]
+    cli: WorkflowTemplateCli,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WorkflowTemplateCli {
+    #[serde(default)]
+    positional: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -168,6 +176,7 @@ struct ComposedWorkflowTemplate {
     policy: WorkflowTemplatePolicy,
     artifact_contracts: Vec<WorkflowArtifactContract>,
     nodes: Vec<WorkflowNodeFile>,
+    cli: WorkflowTemplateCli,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +186,12 @@ struct ImportedStage {
     nodes: Vec<WorkflowNodeFile>,
     terminal_nodes: Vec<String>,
     entry_nodes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowTemplateInputSpec {
+    pub params: Vec<String>,
+    pub positional: Vec<String>,
 }
 
 pub(crate) fn resolve_workflow_source(
@@ -251,6 +266,17 @@ pub(crate) fn load_template_with_params(
     apply_parameter_expansion(template, set_overrides)
 }
 
+pub(crate) fn load_template_input_spec(
+    source: &ResolvedWorkflowSource,
+) -> Result<WorkflowTemplateInputSpec, Box<dyn std::error::Error>> {
+    let mut stack = Vec::<PathBuf>::new();
+    let template = load_template_recursive(&source.path, &mut stack)?;
+    Ok(WorkflowTemplateInputSpec {
+        params: template.params.keys().cloned().collect(),
+        positional: template.cli.positional,
+    })
+}
+
 fn load_template_recursive(
     path: &Path,
     stack: &mut Vec<PathBuf>,
@@ -277,6 +303,7 @@ fn load_template_recursive(
             policy: parsed.policy,
             artifact_contracts: parsed.artifact_contracts,
             nodes: parsed.nodes,
+            cli: parsed.cli,
         })
     } else {
         compose_template(&canonical, parsed, stack)
@@ -406,6 +433,7 @@ fn compose_template(
         policy: parsed.policy,
         artifact_contracts,
         nodes,
+        cli: parsed.cli,
     })
 }
 

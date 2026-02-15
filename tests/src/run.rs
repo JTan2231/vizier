@@ -426,6 +426,105 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
 }
 
 #[test]
+fn test_run_dynamic_named_flags_expand_to_set_overrides() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/named-flags.toml",
+        "id = \"template.named.flags\"\n\
+version = \"v1\"\n\
+[params]\n\
+message = \"default\"\n\
+[[nodes]]\n\
+id = \"single\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"echo ${message} > named-flags.txt\"\n",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflow/named-flags.toml",
+            "--message",
+            "overridden",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+    let script = manifest
+        .pointer("/nodes/single/args/script")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        script.contains("overridden"),
+        "expected named flag override in manifest args, got: {script}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_positional_inputs_follow_cli_positional_mapping() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/positional.toml",
+        "id = \"template.positional\"\n\
+version = \"v1\"\n\
+[cli]\n\
+positional = [\"first\", \"second\"]\n\
+[params]\n\
+first = \"\"\n\
+second = \"\"\n\
+[[nodes]]\n\
+id = \"single\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"echo ${first}-${second} > positional.txt\"\n",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflow/positional.toml",
+            "alpha",
+            "beta",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+    let script = manifest
+        .pointer("/nodes/single/args/script")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        script.contains("alpha-beta"),
+        "expected positional overrides in manifest args, got: {script}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
@@ -435,6 +534,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             ".vizier/workflow/draft.toml",
             &[
                 "version = \"v2\"",
+                "positional = [\"spec_file\", \"slug\", \"branch\"]",
                 "cap.env.builtin.worktree.prepare",
                 "cap.env.builtin.prompt.resolve",
                 "cap.agent.invoke",
@@ -446,6 +546,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             ".vizier/workflow/approve.toml",
             &[
                 "version = \"v2\"",
+                "positional = [\"slug\", \"branch\"]",
                 "cap.env.builtin.worktree.prepare",
                 "cap.env.builtin.prompt.resolve",
                 "cap.agent.invoke",
@@ -457,6 +558,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             ".vizier/workflow/merge.toml",
             &[
                 "version = \"v2\"",
+                "positional = [\"slug\", \"branch\", \"target_branch\"]",
                 "cap.env.builtin.git.integrate_plan_branch",
                 "control.gate.conflict_resolution",
                 "control.gate.cicd",

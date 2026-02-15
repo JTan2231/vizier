@@ -45,7 +45,9 @@ merge = "file:.vizier/workflow/merge.toml"
 
 ## Operational Notes
 
-- `vizier run --set` applies queue-time interpolation and typed coercion before enqueue.
+- `vizier run` accepts template params via `--set key=value`, named flags (`--spec-file`, `--slug`, ...), or ordered positional inputs declared by template `[cli].positional`.
+- Named flags map kebab-case to snake_case (`--spec-file` -> `spec_file`).
+- `vizier run --set` still applies queue-time interpolation and typed coercion before enqueue.
 - `vizier run --after`, `--require-approval`, and `--follow` are the stage orchestration controls.
 - Job log streaming is command-local: `vizier jobs tail <job> --follow`.
 - Help output is pager-aware on TTY and plain in non-TTY contexts.

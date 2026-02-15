@@ -1,6 +1,9 @@
 id = "template.stage.merge"
 version = "v2"
 
+[cli]
+positional = ["slug", "branch", "target_branch"]
+
 [params]
 branch = ""
 cicd_auto_resolve = "false"

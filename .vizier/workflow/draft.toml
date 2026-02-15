@@ -1,6 +1,9 @@
 id = "template.stage.draft"
 version = "v2"
 
+[cli]
+positional = ["spec_file", "slug", "branch"]
+
 [params]
 branch = ""
 commit_message = "chore: workflow stage commit"
