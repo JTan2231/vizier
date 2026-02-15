@@ -744,6 +744,7 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "name = \"slug\"",
                 "[policy.dependencies]",
                 "missing_producer = \"wait\"",
+                "id = \"plan_text\"",
                 "id = \"plan_branch\"",
                 "id = \"plan_doc\"",
                 "cap.env.builtin.worktree.prepare",
@@ -751,6 +752,8 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "cap.env.builtin.prompt.resolve",
                 "prompt_file = \".vizier/prompts/DRAFT_PROMPTS.md\"",
                 "cap.agent.invoke",
+                "type_id = \"plan_text\"",
+                "key = \"draft_plan:${slug}\"",
                 "cap.env.builtin.plan.persist",
                 "plan_branch = { slug = \"${slug}\", branch = \"${branch}\" }",
                 "plan_doc = { slug = \"${slug}\", branch = \"${branch}\" }",
@@ -829,17 +832,13 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
 }
 
 #[test]
-fn test_run_draft_stage_commits_plan_before_agent_invocation() -> TestResult {
+fn test_run_draft_stage_persists_agent_output_as_plan_doc() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     let slug = "draft-plan-visible";
-    write_stage_alias_test_config_with_agent_command(
-        &repo,
-        &format!(
-            "cat >/dev/null; test -f .vizier/implementation-plans/{slug}.md && git cat-file -e HEAD:.vizier/implementation-plans/{slug}.md && printf '%s\\n' 'verified draft plan visibility'"
-        ),
-    )?;
+    let sentinel = "mock agent response";
+    write_stage_alias_test_config(&repo)?;
 
     let payload = run_json(
         &repo,
@@ -849,7 +848,7 @@ fn test_run_draft_stage_commits_plan_before_agent_invocation() -> TestResult {
             "--set",
             &format!("slug={slug}"),
             "--set",
-            "spec_text=Ensure plan file exists before agent runs.",
+            "spec_text=Ensure draft plan body is sourced from agent output.",
             "--follow",
             "--format",
             "json",
@@ -870,6 +869,50 @@ fn test_run_draft_stage_commits_plan_before_agent_invocation() -> TestResult {
             "draft node `{node}` should succeed: {record}"
         );
     }
+    let invoke_job = manifest_node_job_id(&manifest, "invoke_agent")?;
+    let persist_job = manifest_node_job_id(&manifest, "persist_plan")?;
+    let persist_record = read_job_record(&repo, &persist_job)?;
+    let persist_after = persist_record
+        .pointer("/schedule/after")
+        .and_then(Value::as_array)
+        .ok_or("persist_plan missing schedule.after")?;
+    assert!(
+        persist_after.iter().any(|entry| {
+            entry.pointer("/job_id").and_then(Value::as_str) == Some(invoke_job.as_str())
+        }),
+        "persist_plan should run after invoke_agent: {persist_record}"
+    );
+
+    let branch = persist_record
+        .pointer("/metadata/branch")
+        .and_then(Value::as_str)
+        .ok_or("persist_plan missing metadata.branch")?;
+    let plan_slug = persist_record
+        .pointer("/metadata/plan")
+        .and_then(Value::as_str)
+        .ok_or("persist_plan missing metadata.plan")?;
+    let plan_doc = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args([
+            "show",
+            &format!("{branch}:.vizier/implementation-plans/{plan_slug}.md"),
+        ])
+        .output()?;
+    assert!(
+        plan_doc.status.success(),
+        "expected persisted plan doc on {branch}: {}",
+        String::from_utf8_lossy(&plan_doc.stderr)
+    );
+    let plan_doc_text = String::from_utf8_lossy(&plan_doc.stdout);
+    assert!(
+        plan_doc_text.contains("## Implementation Plan"),
+        "expected implementation plan section in persisted doc: {plan_doc_text}"
+    );
+    assert!(
+        plan_doc_text.contains(sentinel),
+        "expected persisted plan body to include agent output sentinel, got: {plan_doc_text}"
+    );
 
     Ok(())
 }

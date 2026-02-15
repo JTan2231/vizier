@@ -37,6 +37,8 @@ use std::{
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
+const PLAN_TEXT_ARTIFACT_TYPE_ID: &str = "plan_text";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobDependency {
     pub artifact: JobArtifact,
@@ -3637,13 +3639,29 @@ fn prompt_output_artifact(node: &WorkflowRuntimeNodeManifest) -> Option<JobArtif
 }
 
 fn resolve_prompt_payload_text(payload: &serde_json::Value) -> Option<String> {
+    resolve_custom_payload_text(payload)
+}
+
+fn resolve_custom_payload_text(payload: &serde_json::Value) -> Option<String> {
     payload
         .get("text")
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
         .or_else(|| {
             payload
+                .get("assistant_text")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+        })
+        .or_else(|| {
+            payload
                 .pointer("/payload/text")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+        })
+        .or_else(|| {
+            payload
+                .pointer("/payload/assistant_text")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string())
         })
@@ -3898,11 +3916,13 @@ fn execute_workflow_executor(
             let response = execute_agent_request_blocking(runner, request);
             match response {
                 Ok(response) => {
-                    if !response.assistant_text.is_empty() {
-                        print!("{}", response.assistant_text);
+                    let assistant_text = response.assistant_text.clone();
+                    let stderr_lines = response.stderr.clone();
+                    if !assistant_text.is_empty() {
+                        print!("{assistant_text}");
                         let _ = io::stdout().flush();
                     }
-                    for line in response.stderr {
+                    for line in &stderr_lines {
                         eprintln!("{line}");
                     }
 
@@ -3910,6 +3930,36 @@ fn execute_workflow_executor(
                         "agent.invoke completed via configured runner",
                     );
                     result.payload_refs = vec![relative_path(project_root, &payload_path)];
+                    let mut produced_custom = HashSet::new();
+                    for artifact in &node.artifacts_by_outcome.succeeded {
+                        if let JobArtifact::Custom { type_id, key } = artifact {
+                            produced_custom.insert((type_id.clone(), key.clone()));
+                        }
+                    }
+                    for (type_id, key) in produced_custom {
+                        let artifact_payload = serde_json::json!({
+                            "type_id": type_id,
+                            "key": key,
+                            "text": assistant_text.clone(),
+                            "stderr": stderr_lines.clone(),
+                            "exit_code": response.exit_code,
+                            "duration_ms": response.duration_ms,
+                            "written_at": Utc::now().to_rfc3339(),
+                        });
+                        let artifact_path = write_custom_artifact_payload(
+                            project_root,
+                            &record.id,
+                            &type_id,
+                            &key,
+                            &artifact_payload,
+                        )?;
+                        result
+                            .payload_refs
+                            .push(relative_path(project_root, &artifact_path));
+                        result
+                            .artifacts_written
+                            .push(JobArtifact::Custom { type_id, key });
+                    }
                     result.metadata = Some(JobMetadata {
                         agent_selector: Some(agent_settings.selector.clone()),
                         agent_backend: Some(agent_settings.backend.to_string()),
@@ -4018,7 +4068,45 @@ fn execute_workflow_executor(
 
             let plan_id = first_non_empty_arg(&node.args, &["plan_id"])
                 .unwrap_or_else(crate::plan::new_plan_id);
+            let mut plan_payload_ref: Option<PathBuf> = None;
+            let plan_body_from_dependency = record.schedule.as_ref().and_then(|schedule| {
+                schedule.dependencies.iter().find_map(|dependency| {
+                    let JobArtifact::Custom { type_id, key } = &dependency.artifact else {
+                        return None;
+                    };
+                    if type_id == PLAN_TEXT_ARTIFACT_TYPE_ID {
+                        Some((type_id.clone(), key.clone()))
+                    } else {
+                        None
+                    }
+                })
+            });
+            let plan_body_from_dependency =
+                if let Some((type_id, key)) = plan_body_from_dependency {
+                    let (_producer_job, payload, payload_path) =
+                        read_latest_custom_artifact_payload(project_root, &type_id, &key)?
+                            .ok_or_else(|| {
+                                format!(
+                                    "plan.persist could not find plan payload for custom:{}:{}",
+                                    type_id, key
+                                )
+                            })?;
+                    let Some(text) = resolve_custom_payload_text(&payload) else {
+                        return Ok(WorkflowNodeResult::failed(
+                            format!(
+                                "plan.persist plan payload missing text field for custom:{}:{}",
+                                type_id, key
+                            ),
+                            Some(1),
+                        ));
+                    };
+                    plan_payload_ref = Some(payload_path);
+                    Some(text)
+                } else {
+                    None
+                };
             let plan_body = first_non_empty_arg(&node.args, &["plan_body", "plan_text", "content"])
+                .or(plan_body_from_dependency)
                 .unwrap_or_else(|| spec_text.clone());
             let doc_contents =
                 crate::plan::render_plan_document(&plan_id, &slug, &branch, &spec_text, &plan_body);
@@ -4077,6 +4165,11 @@ fn execute_workflow_executor(
                 relative_path(project_root, &plan_abs),
                 relative_path(project_root, &execution_root.join(state_rel)),
             ];
+            if let Some(payload_path) = plan_payload_ref {
+                result
+                    .payload_refs
+                    .push(relative_path(project_root, &payload_path));
+            }
             result.metadata = Some(JobMetadata {
                 plan: Some(slug),
                 branch: Some(branch),
@@ -10016,6 +10109,84 @@ mod tests {
         assert!(
             project_root.join(state_ref).exists(),
             "expected persisted plan state"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_plan_persist_prefers_plan_text_dependency_payload() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let artifact = JobArtifact::Custom {
+            type_id: PLAN_TEXT_ARTIFACT_TYPE_ID.to_string(),
+            key: "draft_plan:runtime-plan".to_string(),
+        };
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-plan-persist-from-artifact",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact.clone(),
+                }],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue");
+
+        write_custom_artifact_payload(
+            project_root,
+            "job-agent-output",
+            PLAN_TEXT_ARTIFACT_TYPE_ID,
+            "draft_plan:runtime-plan",
+            &serde_json::json!({
+                "text": "- Generated from agent artifact"
+            }),
+        )
+        .expect("write plan payload");
+        write_custom_artifact_markers(
+            project_root,
+            "job-agent-output",
+            std::slice::from_ref(&artifact),
+        )
+        .expect("write artifact marker");
+
+        let record = read_record(&jobs_root, "job-plan-persist-from-artifact").expect("record");
+        let node = runtime_executor_node(
+            "persist",
+            "job-plan-persist-from-artifact",
+            "cap.env.builtin.plan.persist",
+            "plan.persist",
+            BTreeMap::from([
+                ("name_override".to_string(), "runtime-plan".to_string()),
+                ("spec_source".to_string(), "inline".to_string()),
+                (
+                    "spec_text".to_string(),
+                    "Spec comes from operator".to_string(),
+                ),
+            ]),
+        );
+        let result = execute_workflow_executor(project_root, &jobs_root, &record, &node)
+            .expect("execute plan.persist");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+
+        let plan_doc =
+            fs::read_to_string(project_root.join(".vizier/implementation-plans/runtime-plan.md"))
+                .expect("read plan doc");
+        assert!(
+            plan_doc.contains("## Operator Spec\nSpec comes from operator"),
+            "expected operator spec section to preserve input spec: {plan_doc}"
+        );
+        assert!(
+            plan_doc.contains("## Implementation Plan\n- Generated from agent artifact"),
+            "expected implementation plan body to come from custom plan_text dependency: {plan_doc}"
         );
     }
 

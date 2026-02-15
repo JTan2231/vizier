@@ -24,6 +24,10 @@ id = "prompt_text"
 version = "v1"
 
 [[artifact_contracts]]
+id = "plan_text"
+version = "v1"
+
+[[artifact_contracts]]
 id = "plan_branch"
 version = "v1"
 
@@ -56,7 +60,7 @@ prompt_file = ".vizier/prompts/DRAFT_PROMPTS.md"
 succeeded = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
 
 [nodes.on]
-succeeded = ["persist_plan"]
+succeeded = ["invoke_agent"]
 
 [[nodes.after]]
 node_id = "worktree_prepare"
@@ -69,11 +73,11 @@ uses = "cap.agent.invoke"
 [[nodes.needs]]
 custom = { type_id = "prompt_text", key = "draft_main" }
 
-[nodes.on]
-succeeded = ["worktree_cleanup"]
+[nodes.produces]
+succeeded = [{ custom = { type_id = "plan_text", key = "draft_plan:${slug}" } }]
 
-[[nodes.after]]
-node_id = "stop_gate"
+[nodes.on]
+succeeded = ["persist_plan"]
 
 [[nodes.after]]
 node_id = "resolve_prompt"
@@ -90,6 +94,9 @@ spec_file = "${spec_file}"
 spec_source = "${spec_source}"
 spec_text = "${spec_text}"
 
+[[nodes.needs]]
+custom = { type_id = "plan_text", key = "draft_plan:${slug}" }
+
 [nodes.produces]
 succeeded = [
   { plan_branch = { slug = "${slug}", branch = "${branch}" } },
@@ -100,7 +107,7 @@ succeeded = [
 succeeded = ["stage_commit"]
 
 [[nodes.after]]
-node_id = "resolve_prompt"
+node_id = "invoke_agent"
 
 [[nodes]]
 id = "stage_commit"
@@ -128,7 +135,7 @@ kind = "gate"
 uses = "control.gate.stop_condition"
 
 [nodes.on]
-succeeded = ["invoke_agent"]
+succeeded = ["worktree_cleanup"]
 
 [[nodes.after]]
 node_id = "stage_commit"
@@ -142,7 +149,7 @@ uses = "cap.env.builtin.worktree.cleanup"
 succeeded = ["terminal"]
 
 [[nodes.after]]
-node_id = "invoke_agent"
+node_id = "stop_gate"
 
 [[nodes]]
 id = "terminal"
