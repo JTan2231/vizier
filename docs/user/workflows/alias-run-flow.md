@@ -27,6 +27,7 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 
 - `vizier run draft --set slug=my-change --set spec_text="..." --follow`
 - `vizier run draft --spec-file specs/DEFAULT.md --slug my-change --follow`
+- `vizier run draft --file specs/DEFAULT.md --name my-change --follow`
 - `vizier run draft specs/DEFAULT.md my-change draft/my-change --follow`
 - `vizier run approve --set slug=my-change --set branch=draft/my-change --follow`
 - `vizier run merge --set slug=my-change --set branch=draft/my-change --set target_branch=master --follow`
@@ -48,10 +49,11 @@ develop = "file:.vizier/develop.toml"
 Workflow parameter input styles:
 
 - Named flags: unknown `--long-flag` inputs on `vizier run` are treated as template params (`--spec-file` maps to `spec_file`).
+- Template aliases: `[cli].named` can map friendly labels to canonical params (`--name` -> `slug`, `--file` -> `spec_file` in stage draft).
 - Ordered inputs: extra positional values after `<flow>` map using template `[cli].positional` order.
 - Explicit `--set key=value` remains supported and keeps last-write-wins behavior.
 - For stage templates, `worktree_prepare` derives `branch=draft/<slug>` when `branch` is omitted.
-- Executor arg contracts are validated before enqueue; current required-input checks include `worktree.prepare` (`branch|slug|plan`), `git.integrate_plan_branch` (`branch|source_branch|plan_branch|slug|plan`), `cicd.run` (`command/script` or a non-empty cicd gate script), and `patch.pipeline_prepare`/`patch.execute_pipeline` (`files_json`).
+- Executor arg contracts are validated before enqueue, and root-node preflight now prints entry-input guidance when required args are missing; current required-input checks include `worktree.prepare` (`branch|slug|plan`), `git.integrate_plan_branch` (`branch|source_branch|plan_branch|slug|plan`), `cicd.run` (`command/script` or a non-empty cicd gate script), and `patch.pipeline_prepare`/`patch.execute_pipeline` (`files_json`).
 
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
 

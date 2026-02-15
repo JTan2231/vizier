@@ -859,6 +859,13 @@ const NON_EMPTY_ANY_OF_ARG_REQUIREMENTS: &[NonEmptyAnyOfArgRequirement] = &[
     },
 ];
 
+pub fn executor_non_empty_any_of_arg_keys(operation: &str) -> Option<&'static [&'static str]> {
+    NON_EMPTY_ANY_OF_ARG_REQUIREMENTS
+        .iter()
+        .find(|entry| entry.operation == operation)
+        .map(|entry| entry.keys)
+}
+
 fn validate_executor_arg_requirements(
     template: &WorkflowTemplate,
     node: &WorkflowNode,
@@ -868,19 +875,11 @@ fn validate_executor_arg_requirements(
         return Ok(());
     };
 
-    for requirement in NON_EMPTY_ANY_OF_ARG_REQUIREMENTS
-        .iter()
-        .filter(|entry| entry.operation == operation)
-    {
-        if requirement
-            .keys
-            .iter()
-            .any(|key| has_nonempty_arg(node, key))
-        {
-            continue;
+    if let Some(required_keys) = executor_non_empty_any_of_arg_keys(operation) {
+        if required_keys.iter().any(|key| has_nonempty_arg(node, key)) {
+            return Ok(());
         }
-        let expected = requirement
-            .keys
+        let expected = required_keys
             .iter()
             .map(|key| format!("args.{key}"))
             .collect::<Vec<_>>()

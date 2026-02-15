@@ -59,6 +59,7 @@ Current user-facing commands are:
 `vizier run <flow> --set key=value` applies queue-time interpolation after template composition (`imports` + `links`) and after defaults from `[params]` are merged.
 
 - `vizier run <flow> --param value` is accepted for workflow params; kebab-case flag names are normalized to snake_case keys (`--spec-file` => `spec_file`).
+- Templates may define `[cli].named` aliases so friendly entry flags map to canonical params (`--name` => `slug`, `--file` => `spec_file` for stage draft).
 - `vizier run <flow> <value...>` is accepted when the template defines `[cli].positional = ["param_a", "param_b", ...]`.
 - `--set` remains last-write-wins by key.
 - Phase 1 interpolation coverage includes:

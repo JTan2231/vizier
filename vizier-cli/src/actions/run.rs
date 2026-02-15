@@ -21,8 +21,10 @@ pub(crate) fn run_workflow(
     let source = workflow_templates::resolve_workflow_source(project_root, &cmd.flow, &cfg)?;
     let input_spec = workflow_templates::load_template_input_spec(&source)?;
     let mut set_overrides = parse_set_overrides(&cmd.set)?;
+    apply_named_input_aliases(&source, &input_spec, &mut set_overrides)?;
     apply_positional_inputs(&source, &input_spec, &cmd.inputs, &mut set_overrides)?;
     let template = workflow_templates::load_template_with_params(&source, &set_overrides)?;
+    validate_entrypoint_input_requirements(&source, &input_spec, &cmd.inputs, &template)?;
 
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     let enqueue = jobs::enqueue_workflow_run(
@@ -109,6 +111,72 @@ fn parse_set_overrides(
     Ok(out)
 }
 
+fn apply_named_input_aliases(
+    source: &ResolvedWorkflowSource,
+    input_spec: &WorkflowTemplateInputSpec,
+    set_overrides: &mut BTreeMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if input_spec.named.is_empty() {
+        return Ok(());
+    }
+
+    let declared_params = input_spec
+        .params
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let aliases = input_spec
+        .named
+        .iter()
+        .map(|(alias, target)| (alias.trim().replace('-', "_"), target.trim().to_string()))
+        .collect::<Vec<_>>();
+
+    for (alias, target) in &aliases {
+        if alias.is_empty() {
+            return Err(format!(
+                "workflow `{}` has an empty [cli].named alias key",
+                source.selector
+            )
+            .into());
+        }
+        if target.is_empty() {
+            return Err(format!(
+                "workflow `{}` alias `{alias}` has an empty [cli].named target",
+                source.selector
+            )
+            .into());
+        }
+        if !declared_params.contains(target.as_str()) {
+            return Err(format!(
+                "workflow `{}` alias `{alias}` maps to unknown parameter `{target}`",
+                source.selector
+            )
+            .into());
+        }
+    }
+
+    for (alias, target) in aliases {
+        if alias == target {
+            continue;
+        }
+
+        let Some(value) = set_overrides.remove(&alias) else {
+            continue;
+        };
+
+        if set_overrides.contains_key(&target) {
+            return Err(format!(
+                "workflow parameter `{target}` was provided multiple ways (`--{}` alias and explicit override)",
+                alias.replace('_', "-")
+            )
+            .into());
+        }
+        set_overrides.insert(target, value);
+    }
+
+    Ok(())
+}
+
 fn apply_positional_inputs(
     source: &ResolvedWorkflowSource,
     input_spec: &WorkflowTemplateInputSpec,
@@ -172,6 +240,246 @@ fn apply_positional_inputs(
     }
 
     Ok(())
+}
+
+fn validate_entrypoint_input_requirements(
+    source: &ResolvedWorkflowSource,
+    input_spec: &WorkflowTemplateInputSpec,
+    positional_values: &[String],
+    template: &vizier_core::workflow_template::WorkflowTemplate,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if template.nodes.is_empty() {
+        return Ok(());
+    }
+
+    let mut incoming_success = HashSet::<String>::new();
+    for node in &template.nodes {
+        for target in &node.on.succeeded {
+            incoming_success.insert(target.clone());
+        }
+    }
+
+    let mut resolved_after = BTreeMap::new();
+    for node in &template.nodes {
+        resolved_after.insert(node.id.clone(), format!("preflight-{}", node.id));
+    }
+
+    let declared_params = input_spec
+        .params
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+
+    for node in &template.nodes {
+        if !node.after.is_empty() || incoming_success.contains(&node.id) {
+            continue;
+        }
+
+        let compiled = vizier_core::workflow_template::compile_workflow_node(
+            template,
+            &node.id,
+            &resolved_after,
+        )
+        .map_err(|err| {
+            format!(
+                "workflow `{}` failed entry-node preflight for `{}`: {err}",
+                source.selector, node.id
+            )
+        })?;
+
+        let Some(operation) = compiled.executor_operation.as_deref() else {
+            continue;
+        };
+        let Some(required_arg_keys) =
+            vizier_core::workflow_template::executor_non_empty_any_of_arg_keys(operation)
+        else {
+            continue;
+        };
+
+        let has_required_value = required_arg_keys.iter().any(|key| {
+            node.args
+                .get(*key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        });
+        if has_required_value {
+            continue;
+        }
+
+        let node_arg_keys = required_arg_keys
+            .iter()
+            .filter(|key| node.args.contains_key(**key))
+            .map(|key| (*key).to_string())
+            .collect::<Vec<_>>();
+
+        let mut required_inputs = node_arg_keys
+            .iter()
+            .filter(|key| declared_params.contains(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if required_inputs.is_empty() {
+            required_inputs = if node_arg_keys.is_empty() {
+                required_arg_keys
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                node_arg_keys
+            };
+        }
+        required_inputs.sort_by_key(|key| {
+            input_spec
+                .positional
+                .iter()
+                .position(|entry| entry == key)
+                .unwrap_or(usize::MAX)
+        });
+
+        return Err(build_entrypoint_input_error(
+            source,
+            input_spec,
+            positional_values,
+            &node.id,
+            operation,
+            &required_inputs,
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+fn build_entrypoint_input_error(
+    source: &ResolvedWorkflowSource,
+    input_spec: &WorkflowTemplateInputSpec,
+    positional_values: &[String],
+    node_id: &str,
+    operation: &str,
+    required_inputs: &[String],
+) -> String {
+    let flow_label = source
+        .command_alias
+        .as_ref()
+        .map(|alias| alias.as_str().to_string())
+        .unwrap_or_else(|| source.selector.clone());
+    let required_flags = required_inputs
+        .iter()
+        .map(|param| {
+            if let Some(alias) = preferred_cli_alias_for_param(input_spec, param)
+                && alias != param
+            {
+                return format!(
+                    "`--{}` (maps to `{}`)",
+                    kebab_case_key(alias),
+                    kebab_case_key(param)
+                );
+            }
+            format!("`--{}`", kebab_case_key(param))
+        })
+        .collect::<Vec<_>>();
+
+    let mut lines = vec![format!(
+        "workflow `{}` entry node `{}` (`{operation}`) requires at least one non-empty input: {}",
+        flow_label,
+        node_id,
+        required_flags.join(", ")
+    )];
+
+    if !positional_values.is_empty() && !input_spec.positional.is_empty() {
+        let mapped = positional_values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let key = input_spec
+                    .positional
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or("extra_input");
+                format!("{}=`{value}`", cli_label_for_param(input_spec, key))
+            })
+            .collect::<Vec<_>>();
+        lines.push(format!("received positional inputs: {}", mapped.join(", ")));
+    }
+
+    let named_param = required_inputs
+        .iter()
+        .min_by_key(|param| {
+            input_spec
+                .positional
+                .iter()
+                .position(|entry| entry == *param)
+                .unwrap_or(usize::MAX)
+        })
+        .or_else(|| required_inputs.first());
+
+    let named_example = named_param
+        .map(|param| {
+            format!(
+                "vizier run {} --{} {}",
+                flow_label,
+                kebab_case_key(&cli_label_for_param(input_spec, param)),
+                cli_placeholder_for_param(input_spec, param)
+            )
+        })
+        .unwrap_or_else(|| format!("vizier run {flow_label}"));
+
+    let positional_example = required_inputs
+        .iter()
+        .filter_map(|param| {
+            input_spec
+                .positional
+                .iter()
+                .position(|entry| entry == param)
+                .map(|index| (param, index))
+        })
+        .min_by_key(|(_, index)| *index)
+        .map(|(_, index)| {
+            let placeholders = input_spec.positional[..=index]
+                .iter()
+                .map(|param| cli_placeholder_for_param(input_spec, param))
+                .collect::<Vec<_>>();
+            format!("vizier run {} {}", flow_label, placeholders.join(" "))
+        });
+
+    lines.push("examples:".to_string());
+    lines.push(format!("  {named_example}"));
+    if let Some(example) = positional_example
+        && example != named_example
+    {
+        lines.push(format!("  {example}"));
+    }
+
+    lines.join("\n")
+}
+
+fn preferred_cli_alias_for_param<'a>(
+    input_spec: &'a WorkflowTemplateInputSpec,
+    param: &str,
+) -> Option<&'a str> {
+    input_spec.named.iter().find_map(|(alias, target)| {
+        if target == param {
+            Some(alias.as_str())
+        } else {
+            None
+        }
+    })
+}
+
+fn cli_label_for_param(input_spec: &WorkflowTemplateInputSpec, param: &str) -> String {
+    preferred_cli_alias_for_param(input_spec, param)
+        .unwrap_or(param)
+        .to_string()
+}
+
+fn cli_placeholder_for_param(input_spec: &WorkflowTemplateInputSpec, param: &str) -> String {
+    format!(
+        "<{}>",
+        kebab_case_key(&cli_label_for_param(input_spec, param))
+    )
+}
+
+fn kebab_case_key(value: &str) -> String {
+    value.trim().replace('_', "-")
 }
 
 fn resolve_root_jobs(
@@ -484,6 +792,64 @@ mod tests {
         let err = parse_set_overrides(&["missing".to_string()]).expect_err("expected error");
         assert!(
             err.to_string().contains("expected KEY=VALUE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn test_source() -> ResolvedWorkflowSource {
+        ResolvedWorkflowSource {
+            selector: "draft".to_string(),
+            path: std::path::PathBuf::from(".vizier/workflow/draft.toml"),
+            command_alias: None,
+        }
+    }
+
+    #[test]
+    fn apply_named_input_aliases_maps_alias_to_declared_param() {
+        let source = test_source();
+        let input_spec = WorkflowTemplateInputSpec {
+            params: vec!["slug".to_string(), "spec_file".to_string()],
+            positional: vec![],
+            named: BTreeMap::from([
+                ("name".to_string(), "slug".to_string()),
+                ("file".to_string(), "spec_file".to_string()),
+            ]),
+        };
+        let mut overrides = BTreeMap::from([
+            ("name".to_string(), "my-change".to_string()),
+            ("file".to_string(), "specs/DEFAULT.md".to_string()),
+        ]);
+
+        apply_named_input_aliases(&source, &input_spec, &mut overrides).expect("map named aliases");
+
+        assert_eq!(overrides.get("slug"), Some(&"my-change".to_string()));
+        assert_eq!(
+            overrides.get("spec_file"),
+            Some(&"specs/DEFAULT.md".to_string())
+        );
+        assert!(
+            !overrides.contains_key("name") && !overrides.contains_key("file"),
+            "aliases should be replaced by canonical params: {overrides:?}"
+        );
+    }
+
+    #[test]
+    fn apply_named_input_aliases_rejects_alias_plus_explicit_target() {
+        let source = test_source();
+        let input_spec = WorkflowTemplateInputSpec {
+            params: vec!["slug".to_string()],
+            positional: vec![],
+            named: BTreeMap::from([("name".to_string(), "slug".to_string())]),
+        };
+        let mut overrides = BTreeMap::from([
+            ("name".to_string(), "alpha".to_string()),
+            ("slug".to_string(), "beta".to_string()),
+        ]);
+
+        let err =
+            apply_named_input_aliases(&source, &input_spec, &mut overrides).expect_err("conflict");
+        assert!(
+            err.to_string().contains("provided multiple ways"),
             "unexpected error: {err}"
         );
     }

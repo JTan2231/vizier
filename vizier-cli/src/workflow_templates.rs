@@ -45,6 +45,8 @@ struct WorkflowTemplateFile {
 struct WorkflowTemplateCli {
     #[serde(default)]
     positional: Vec<String>,
+    #[serde(default)]
+    named: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -192,6 +194,7 @@ struct ImportedStage {
 pub(crate) struct WorkflowTemplateInputSpec {
     pub params: Vec<String>,
     pub positional: Vec<String>,
+    pub named: BTreeMap<String, String>,
 }
 
 pub(crate) fn resolve_workflow_source(
@@ -271,9 +274,18 @@ pub(crate) fn load_template_input_spec(
 ) -> Result<WorkflowTemplateInputSpec, Box<dyn std::error::Error>> {
     let mut stack = Vec::<PathBuf>::new();
     let template = load_template_recursive(&source.path, &mut stack)?;
+    let WorkflowTemplateCli {
+        positional,
+        named: raw_named,
+    } = template.cli;
+    let mut named = BTreeMap::new();
+    for (alias, target) in raw_named {
+        named.insert(alias.trim().replace('-', "_"), target.trim().to_string());
+    }
     Ok(WorkflowTemplateInputSpec {
         params: template.params.keys().cloned().collect(),
-        positional: template.cli.positional,
+        positional,
+        named,
     })
 }
 

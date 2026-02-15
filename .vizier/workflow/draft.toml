@@ -4,6 +4,10 @@ version = "v2"
 [cli]
 positional = ["spec_file", "slug", "branch"]
 
+[cli.named]
+file = "spec_file"
+name = "slug"
+
 [params]
 branch = ""
 commit_message = "chore: workflow stage commit"

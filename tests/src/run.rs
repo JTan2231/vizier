@@ -525,6 +525,75 @@ script = \"echo ${first}-${second} > positional.txt\"\n",
 }
 
 #[test]
+fn test_run_stage_named_alias_flags_map_to_params() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--name",
+            "alias-flag-smoke",
+            "--file",
+            "specs/DEFAULT.md",
+            "--set",
+            "prompt_text=alias mapping smoke",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    assert_eq!(
+        manifest
+            .pointer("/nodes/worktree_prepare/args/slug")
+            .and_then(Value::as_str),
+        Some("alias-flag-smoke"),
+        "expected --name to map to worktree slug: {manifest}"
+    );
+    assert_eq!(
+        manifest
+            .pointer("/nodes/persist_plan/args/spec_file")
+            .and_then(Value::as_str),
+        Some("specs/DEFAULT.md"),
+        "expected --file to map to persist_plan spec_file: {manifest}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_entrypoint_preflight_reports_missing_root_inputs() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let output = repo.vizier_output(&["run", "draft", "specs/DEFAULT.md"])?;
+    assert!(
+        !output.status.success(),
+        "draft run should fail when required root-node inputs are missing"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("entry node `worktree_prepare`")
+            && stderr.contains("requires at least one non-empty input")
+            && stderr.contains("--name")
+            && stderr.contains("vizier run draft <file> <name>"),
+        "expected actionable entrypoint guidance, got: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
@@ -535,6 +604,9 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             &[
                 "version = \"v2\"",
                 "positional = [\"spec_file\", \"slug\", \"branch\"]",
+                "[cli.named]",
+                "file = \"spec_file\"",
+                "name = \"slug\"",
                 "cap.env.builtin.worktree.prepare",
                 "slug = \"${slug}\"",
                 "cap.env.builtin.prompt.resolve",
@@ -548,6 +620,8 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             &[
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\"]",
+                "[cli.named]",
+                "name = \"slug\"",
                 "cap.env.builtin.worktree.prepare",
                 "slug = \"${slug}\"",
                 "cap.env.builtin.prompt.resolve",
@@ -561,6 +635,10 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
             &[
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\", \"target_branch\"]",
+                "[cli.named]",
+                "name = \"slug\"",
+                "source = \"branch\"",
+                "target = \"target_branch\"",
                 "cap.env.builtin.git.integrate_plan_branch",
                 "control.gate.conflict_resolution",
                 "control.gate.cicd",
