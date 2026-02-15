@@ -3793,6 +3793,15 @@ fn execute_workflow_executor(
                     Some(1),
                 ));
             }
+            let plan_rel_text = plan_rel.to_string_lossy().replace('\\', "/");
+            if let Err(err) =
+                vizier_core::vcs::stage_paths_allow_missing_in(&execution_root, &[&plan_rel_text])
+            {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("plan.persist failed to stage {plan_rel_text}: {err}"),
+                    Some(1),
+                ));
+            }
 
             let now = Utc::now().to_rfc3339();
             let summary = spec_text
@@ -9459,6 +9468,11 @@ mod tests {
         seed_repo(&repo).expect("seed repo");
         let project_root = temp.path();
         let jobs_root = project_root.join(".vizier/jobs");
+        fs::write(
+            project_root.join(".gitignore"),
+            ".vizier/implementation-plans\n",
+        )
+        .expect("write gitignore");
 
         enqueue_job(
             project_root,
@@ -9503,8 +9517,16 @@ mod tests {
                 .any(|artifact| matches!(artifact, JobArtifact::PlanDoc { .. })),
             "expected plan doc artifact"
         );
-        let plan_doc = project_root.join(".vizier/implementation-plans/runtime-plan.md");
+        let plan_rel = ".vizier/implementation-plans/runtime-plan.md";
+        let plan_doc = project_root.join(plan_rel);
         assert!(plan_doc.exists(), "expected persisted plan doc");
+        let staged = git_output(project_root, &["diff", "--cached", "--name-only"]);
+        assert!(staged.status.success(), "read staged paths");
+        let staged_paths = String::from_utf8_lossy(&staged.stdout);
+        assert!(
+            staged_paths.lines().any(|line| line == plan_rel),
+            "expected plan doc staged despite ignore rule: {staged_paths}"
+        );
         let state_ref = result
             .payload_refs
             .iter()

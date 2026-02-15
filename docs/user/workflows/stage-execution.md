@@ -50,6 +50,7 @@ merge = "file:.vizier/workflows/merge.toml"
 - `vizier run` accepts template params via `--set key=value`, named flags (`--spec-file`, `--slug`, ...), or ordered positional inputs declared by template `[cli].positional`.
 - Named flags map kebab-case to snake_case (`--spec-file` -> `spec_file`); templates may also define `[cli].named` aliases for friendlier entry labels (for example, stage draft supports `--name` -> `slug` and `--file` -> `spec_file`).
 - Stage draft snapshots `spec_file` contents into `persist_plan.args.spec_text` at enqueue time when `spec_source=inline` and `spec_text` is empty, so uncommitted local specs can be used safely.
+- Stage `plan.persist` now explicitly stages the generated `.vizier/implementation-plans/<slug>.md` path via VCS helpers, so draft plans remain commit-visible even when `.vizier/implementation-plans` is ignored.
 - Stage prompt files are hardcoded in the shipped templates:
   - draft: `.vizier/prompts/DRAFT_PROMPTS.md`
   - approve: `.vizier/prompts/APPROVE_PROMPTS.md`

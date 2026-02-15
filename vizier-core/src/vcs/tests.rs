@@ -614,6 +614,27 @@ fn stage_paths_allow_missing_stages_deletions() {
     );
 }
 
+#[test]
+fn stage_paths_allow_missing_explicitly_stages_ignored_file() {
+    let repo = TestRepo::new();
+
+    repo.write("README.md", "base\n");
+    repo.write(".gitignore", ".vizier/implementation-plans\n");
+    raw_commit(repo.repo(), "base");
+
+    let plan_path = ".vizier/implementation-plans/alpha.md";
+    repo.write(plan_path, "# alpha\n");
+    stage_paths_allow_missing_in(repo.path(), &[plan_path]).expect("stage ignored plan path");
+
+    let staged = snapshot_staged(repo.path_str()).expect("snapshot staged");
+    assert!(
+        staged
+            .iter()
+            .any(|s| matches!(s.kind, super::StagedKind::Added) && s.path == plan_path),
+        "expected ignored plan file to be staged when path is explicit"
+    );
+}
+
 // --- unstage: specific paths & entire index (born HEAD) ------------------
 
 #[test]
