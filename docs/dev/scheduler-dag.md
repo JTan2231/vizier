@@ -44,7 +44,8 @@ exactly one such artifact as input.
   - `save-input.patch` remains historical compatibility material from removed
     command families.
   - `.vizier/jobs/runs/<run_id>.json` stores queue-time workflow runtime manifests for compiled template runs.
-- **Scheduler core** lives in `vizier-cli/src/jobs.rs` (`scheduler_tick` and helpers).
+- **Scheduler core** lives in `vizier-core/src/jobs/mod.rs` (`scheduler_tick` and helpers).
+- **CLI jobs module** (`vizier-cli/src/jobs.rs`) is a compatibility re-export shim over `vizier_core::jobs`.
 - **CLI orchestration** renders/operates scheduler state through
   `vizier-cli/src/cli/jobs_view.rs`.
 - **Schedule metadata** is stored per job: `after`, `dependencies`, `locks`,

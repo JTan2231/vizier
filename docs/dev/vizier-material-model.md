@@ -262,7 +262,7 @@ Ephemeral operational artifacts:
 ## Source Anchors
 
 - Plan schema/front matter: `vizier-cli/src/plan.rs`
-- Scheduler job records/metadata: `vizier-cli/src/jobs.rs`, `docs/dev/scheduler-dag.md`
+- Scheduler job records/metadata: `vizier-core/src/jobs/mod.rs`, `docs/dev/scheduler-dag.md`
 - Workflow capability taxonomy + validator: `vizier-kernel/src/workflow_template.rs`
 - Session schema/path: `vizier-core/src/auditor.rs`
 - Clean-worktree exclusions: `vizier-core/src/vcs/status.rs`
