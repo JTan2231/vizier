@@ -342,6 +342,54 @@ retries = 3
     }
 
     #[test]
+    fn test_workflow_global_workflows_defaults() {
+        let cfg = Config::default();
+        assert!(cfg.workflow.global_workflows.enabled);
+        assert!(
+            cfg.workflow.global_workflows.dir.as_os_str().is_empty(),
+            "default global workflow dir override should be empty"
+        );
+    }
+
+    #[test]
+    fn test_workflow_global_workflows_config_from_toml() {
+        let toml = r#"
+[workflow.global_workflows]
+enabled = false
+dir = "./global-workflows"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = load_config_from_toml(file.path().to_path_buf())
+            .expect("parse workflow.global_workflows config");
+        assert!(!cfg.workflow.global_workflows.enabled);
+        assert_eq!(
+            cfg.workflow.global_workflows.dir,
+            file.path()
+                .parent()
+                .expect("config parent")
+                .join("global-workflows")
+        );
+    }
+
+    #[test]
+    fn test_workflow_global_workflows_empty_dir_uses_default_location() {
+        let toml = r#"
+[workflow.global_workflows]
+dir = "   "
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = load_config_from_toml(file.path().to_path_buf())
+            .expect("parse workflow.global_workflows empty dir");
+        assert!(cfg.workflow.global_workflows.enabled);
+        assert!(
+            cfg.workflow.global_workflows.dir.as_os_str().is_empty(),
+            "blank dir should keep default global workflow location resolution"
+        );
+    }
+
+    #[test]
     fn test_approve_stop_condition_config_from_toml() {
         let toml = r#"
 [approve.stop_condition]

@@ -13,10 +13,13 @@ Environment variables:
   BINDIR   Install dir for the vizier binary (default: $PREFIX/bin)
   DATADIR  Install dir for shared data (default: $PREFIX/share)
   MANDIR   Install dir for man pages (default: $PREFIX/share/man)
+  WORKFLOWSDIR  Install dir for global workflow templates
+               (default: <base_config_dir>/vizier/workflows)
 
 Install layout:
   $BINDIR/vizier
   $DATADIR/vizier/agents/<label>/{agent.sh,filter.sh,...}
+  $WORKFLOWSDIR/{draft.toml,approve.toml,merge.toml}
   $MANDIR/man1/*.1
   $MANDIR/man5/*.5
   $MANDIR/man7/*.7
@@ -36,6 +39,30 @@ say() {
 die() {
   printf 'error: %s\n' "$*" 1>&2
   exit 1
+}
+
+resolve_base_config_dir() {
+  if [ -n "${VIZIER_CONFIG_DIR:-}" ]; then
+    printf '%s\n' "$VIZIER_CONFIG_DIR"
+    return 0
+  fi
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    printf '%s\n' "$XDG_CONFIG_HOME"
+    return 0
+  fi
+  if [ -n "${APPDATA:-}" ]; then
+    printf '%s\n' "$APPDATA"
+    return 0
+  fi
+  if [ -n "${HOME:-}" ]; then
+    printf '%s\n' "$HOME/.config"
+    return 0
+  fi
+  if [ -n "${USERPROFILE:-}" ]; then
+    printf '%s\n' "$USERPROFILE/AppData/Roaming"
+    return 0
+  fi
+  return 1
 }
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
@@ -72,9 +99,20 @@ DESTDIR=${DESTDIR:-}
 BINDIR=${BINDIR:-"$PREFIX/bin"}
 DATADIR=${DATADIR:-"$PREFIX/share"}
 MANDIR=${MANDIR:-"$PREFIX/share/man"}
+if base_config_dir=$(resolve_base_config_dir); then
+  default_workflows_dir="$base_config_dir/vizier/workflows"
+else
+  default_workflows_dir=""
+fi
+WORKFLOWSDIR=${WORKFLOWSDIR:-"$default_workflows_dir"}
+if [ -z "$WORKFLOWSDIR" ]; then
+  die "unable to resolve WORKFLOWSDIR default (set WORKFLOWSDIR or one of VIZIER_CONFIG_DIR/XDG_CONFIG_HOME/APPDATA/HOME/USERPROFILE)"
+fi
 
 agents_src="examples/agents"
 man_src_root="docs/man"
+workflow_src_root=".vizier/workflows"
+workflow_seed_files="draft.toml approve.toml merge.toml"
 
 manifest_rel="$DATADIR/vizier/install-manifest.txt"
 manifest_path="$DESTDIR$manifest_rel"
@@ -104,7 +142,7 @@ check_install_permissions() {
   fi
 
   unwritable=""
-  for path in "$DESTDIR$BINDIR" "$DESTDIR$DATADIR" "$DESTDIR$MANDIR"; do
+  for path in "$DESTDIR$BINDIR" "$DESTDIR$DATADIR" "$DESTDIR$MANDIR" "$DESTDIR$WORKFLOWSDIR"; do
     if ! is_writable_parent "$path"; then
       unwritable="${unwritable}  $path\n"
     fi
@@ -168,6 +206,7 @@ if [ "$uninstall" -eq 1 ]; then
   rmdir "$DESTDIR$DATADIR/vizier/agents/claude" 2>/dev/null || true
   rmdir "$DESTDIR$DATADIR/vizier/agents" 2>/dev/null || true
   rmdir "$DESTDIR$DATADIR/vizier" 2>/dev/null || true
+  rmdir "$DESTDIR$WORKFLOWSDIR" 2>/dev/null || true
 
   say "Uninstalled files listed in $manifest_rel"
   exit 0
@@ -180,6 +219,16 @@ fi
 if [ ! -d "$man_src_root" ]; then
   die "missing man pages directory: $man_src_root"
 fi
+
+if [ ! -d "$workflow_src_root" ]; then
+  die "missing workflow templates directory: $workflow_src_root"
+fi
+
+for workflow_file in $workflow_seed_files; do
+  if [ ! -f "$workflow_src_root/$workflow_file" ]; then
+    die "missing workflow seed template: $workflow_src_root/$workflow_file"
+  fi
+done
 
 man_files=$(find "$man_src_root" -type f -path "$man_src_root/man*/*" | sort)
 if [ -z "$man_files" ]; then
@@ -208,6 +257,9 @@ fi
 
 installed_paths=""
 installed_man_targets=""
+installed_workflow_targets=""
+retained_workflow_targets=""
+skipped_workflow_targets=""
 
 record_manifest_path() {
   installed_paths="${installed_paths}${1}\n"
@@ -231,6 +283,26 @@ for src in $man_files; do
   installed_man_targets="${installed_man_targets}  $dst_rel\n"
 done
 
+for workflow_file in $workflow_seed_files; do
+  src="$workflow_src_root/$workflow_file"
+  dst_rel="$WORKFLOWSDIR/$workflow_file"
+  dst="$DESTDIR$dst_rel"
+
+  if [ -e "$dst" ]; then
+    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+      record_manifest_path "$dst_rel"
+      retained_workflow_targets="${retained_workflow_targets}  $dst_rel\n"
+    else
+      skipped_workflow_targets="${skipped_workflow_targets}  $dst_rel\n"
+    fi
+    continue
+  fi
+
+  install_file 0644 "$src" "$dst"
+  record_manifest_path "$dst_rel"
+  installed_workflow_targets="${installed_workflow_targets}  $dst_rel\n"
+done
+
 install_dir "$(dirname "$manifest_path")"
 if [ "$dry_run" -eq 1 ]; then
   say "+ write manifest $manifest_rel"
@@ -241,6 +313,18 @@ fi
 say "Installed:"
 say "  $BINDIR/vizier"
 say "  $DATADIR/vizier/agents/*"
+if [ -n "$installed_workflow_targets" ]; then
+  say "Global workflow templates (installed):"
+  printf "%b" "$installed_workflow_targets"
+fi
+if [ -n "$retained_workflow_targets" ]; then
+  say "Global workflow templates (retained unchanged):"
+  printf "%b" "$retained_workflow_targets"
+fi
+if [ -n "$skipped_workflow_targets" ]; then
+  say "Global workflow templates (preserved existing):"
+  printf "%b" "$skipped_workflow_targets"
+fi
 say "Man pages:"
 printf "%b" "$installed_man_targets"
 say "Manifest:"

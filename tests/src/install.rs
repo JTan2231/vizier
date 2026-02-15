@@ -83,6 +83,10 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         &root.join("examples/agents"),
     )?;
     copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+    copy_dir_recursive(
+        &repo_root().join(".vizier/workflows"),
+        &root.join(".vizier/workflows"),
+    )?;
 
     let bin_dir = tmp.path().join("bin");
     write_cargo_stub(&bin_dir)?;
@@ -108,6 +112,10 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
                 ("CARGO_TARGET_DIR", cargo_target.as_os_str()),
                 ("DESTDIR", stage.as_os_str()),
                 ("PREFIX", Path::new("/usr/local").as_os_str()),
+                (
+                    "WORKFLOWSDIR",
+                    Path::new("/usr/local/share/vizier/workflows").as_os_str(),
+                ),
             ],
         )?;
         assert!(
@@ -135,9 +143,18 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         "usr/local/share/vizier/agents/claude/agent.sh",
         "usr/local/share/vizier/agents/claude/filter.sh",
     ];
+    let expected_workflows = [
+        "usr/local/share/vizier/workflows/draft.toml",
+        "usr/local/share/vizier/workflows/approve.toml",
+        "usr/local/share/vizier/workflows/merge.toml",
+    ];
 
     assert!(expected_exe.is_file(), "missing {}", expected_exe.display());
     for rel in expected_man_pages {
+        let path = stage.join(rel);
+        assert!(path.is_file(), "missing {}", path.display());
+    }
+    for rel in expected_workflows {
         let path = stage.join(rel);
         assert!(path.is_file(), "missing {}", path.display());
     }
@@ -156,6 +173,10 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
             assert_mode(&path, 0o755)?;
         }
         for rel in expected_man_pages {
+            let path = stage.join(rel);
+            assert_mode(&path, 0o644)?;
+        }
+        for rel in expected_workflows {
             let path = stage.join(rel);
             assert_mode(&path, 0o644)?;
         }
@@ -178,6 +199,13 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         manifest_lines.contains("/usr/local/share/vizier/agents/codex/agent.sh"),
         "manifest missing codex shim: {manifest}"
     );
+    for rel in expected_workflows {
+        let manifest_path = format!("/{rel}");
+        assert!(
+            manifest_lines.contains(manifest_path.as_str()),
+            "manifest missing workflow template entry {manifest_path}: {manifest}"
+        );
+    }
 
     let uninstall = run_install_sh(
         &root,
@@ -186,6 +214,10 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
             ("PATH", joined_path.as_os_str()),
             ("DESTDIR", stage.as_os_str()),
             ("PREFIX", Path::new("/usr/local").as_os_str()),
+            (
+                "WORKFLOWSDIR",
+                Path::new("/usr/local/share/vizier/workflows").as_os_str(),
+            ),
         ],
     )?;
     assert!(
@@ -210,6 +242,14 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         assert!(
             !path.exists(),
             "expected man page removed: {}",
+            path.display()
+        );
+    }
+    for rel in expected_workflows {
+        let path = stage.join(rel);
+        assert!(
+            !path.exists(),
+            "expected workflow template removed: {}",
             path.display()
         );
     }
@@ -242,6 +282,10 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
         &root.join("examples/agents"),
     )?;
     copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+    copy_dir_recursive(
+        &repo_root().join(".vizier/workflows"),
+        &root.join(".vizier/workflows"),
+    )?;
 
     let stage = tmp.path().join("stage");
     let cargo_target = tmp.path().join("cargo-target");
@@ -254,6 +298,10 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
             ("DESTDIR", stage.as_os_str()),
             ("CARGO_TARGET_DIR", cargo_target.as_os_str()),
             ("PREFIX", Path::new("/usr/local").as_os_str()),
+            (
+                "WORKFLOWSDIR",
+                Path::new("/usr/local/share/vizier/workflows").as_os_str(),
+            ),
         ],
     )?;
     assert!(
@@ -269,10 +317,13 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
         "/usr/local/share/man/man1/vizier-jobs.1",
         "/usr/local/share/man/man5/vizier-config.5",
         "/usr/local/share/man/man7/vizier-workflow.7",
+        "/usr/local/share/vizier/workflows/draft.toml",
+        "/usr/local/share/vizier/workflows/approve.toml",
+        "/usr/local/share/vizier/workflows/merge.toml",
     ] {
         assert!(
             stdout.contains(rel),
-            "dry-run output should include planned man install target {rel}: {stdout}"
+            "dry-run output should include planned install target {rel}: {stdout}"
         );
     }
 
@@ -304,6 +355,10 @@ fn test_install_sh_requires_writable_prefix() -> TestResult {
         &root.join("examples/agents"),
     )?;
     copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+    copy_dir_recursive(
+        &repo_root().join(".vizier/workflows"),
+        &root.join(".vizier/workflows"),
+    )?;
 
     let prefix = tmp.path().join("prefix");
     fs::create_dir_all(&prefix)?;
@@ -311,7 +366,15 @@ fn test_install_sh_requires_writable_prefix() -> TestResult {
     perms.set_mode(0o555);
     fs::set_permissions(&prefix, perms)?;
 
-    let output = run_install_sh(&root, &[], &[("PREFIX", prefix.as_os_str())])?;
+    let workflows_dir = prefix.join("share/vizier/workflows");
+    let output = run_install_sh(
+        &root,
+        &[],
+        &[
+            ("PREFIX", prefix.as_os_str()),
+            ("WORKFLOWSDIR", workflows_dir.as_os_str()),
+        ],
+    )?;
     assert!(
         !output.status.success(),
         "expected install.sh to fail for unwritable prefix: status={:?}\nstdout={}\nstderr={}",
@@ -329,5 +392,121 @@ fn test_install_sh_requires_writable_prefix() -> TestResult {
         stderr.contains("sudo ./install.sh"),
         "expected sudo suggestion in stderr: {stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("src");
+    fs::create_dir_all(&root)?;
+
+    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
+    copy_dir_recursive(
+        &repo_root().join("examples/agents"),
+        &root.join("examples/agents"),
+    )?;
+    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+    copy_dir_recursive(
+        &repo_root().join(".vizier/workflows"),
+        &root.join(".vizier/workflows"),
+    )?;
+
+    let bin_dir = tmp.path().join("bin");
+    write_cargo_stub(&bin_dir)?;
+
+    let stage = tmp.path().join("stage");
+    let cargo_target = tmp.path().join("cargo-target");
+    fs::create_dir_all(&stage)?;
+    let workflows_dir = stage.join("usr/local/share/vizier/workflows");
+    fs::create_dir_all(&workflows_dir)?;
+    fs::write(workflows_dir.join("draft.toml"), "custom draft workflow\n")?;
+
+    let mut paths = vec![bin_dir.clone()];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    let joined_path = env::join_paths(paths)?;
+
+    let output = run_install_sh(
+        &root,
+        &[],
+        &[
+            ("PATH", joined_path.as_os_str()),
+            ("CARGO_TARGET_DIR", cargo_target.as_os_str()),
+            ("DESTDIR", stage.as_os_str()),
+            ("PREFIX", Path::new("/usr/local").as_os_str()),
+            (
+                "WORKFLOWSDIR",
+                Path::new("/usr/local/share/vizier/workflows").as_os_str(),
+            ),
+        ],
+    )?;
+    assert!(
+        output.status.success(),
+        "install.sh failed while preserving workflow template: status={:?}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(workflows_dir.join("draft.toml"))?,
+        "custom draft workflow\n",
+        "existing workflow should be preserved"
+    );
+    assert!(workflows_dir.join("approve.toml").is_file());
+    assert!(workflows_dir.join("merge.toml").is_file());
+
+    let manifest = fs::read_to_string(stage.join("usr/local/share/vizier/install-manifest.txt"))?;
+    let manifest_lines: HashSet<&str> = manifest.lines().collect();
+    assert!(
+        !manifest_lines.contains("/usr/local/share/vizier/workflows/draft.toml"),
+        "preserved existing workflow should not be tracked for uninstall: {manifest}"
+    );
+    assert!(
+        manifest_lines.contains("/usr/local/share/vizier/workflows/approve.toml"),
+        "installed approve workflow should be tracked: {manifest}"
+    );
+    assert!(
+        manifest_lines.contains("/usr/local/share/vizier/workflows/merge.toml"),
+        "installed merge workflow should be tracked: {manifest}"
+    );
+
+    let uninstall = run_install_sh(
+        &root,
+        &["--uninstall"],
+        &[
+            ("PATH", joined_path.as_os_str()),
+            ("DESTDIR", stage.as_os_str()),
+            ("PREFIX", Path::new("/usr/local").as_os_str()),
+            (
+                "WORKFLOWSDIR",
+                Path::new("/usr/local/share/vizier/workflows").as_os_str(),
+            ),
+        ],
+    )?;
+    assert!(
+        uninstall.status.success(),
+        "install.sh --uninstall failed: status={:?}\nstdout={}\nstderr={}",
+        uninstall.status,
+        String::from_utf8_lossy(&uninstall.stdout),
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(workflows_dir.join("draft.toml"))?,
+        "custom draft workflow\n",
+        "preserved workflow should remain after uninstall"
+    );
+    assert!(
+        !workflows_dir.join("approve.toml").exists(),
+        "installed approve workflow should be removed by uninstall"
+    );
+    assert!(
+        !workflows_dir.join("merge.toml").exists(),
+        "installed merge workflow should be removed by uninstall"
+    );
+
     Ok(())
 }

@@ -774,6 +774,12 @@ pub struct BackgroundConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkflowGlobalWorkflowsConfig {
+    pub enabled: bool,
+    pub dir: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkflowTemplateConfig {
     pub save: String,
     pub draft: String,
@@ -788,6 +794,7 @@ pub struct WorkflowTemplateConfig {
 pub struct WorkflowConfig {
     pub no_commit_default: bool,
     pub background: BackgroundConfig,
+    pub global_workflows: WorkflowGlobalWorkflowsConfig,
     pub templates: WorkflowTemplateConfig,
 }
 
@@ -1106,6 +1113,12 @@ pub struct BackgroundLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkflowGlobalWorkflowsLayer {
+    pub enabled: Option<bool>,
+    pub dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkflowTemplateLayer {
     pub save: Option<String>,
     pub draft: Option<String>,
@@ -1120,6 +1133,7 @@ pub struct WorkflowTemplateLayer {
 pub struct WorkflowLayer {
     pub no_commit_default: Option<bool>,
     pub background: BackgroundLayer,
+    pub global_workflows: WorkflowGlobalWorkflowsLayer,
     pub templates: WorkflowTemplateLayer,
 }
 

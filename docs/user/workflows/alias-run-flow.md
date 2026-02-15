@@ -32,7 +32,7 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 - `vizier run approve --set slug=my-change --set branch=draft/my-change --follow`
 - `vizier run merge --set slug=my-change --set branch=draft/my-change --set target_branch=master --follow`
 - `vizier run develop`
-- `vizier run file:.vizier/workflow/custom.toml --set key=value`
+- `vizier run file:.vizier/workflows/custom.toml --set key=value`
 - `vizier run develop --after <job-id> --require-approval`
 - `vizier run develop --follow --format json`
 
@@ -40,9 +40,9 @@ Recommended repo alias map:
 
 ```toml
 [commands]
-draft = "file:.vizier/workflow/draft.toml"
-approve = "file:.vizier/workflow/approve.toml"
-merge = "file:.vizier/workflow/merge.toml"
+draft = "file:.vizier/workflows/draft.toml"
+approve = "file:.vizier/workflows/approve.toml"
+merge = "file:.vizier/workflows/merge.toml"
 develop = "file:.vizier/develop.toml"
 ```
 

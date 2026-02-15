@@ -27,6 +27,10 @@ Primary user-facing commands are:
 .PP
 \fBvizier cd\fR and \fBvizier clean\fR remain exposed but return deprecation
 errors in scheduler-managed environments.
+.PP
+\fBvizier run <flow>\fR resolves in this order: explicit file path, configured
+\fB[commands]\fR alias, selector identity, repo fallback files, then implicit
+global workflow aliases from \fB[workflow.global_workflows]\fR when enabled.
 .SH JOB OPERATIONS
 Use \fBvizier jobs\fR to inspect and control background job records:
 .IP "\(bu" 2

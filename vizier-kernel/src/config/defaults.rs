@@ -264,6 +264,15 @@ impl Default for WorkflowTemplateConfig {
     }
 }
 
+impl Default for WorkflowGlobalWorkflowsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dir: std::path::PathBuf::new(),
+        }
+    }
+}
+
 impl Default for MergeCicdGateConfig {
     fn default() -> Self {
         Self {

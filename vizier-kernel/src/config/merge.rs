@@ -296,6 +296,18 @@ impl BackgroundConfig {
     }
 }
 
+impl WorkflowGlobalWorkflowsConfig {
+    fn apply_layer(&mut self, layer: &WorkflowGlobalWorkflowsLayer) {
+        if let Some(enabled) = layer.enabled {
+            self.enabled = enabled;
+        }
+
+        if let Some(dir) = layer.dir.as_ref() {
+            self.dir = dir.clone();
+        }
+    }
+}
+
 impl WorkflowTemplateConfig {
     fn apply_layer(&mut self, layer: &WorkflowTemplateLayer) {
         if let Some(value) = layer.save.as_ref() {
@@ -329,6 +341,7 @@ impl WorkflowConfig {
         }
 
         self.background.apply_layer(&layer.background);
+        self.global_workflows.apply_layer(&layer.global_workflows);
         self.templates.apply_layer(&layer.templates);
     }
 }

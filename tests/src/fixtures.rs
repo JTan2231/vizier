@@ -432,6 +432,11 @@ fn seed_vizier_dir(source_repo_root: &Path, target_repo_root: &Path) -> io::Resu
         copy_dir_recursive(&source_workflow, &target_vizier.join("workflow"))?;
     }
 
+    let source_workflows = source_vizier.join("workflows");
+    if source_workflows.is_dir() {
+        copy_dir_recursive(&source_workflows, &target_vizier.join("workflows"))?;
+    }
+
     let source_prompts = source_vizier.join("prompts");
     if source_prompts.is_dir() {
         copy_dir_recursive(&source_prompts, &target_vizier.join("prompts"))?;

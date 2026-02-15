@@ -208,7 +208,7 @@ pub(crate) fn resolve_workflow_source(
     }
 
     if is_explicit_file_source(flow) {
-        let path = resolve_source_path(project_root, flow)?;
+        let path = resolve_source_path(project_root, cfg, flow)?;
         return Ok(ResolvedWorkflowSource {
             selector: normalize_selector_from_path(project_root, flow, &path),
             path,
@@ -220,7 +220,7 @@ pub(crate) fn resolve_workflow_source(
         && let Some(selector) = cfg.template_selector_for_alias(&alias)
     {
         let selector_text = selector.to_string();
-        let path = resolve_selector_path(project_root, &selector_text)?.ok_or_else(|| {
+        let path = resolve_selector_path(project_root, cfg, &selector_text)?.ok_or_else(|| {
             format!(
                 "alias `{}` resolves to `{}` but no readable template source was found",
                 alias, selector_text
@@ -233,7 +233,7 @@ pub(crate) fn resolve_workflow_source(
         });
     }
 
-    if let Some(path) = resolve_selector_path(project_root, flow)? {
+    if let Some(path) = resolve_selector_path(project_root, cfg, flow)? {
         return Ok(ResolvedWorkflowSource {
             selector: flow.to_string(),
             path,
@@ -254,8 +254,16 @@ pub(crate) fn resolve_workflow_source(
         });
     }
 
+    if let Some(path) = resolve_global_fallback_path(project_root, flow, cfg) {
+        return Ok(ResolvedWorkflowSource {
+            selector: format!("file:{}", path.display()),
+            path,
+            command_alias: None,
+        });
+    }
+
     Err(format!(
-        "unable to resolve FLOW `{flow}`; pass file:<path>, a direct .toml/.json path, a configured [commands] alias, or a known template selector"
+        "unable to resolve FLOW `{flow}`; pass file:<path>, a direct .toml/.json path, a configured [commands] alias, a known template selector, or an implicit global workflow alias"
     )
     .into())
 }
@@ -1036,6 +1044,7 @@ fn expand_string_value(
 
 fn resolve_selector_path(
     project_root: &Path,
+    cfg: &config::Config,
     selector: &str,
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     if selector.trim().is_empty() {
@@ -1043,7 +1052,7 @@ fn resolve_selector_path(
     }
 
     if is_explicit_file_source(selector) {
-        let path = resolve_source_path(project_root, selector)?;
+        let path = resolve_source_path(project_root, cfg, selector)?;
         return Ok(Some(path));
     }
 
@@ -1099,6 +1108,7 @@ fn candidate_template_paths(
     let mut out = Vec::new();
     for root in [
         project_root.join(".vizier"),
+        project_root.join(".vizier/workflows"),
         project_root.join(".vizier/workflow"),
     ] {
         if !root.is_dir() {
@@ -1158,6 +1168,8 @@ fn resolve_repo_fallback_path(project_root: &Path, flow: &str) -> Option<PathBuf
     let candidates = [
         project_root.join(format!(".vizier/{flow}.toml")),
         project_root.join(format!(".vizier/{flow}.json")),
+        project_root.join(format!(".vizier/workflows/{flow}.toml")),
+        project_root.join(format!(".vizier/workflows/{flow}.json")),
         project_root.join(format!(".vizier/workflow/{flow}.toml")),
         project_root.join(format!(".vizier/workflow/{flow}.json")),
     ];
@@ -1165,7 +1177,36 @@ fn resolve_repo_fallback_path(project_root: &Path, flow: &str) -> Option<PathBuf
     candidates
         .into_iter()
         .find(|path| path.is_file())
-        .and_then(|path| resolve_source_path(project_root, &path.to_string_lossy()).ok())
+        .and_then(|path| fs::canonicalize(path).ok())
+}
+
+fn resolve_global_fallback_path(
+    project_root: &Path,
+    flow: &str,
+    cfg: &config::Config,
+) -> Option<PathBuf> {
+    let root = resolved_global_workflow_dir(cfg)?;
+    let candidates = [
+        root.join(format!("{flow}.toml")),
+        root.join(format!("{flow}.json")),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .and_then(|path| resolve_source_path(project_root, cfg, &path.to_string_lossy()).ok())
+}
+
+fn resolved_global_workflow_dir(cfg: &config::Config) -> Option<PathBuf> {
+    if !cfg.workflow.global_workflows.enabled {
+        return None;
+    }
+
+    if !cfg.workflow.global_workflows.dir.as_os_str().is_empty() {
+        return Some(cfg.workflow.global_workflows.dir.clone());
+    }
+
+    config::base_config_dir().map(|base| base.join("vizier").join("workflows"))
 }
 
 fn is_explicit_file_source(value: &str) -> bool {
@@ -1183,6 +1224,7 @@ fn is_explicit_file_source(value: &str) -> bool {
 
 fn resolve_source_path(
     project_root: &Path,
+    cfg: &config::Config,
     source: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let raw = source.strip_prefix("file:").unwrap_or(source).trim();
@@ -1209,16 +1251,34 @@ fn resolve_source_path(
     }
     let canonical_root =
         fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
-    if !canonical.starts_with(&canonical_root) && !canonical.starts_with(project_root) {
+    let in_repo = canonical.starts_with(&canonical_root) || canonical.starts_with(project_root);
+    if in_repo {
+        return Ok(canonical);
+    }
+
+    if let Some(global_dir) = resolved_global_workflow_dir(cfg)
+        && let Ok(canonical_global) = fs::canonicalize(&global_dir)
+        && canonical.starts_with(&canonical_global)
+    {
+        return Ok(canonical);
+    }
+
+    if let Some(global_dir) = resolved_global_workflow_dir(cfg) {
         return Err(format!(
-            "workflow source `{}` is outside repository root {}",
+            "workflow source `{}` is outside repository root {} and global workflow directory {}",
             canonical.display(),
-            project_root.display()
+            project_root.display(),
+            global_dir.display()
         )
         .into());
     }
 
-    Ok(canonical)
+    Err(format!(
+        "workflow source `{}` is outside repository root {}",
+        canonical.display(),
+        project_root.display()
+    )
+    .into())
 }
 
 fn normalize_selector_from_path(project_root: &Path, raw: &str, path: &Path) -> String {
@@ -1595,6 +1655,121 @@ mode = \"${mode}\"\n",
         assert!(
             err.to_string()
                 .contains("invalid retry mode value `sometimes` for nodes[n1].retry.mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolves_global_workflow_alias_when_repo_sources_are_missing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let global_dir = root.path().join("global-workflows");
+        write(
+            &global_dir.join("global-only.toml"),
+            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.workflow.global_workflows.enabled = true;
+        cfg.workflow.global_workflows.dir = global_dir.clone();
+
+        let resolved = resolve_workflow_source(root.path(), "global-only", &cfg)
+            .expect("resolve global workflow alias");
+        assert_eq!(
+            resolved.path,
+            fs::canonicalize(global_dir.join("global-only.toml")).expect("canonical global path")
+        );
+        assert!(
+            resolved.selector.starts_with("file:"),
+            "global alias should normalize to file selector: {}",
+            resolved.selector
+        );
+    }
+
+    #[test]
+    fn repo_fallback_precedes_global_workflow_alias() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let global_dir = root.path().join("global-workflows");
+        write(
+            &global_dir.join("shared.toml"),
+            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"global\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+        write(
+            &root.path().join(".vizier/workflows/shared.toml"),
+            "id = \"template.repo\"\nversion = \"v1\"\n[[nodes]]\nid = \"repo\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.workflow.global_workflows.enabled = true;
+        cfg.workflow.global_workflows.dir = global_dir;
+
+        let resolved =
+            resolve_workflow_source(root.path(), "shared", &cfg).expect("resolve shared alias");
+        assert!(
+            resolved.path.ends_with(".vizier/workflows/shared.toml"),
+            "repo fallback should win before global fallback: {}",
+            resolved.path.display()
+        );
+    }
+
+    #[test]
+    fn explicit_global_file_source_is_allowed_outside_repo() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let global_dir = tempfile::tempdir().expect("global tempdir");
+        write(
+            &global_dir.path().join("outside.toml"),
+            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.workflow.global_workflows.enabled = true;
+        cfg.workflow.global_workflows.dir = global_dir.path().to_path_buf();
+
+        let selector = format!("file:{}", global_dir.path().join("outside.toml").display());
+        let resolved = resolve_workflow_source(root.path(), &selector, &cfg)
+            .expect("explicit global file source should resolve");
+        assert_eq!(
+            resolved.path,
+            fs::canonicalize(global_dir.path().join("outside.toml"))
+                .expect("canonical global file path")
+        );
+    }
+
+    #[test]
+    fn explicit_out_of_repo_file_is_rejected_when_not_under_global_workflow_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        write(
+            &outside.path().join("outside.toml"),
+            "id = \"template.outside\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let cfg = config::Config::default();
+        let selector = format!("file:{}", outside.path().join("outside.toml").display());
+        let err = resolve_workflow_source(root.path(), &selector, &cfg)
+            .expect_err("outside path should be rejected");
+        assert!(
+            err.to_string().contains("outside repository root"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn disabled_global_workflows_do_not_resolve_implicit_aliases() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let global_dir = root.path().join("global-workflows");
+        write(
+            &global_dir.join("global-only.toml"),
+            "id = \"template.global\"\nversion = \"v1\"\n[[nodes]]\nid = \"n1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+
+        let mut cfg = config::Config::default();
+        cfg.workflow.global_workflows.enabled = false;
+        cfg.workflow.global_workflows.dir = global_dir;
+
+        let err = resolve_workflow_source(root.path(), "global-only", &cfg)
+            .expect_err("disabled global workflows should skip implicit alias lookup");
+        assert!(
+            err.to_string().contains("unable to resolve FLOW"),
             "unexpected error: {err}"
         );
     }

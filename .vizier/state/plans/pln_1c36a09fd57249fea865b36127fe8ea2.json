@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_1c36a09fd57249fea865b36127fe8ea2",
+  "slug": "default",
+  "branch": "draft/default",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_0e30675c869b4cf0b624ccc94e9089d0-persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Global Default Workflows (`DEFAULT`)",
+  "created_at": "2026-02-15T06:58:02.591415+00:00",
+  "updated_at": "2026-02-15T06:58:02.591415+00:00",
+  "job_ids": {
+    "persist": "wf-run_0e30675c869b4cf0b624ccc94e9089d0-persist_plan"
+  }
+}

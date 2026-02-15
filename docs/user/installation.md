@@ -20,6 +20,7 @@ This installs:
 
 - `"$HOME/.local/bin/vizier"`
 - `"$HOME/.local/share/vizier/agents/*"`
+- `"$HOME/.config/vizier/workflows/{draft,approve,merge}.toml"` (or platform equivalent)
 - `"$HOME/.local/share/man/man1/vizier.1"`
 - `"$HOME/.local/share/man/man1/vizier-jobs.1"`
 - `"$HOME/.local/share/man/man5/vizier-config.5"`
@@ -87,6 +88,7 @@ This writes into:
 
 - `"$DESTDIR/usr/local/bin/vizier"`
 - `"$DESTDIR/usr/local/share/vizier/agents/*"`
+- `"$DESTDIR$WORKFLOWSDIR/{draft,approve,merge}.toml"`
 - `"$DESTDIR/usr/local/share/man/man1/*.1"`
 - `"$DESTDIR/usr/local/share/man/man5/*.5"`
 - `"$DESTDIR/usr/local/share/man/man7/*.7"`
@@ -121,6 +123,7 @@ MANPATH="$HOME/.local/share/man:${MANPATH:-}" man vizier-jobs
 - `BINDIR` (default: `"$PREFIX/bin"`)
 - `DATADIR` (default: `"$PREFIX/share"`)
 - `MANDIR` (default: `"$PREFIX/share/man"`)
+- `WORKFLOWSDIR` (default: `<base_config_dir>/vizier/workflows`, where `<base_config_dir>` follows `VIZIER_CONFIG_DIR`, `XDG_CONFIG_HOME`, `APPDATA`, `HOME/.config`, `USERPROFILE/AppData/Roaming`)
 
 Note: Vizier discovers bundled agent shims relative to the binary location:
 

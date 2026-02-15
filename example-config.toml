@@ -196,19 +196,27 @@ enabled = true
 # Silence progress chatter for detached jobs unless the caller set verbosity
 quiet = true
 
+# Global implicit workflow discovery for `vizier run <flow>` when no explicit file/alias/repo match exists.
+[workflow.global_workflows]
+enabled = true
+# Optional override for the global workflow directory. Empty = platform default
+# (<base_config_dir>/vizier/workflows; base_config_dir follows VIZIER_CONFIG_DIR, XDG_CONFIG_HOME,
+# APPDATA, HOME/.config, USERPROFILE/AppData/Roaming).
+dir = ""
+
 # Optional alias mapping for `vizier run <alias>` stage orchestration.
 # Stage aliases can point directly to repo-local workflow templates.
 [commands]
-draft = "file:.vizier/workflow/draft.toml"
-approve = "file:.vizier/workflow/approve.toml"
-merge = "file:.vizier/workflow/merge.toml"
+draft = "file:.vizier/workflows/draft.toml"
+approve = "file:.vizier/workflows/approve.toml"
+merge = "file:.vizier/workflows/merge.toml"
 develop = "file:.vizier/develop.toml"
 
 # Compatibility fallback for legacy callers that still read `[workflow.templates]`.
 [workflow.templates]
-draft = "file:.vizier/workflow/draft.toml"
-approve = "file:.vizier/workflow/approve.toml"
-merge = "file:.vizier/workflow/merge.toml"
+draft = "file:.vizier/workflows/draft.toml"
+approve = "file:.vizier/workflows/approve.toml"
+merge = "file:.vizier/workflows/merge.toml"
 
 # Optional cleanup for cancelled background jobs (never runs on failures)
 [jobs.cancel]

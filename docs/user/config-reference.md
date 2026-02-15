@@ -29,17 +29,28 @@ Legacy workflow-global flags are no longer supported.
 - `[jobs]`: cancellation and retention behavior for job operations.
 - `[commits]`: release/commit metadata formatting controls.
 - `[commands]`: alias-to-template mapping consumed by `vizier run <alias>`.
+- `[workflow.global_workflows]`: default-on implicit alias lookup for global workflow files.
 - `[workflow.templates]`: compatibility fallback for legacy selector lookups.
 
 Recommended stage aliases:
 
 ```toml
 [commands]
-draft = "file:.vizier/workflow/draft.toml"
-approve = "file:.vizier/workflow/approve.toml"
-merge = "file:.vizier/workflow/merge.toml"
+draft = "file:.vizier/workflows/draft.toml"
+approve = "file:.vizier/workflows/approve.toml"
+merge = "file:.vizier/workflows/merge.toml"
 develop = "file:.vizier/develop.toml"
 ```
+
+Global workflow defaults:
+
+```toml
+[workflow.global_workflows]
+enabled = true
+dir = ""  # optional override; empty = <base_config_dir>/vizier/workflows
+```
+
+`<base_config_dir>` resolution order: `VIZIER_CONFIG_DIR`, `XDG_CONFIG_HOME`, `APPDATA`, `HOME/.config`, `USERPROFILE/AppData/Roaming`.
 
 ## Operational Commands
 

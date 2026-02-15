@@ -583,7 +583,7 @@ fn load_config_layer_from_value(
     }
 
     if let Some(workflow_table) = value_at_path(&file_config, &["workflow"]) {
-        parse_workflow_table(workflow_table, &mut layer.workflow)?;
+        parse_workflow_table(workflow_table, &mut layer.workflow, base_dir)?;
     }
 
     if let Some(commands_value) = value_at_path(&file_config, &["commands"]) {
@@ -1595,6 +1595,7 @@ fn parse_jobs_table(
 fn parse_workflow_table(
     value: &serde_json::Value,
     layer: &mut WorkflowLayer,
+    base_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let table = match value.as_object() {
         Some(obj) => obj,
@@ -1615,6 +1616,37 @@ fn parse_workflow_table(
         }
         if let Some(quiet) = parse_bool(background.get("quiet")) {
             layer.background.quiet = Some(quiet);
+        }
+    }
+
+    if let Some(global_workflows) = table
+        .get("global_workflows")
+        .or_else(|| table.get("global-workflows"))
+        .and_then(|value| value.as_object())
+    {
+        if let Some(enabled) = parse_bool(
+            global_workflows
+                .get("enabled")
+                .or_else(|| global_workflows.get("enable")),
+        ) {
+            layer.global_workflows.enabled = Some(enabled);
+        }
+
+        if let Some(dir_value) = global_workflows.get("dir")
+            && let Some(raw_dir) = dir_value.as_str()
+        {
+            let trimmed = raw_dir.trim();
+            if trimmed.is_empty() {
+                layer.global_workflows.dir = Some(PathBuf::new());
+            } else {
+                let mut resolved = PathBuf::from(trimmed);
+                if resolved.is_relative()
+                    && let Some(base) = base_dir
+                {
+                    resolved = base.join(resolved);
+                }
+                layer.global_workflows.dir = Some(resolved);
+            }
         }
     }
 

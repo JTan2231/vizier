@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-15, global default workflows):
+  - `vizier run` flow resolution now includes implicit global alias lookup after repo-local sources, using `[workflow.global_workflows]` (`enabled` default true, optional `dir` override) and repo-bounded path safety that only allows out-of-repo file selectors under the resolved global workflow directory.
+  - Repo fallback discovery now treats `.vizier/workflows/<flow>.{toml,json}` as canonical while retaining legacy `.vizier/workflow/*` compatibility.
+  - Install surfaces now seed stage templates from `.vizier/workflows/{draft,approve,merge}.toml` into `WORKFLOWSDIR` (default `<base_config_dir>/vizier/workflows`), preserve pre-existing user templates, and keep uninstall parity via manifest tracking of installed/unchanged files.
+  - Coverage added for config parsing defaults/overrides, resolver precedence and path safety, and install/uninstall manifest behavior for preserved templates.
 - Update (2026-02-15, templates gate retry stabilization):
   - Repaired the gate-breaking regression in repo-local stage artifacts: `.vizier/config.toml` now restores `[commands].draft|approve|merge`, and `.vizier/workflow/{draft,approve,merge}.toml` is back on canonical `template.stage.*@v2` `cap.env.*`/`cap.agent.invoke`/`control.*` labels.
   - Draft-stage cleanup now uses an explicit `after` dependency from `stage_commit` (instead of a non-stop-gate `on.succeeded` route) to satisfy the `git.stage_commit` capability contract.
