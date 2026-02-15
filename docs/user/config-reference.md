@@ -97,6 +97,19 @@ Current user-facing commands are:
 - Unresolved placeholders or invalid coercions fail before enqueue; no run manifest or node jobs are created.
 - Phase 2 topology/identity expansion (`nodes.after`, `nodes.on.*`, template `id/version`, `imports`, `links`) is intentionally deferred.
 
+## Workflow Dependency Policy
+
+Workflow templates can opt into optimistic dependency-derived scheduling for missing artifact producers:
+
+```toml
+[policy.dependencies]
+missing_producer = "wait" # default is "block"
+```
+
+- `block`: missing artifact with no known producer transitions the job to `blocked_by_dependency`.
+- `wait`: missing artifact with no known producer keeps the job in `waiting_on_deps` with `awaiting producer for <artifact>`.
+- This policy affects artifact dependencies only (`nodes.needs` -> `schedule.dependencies`), not explicit `--after` dependencies.
+
 ## Canonical Companion Docs
 
 - `docs/user/prompt-config-matrix.md`

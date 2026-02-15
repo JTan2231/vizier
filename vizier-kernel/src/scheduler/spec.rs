@@ -1,6 +1,6 @@
 use super::{
     AfterPolicy, JobApprovalFact, JobApprovalState, JobArtifact, JobLock, JobPrecondition,
-    JobStatus, JobWaitKind, JobWaitReason, LockState, format_artifact,
+    JobStatus, JobWaitKind, JobWaitReason, LockState, MissingProducerPolicy, format_artifact,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -9,6 +9,7 @@ pub struct SchedulerFacts {
     pub job_statuses: HashMap<String, JobStatus>,
     pub job_after_dependencies: HashMap<String, Vec<JobAfterDependencyStatus>>,
     pub job_dependencies: HashMap<String, Vec<JobArtifact>>,
+    pub job_missing_producer_policy: HashMap<String, MissingProducerPolicy>,
     pub producer_statuses: HashMap<JobArtifact, Vec<JobStatus>>,
     pub artifact_exists: HashSet<JobArtifact>,
     pub job_locks: HashMap<String, Vec<JobLock>>,
@@ -143,7 +144,7 @@ fn evaluate_job_with_lock_state(
         .unwrap_or_default();
     let mut waited_on = facts.waited_on.get(job_id).cloned().unwrap_or_default();
 
-    match dependency_state(facts, &dependencies) {
+    match dependency_state(facts, job_id, &dependencies) {
         DependencyState::Blocked { detail } => {
             note_waited(&mut waited_on, JobWaitKind::Dependencies);
             return SchedulerDecision {
@@ -284,7 +285,13 @@ fn evaluate_job_with_lock_state(
     }
 }
 
-fn dependency_state(facts: &SchedulerFacts, deps: &[JobArtifact]) -> DependencyState {
+fn dependency_state(facts: &SchedulerFacts, job_id: &str, deps: &[JobArtifact]) -> DependencyState {
+    let missing_producer_policy = facts
+        .job_missing_producer_policy
+        .get(job_id)
+        .copied()
+        .unwrap_or_default();
+
     for artifact in deps {
         if facts.artifact_exists.contains(artifact) {
             continue;
@@ -309,11 +316,18 @@ fn dependency_state(facts: &SchedulerFacts, deps: &[JobArtifact]) -> DependencyS
                     detail: format!("dependency failed for {}", format_artifact(artifact)),
                 };
             }
-            None => {
-                return DependencyState::Blocked {
-                    detail: format!("missing {}", format_artifact(artifact)),
-                };
-            }
+            None => match missing_producer_policy {
+                MissingProducerPolicy::Block => {
+                    return DependencyState::Blocked {
+                        detail: format!("missing {}", format_artifact(artifact)),
+                    };
+                }
+                MissingProducerPolicy::Wait => {
+                    return DependencyState::Waiting {
+                        detail: format!("awaiting producer for {}", format_artifact(artifact)),
+                    };
+                }
+            },
         }
     }
 
@@ -548,6 +562,113 @@ mod tests {
             let decision = evaluate_job(&facts, &job_id);
             assert_eq!(decision.action, SchedulerAction::Start);
             assert_eq!(decision.next_status, JobStatus::Running);
+        }
+    }
+
+    #[test]
+    fn dependency_policy_matrix_covers_missing_producer_modes() {
+        let job_id = "job-policy";
+        let artifact = JobArtifact::CommandPatch {
+            job_id: "policy-artifact".to_string(),
+        };
+
+        for policy in [MissingProducerPolicy::Block, MissingProducerPolicy::Wait] {
+            let mut facts = base_facts(job_id);
+            facts
+                .job_dependencies
+                .insert(job_id.to_string(), vec![artifact.clone()]);
+            facts
+                .job_missing_producer_policy
+                .insert(job_id.to_string(), policy);
+            facts
+                .producer_statuses
+                .insert(artifact.clone(), vec![JobStatus::Running]);
+            let decision = evaluate_job(&facts, job_id);
+            assert_eq!(
+                decision.next_status,
+                JobStatus::WaitingOnDeps,
+                "active producer should wait under {:?}",
+                policy
+            );
+            assert_eq!(
+                decision.wait_reason.and_then(|reason| reason.detail),
+                Some(format!("waiting on {}", format_artifact(&artifact)))
+            );
+
+            let mut facts = base_facts(job_id);
+            facts
+                .job_dependencies
+                .insert(job_id.to_string(), vec![artifact.clone()]);
+            facts
+                .job_missing_producer_policy
+                .insert(job_id.to_string(), policy);
+            facts
+                .producer_statuses
+                .insert(artifact.clone(), vec![JobStatus::Succeeded]);
+            let decision = evaluate_job(&facts, job_id);
+            assert_eq!(
+                decision.next_status,
+                JobStatus::BlockedByDependency,
+                "missing artifact after succeeded producer should block under {:?}",
+                policy
+            );
+            assert_eq!(
+                decision.wait_reason.and_then(|reason| reason.detail),
+                Some(format!("missing {}", format_artifact(&artifact)))
+            );
+
+            let mut facts = base_facts(job_id);
+            facts
+                .job_dependencies
+                .insert(job_id.to_string(), vec![artifact.clone()]);
+            facts
+                .job_missing_producer_policy
+                .insert(job_id.to_string(), policy);
+            facts
+                .producer_statuses
+                .insert(artifact.clone(), vec![JobStatus::Failed]);
+            let decision = evaluate_job(&facts, job_id);
+            assert_eq!(
+                decision.next_status,
+                JobStatus::BlockedByDependency,
+                "terminal failed producer should block under {:?}",
+                policy
+            );
+            assert_eq!(
+                decision.wait_reason.and_then(|reason| reason.detail),
+                Some(format!(
+                    "dependency failed for {}",
+                    format_artifact(&artifact)
+                ))
+            );
+
+            let mut facts = base_facts(job_id);
+            facts
+                .job_dependencies
+                .insert(job_id.to_string(), vec![artifact.clone()]);
+            facts
+                .job_missing_producer_policy
+                .insert(job_id.to_string(), policy);
+            let decision = evaluate_job(&facts, job_id);
+            match policy {
+                MissingProducerPolicy::Block => {
+                    assert_eq!(decision.next_status, JobStatus::BlockedByDependency);
+                    assert_eq!(
+                        decision.wait_reason.and_then(|reason| reason.detail),
+                        Some(format!("missing {}", format_artifact(&artifact)))
+                    );
+                }
+                MissingProducerPolicy::Wait => {
+                    assert_eq!(decision.next_status, JobStatus::WaitingOnDeps);
+                    assert_eq!(
+                        decision.wait_reason.and_then(|reason| reason.detail),
+                        Some(format!(
+                            "awaiting producer for {}",
+                            format_artifact(&artifact)
+                        ))
+                    );
+                }
+            }
         }
     }
 

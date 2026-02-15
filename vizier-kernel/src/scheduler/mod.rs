@@ -63,6 +63,19 @@ impl Default for AfterPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingProducerPolicy {
+    Block,
+    Wait,
+}
+
+impl Default for MissingProducerPolicy {
+    fn default() -> Self {
+        Self::Block
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobAfterDependency {
     pub job_id: String,

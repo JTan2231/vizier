@@ -14,8 +14,23 @@ slug = ""
 stop_condition_retries = "3"
 stop_condition_script = ""
 
+[policy.dependencies]
+missing_producer = "wait"
+
 [[artifact_contracts]]
 id = "prompt_text"
+version = "v1"
+
+[[artifact_contracts]]
+id = "plan_branch"
+version = "v1"
+
+[[artifact_contracts]]
+id = "plan_doc"
+version = "v1"
+
+[[artifact_contracts]]
+id = "stage_token"
 version = "v1"
 
 [[nodes]]
@@ -27,6 +42,12 @@ uses = "cap.env.builtin.worktree.prepare"
 branch = "${branch}"
 slug = "${slug}"
 purpose = "stage-approve"
+
+[[nodes.needs]]
+plan_branch = { slug = "${slug}", branch = "${branch}" }
+
+[[nodes.needs]]
+plan_doc = { slug = "${slug}", branch = "${branch}" }
 
 [nodes.on]
 succeeded = ["resolve_prompt"]
@@ -112,6 +133,9 @@ node_id = "stop_gate"
 id = "terminal"
 kind = "gate"
 uses = "control.terminal"
+
+[nodes.produces]
+succeeded = [{ custom = { type_id = "stage_token", key = "approve:${slug}" } }]
 
 [[nodes.after]]
 node_id = "worktree_cleanup"

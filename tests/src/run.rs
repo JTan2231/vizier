@@ -29,6 +29,68 @@ script = \"{}\"\n",
     Ok(())
 }
 
+fn write_stage_token_dependency_templates(repo: &IntegrationRepo) -> TestResult {
+    repo.write(
+        ".vizier/workflows/custom-stage-token-producer.toml",
+        "id = \"template.custom.stage_token.producer\"\n\
+version = \"v1\"\n\
+[params]\n\
+slug = \"alpha\"\n\
+[[artifact_contracts]]\n\
+id = \"stage_token\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"produce\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"true\"\n\
+[nodes.produces]\n\
+succeeded = [{ custom = { type_id = \"stage_token\", key = \"approve:${slug}\" } }]\n",
+    )?;
+    repo.write(
+        ".vizier/workflows/custom-stage-token-consumer-wait.toml",
+        "id = \"template.custom.stage_token.consumer_wait\"\n\
+version = \"v1\"\n\
+[params]\n\
+slug = \"alpha\"\n\
+[policy.dependencies]\n\
+missing_producer = \"wait\"\n\
+[[artifact_contracts]]\n\
+id = \"stage_token\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"consume\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"true\"\n\
+[[nodes.needs]]\n\
+custom = { type_id = \"stage_token\", key = \"approve:${slug}\" }\n",
+    )?;
+    repo.write(
+        ".vizier/workflows/custom-stage-token-consumer-block.toml",
+        "id = \"template.custom.stage_token.consumer_block\"\n\
+version = \"v1\"\n\
+[params]\n\
+slug = \"alpha\"\n\
+[policy.dependencies]\n\
+missing_producer = \"block\"\n\
+[[artifact_contracts]]\n\
+id = \"stage_token\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"consume\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"true\"\n\
+[[nodes.needs]]\n\
+custom = { type_id = \"stage_token\", key = \"approve:${slug}\" }\n",
+    )?;
+    Ok(())
+}
+
 fn write_stage_alias_test_config(repo: &IntegrationRepo) -> TestResult {
     write_stage_alias_test_config_with_agent_command(
         repo,
@@ -72,6 +134,23 @@ fn seed_plan_branch(repo: &IntegrationRepo, slug: &str, branch: &str) -> TestRes
     repo.git(&["commit", "-m", &format!("docs: seed plan {slug}")])?;
     repo.git(&["checkout", "master"])?;
     Ok(())
+}
+
+fn run_stage_approve_follow(repo: &IntegrationRepo, slug: &str, branch: &str) -> TestResult<Value> {
+    run_json(
+        repo,
+        &[
+            "run",
+            "approve",
+            "--set",
+            &format!("slug={slug}"),
+            "--set",
+            &format!("branch={branch}"),
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )
 }
 
 fn load_run_manifest(repo: &IntegrationRepo, run_id: &str) -> TestResult<Value> {
@@ -159,7 +238,7 @@ fn wait_for_manifest_jobs(
 
 #[test]
 fn test_run_alias_composes_and_applies_set_overrides() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -266,7 +345,7 @@ script = \"test -f compose.txt\"\n",
 
 #[test]
 fn test_run_set_expands_non_args_runtime_fields() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -404,7 +483,7 @@ fn test_run_set_expands_non_args_runtime_fields() -> TestResult {
 
 #[test]
 fn test_run_file_selector_enqueues_workflow() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
@@ -434,7 +513,7 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
 
 #[test]
 fn test_run_dynamic_named_flags_expand_to_set_overrides() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -482,7 +561,7 @@ script = \"echo ${message} > named-flags.txt\"\n",
 
 #[test]
 fn test_run_positional_inputs_follow_cli_positional_mapping() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -533,7 +612,7 @@ script = \"echo ${first}-${second} > positional.txt\"\n",
 
 #[test]
 fn test_run_stage_named_alias_flags_map_to_params() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
     repo.write("specs/DEFAULT.md", "Stage alias mapping smoke spec.\n")?;
@@ -579,7 +658,7 @@ fn test_run_stage_named_alias_flags_map_to_params() -> TestResult {
 
 #[test]
 fn test_run_stage_file_input_is_inlined_at_enqueue() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
 
@@ -628,7 +707,7 @@ fn test_run_stage_file_input_is_inlined_at_enqueue() -> TestResult {
 
 #[test]
 fn test_run_entrypoint_preflight_reports_missing_root_inputs() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
 
@@ -651,7 +730,7 @@ fn test_run_entrypoint_preflight_reports_missing_root_inputs() -> TestResult {
 
 #[test]
 fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     let checks: [(&str, &[&str]); 3] = [
@@ -663,12 +742,18 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "[cli.named]",
                 "file = \"spec_file\"",
                 "name = \"slug\"",
+                "[policy.dependencies]",
+                "missing_producer = \"wait\"",
+                "id = \"plan_branch\"",
+                "id = \"plan_doc\"",
                 "cap.env.builtin.worktree.prepare",
                 "slug = \"${slug}\"",
                 "cap.env.builtin.prompt.resolve",
                 "prompt_file = \".vizier/prompts/DRAFT_PROMPTS.md\"",
                 "cap.agent.invoke",
                 "cap.env.builtin.plan.persist",
+                "plan_branch = { slug = \"${slug}\", branch = \"${branch}\" }",
+                "plan_doc = { slug = \"${slug}\", branch = \"${branch}\" }",
                 "cap.env.builtin.git.stage_commit",
             ],
         ),
@@ -679,13 +764,22 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "positional = [\"slug\", \"branch\"]",
                 "[cli.named]",
                 "name = \"slug\"",
+                "[policy.dependencies]",
+                "missing_producer = \"wait\"",
+                "id = \"plan_branch\"",
+                "id = \"plan_doc\"",
+                "id = \"stage_token\"",
                 "cap.env.builtin.worktree.prepare",
                 "slug = \"${slug}\"",
+                "plan_branch = { slug = \"${slug}\", branch = \"${branch}\" }",
+                "plan_doc = { slug = \"${slug}\", branch = \"${branch}\" }",
                 "cap.env.builtin.prompt.resolve",
                 "prompt_file = \".vizier/prompts/APPROVE_PROMPTS.md\"",
                 "cap.agent.invoke",
                 "cap.env.builtin.git.stage_commit",
                 "control.gate.stop_condition",
+                "type_id = \"stage_token\"",
+                "key = \"approve:${slug}\"",
             ],
         ),
         (
@@ -697,7 +791,13 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "name = \"slug\"",
                 "source = \"branch\"",
                 "target = \"target_branch\"",
+                "[policy.dependencies]",
+                "missing_producer = \"wait\"",
+                "conflict_auto_resolve = \"true\"",
+                "id = \"stage_token\"",
                 "cap.env.builtin.git.integrate_plan_branch",
+                "type_id = \"stage_token\"",
+                "key = \"approve:${slug}\"",
                 "control.gate.conflict_resolution",
                 "prompt_file = \".vizier/prompts/MERGE_PROMPTS.md\"",
                 "control.gate.cicd",
@@ -867,11 +967,14 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
         );
     }
 
-    repo.git(&["checkout", "-b", "draft/merge-smoke"])?;
+    seed_plan_branch(&repo, "merge-smoke", "draft/merge-smoke")?;
+    repo.git(&["checkout", "draft/merge-smoke"])?;
     repo.write("merge-smoke.txt", "merge smoke branch change\n")?;
     repo.git(&["add", "merge-smoke.txt"])?;
     repo.git(&["commit", "-m", "feat: merge smoke branch"])?;
     repo.git(&["checkout", "master"])?;
+
+    run_stage_approve_follow(&repo, "merge-smoke", "draft/merge-smoke")?;
 
     let merge_payload = run_json(
         &repo,
@@ -925,16 +1028,302 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
 }
 
 #[test]
-fn test_run_merge_stage_default_slug_derives_source_branch() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+fn test_run_stage_chain_queues_without_after_using_artifact_dependencies() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
 
-    repo.git(&["checkout", "-b", "draft/default"])?;
+    let slug = "opt-chain";
+    let branch = format!("draft/{slug}");
+
+    let draft_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            &format!("slug={slug}"),
+            "--set",
+            &format!("branch={branch}"),
+            "--set",
+            "spec_text=Queue stage chain without --after.",
+            "--format",
+            "json",
+        ],
+    )?;
+    let draft_root = draft_payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing draft root job id")?;
+    let draft_run_id = draft_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing draft run id")?;
+    let draft_manifest = load_run_manifest(&repo, draft_run_id)?;
+
+    let approve_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "approve",
+            "--set",
+            &format!("slug={slug}"),
+            "--set",
+            &format!("branch={branch}"),
+            "--format",
+            "json",
+        ],
+    )?;
+    let approve_root = approve_payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing approve root job id")?;
+    let approve_run_id = approve_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing approve run id")?;
+    let approve_manifest = load_run_manifest(&repo, approve_run_id)?;
+
+    let merge_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            &format!("slug={slug}"),
+            "--set",
+            &format!("branch={branch}"),
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: optimistic chain merge",
+            "--format",
+            "json",
+        ],
+    )?;
+    let merge_root = merge_payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing merge root job id")?;
+    let merge_run_id = merge_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing merge run id")?;
+    let merge_manifest = load_run_manifest(&repo, merge_run_id)?;
+
+    let approve_prepare_job = manifest_node_job_id(&approve_manifest, "worktree_prepare")?;
+    let merge_integrate_job = manifest_node_job_id(&merge_manifest, "merge_integrate")?;
+
+    wait_for_job_status(
+        &repo,
+        &approve_prepare_job,
+        "waiting_on_deps",
+        Duration::from_secs(10),
+    )?;
+    wait_for_job_status(
+        &repo,
+        &merge_integrate_job,
+        "waiting_on_deps",
+        Duration::from_secs(10),
+    )?;
+
+    let approve_wait_detail = read_job_record(&repo, &approve_prepare_job)?
+        .pointer("/schedule/wait_reason/detail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        approve_wait_detail.contains("plan_branch:") || approve_wait_detail.contains("plan_doc:"),
+        "approve should wait on draft plan artifacts: {approve_wait_detail}"
+    );
+
+    let merge_record = read_job_record(&repo, &merge_integrate_job)?;
+    let merge_dependencies = merge_record
+        .pointer("/schedule/dependencies")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        merge_dependencies.iter().any(|value| {
+            value
+                .pointer("/artifact/custom/type_id")
+                .and_then(Value::as_str)
+                == Some("stage_token")
+                && value
+                    .pointer("/artifact/custom/key")
+                    .and_then(Value::as_str)
+                    == Some("approve:opt-chain")
+        }),
+        "merge integrate should declare stage token dependency: {merge_record}"
+    );
+
+    wait_for_manifest_jobs(&repo, &draft_manifest, Duration::from_secs(40))?;
+    wait_for_manifest_jobs(&repo, &approve_manifest, Duration::from_secs(40))?;
+    wait_for_manifest_jobs(&repo, &merge_manifest, Duration::from_secs(40))?;
+
+    let draft_root_record = read_job_record(&repo, draft_root)?;
+    assert_eq!(
+        draft_root_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "draft root should complete successfully: {draft_root_record}"
+    );
+    let approve_root_record = read_job_record(&repo, approve_root)?;
+    assert_eq!(
+        approve_root_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "approve root should complete successfully: {approve_root_record}"
+    );
+    let merge_root_record = read_job_record(&repo, merge_root)?;
+    assert_eq!(
+        merge_root_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "merge root should complete successfully: {merge_root_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_custom_wait_policy_unblocks_consumer_when_producer_arrives() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_token_dependency_templates(&repo)?;
+
+    let slug = "late-producer";
+    let consumer_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/custom-stage-token-consumer-wait.toml",
+            "--set",
+            &format!("slug={slug}"),
+            "--format",
+            "json",
+        ],
+    )?;
+    let consumer_run_id = consumer_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing consumer run id")?;
+    let consumer_manifest = load_run_manifest(&repo, consumer_run_id)?;
+    let consumer_root = consumer_payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing consumer root job id")?;
+
+    wait_for_job_status(
+        &repo,
+        consumer_root,
+        "waiting_on_deps",
+        Duration::from_secs(10),
+    )?;
+    let consumer_wait = read_job_record(&repo, consumer_root)?
+        .pointer("/schedule/wait_reason/detail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        consumer_wait.contains("awaiting producer for custom:stage_token:approve:late-producer"),
+        "consumer should wait on unknown producer in optimistic mode: {consumer_wait}"
+    );
+
+    let producer_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/custom-stage-token-producer.toml",
+            "--set",
+            &format!("slug={slug}"),
+            "--format",
+            "json",
+        ],
+    )?;
+    let producer_run_id = producer_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing producer run id")?;
+    let producer_manifest = load_run_manifest(&repo, producer_run_id)?;
+
+    wait_for_manifest_jobs(&repo, &producer_manifest, Duration::from_secs(20))?;
+    wait_for_manifest_jobs(&repo, &consumer_manifest, Duration::from_secs(20))?;
+
+    let consumer_record = read_job_record(&repo, consumer_root)?;
+    assert_eq!(
+        consumer_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "consumer should unblock after producer succeeds: {consumer_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_custom_block_policy_still_blocks_missing_producer() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_token_dependency_templates(&repo)?;
+
+    let output = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/custom-stage-token-consumer-block.toml",
+            "--set",
+            "slug=strict-block",
+            "--format",
+            "json",
+        ],
+    )?;
+    let root = output
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing strict root job id")?;
+
+    wait_for_job_status(
+        &repo,
+        root,
+        "blocked_by_dependency",
+        Duration::from_secs(10),
+    )?;
+    let detail = read_job_record(&repo, root)?
+        .pointer("/schedule/wait_reason/detail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        detail.contains("missing custom:stage_token:approve:strict-block"),
+        "strict policy should block missing producers: {detail}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_merge_stage_default_slug_derives_source_branch() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    seed_plan_branch(&repo, "default", "draft/default")?;
+    repo.git(&["checkout", "draft/default"])?;
     repo.write("merge-default.txt", "merge default branch change\n")?;
     repo.git(&["add", "merge-default.txt"])?;
     repo.git(&["commit", "-m", "feat: merge default branch"])?;
     repo.git(&["checkout", "master"])?;
+
+    run_stage_approve_follow(&repo, "default", "draft/default")?;
 
     let payload = run_json(
         &repo,
@@ -977,7 +1366,7 @@ fn test_run_merge_stage_default_slug_derives_source_branch() -> TestResult {
 
 #[test]
 fn test_run_merge_stage_embeds_plan_content_and_removes_source_plan_doc() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
 
@@ -987,6 +1376,8 @@ fn test_run_merge_stage_embeds_plan_content_and_removes_source_plan_doc() -> Tes
     repo.git(&["add", "merge-plan-doc.txt"])?;
     repo.git(&["commit", "-m", "feat: merge branch payload"])?;
     repo.git(&["checkout", "master"])?;
+
+    run_stage_approve_follow(&repo, "merge-plan-doc", "draft/merge-plan-doc")?;
 
     let payload = run_json(
         &repo,
@@ -1064,7 +1455,7 @@ fn test_run_merge_stage_embeds_plan_content_and_removes_source_plan_doc() -> Tes
 
 #[test]
 fn test_run_approve_stage_stop_condition_retry_loop() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -1163,7 +1554,7 @@ uses = \"control.terminal\"\n",
 
 #[test]
 fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
 
@@ -1293,14 +1684,18 @@ fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry(
         String::from_utf8_lossy(&cancel_gate.stderr)
     );
 
-    let retry_repo = IntegrationRepo::new()?;
+    drop(repo);
+    let retry_repo = IntegrationRepo::new_serial()?;
     clean_workdir(&retry_repo)?;
     write_stage_alias_test_config(&retry_repo)?;
-    retry_repo.git(&["checkout", "-b", "draft/retry-smoke"])?;
+    seed_plan_branch(&retry_repo, "retry-smoke", "draft/retry-smoke")?;
+    retry_repo.git(&["checkout", "draft/retry-smoke"])?;
     retry_repo.write("retry-smoke.txt", "retry smoke branch change\n")?;
     retry_repo.git(&["add", "retry-smoke.txt"])?;
     retry_repo.git(&["commit", "-m", "feat: retry smoke branch"])?;
     retry_repo.git(&["checkout", "master"])?;
+
+    run_stage_approve_follow(&retry_repo, "retry-smoke", "draft/retry-smoke")?;
 
     let merge_payload = run_json(
         &retry_repo,
@@ -1355,10 +1750,11 @@ fn test_run_stage_jobs_control_paths_cover_approve_cancel_tail_attach_and_retry(
 
 #[test]
 fn test_run_merge_stage_conflict_gate_blocks_and_preserves_sentinel() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
-    repo.git(&["checkout", "-b", "draft/conflict-smoke"])?;
+    seed_plan_branch(&repo, "conflict-smoke", "draft/conflict-smoke")?;
+    repo.git(&["checkout", "draft/conflict-smoke"])?;
     repo.write("a", "draft conflict content\n")?;
     repo.git(&["add", "a"])?;
     repo.git(&["commit", "-m", "feat: conflict branch change"])?;
@@ -1366,6 +1762,8 @@ fn test_run_merge_stage_conflict_gate_blocks_and_preserves_sentinel() -> TestRes
     repo.write("a", "master conflict content\n")?;
     repo.git(&["add", "a"])?;
     repo.git(&["commit", "-m", "feat: master conflict change"])?;
+
+    run_stage_approve_follow(&repo, "conflict-smoke", "draft/conflict-smoke")?;
 
     let payload = run_json(
         &repo,
@@ -1424,7 +1822,7 @@ fn test_run_merge_stage_conflict_gate_blocks_and_preserves_sentinel() -> TestRes
 
 #[test]
 fn test_run_set_rejects_unresolved_non_args_without_partial_enqueue() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -1480,7 +1878,7 @@ fn test_run_set_rejects_unresolved_non_args_without_partial_enqueue() -> TestRes
 
 #[test]
 fn test_run_rejects_legacy_uses_without_partial_enqueue() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(
@@ -1526,7 +1924,7 @@ uses = \"vizier.merge.integrate\"\n",
 
 #[test]
 fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
@@ -1620,7 +2018,7 @@ fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
 
 #[test]
 fn test_run_follow_exit_codes_cover_success_blocked_and_failed() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     write_single_run_template(&repo, ".vizier/workflows/follow-success.toml", "true")?;
@@ -1677,7 +2075,7 @@ uses = \"control.gate.approval\"\n",
 
 #[test]
 fn test_run_execution_root_propagates_to_successor_nodes() -> TestResult {
-    let repo = IntegrationRepo::new()?;
+    let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
     repo.write(

@@ -16,8 +16,19 @@ spec_file = ""
 spec_source = "inline"
 spec_text = ""
 
+[policy.dependencies]
+missing_producer = "wait"
+
 [[artifact_contracts]]
 id = "prompt_text"
+version = "v1"
+
+[[artifact_contracts]]
+id = "plan_branch"
+version = "v1"
+
+[[artifact_contracts]]
+id = "plan_doc"
 version = "v1"
 
 [[nodes]]
@@ -79,6 +90,12 @@ spec_file = "${spec_file}"
 spec_source = "${spec_source}"
 spec_text = "${spec_text}"
 
+[nodes.produces]
+succeeded = [
+  { plan_branch = { slug = "${slug}", branch = "${branch}" } },
+  { plan_doc = { slug = "${slug}", branch = "${branch}" } },
+]
+
 [nodes.on]
 succeeded = ["stage_commit"]
 
@@ -92,6 +109,12 @@ uses = "cap.env.builtin.git.stage_commit"
 
 [nodes.args]
 message = "${commit_message}"
+
+[nodes.produces]
+succeeded = [
+  { plan_branch = { slug = "${slug}", branch = "${branch}" } },
+  { plan_doc = { slug = "${slug}", branch = "${branch}" } },
+]
 
 [[nodes.after]]
 node_id = "persist_plan"

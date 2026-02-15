@@ -1,4 +1,6 @@
-use crate::scheduler::{AfterPolicy, JobAfterDependency, JobArtifact, JobLock, format_artifact};
+use crate::scheduler::{
+    AfterPolicy, JobAfterDependency, JobArtifact, JobLock, MissingProducerPolicy, format_artifact,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -35,6 +37,7 @@ impl WorkflowTemplate {
             template_version: self.version.clone(),
             failure_mode: self.policy.failure_mode,
             resume: self.policy.resume.clone(),
+            dependencies: self.policy.dependencies.clone(),
             artifact_contracts,
             nodes,
         }
@@ -47,6 +50,8 @@ pub struct WorkflowTemplatePolicy {
     pub failure_mode: WorkflowFailureMode,
     #[serde(default)]
     pub resume: WorkflowResumePolicy,
+    #[serde(default)]
+    pub dependencies: WorkflowDependenciesPolicy,
 }
 
 impl Default for WorkflowTemplatePolicy {
@@ -54,8 +59,15 @@ impl Default for WorkflowTemplatePolicy {
         Self {
             failure_mode: WorkflowFailureMode::BlockDownstream,
             resume: WorkflowResumePolicy::default(),
+            dependencies: WorkflowDependenciesPolicy::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WorkflowDependenciesPolicy {
+    #[serde(default)]
+    pub missing_producer: MissingProducerPolicy,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -339,6 +351,7 @@ pub struct WorkflowPolicySnapshot {
     pub template_version: String,
     pub failure_mode: WorkflowFailureMode,
     pub resume: WorkflowResumePolicy,
+    pub dependencies: WorkflowDependenciesPolicy,
     pub artifact_contracts: Vec<WorkflowArtifactContract>,
     pub nodes: Vec<WorkflowPolicySnapshotNode>,
 }
@@ -2262,7 +2275,7 @@ fn workflow_gate_label(gate: &WorkflowGate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::{LockMode, format_artifact};
+    use crate::scheduler::{LockMode, MissingProducerPolicy, format_artifact};
 
     fn prompt_artifact(key: &str) -> JobArtifact {
         JobArtifact::Custom {
@@ -2282,6 +2295,7 @@ mod tests {
                     key: "review".to_string(),
                     reuse_mode: WorkflowResumeReuseMode::Strict,
                 },
+                dependencies: WorkflowDependenciesPolicy::default(),
             },
             artifact_contracts: vec![
                 WorkflowArtifactContract {
@@ -2442,6 +2456,31 @@ mod tests {
     }
 
     #[test]
+    fn policy_snapshot_tracks_dependency_policy() {
+        let mut template = sample_template();
+        let block_hash = template
+            .policy_snapshot()
+            .stable_hash_hex()
+            .expect("hash block snapshot");
+        assert_eq!(
+            template.policy.dependencies.missing_producer,
+            MissingProducerPolicy::Block
+        );
+
+        template.policy.dependencies.missing_producer = MissingProducerPolicy::Wait;
+        let wait_snapshot = template.policy_snapshot();
+        assert_eq!(
+            wait_snapshot.dependencies.missing_producer,
+            MissingProducerPolicy::Wait
+        );
+        let wait_hash = wait_snapshot.stable_hash_hex().expect("hash wait snapshot");
+        assert_ne!(
+            block_hash, wait_hash,
+            "dependency policy changes should affect policy snapshot hash"
+        );
+    }
+
+    #[test]
     fn compile_node_maps_edges_and_artifacts() {
         let template = sample_template();
         let resolved_after =
@@ -2583,6 +2622,35 @@ mod tests {
             error.contains("without declared artifact contract `acme.diff`"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn compile_node_validates_stage_token_custom_contracts() {
+        let mut template = custom_artifact_template();
+        template.nodes[0].needs = vec![JobArtifact::Custom {
+            type_id: "stage_token".to_string(),
+            key: "approve:alpha".to_string(),
+        }];
+        template.nodes[0].produces.succeeded = vec![JobArtifact::Custom {
+            type_id: "stage_token".to_string(),
+            key: "merge:alpha".to_string(),
+        }];
+
+        template.artifact_contracts.clear();
+        let error = compile_workflow_node(&template, "custom_node", &BTreeMap::new())
+            .expect_err("missing stage token contract should fail");
+        assert!(
+            error.contains("without declared artifact contract `stage_token`"),
+            "unexpected error: {error}"
+        );
+
+        template.artifact_contracts.push(WorkflowArtifactContract {
+            id: "stage_token".to_string(),
+            version: "v1".to_string(),
+            schema: None,
+        });
+        compile_workflow_node(&template, "custom_node", &BTreeMap::new())
+            .expect("declared stage token contract should compile");
     }
 
     #[test]

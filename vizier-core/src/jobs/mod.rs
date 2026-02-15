@@ -7,7 +7,8 @@ use crate::scheduler::spec::{
 #[allow(unused_imports)]
 pub use crate::scheduler::{
     AfterPolicy, JobAfterDependency, JobApprovalFact, JobApprovalState, JobArtifact, JobLock,
-    JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, PinnedHead, format_artifact,
+    JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, MissingProducerPolicy,
+    PinnedHead, format_artifact,
 };
 use crate::workflow_template::{
     CompiledWorkflowNode, PROMPT_ARTIFACT_TYPE_ID, WorkflowGate, WorkflowNodeKind,
@@ -41,12 +42,24 @@ pub struct JobDependency {
     pub artifact: JobArtifact,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct JobDependenciesPolicy {
+    #[serde(default)]
+    pub missing_producer: MissingProducerPolicy,
+}
+
+fn is_default_dependency_policy(policy: &JobDependenciesPolicy) -> bool {
+    policy == &JobDependenciesPolicy::default()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobSchedule {
     #[serde(default)]
     pub after: Vec<JobAfterDependency>,
     #[serde(default)]
     pub dependencies: Vec<JobDependency>,
+    #[serde(default, skip_serializing_if = "is_default_dependency_policy")]
+    pub dependency_policy: JobDependenciesPolicy,
     #[serde(default)]
     pub locks: Vec<JobLock>,
     #[serde(default)]
@@ -1402,6 +1415,9 @@ pub fn enqueue_workflow_run(
         let schedule = JobSchedule {
             after,
             dependencies,
+            dependency_policy: JobDependenciesPolicy {
+                missing_producer: template.policy.dependencies.missing_producer,
+            },
             locks: compiled.locks.clone(),
             artifacts: compiled.artifacts.clone(),
             pinned_head: None,
@@ -2433,6 +2449,10 @@ fn build_scheduler_facts(
             if !deps.is_empty() {
                 dependency_artifacts.extend(deps.iter().cloned());
                 facts.job_dependencies.insert(record.id.clone(), deps);
+                facts.job_missing_producer_policy.insert(
+                    record.id.clone(),
+                    schedule.dependency_policy.missing_producer,
+                );
             }
 
             if !schedule.locks.is_empty() {
@@ -2877,6 +2897,10 @@ fn current_branch_name(execution_root: &Path) -> Option<String> {
 }
 
 fn has_unmerged_paths(execution_root: &Path) -> bool {
+    !list_unmerged_paths(execution_root).is_empty()
+}
+
+fn list_unmerged_paths(execution_root: &Path) -> Vec<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(execution_root)
@@ -2885,9 +2909,186 @@ fn has_unmerged_paths(execution_root: &Path) -> bool {
         .output();
     match output {
         Ok(output) if output.status.success() => {
-            !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            let mut paths = Vec::new();
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some((_prefix, path)) = line.split_once('\t') {
+                    let trimmed = path.trim();
+                    if !trimmed.is_empty() {
+                        paths.push(trimmed.to_string());
+                    }
+                }
+            }
+            paths.sort();
+            paths.dedup();
+            paths
         }
-        _ => false,
+        _ => Vec::new(),
+    }
+}
+
+fn parse_non_empty_json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|raw| raw.as_str())
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| raw.to_string())
+}
+
+fn read_merge_sentinel_branches(sentinel: &Path) -> (Option<String>, Option<String>) {
+    let Ok(raw) = fs::read_to_string(sentinel) else {
+        return (None, None);
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (None, None);
+    };
+    (
+        parse_non_empty_json_string_field(&payload, "source_branch"),
+        parse_non_empty_json_string_field(&payload, "target_branch"),
+    )
+}
+
+fn load_merge_conflict_companion_prompt(
+    execution_root: &Path,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if let Some(text) = first_non_empty_arg(&node.args, &["prompt_text"]) {
+        return Ok(Some(text));
+    }
+
+    let Some(prompt_file) = first_non_empty_arg(&node.args, &["prompt_file"]) else {
+        return Ok(None);
+    };
+    let abs = resolve_path_in_execution_root(execution_root, &prompt_file);
+    let contents = fs::read_to_string(abs)?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+fn resolve_merge_conflict_branches(
+    execution_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+    sentinel: &Path,
+    slug: &str,
+) -> (String, String) {
+    let (sentinel_source, sentinel_target) = read_merge_sentinel_branches(sentinel);
+    let source_branch = sentinel_source
+        .or_else(|| first_non_empty_arg(&node.args, &["branch", "source_branch"]))
+        .or_else(|| {
+            record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.branch.clone())
+        })
+        .unwrap_or_else(|| format!("draft/{slug}"));
+    let target_branch = sentinel_target
+        .or_else(|| first_non_empty_arg(&node.args, &["target", "target_branch"]))
+        .or_else(|| {
+            record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.target.clone())
+        })
+        .or_else(|| current_branch_name(execution_root))
+        .unwrap_or_else(|| "main".to_string());
+    (source_branch, target_branch)
+}
+
+fn run_merge_conflict_auto_resolve_agent(
+    execution_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+    sentinel: &Path,
+    slug: &str,
+    conflicts: &[String],
+) -> Option<String> {
+    let base_settings = match resolve_workflow_agent_settings(record) {
+        Ok(settings) => settings,
+        Err(err) => {
+            return Some(format!("auto-resolve agent settings unavailable: {err}"));
+        }
+    };
+    let prompt_settings = match base_settings.for_prompt(config::PromptKind::MergeConflict) {
+        Ok(settings) => settings,
+        Err(err) => {
+            return Some(format!(
+                "merge-conflict prompt profile unavailable for auto-resolve: {err}"
+            ));
+        }
+    };
+    let runner = match prompt_settings.agent_runner() {
+        Ok(runner) => runner.clone(),
+        Err(err) => {
+            return Some(format!(
+                "merge-conflict auto-resolve requires agent runner: {err}"
+            ));
+        }
+    };
+
+    let mut prompt_selection = prompt_settings
+        .prompt_selection()
+        .cloned()
+        .unwrap_or_else(|| {
+            config::get_config().prompt_for(
+                config::CommandScope::Merge,
+                config::PromptKind::MergeConflict,
+            )
+        });
+    match load_merge_conflict_companion_prompt(execution_root, node) {
+        Ok(Some(companion)) => {
+            prompt_selection.text = format!("{companion}\n\n{}", prompt_selection.text.trim());
+        }
+        Ok(None) => {}
+        Err(err) => {
+            return Some(format!(
+                "unable to load merge-conflict companion prompt: {err}"
+            ));
+        }
+    }
+
+    let (source_branch, target_branch) =
+        resolve_merge_conflict_branches(execution_root, record, node, sentinel, slug);
+    let prompt = match crate::agent_prompt::build_merge_conflict_prompt(
+        &prompt_selection,
+        &target_branch,
+        &source_branch,
+        conflicts,
+        &prompt_settings.documentation,
+    ) {
+        Ok(prompt) => prompt,
+        Err(err) => {
+            return Some(format!("unable to build merge-conflict prompt: {err}"));
+        }
+    };
+
+    let request =
+        build_workflow_agent_request(&prompt_settings, prompt, execution_root.to_path_buf());
+    match execute_agent_request_blocking(runner, request) {
+        Ok(response) => {
+            if !response.assistant_text.is_empty() {
+                print!("{}", response.assistant_text);
+                let _ = io::stdout().flush();
+            }
+            for line in response.stderr {
+                eprintln!("{line}");
+            }
+            None
+        }
+        Err(AgentError::NonZeroExit(code, lines)) => {
+            for line in lines {
+                eprintln!("{line}");
+            }
+            Some(format!("merge-conflict auto-resolve agent exited {code}"))
+        }
+        Err(AgentError::Timeout(secs)) => Some(format!(
+            "merge-conflict auto-resolve agent timed out after {secs}s"
+        )),
+        Err(err) => Some(format!("merge-conflict auto-resolve agent failed: {err}")),
     }
 }
 
@@ -3481,6 +3682,7 @@ fn execute_workflow_executor(
                 .arg(project_root)
                 .arg("worktree")
                 .arg("add")
+                .arg("--force")
                 .arg(&worktree_path)
                 .arg(&branch)
                 .output()?;
@@ -4508,10 +4710,12 @@ fn execute_workflow_control(
                 ));
             }
 
-            let mut conflicts_present = has_unmerged_paths(&execution_root);
+            let mut conflict_paths = list_unmerged_paths(&execution_root);
+            let mut conflicts_present = !conflict_paths.is_empty();
             let auto_resolve = bool_arg(&node.args, "auto_resolve")
                 .or_else(|| conflict_auto_resolve_from_gate(node))
                 .unwrap_or(false);
+            let mut auto_resolve_warning: Option<String> = None;
             if conflicts_present && auto_resolve {
                 if let Some(script) = resolve_node_shell_script(node, None) {
                     let (status, stdout, stderr) =
@@ -4530,15 +4734,28 @@ fn execute_workflow_control(
                             Some(status),
                         ));
                     }
+                } else if let Some(detail) = run_merge_conflict_auto_resolve_agent(
+                    &execution_root,
+                    record,
+                    node,
+                    &sentinel,
+                    &slug,
+                    &conflict_paths,
+                ) {
+                    display::warn(detail.clone());
+                    auto_resolve_warning = Some(detail);
                 }
-                conflicts_present = has_unmerged_paths(&execution_root);
+                conflict_paths = list_unmerged_paths(&execution_root);
+                conflicts_present = !conflict_paths.is_empty();
             }
 
             if conflicts_present {
-                let mut blocked = WorkflowNodeResult::blocked(
-                    format!("merge conflicts remain for slug `{slug}`"),
-                    Some(10),
-                );
+                let summary = if let Some(detail) = auto_resolve_warning {
+                    format!("merge conflicts remain for slug `{slug}` ({detail})")
+                } else {
+                    format!("merge conflicts remain for slug `{slug}`")
+                };
+                let mut blocked = WorkflowNodeResult::blocked(summary, Some(10));
                 blocked.artifacts_written = vec![JobArtifact::MergeSentinel { slug }];
                 blocked.payload_refs = vec![relative_path(project_root, &sentinel)];
                 return Ok(blocked);
@@ -6831,6 +7048,56 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_tick_waits_for_missing_producer_when_policy_is_wait() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let schedule = JobSchedule {
+            dependencies: vec![JobDependency {
+                artifact: JobArtifact::PlanDoc {
+                    slug: "alpha".to_string(),
+                    branch: "draft/alpha".to_string(),
+                },
+            }],
+            dependency_policy: JobDependenciesPolicy {
+                missing_producer: MissingProducerPolicy::Wait,
+            },
+            ..JobSchedule::default()
+        };
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "waiting-job",
+            &["save".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            Some(schedule),
+        )
+        .expect("enqueue job");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("scheduler tick");
+
+        let record = read_record(&jobs_root, "waiting-job").expect("read record");
+        assert_eq!(record.status, JobStatus::WaitingOnDeps);
+        let wait_reason = record
+            .schedule
+            .as_ref()
+            .and_then(|sched| sched.wait_reason.as_ref())
+            .expect("wait reason");
+        assert_eq!(wait_reason.kind, JobWaitKind::Dependencies);
+        let detail = wait_reason.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("awaiting producer for plan_doc:alpha (draft/alpha)"),
+            "unexpected wait detail: {detail}"
+        );
+    }
+
+    #[test]
     fn scheduler_tick_waits_on_after_dependency() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
@@ -7635,6 +7902,50 @@ mod tests {
             .expect("producer statuses");
         assert!(statuses.contains(&JobStatus::Running));
         assert!(statuses.contains(&JobStatus::Succeeded));
+    }
+
+    #[test]
+    fn scheduler_facts_collect_missing_producer_policy() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        fs::create_dir_all(&jobs_root).expect("jobs root");
+
+        let artifact = JobArtifact::CommandPatch {
+            job_id: "policy-artifact".to_string(),
+        };
+        write_job_with_status(
+            project_root,
+            &jobs_root,
+            "policy-job",
+            JobStatus::Queued,
+            JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact.clone(),
+                }],
+                dependency_policy: JobDependenciesPolicy {
+                    missing_producer: MissingProducerPolicy::Wait,
+                },
+                ..JobSchedule::default()
+            },
+            &["--help".to_string()],
+        )
+        .expect("policy job");
+
+        let mut records = list_records(&jobs_root).expect("list records");
+        records.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let facts = build_scheduler_facts(
+            &Repository::discover(project_root).expect("repo"),
+            &jobs_root,
+            &records,
+        )
+        .expect("facts");
+
+        assert_eq!(
+            facts.job_missing_producer_policy.get("policy-job").copied(),
+            Some(MissingProducerPolicy::Wait)
+        );
     }
 
     #[test]
@@ -9147,6 +9458,105 @@ mod tests {
             !worktree_abs.exists(),
             "expected owned worktree directory to be removed"
         );
+    }
+
+    #[test]
+    fn workflow_runtime_worktree_prepare_allows_branch_in_multiple_worktrees() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-worktree-shared-1",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue shared 1");
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-worktree-shared-2",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue shared 2");
+
+        let record_one = read_record(&jobs_root, "job-worktree-shared-1").expect("record one");
+        let prepare_one = runtime_executor_node(
+            "prepare_one",
+            "job-worktree-shared-1",
+            "cap.env.builtin.worktree.prepare",
+            "worktree.prepare",
+            BTreeMap::from([("branch".to_string(), "draft/worktree-shared".to_string())]),
+        );
+        let prepared_one =
+            execute_workflow_executor(project_root, &jobs_root, &record_one, &prepare_one)
+                .expect("prepare one");
+        assert_eq!(prepared_one.outcome, WorkflowNodeOutcome::Succeeded);
+        let prepare_one_meta = prepared_one.metadata.clone().expect("prepare one metadata");
+        let worktree_one = prepare_one_meta
+            .worktree_path
+            .as_deref()
+            .map(|path| resolve_recorded_path(project_root, path))
+            .expect("worktree one path");
+        assert!(worktree_one.exists(), "worktree one should exist");
+
+        let record_two = read_record(&jobs_root, "job-worktree-shared-2").expect("record two");
+        let prepare_two = runtime_executor_node(
+            "prepare_two",
+            "job-worktree-shared-2",
+            "cap.env.builtin.worktree.prepare",
+            "worktree.prepare",
+            BTreeMap::from([("branch".to_string(), "draft/worktree-shared".to_string())]),
+        );
+        let prepared_two =
+            execute_workflow_executor(project_root, &jobs_root, &record_two, &prepare_two)
+                .expect("prepare two");
+        assert_eq!(prepared_two.outcome, WorkflowNodeOutcome::Succeeded);
+        let prepare_two_meta = prepared_two.metadata.clone().expect("prepare two metadata");
+        let worktree_two = prepare_two_meta
+            .worktree_path
+            .as_deref()
+            .map(|path| resolve_recorded_path(project_root, path))
+            .expect("worktree two path");
+        assert!(worktree_two.exists(), "worktree two should exist");
+        assert_ne!(
+            worktree_one, worktree_two,
+            "shared branch prepares should still use distinct worktree paths"
+        );
+
+        let cleanup = runtime_executor_node(
+            "cleanup",
+            "job-worktree-shared-1",
+            "cap.env.builtin.worktree.cleanup",
+            "worktree.cleanup",
+            BTreeMap::new(),
+        );
+        let mut cleanup_record_one = record_one.clone();
+        cleanup_record_one.metadata = Some(prepare_one_meta);
+        let cleaned_one =
+            execute_workflow_executor(project_root, &jobs_root, &cleanup_record_one, &cleanup)
+                .expect("cleanup one");
+        assert_eq!(cleaned_one.outcome, WorkflowNodeOutcome::Succeeded);
+
+        let mut cleanup_record_two = record_two.clone();
+        cleanup_record_two.metadata = Some(prepare_two_meta);
+        let cleaned_two =
+            execute_workflow_executor(project_root, &jobs_root, &cleanup_record_two, &cleanup)
+                .expect("cleanup two");
+        assert_eq!(cleaned_two.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(!worktree_one.exists(), "worktree one should be removed");
+        assert!(!worktree_two.exists(), "worktree two should be removed");
     }
 
     #[test]

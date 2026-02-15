@@ -43,6 +43,26 @@ merge = "file:.vizier/workflows/merge.toml"
 - `approve`: `worktree_prepare -> resolve_prompt -> invoke_agent -> stage_commit -> stop_gate -> worktree_cleanup -> terminal`
 - `merge`: `merge_integrate -> merge_gate_cicd -> terminal`, with `merge_integrate.on.blocked -> merge_conflict_resolution`
 
+## Cross-Run Dependency Contracts
+
+Shipped stage templates now opt into optimistic artifact dependency waiting:
+
+```toml
+[policy.dependencies]
+missing_producer = "wait"
+```
+
+Stage contract details:
+
+- `draft.persist_plan` produces `plan_branch:{slug,branch}` and `plan_doc:{slug,branch}`.
+- `approve.worktree_prepare` needs `plan_branch:{slug,branch}` and `plan_doc:{slug,branch}`.
+- `approve.terminal` produces `custom:stage_token:approve:${slug}`.
+- shipped `merge.merge_integrate` needs `custom:stage_token:approve:${slug}`.
+- custom merge variants can also add `plan_branch:{slug,branch}` when explicit source-branch presence gating is required.
+- `approve`/`merge` declare the `stage_token@v1` artifact contract so custom stage tokens validate at queue time.
+
+With these contracts in place, `vizier run draft`, `vizier run approve`, and `vizier run merge` can be queued back-to-back without explicit `--after` wiring.
+
 ## Operational Notes
 
 - `vizier run` accepts template params via `--set key=value`, named flags (`--spec-file`, `--slug`, ...), or ordered positional inputs declared by template `[cli].positional`.
@@ -59,9 +79,10 @@ merge = "file:.vizier/workflows/merge.toml"
 - Entry-node preflight now reports missing root inputs before enqueue, including actionable examples derived from `[cli].positional`/`[cli].named`.
 - Stage `worktree_prepare` defaults to `draft/<slug>` when `branch` is unset; provide `branch` explicitly to override.
 - Stage `merge_integrate` also defaults to `draft/<slug>` when source branch args are unset; `vizier run merge <slug>` can run without explicitly setting `branch`.
+- Stage `merge_conflict_resolution` now defaults `conflict_auto_resolve=true`; when merge conflicts are detected it attempts configured agent-based resolution before remaining blocked for operator retry.
 - During `merge_integrate`, Vizier now loads `.vizier/implementation-plans/<slug>.md` from the source branch (or source history fallback), appends that content to the merge commit message body, and commits removal of the plan doc from the source branch tip before finalizing merge integration.
 - Queue-time capability validation now enforces executor arg contracts before any jobs are enqueued. Examples: `worktree.prepare` requires one of `args.branch|args.slug|args.plan`; `git.integrate_plan_branch` requires one of `args.branch|args.source_branch|args.plan_branch|args.slug|args.plan`; `cicd.run` requires `args.command`/`args.script` or a non-empty `cicd` gate script; `patch.pipeline_prepare` and `patch.execute_pipeline` require `args.files_json`.
 - `vizier run --set` still applies queue-time interpolation and typed coercion before enqueue.
-- `vizier run --after`, `--require-approval`, and `--follow` are the stage orchestration controls.
+- `vizier run --after`, `--require-approval`, and `--follow` remain available stage orchestration controls.
 - Job log streaming is command-local: `vizier jobs tail <job> --follow`.
 - Help output is pager-aware on TTY and plain in non-TTY contexts.

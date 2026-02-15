@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_3580fa0f7eba440590a5d690c4882c3a",
+  "slug": "opt",
+  "branch": "draft/opt",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_5ffd51c7aaf44223a31098abadd23329-persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Dependency-Derived Optimistic Scheduling (`OPT`)",
+  "created_at": "2026-02-15T19:21:50.111318+00:00",
+  "updated_at": "2026-02-15T19:21:50.111318+00:00",
+  "job_ids": {
+    "persist": "wf-run_5ffd51c7aaf44223a31098abadd23329-persist_plan"
+  }
+}

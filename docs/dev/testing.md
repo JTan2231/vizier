@@ -59,3 +59,4 @@ When touching scheduler metadata:
 - Fixture job polling defaults to 50ms; set `VIZIER_TEST_JOB_POLL_MS` to tune it for debugging noisy/slow environments.
 - Set `VIZIER_TEST_KEEP_TEMP=1` when debugging to preserve fixture build roots across process exit.
 - Set `VIZIER_TEST_SERIAL=1` to force fixture-level serialization when debugging ordering-sensitive integration flakes.
+- Stage-run integration coverage in `tests/src/run.rs` uses `IntegrationRepo::new_serial()` so workflow DAG tests execute deterministically under default parallel `cargo test`.

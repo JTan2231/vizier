@@ -14,12 +14,19 @@ branch = ""
 cicd_auto_resolve = "false"
 cicd_auto_resolve_script = ""
 cicd_script = ""
-conflict_auto_resolve = "false"
+conflict_auto_resolve = "true"
 delete_branch = "true"
 merge_message = ""
 slug = ""
 squash = "true"
 target_branch = ""
+
+[policy.dependencies]
+missing_producer = "wait"
+
+[[artifact_contracts]]
+id = "stage_token"
+version = "v1"
 
 [[nodes]]
 id = "merge_integrate"
@@ -33,6 +40,9 @@ message = "${merge_message}"
 slug = "${slug}"
 squash = "${squash}"
 target_branch = "${target_branch}"
+
+[[nodes.needs]]
+custom = { type_id = "stage_token", key = "approve:${slug}" }
 
 [nodes.on]
 succeeded = ["merge_gate_cicd"]
