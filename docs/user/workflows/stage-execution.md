@@ -53,6 +53,7 @@ merge = "file:.vizier/workflow/merge.toml"
   - merge companion: `.vizier/prompts/MERGE_PROMPTS.md`
 - Entry-node preflight now reports missing root inputs before enqueue, including actionable examples derived from `[cli].positional`/`[cli].named`.
 - Stage `worktree_prepare` defaults to `draft/<slug>` when `branch` is unset; provide `branch` explicitly to override.
+- Stage `merge_integrate` also defaults to `draft/<slug>` when source branch args are unset; `vizier run merge <slug>` can run without explicitly setting `branch`.
 - Queue-time capability validation now enforces executor arg contracts before any jobs are enqueued. Examples: `worktree.prepare` requires one of `args.branch|args.slug|args.plan`; `git.integrate_plan_branch` requires one of `args.branch|args.source_branch|args.plan_branch|args.slug|args.plan`; `cicd.run` requires `args.command`/`args.script` or a non-empty `cicd` gate script; `patch.pipeline_prepare` and `patch.execute_pipeline` require `args.files_json`.
 - `vizier run --set` still applies queue-time interpolation and typed coercion before enqueue.
 - `vizier run --after`, `--require-approval`, and `--follow` are the stage orchestration controls.

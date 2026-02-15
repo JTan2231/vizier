@@ -3605,6 +3605,10 @@ fn execute_workflow_executor(
             let source_branch =
                 first_non_empty_arg(&node.args, &["branch", "source_branch", "plan_branch"])
                     .or_else(|| {
+                        first_non_empty_arg(&node.args, &["slug", "plan"])
+                            .map(|slug| crate::plan::default_branch_for_slug(&slug))
+                    })
+                    .or_else(|| {
                         record
                             .metadata
                             .as_ref()
@@ -9033,6 +9037,61 @@ mod tests {
         );
         let sentinel = project_root.join(".vizier/tmp/merge-conflicts/runtime-conflict.json");
         assert!(sentinel.exists(), "expected merge sentinel file");
+    }
+
+    #[test]
+    fn workflow_runtime_integrate_plan_branch_derives_branch_from_slug_when_branch_missing() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        let target = current_branch_name(project_root).expect("target branch");
+
+        let checkout = git_status(
+            project_root,
+            &["checkout", "-b", "draft/runtime-slug-merge"],
+        );
+        assert!(checkout.success(), "create draft branch");
+        fs::write(project_root.join("slug-merge.txt"), "from slug source\n")
+            .expect("write source file");
+        git_commit_all(project_root, "feat: slug merge source");
+        let checkout_target = git_status(project_root, &["checkout", &target]);
+        assert!(checkout_target.success(), "checkout target");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-integrate-slug-derived",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-integrate-slug-derived").expect("record");
+        let node = runtime_executor_node(
+            "integrate",
+            "job-integrate-slug-derived",
+            "cap.env.builtin.git.integrate_plan_branch",
+            "git.integrate_plan_branch",
+            BTreeMap::from([
+                ("slug".to_string(), "runtime-slug-merge".to_string()),
+                ("target_branch".to_string(), target),
+                ("squash".to_string(), "false".to_string()),
+            ]),
+        );
+        let result =
+            execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("integrate");
+        assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert_eq!(
+            fs::read_to_string(project_root.join("slug-merge.txt"))
+                .ok()
+                .as_deref(),
+            Some("from slug source\n"),
+            "expected merge to include source branch changes"
+        );
     }
 
     #[test]

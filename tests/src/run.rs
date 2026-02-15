@@ -813,6 +813,57 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
 }
 
 #[test]
+fn test_run_merge_stage_default_slug_derives_source_branch() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    repo.git(&["checkout", "-b", "draft/default"])?;
+    repo.write("merge-default.txt", "merge default branch change\n")?;
+    repo.git(&["add", "merge-default.txt"])?;
+    repo.git(&["commit", "-m", "feat: merge default branch"])?;
+    repo.git(&["checkout", "master"])?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "default",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: merge plan default",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    for node in ["merge_integrate", "merge_gate_cicd"] {
+        let job_id = manifest_node_job_id(&manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "merge node `{node}` should succeed: {record}"
+        );
+    }
+
+    assert_eq!(
+        fs::read_to_string(repo.path().join("merge-default.txt"))?.as_str(),
+        "merge default branch change\n"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_run_approve_stage_stop_condition_retry_loop() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
