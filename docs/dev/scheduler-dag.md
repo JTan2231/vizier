@@ -104,14 +104,18 @@ Control policies:
 - `terminal`
 
 Runtime notes:
-- handlers resolve execution root from repo/worktree metadata before filesystem
-  or process execution.
+- handlers resolve execution root in metadata precedence order:
+  `metadata.execution_root` -> `metadata.worktree_path` (compat fallback) ->
+  repo root, and reject out-of-repo paths.
 - `agent.invoke` uses resolved configured runner settings (no prompt-echo
   facade path).
 - `terminal` is an explicit sink policy and fails when outgoing routes are
   configured.
 - conflict/cicd/approval gates route as `succeeded`/`failed`/`blocked` outcomes
   for scheduler retry/edge handling.
+- `on.succeeded` edges remain materialized as `after:success` dependencies for
+  scheduler determinism, with runtime metadata propagation occurring along those
+  explicit success edges.
 
 ## Job lifecycle
 Statuses:
@@ -149,6 +153,8 @@ Safety and rewind behavior:
 - Retry clears `worktree_*` metadata only when cleanup is confirmed done/skipped; degraded cleanup
   retains `worktree_name`/`worktree_path`/`worktree_owned` and records
   `retry_cleanup_status`/`retry_cleanup_error` for later recovery via retry/cancel.
+- When retry cleanup is done/skipped, `metadata.execution_root` resets to `.`
+  (repo-root marker). Degraded cleanup preserves `execution_root`.
 - Merge-related retry sets also clear scheduler-owned conflict sentinels under
   `.vizier/tmp/merge-conflicts/<slug>.json`. If Git is currently in an
   in-progress merge/cherry-pick state, retry fails with guidance instead of
@@ -276,6 +282,7 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 - `artifacts`
 - `workflow template` / `workflow node` / `workflow policy snapshot` / `workflow gates`
 - `workflow capability` (legacy) / `workflow executor class` / `workflow executor operation` / `workflow control policy`
+- `execution_root` (effective runtime filesystem root marker)
 
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).

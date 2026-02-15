@@ -8,11 +8,15 @@
 - **Code state**: Snapshot slice for user-visible behavior, interfaces, and constraints.
 - **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
+- **Current worktree evidence**: Snapshot code-state line that records the latest local `draft/*` branch inventory plus on-disk and deleted `.vizier/implementation-plans/*.md` evidence for the active worktree slug.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
 - **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree (including when the directory itself is absent); used with branch inventory to quantify legacy drift.
 - **Mixed plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has at least one on-disk plan doc while also carrying tracked deletions (`D .vizier/implementation-plans/<slug>.md`), signaling overlapping historical drift shapes in one worktree.
 - **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that define canonical workflow identity for scheduler/job records.
+- **Execution-root metadata**: Job metadata field `execution_root` representing the logical filesystem root for workflow-node runtime (`.` = repo root).
+- **Execution-root edge propagation**: Runtime behavior that copies execution context (`execution_root` + worktree ownership fields) along explicit workflow routes before downstream queue/retry handling.
+- **Execution-root reset contract**: Cleanup/retry rule where successful worktree cleanup resets `execution_root` to `.` and clears `worktree_*` ownership fields; degraded cleanup preserves context for recovery.
 - **Executor-first workflow model**: Internal template contract where each executor node declares exactly one executor class (`environment.builtin`, `environment.shell`, or `agent`) and control behavior is modeled separately.
 - **Explicit `uses` declaration**: Validator rule that executor/control node identity must be declared via recognized `uses` IDs; unknown arbitrary labels are rejected (no implicit custom-command fallback).
 - **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
@@ -38,7 +42,7 @@
 - **Prompt artifact contract**: Canonical prompt payload wiring for executor templates: one custom artifact shaped `custom:prompt_text:<key>` produced by prompt-resolve nodes and consumed by canonical invoke nodes.
 - **Prompt payload data store**: Optional typed JSON payload files for custom artifacts under `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; scheduler gating still keys off marker files.
 - **Prompt-resolve node**: Environment executor node (`cap.env.builtin.prompt.resolve` or `cap.env.shell.prompt.resolve`) that outputs exactly one prompt artifact for downstream `cap.agent.invoke`.
-- **Runtime execution root resolution**: Workflow-node rule that executes each handler in either repo root or metadata-linked worktree root (`metadata.worktree_path`) so shell/git/plan operations apply to the correct checkout.
+- **Runtime execution root resolution**: Workflow-node rule that resolves handler roots by precedence (`metadata.execution_root` -> `metadata.worktree_path` -> repo root) with repo-boundary validation.
 - **Sink policy (`terminal`)**: Canonical control-node contract where terminal nodes must have no outgoing routes; configured outgoing edges are treated as runtime failure.
 - **Release dry run**: `vizier release --dry-run` preview mode for version bump and notes without commit/tag creation.
 - **Session log**: Per-run artifact at `.vizier/sessions/<id>/session.json` when session logging is enabled.
@@ -50,7 +54,7 @@
 - **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions for the current worktree slug so legacy drift reporting stays current.
 - **Workspace commands (`cd`/`clean`)**: Deprecated-but-retained worktree helpers currently still available on the reduced CLI surface.
 - **`__workflow-node` entrypoint**: Hidden scheduler-only CLI command (`vizier __workflow-node --job-id <id>`) that executes one compiled workflow node and finalizes its job record.
-- **Workflow node runtime metadata**: Job metadata fields `workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, and `workflow_payload_refs` used by runtime node execution and retry rewinds.
+- **Workflow node runtime metadata**: Job metadata fields `workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, and `workflow_payload_refs` used by runtime node execution and retry rewinds; workflow jobs may also carry `execution_root` + worktree ownership context.
 - **Workflow run manifest**: Queue-time runtime file `.vizier/jobs/runs/<run_id>.json` containing per-node executor/control identity, args, retry policy, routing targets, and outcome artifact maps.
 - **Workflow runtime bridge**: Internal execution layer that compiles canonical templates to scheduler jobs, dispatches node handlers through `__workflow-node`, and routes outcomes without exposing removed public workflow commands.
 - **Run flow resolution order**: `FLOW` lookup contract: explicit `file:`/path, then `[commands]` alias, then selector lookup, then repo fallback files (`.vizier/<flow>.{toml,json}`, `.vizier/workflow/<flow>.{toml,json}`).

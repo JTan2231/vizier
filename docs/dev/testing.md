@@ -44,7 +44,8 @@ When touching scheduler metadata:
 - Keep dual-write assertions for migration windows (`metadata.scope` plus `metadata.command_alias`/`metadata.workflow_template_selector`).
 - Verify retry/status/show flows preserve alias/template metadata while clearing runtime-only fields.
 - Verify `jobs show` prioritizes executor-first fields (`workflow_executor_class`, `workflow_executor_operation`, `workflow_control_policy`) and that historical records with legacy fields still deserialize safely.
-- Include runtime metadata assertions for workflow-node jobs (`workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, `workflow_payload_refs`) and ensure retry rewind clears outcome/payload while bumping node attempt counters.
+- Include runtime metadata assertions for workflow-node jobs (`workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, `workflow_payload_refs`, `execution_root`) and ensure retry rewind clears outcome/payload while bumping node attempt counters.
+- Add edge-propagation coverage for execution-root transitions (`worktree.prepare` propagation, active-target no-mutation guard, and `worktree.cleanup` reset to repo root).
 
 ## Fixture temp lifecycle
 - Shared integration fixtures in `tests/src/fixtures.rs` own Vizier temp roots under the system temp dir.

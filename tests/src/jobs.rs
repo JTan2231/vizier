@@ -1797,6 +1797,7 @@ fn test_jobs_show_format_json() -> TestResult {
             "build_keep_branch": false,
             "build_dependencies": ["01", "02a"],
             "revision": "abc123",
+            "execution_root": ".vizier/tmp-worktrees/job-worktree",
             "worktree_name": "job-worktree",
             "worktree_path": ".vizier/tmp-worktrees/job-worktree",
             "agent_backend": "mock",
@@ -1925,6 +1926,11 @@ fn test_jobs_show_format_json() -> TestResult {
         json.get("artifacts").and_then(Value::as_str),
         Some("plan_commits:alpha (draft/alpha)"),
         "artifacts mismatch: {json}"
+    );
+    assert_eq!(
+        json.get("execution_root").and_then(Value::as_str),
+        Some(".vizier/tmp-worktrees/job-worktree"),
+        "execution root mismatch: {json}"
     );
     assert_eq!(
         json.get("worktree").and_then(Value::as_str),
@@ -2442,6 +2448,7 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
                 "scope": "save",
                 "command_alias": "save",
                 "workflow_template_selector": "template.save@v1",
+                "execution_root": worktree_rel,
                 "worktree_owned": true,
                 "worktree_path": worktree_rel,
                 "agent_exit_code": 9,
@@ -2502,6 +2509,10 @@ fn test_jobs_retry_rewinds_state_and_cleans_scheduler_artifacts() -> TestResult 
         .get("metadata")
         .and_then(Value::as_object)
         .ok_or("expected metadata object")?;
+    assert_eq!(
+        metadata.get("execution_root"),
+        Some(&Value::String(".".to_string()))
+    );
     assert_eq!(metadata.get("worktree_path"), Some(&Value::Null));
     assert_eq!(metadata.get("worktree_owned"), Some(&Value::Null));
     assert_eq!(metadata.get("agent_exit_code"), Some(&Value::Null));
@@ -2574,6 +2585,7 @@ fn test_jobs_retry_preserves_worktree_metadata_when_cleanup_degrades() -> TestRe
             "session_path": null,
             "outcome_path": null,
             "metadata": {
+                "execution_root": worktree_rel,
                 "worktree_name": "missing-retry-worktree",
                 "worktree_owned": true,
                 "worktree_path": worktree_rel
@@ -2627,6 +2639,10 @@ fn test_jobs_retry_preserves_worktree_metadata_when_cleanup_degrades() -> TestRe
     );
     assert_eq!(metadata.get("worktree_owned"), Some(&Value::Bool(true)));
     assert_eq!(
+        metadata.get("execution_root"),
+        Some(&Value::String(worktree_rel.to_string()))
+    );
+    assert_eq!(
         metadata.get("retry_cleanup_status"),
         Some(&Value::String("degraded".to_string()))
     );
@@ -2674,6 +2690,7 @@ fn test_jobs_retry_uses_fallback_cleanup_to_clear_worktree_metadata() -> TestRes
             "session_path": null,
             "outcome_path": null,
             "metadata": {
+                "execution_root": worktree_rel,
                 "worktree_name": "wrong-worktree-name",
                 "worktree_owned": true,
                 "worktree_path": worktree_rel
@@ -2705,6 +2722,10 @@ fn test_jobs_retry_uses_fallback_cleanup_to_clear_worktree_metadata() -> TestRes
     assert_eq!(metadata.get("worktree_name"), Some(&Value::Null));
     assert_eq!(metadata.get("worktree_path"), Some(&Value::Null));
     assert_eq!(metadata.get("worktree_owned"), Some(&Value::Null));
+    assert_eq!(
+        metadata.get("execution_root"),
+        Some(&Value::String(".".to_string()))
+    );
     assert_eq!(
         metadata.get("retry_cleanup_status"),
         Some(&Value::String("done".to_string()))

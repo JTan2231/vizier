@@ -1,6 +1,6 @@
 # Workflow-template reduction surface
 
-Status (2026-02-14): ACTIVE. `vizier run` is now the public workflow-template orchestrator while wrapper families remain removed.
+Status (2026-02-15): ACTIVE. `vizier run` is now the public workflow-template orchestrator while wrapper families remain removed.
 
 Thread: Workflow-template reduction surface (cross: Agent workflow orchestration, Configuration posture + defaults, Session logging)
 
@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-15, execution-root propagation):
+  - `vizier-cli/src/jobs.rs` now carries additive workflow metadata `execution_root` and resolves runtime roots by precedence (`execution_root` -> legacy `worktree_path` -> repo root) with repo-boundary canonicalization checks.
+  - Runtime route handling now keeps `on.succeeded` topology unchanged (`after:success` bridge) while using explicit route metadata to propagate execution context edge-locally to downstream queued nodes; non-success retry routes now inject propagated context before scheduler requeue.
+  - `worktree.prepare` now records execution-root context, successful `worktree.cleanup` resets execution root to `.` and clears worktree ownership metadata, and retry rewind mirrors that reset/preserve split for done/skipped vs degraded cleanup.
+  - Jobs observability now exposes `execution_root` via `vizier jobs show` fields/json, and runtime/integration coverage now asserts propagation idempotence, running-target no-mutation guards, precedence/safety failures, and run-time successor propagation.
 - Update (2026-02-15, `--set` Phase 1 expansion surface):
   - `vizier-cli/src/workflow_templates.rs` now expands `--set` queue-time across Phase 1 fields instead of args-only: artifact payload strings (`needs`/`produces`), lock keys, custom precondition args, gate script/custom fields, gate bool fields (`approval.required`, `cicd.auto_resolve`), retry mode/budget, and artifact-contract IDs/versions.
   - Queue-time coercion now validates expanded typed fields with field-path errors (bool tokens, retry budget `u32`, retry mode enum parse) before enqueue, preserving all-or-nothing manifest/job materialization.

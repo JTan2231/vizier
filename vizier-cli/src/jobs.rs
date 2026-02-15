@@ -158,6 +158,7 @@ pub struct JobMetadata {
     pub patch_index: Option<usize>,
     pub patch_total: Option<usize>,
     pub revision: Option<String>,
+    pub execution_root: Option<String>,
     pub worktree_name: Option<String>,
     pub worktree_path: Option<String>,
     pub worktree_owned: Option<bool>,
@@ -383,6 +384,7 @@ impl WorkflowNodeResult {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum WorkflowRouteMode {
+    PropagateContext,
     RetryJob,
 }
 
@@ -917,14 +919,23 @@ fn merge_metadata(
             if base.revision.is_none() {
                 base.revision = update.revision;
             }
-            if base.worktree_name.is_none() {
-                base.worktree_name = update.worktree_name;
+            if update.execution_root.is_some() {
+                base.execution_root = update.execution_root;
             }
-            if base.worktree_path.is_none() {
-                base.worktree_path = update.worktree_path;
-            }
-            if base.worktree_owned.is_none() {
-                base.worktree_owned = update.worktree_owned;
+            if update.worktree_owned == Some(false) {
+                base.worktree_name = None;
+                base.worktree_path = None;
+                base.worktree_owned = None;
+            } else {
+                if update.worktree_name.is_some() {
+                    base.worktree_name = update.worktree_name;
+                }
+                if update.worktree_path.is_some() {
+                    base.worktree_path = update.worktree_path;
+                }
+                if update.worktree_owned.is_some() {
+                    base.worktree_owned = update.worktree_owned;
+                }
             }
             if base.agent_selector.is_none() {
                 base.agent_selector = update.agent_selector;
@@ -1288,21 +1299,21 @@ fn compiled_node_lookup(
 }
 
 fn convert_outcome_edges_to_routes(edges: &WorkflowOutcomeEdges) -> WorkflowRouteTargets {
-    let to_targets = |values: &[String]| {
+    let to_targets = |values: &[String], mode: WorkflowRouteMode| {
         values
             .iter()
             .map(|target| WorkflowRouteTarget {
                 node_id: target.clone(),
-                mode: WorkflowRouteMode::RetryJob,
+                mode,
             })
             .collect::<Vec<_>>()
     };
 
     WorkflowRouteTargets {
-        succeeded: Vec::new(),
-        failed: to_targets(&edges.failed),
-        blocked: to_targets(&edges.blocked),
-        cancelled: to_targets(&edges.cancelled),
+        succeeded: to_targets(&edges.succeeded, WorkflowRouteMode::PropagateContext),
+        failed: to_targets(&edges.failed, WorkflowRouteMode::RetryJob),
+        blocked: to_targets(&edges.blocked, WorkflowRouteMode::RetryJob),
+        cancelled: to_targets(&edges.cancelled, WorkflowRouteMode::RetryJob),
     }
 }
 
@@ -2601,6 +2612,38 @@ fn map_workflow_outcome_to_job_status(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkflowExecutionContext {
+    execution_root: Option<String>,
+    worktree_path: Option<String>,
+    worktree_name: Option<String>,
+    worktree_owned: Option<bool>,
+}
+
+fn normalized_metadata_value(value: Option<&String>) -> Option<String> {
+    value
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.to_string())
+}
+
+fn workflow_execution_context_from_metadata(
+    metadata: Option<&JobMetadata>,
+) -> Option<WorkflowExecutionContext> {
+    let metadata = metadata?;
+    let context = WorkflowExecutionContext {
+        execution_root: normalized_metadata_value(metadata.execution_root.as_ref()),
+        worktree_path: normalized_metadata_value(metadata.worktree_path.as_ref()),
+        worktree_name: normalized_metadata_value(metadata.worktree_name.as_ref()),
+        worktree_owned: metadata.worktree_owned,
+    };
+    if context.execution_root.is_none() && context.worktree_path.is_none() {
+        None
+    } else {
+        Some(context)
+    }
+}
+
 fn run_shell_text_command(
     execution_root: &Path,
     script: &str,
@@ -2632,26 +2675,61 @@ fn resolve_execution_root(
     project_root: &Path,
     record: &JobRecord,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let Some(worktree) = record
-        .metadata
-        .as_ref()
-        .and_then(|meta| meta.worktree_path.as_ref())
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(project_root.to_path_buf());
+    let canonical_project_root = project_root.canonicalize().map_err(|err| {
+        format!(
+            "cannot resolve repository root {}: {}",
+            project_root.display(),
+            err
+        )
+    })?;
+    let Some(metadata) = record.metadata.as_ref() else {
+        return Ok(canonical_project_root);
     };
 
-    let resolved = resolve_recorded_path(project_root, worktree);
-    if resolved.exists() {
-        Ok(resolved)
-    } else {
-        Err(format!(
-            "workflow execution root {} does not exist",
-            resolved.display()
-        )
-        .into())
+    if let Some(execution_root) = normalized_metadata_value(metadata.execution_root.as_ref()) {
+        return resolve_execution_root_candidate(
+            project_root,
+            &canonical_project_root,
+            &execution_root,
+            "execution_root",
+        );
     }
+
+    if let Some(worktree_path) = normalized_metadata_value(metadata.worktree_path.as_ref()) {
+        return resolve_execution_root_candidate(
+            project_root,
+            &canonical_project_root,
+            &worktree_path,
+            "worktree_path",
+        );
+    }
+
+    Ok(canonical_project_root)
+}
+
+fn resolve_execution_root_candidate(
+    project_root: &Path,
+    canonical_project_root: &Path,
+    recorded: &str,
+    field_name: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let resolved = resolve_recorded_path(project_root, recorded);
+    let canonical = resolved.canonicalize().map_err(|err| {
+        format!(
+            "workflow metadata.{field_name} path {} is invalid: {}",
+            resolved.display(),
+            err
+        )
+    })?;
+    if !canonical.starts_with(canonical_project_root) {
+        return Err(format!(
+            "workflow metadata.{field_name} path {} is outside repository root {}",
+            canonical.display(),
+            canonical_project_root.display()
+        )
+        .into());
+    }
+    Ok(canonical)
 }
 
 fn resolve_path_in_execution_root(execution_root: &Path, path: &str) -> PathBuf {
@@ -3079,6 +3157,7 @@ fn execute_workflow_executor(
                     WorkflowNodeResult::succeeded("worktree already exists for this node");
                 result.payload_refs = vec![relative_path(project_root, &worktree_path)];
                 result.metadata = Some(JobMetadata {
+                    execution_root: Some(relative_path(project_root, &worktree_path)),
                     worktree_owned: Some(true),
                     worktree_path: Some(relative_path(project_root, &worktree_path)),
                     worktree_name: find_worktree_name_by_path(
@@ -3117,6 +3196,7 @@ fn execute_workflow_executor(
                 find_worktree_name_by_path(&Repository::open(project_root)?, &worktree_path);
             result.metadata = Some(JobMetadata {
                 branch: Some(branch),
+                execution_root: Some(relative_path(project_root, &worktree_path)),
                 worktree_owned: Some(true),
                 worktree_path: Some(relative_path(project_root, &worktree_path)),
                 worktree_name,
@@ -3172,6 +3252,8 @@ fn execute_workflow_executor(
                 } else {
                     let mut cleaned = WorkflowNodeResult::succeeded("worktree cleaned");
                     cleaned.metadata = Some(JobMetadata {
+                        execution_root: Some(".".to_string()),
+                        worktree_owned: Some(false),
                         retry_cleanup_status: Some(RetryCleanupStatus::Done),
                         retry_cleanup_error: None,
                         ..JobMetadata::default()
@@ -4255,10 +4337,12 @@ fn apply_workflow_routes(
     project_root: &Path,
     jobs_root: &Path,
     binary: &Path,
+    source_record: &JobRecord,
     node: &WorkflowRuntimeNodeManifest,
     run_manifest: &WorkflowRunManifest,
     outcome: WorkflowNodeOutcome,
 ) {
+    let source_context = workflow_execution_context_from_metadata(source_record.metadata.as_ref());
     for route in node.routes.for_outcome(outcome) {
         let Some(target) = run_manifest.nodes.get(&route.node_id) else {
             display::warn(format!(
@@ -4269,6 +4353,25 @@ fn apply_workflow_routes(
         };
 
         match route.mode {
+            WorkflowRouteMode::PropagateContext => {
+                let Some(context) = source_context.as_ref() else {
+                    continue;
+                };
+                match apply_workflow_execution_context(jobs_root, &target.job_id, context, true) {
+                    Ok(true) => display::debug(format!(
+                        "workflow route {} -> {} propagated execution context",
+                        node.node_id, target.node_id
+                    )),
+                    Ok(false) => display::debug(format!(
+                        "workflow route {} -> {} skipped execution-context propagation (active or unchanged target)",
+                        node.node_id, target.node_id
+                    )),
+                    Err(err) => display::warn(format!(
+                        "workflow route {} -> {} context propagation failed: {}",
+                        node.node_id, target.node_id, err
+                    )),
+                }
+            }
             WorkflowRouteMode::RetryJob => {
                 let target_record = read_record(jobs_root, &target.job_id);
                 if let Ok(record) = target_record
@@ -4276,7 +4379,13 @@ fn apply_workflow_routes(
                 {
                     continue;
                 }
-                if let Err(err) = retry_job(project_root, jobs_root, binary, &target.job_id) {
+                if let Err(err) = retry_job_internal(
+                    project_root,
+                    jobs_root,
+                    binary,
+                    &target.job_id,
+                    source_context.as_ref(),
+                ) {
                     display::warn(format!(
                         "workflow route {} -> {} retry failed: {}",
                         node.node_id, target.node_id, err
@@ -4285,6 +4394,40 @@ fn apply_workflow_routes(
             }
         }
     }
+}
+
+fn apply_workflow_execution_context(
+    jobs_root: &Path,
+    job_id: &str,
+    context: &WorkflowExecutionContext,
+    skip_active_targets: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let paths = paths_for(jobs_root, job_id);
+    if !paths.record_path.exists() {
+        return Err(format!("no background job {}", job_id).into());
+    }
+    let mut record = load_record(&paths)?;
+    if skip_active_targets && record.status == JobStatus::Running {
+        return Ok(false);
+    }
+
+    let mut metadata = record.metadata.take().unwrap_or_default();
+    let changed = metadata.execution_root != context.execution_root
+        || metadata.worktree_path != context.worktree_path
+        || metadata.worktree_name != context.worktree_name
+        || metadata.worktree_owned != context.worktree_owned;
+    if !changed {
+        record.metadata = Some(metadata);
+        return Ok(false);
+    }
+
+    metadata.execution_root = context.execution_root.clone();
+    metadata.worktree_path = context.worktree_path.clone();
+    metadata.worktree_name = context.worktree_name.clone();
+    metadata.worktree_owned = context.worktree_owned;
+    record.metadata = Some(metadata);
+    persist_record(&paths, &record)?;
+    Ok(true)
 }
 
 fn execute_workflow_node_job(
@@ -4344,7 +4487,7 @@ fn execute_workflow_node_job(
         ..JobMetadata::default()
     };
     let metadata_update = merge_metadata(Some(metadata_update), result.metadata.clone());
-    let _ = finalize_job_with_artifacts(
+    let finalized_record = finalize_job_with_artifacts(
         project_root,
         jobs_root,
         job_id,
@@ -4360,6 +4503,7 @@ fn execute_workflow_node_job(
         project_root,
         jobs_root,
         &binary,
+        &finalized_record,
         node_manifest,
         &manifest,
         result.outcome,
@@ -4540,6 +4684,16 @@ pub fn retry_job(
     binary: &Path,
     requested_job_id: &str,
 ) -> Result<RetryOutcome, Box<dyn std::error::Error>> {
+    retry_job_internal(project_root, jobs_root, binary, requested_job_id, None)
+}
+
+fn retry_job_internal(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    requested_job_id: &str,
+    propagated_context: Option<&WorkflowExecutionContext>,
+) -> Result<RetryOutcome, Box<dyn std::error::Error>> {
     let _lock = SchedulerLock::acquire(jobs_root)?;
     let records = list_records(jobs_root)?;
     let graph = ScheduleGraph::new(records);
@@ -4596,6 +4750,10 @@ pub fn retry_job(
         rewind_job_record_for_retry(project_root, jobs_root, &mut record)?;
         persist_record(&paths, &record)?;
         reset.push(job_id.clone());
+    }
+
+    if let Some(context) = propagated_context {
+        let _ = apply_workflow_execution_context(jobs_root, requested_job_id, context, true)?;
     }
 
     let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, binary)?;
@@ -4818,6 +4976,7 @@ fn rewind_job_record_for_retry(
             metadata.worktree_name = None;
             metadata.worktree_path = None;
             metadata.worktree_owned = None;
+            metadata.execution_root = Some(".".to_string());
         }
         let next_attempt = metadata
             .workflow_node_attempt
@@ -5176,6 +5335,7 @@ pub fn record_job_worktree(
 
     let mut record = load_record(&paths)?;
     let update = JobMetadata {
+        execution_root: Some(relative_path(project_root, worktree_path)),
         worktree_owned: Some(true),
         worktree_path: Some(relative_path(project_root, worktree_path)),
         worktree_name: worktree_name.map(|name| name.to_string()),
@@ -7563,6 +7723,7 @@ mod tests {
                 ..record.schedule.clone().unwrap_or_default()
             });
             record.metadata = Some(JobMetadata {
+                execution_root: Some(".vizier/tmp-worktrees/retry-cleanup".to_string()),
                 worktree_owned: Some(true),
                 worktree_path: Some(".vizier/tmp-worktrees/retry-cleanup".to_string()),
                 workflow_node_attempt: Some(4),
@@ -7595,6 +7756,7 @@ mod tests {
         assert!(metadata.worktree_name.is_none());
         assert!(metadata.worktree_path.is_none());
         assert!(metadata.worktree_owned.is_none());
+        assert_eq!(metadata.execution_root.as_deref(), Some("."));
         assert_eq!(metadata.workflow_node_attempt, Some(5));
         assert!(metadata.workflow_node_outcome.is_none());
         assert!(metadata.workflow_payload_refs.is_none());
@@ -7663,6 +7825,7 @@ mod tests {
         let mut record = update_job_record(&jobs_root, "job-retry-degraded", |record| {
             record.status = JobStatus::Failed;
             record.metadata = Some(JobMetadata {
+                execution_root: Some(worktree_rel.to_string()),
                 worktree_name: Some("missing-retry-worktree".to_string()),
                 worktree_owned: Some(true),
                 worktree_path: Some(worktree_rel.to_string()),
@@ -7684,6 +7847,7 @@ mod tests {
             metadata.retry_cleanup_status,
             Some(RetryCleanupStatus::Degraded)
         );
+        assert_eq!(metadata.execution_root.as_deref(), Some(worktree_rel));
         let detail = metadata.retry_cleanup_error.as_deref().unwrap_or("");
         assert!(
             detail.contains("fallback cleanup failed"),
@@ -7733,6 +7897,7 @@ mod tests {
         let mut record = update_job_record(&jobs_root, "job-retry-fallback", |record| {
             record.status = JobStatus::Failed;
             record.metadata = Some(JobMetadata {
+                execution_root: Some(worktree_rel.to_string()),
                 worktree_name: Some("wrong-worktree-name".to_string()),
                 worktree_owned: Some(true),
                 worktree_path: Some(worktree_rel.to_string()),
@@ -7747,6 +7912,7 @@ mod tests {
         assert!(metadata.worktree_name.is_none());
         assert!(metadata.worktree_path.is_none());
         assert!(metadata.worktree_owned.is_none());
+        assert_eq!(metadata.execution_root.as_deref(), Some("."));
         assert_eq!(
             metadata.retry_cleanup_status,
             Some(RetryCleanupStatus::Done)
@@ -7962,6 +8128,64 @@ mod tests {
     }
 
     #[test]
+    fn retry_job_internal_applies_propagated_execution_context_before_scheduler_tick() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-root",
+            &["--help".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            Some(JobMetadata {
+                execution_root: Some(".".to_string()),
+                ..JobMetadata::default()
+            }),
+            None,
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: JobArtifact::TargetBranch {
+                        name: "missing-retry-target".to_string(),
+                    },
+                }],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue root");
+        update_job_record(&jobs_root, "job-root", |record| {
+            record.status = JobStatus::Failed;
+            record.exit_code = Some(1);
+        })
+        .expect("mark root failed");
+
+        let propagated = WorkflowExecutionContext {
+            execution_root: Some(".vizier/tmp-worktrees/propagated".to_string()),
+            worktree_path: Some(".vizier/tmp-worktrees/propagated".to_string()),
+            worktree_name: Some("propagated".to_string()),
+            worktree_owned: Some(true),
+        };
+        let binary = std::env::current_exe().expect("current exe");
+        retry_job_internal(
+            project_root,
+            &jobs_root,
+            &binary,
+            "job-root",
+            Some(&propagated),
+        )
+        .expect("retry with propagated context");
+
+        let root = read_record(&jobs_root, "job-root").expect("root record");
+        let metadata = root.metadata.as_ref().expect("root metadata");
+        assert_eq!(metadata.execution_root, propagated.execution_root);
+        assert_eq!(metadata.worktree_path, propagated.worktree_path);
+        assert_eq!(metadata.worktree_name, propagated.worktree_name);
+        assert_eq!(metadata.worktree_owned, propagated.worktree_owned);
+    }
+
+    #[test]
     fn enqueue_workflow_run_materializes_runtime_node_jobs() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
@@ -8031,6 +8255,17 @@ mod tests {
         assert_eq!(manifest.nodes.len(), 2);
         assert!(manifest.nodes.contains_key("resolve_prompt"));
         assert!(manifest.nodes.contains_key("invoke_agent"));
+        let resolve_manifest = manifest
+            .nodes
+            .get("resolve_prompt")
+            .expect("resolve manifest");
+        assert!(
+            resolve_manifest.routes.succeeded.iter().any(|target| {
+                target.node_id == "invoke_agent"
+                    && matches!(target.mode, WorkflowRouteMode::PropagateContext)
+            }),
+            "expected success edge to materialize as context-propagation route"
+        );
     }
 
     #[test]
@@ -8138,6 +8373,10 @@ mod tests {
             .expect("prepare");
         assert_eq!(prepare_result.outcome, WorkflowNodeOutcome::Succeeded);
         let prepare_meta = prepare_result.metadata.clone().expect("worktree metadata");
+        assert_eq!(
+            prepare_meta.execution_root.as_deref(),
+            prepare_meta.worktree_path.as_deref()
+        );
         let worktree_rel = prepare_meta
             .worktree_path
             .as_deref()
@@ -8158,9 +8397,276 @@ mod tests {
             execute_workflow_executor(project_root, &jobs_root, &cleanup_record, &cleanup)
                 .expect("cleanup");
         assert_eq!(cleanup_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let cleanup_meta = cleanup_result.metadata.clone().expect("cleanup metadata");
+        assert_eq!(cleanup_meta.execution_root.as_deref(), Some("."));
+        assert_eq!(cleanup_meta.worktree_owned, Some(false));
         assert!(
             !worktree_abs.exists(),
             "expected owned worktree directory to be removed"
+        );
+    }
+
+    #[test]
+    fn resolve_execution_root_prefers_execution_root_and_validates_repo_bounds() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let canonical_root = project_root.canonicalize().expect("canonical repo root");
+
+        let worktree_rel = ".vizier/tmp-worktrees/root-precedence";
+        let worktree_abs = project_root.join(worktree_rel);
+        fs::create_dir_all(&worktree_abs).expect("create worktree path");
+        let canonical_worktree = worktree_abs
+            .canonicalize()
+            .expect("canonical worktree root");
+
+        let mut record = JobRecord {
+            id: "job-root-precedence".to_string(),
+            status: JobStatus::Queued,
+            command: vec!["vizier".to_string(), "__workflow-node".to_string()],
+            child_args: Vec::new(),
+            created_at: Utc::now(),
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: ".vizier/jobs/job-root-precedence/stdout.log".to_string(),
+            stderr_path: ".vizier/jobs/job-root-precedence/stderr.log".to_string(),
+            session_path: None,
+            outcome_path: None,
+            metadata: Some(JobMetadata {
+                execution_root: Some(".".to_string()),
+                worktree_path: Some(worktree_rel.to_string()),
+                ..JobMetadata::default()
+            }),
+            config_snapshot: None,
+            schedule: None,
+        };
+
+        let resolved =
+            resolve_execution_root(project_root, &record).expect("resolve from explicit root");
+        assert_eq!(resolved, canonical_root);
+
+        if let Some(metadata) = record.metadata.as_mut() {
+            metadata.execution_root = Some(worktree_rel.to_string());
+            metadata.worktree_path = Some(".".to_string());
+        }
+        let resolved =
+            resolve_execution_root(project_root, &record).expect("resolve from execution_root");
+        assert_eq!(resolved, canonical_worktree);
+
+        if let Some(metadata) = record.metadata.as_mut() {
+            metadata.execution_root = None;
+            metadata.worktree_path = Some(worktree_rel.to_string());
+        }
+        let resolved =
+            resolve_execution_root(project_root, &record).expect("resolve from worktree_path");
+        assert_eq!(resolved, canonical_worktree);
+
+        if let Some(metadata) = record.metadata.as_mut() {
+            metadata.execution_root = Some("..".to_string());
+            metadata.worktree_path = Some(worktree_rel.to_string());
+        }
+        let err = resolve_execution_root(project_root, &record)
+            .expect_err("expected repo-boundary rejection");
+        assert!(
+            err.to_string().contains("outside repository root"),
+            "expected out-of-repo rejection, got: {err}"
+        );
+
+        if let Some(metadata) = record.metadata.as_mut() {
+            metadata.execution_root = Some("missing-root".to_string());
+            metadata.worktree_path = Some(worktree_rel.to_string());
+        }
+        let err = resolve_execution_root(project_root, &record)
+            .expect_err("expected missing-root failure");
+        assert!(
+            err.to_string().contains("metadata.execution_root"),
+            "expected explicit field validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn merge_metadata_clears_worktree_fields_when_cleanup_resets_root() {
+        let existing = Some(JobMetadata {
+            execution_root: Some(".vizier/tmp-worktrees/workflow".to_string()),
+            worktree_name: Some("workflow-node".to_string()),
+            worktree_path: Some(".vizier/tmp-worktrees/workflow".to_string()),
+            worktree_owned: Some(true),
+            ..JobMetadata::default()
+        });
+        let update = Some(JobMetadata {
+            execution_root: Some(".".to_string()),
+            worktree_owned: Some(false),
+            retry_cleanup_status: Some(RetryCleanupStatus::Done),
+            ..JobMetadata::default()
+        });
+        let merged = merge_metadata(existing, update).expect("merged metadata");
+        assert_eq!(merged.execution_root.as_deref(), Some("."));
+        assert!(merged.worktree_name.is_none());
+        assert!(merged.worktree_path.is_none());
+        assert!(merged.worktree_owned.is_none());
+        assert_eq!(merged.retry_cleanup_status, Some(RetryCleanupStatus::Done));
+    }
+
+    #[test]
+    fn apply_workflow_execution_context_is_idempotent_and_skips_active_targets() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-target",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue target");
+        let context = WorkflowExecutionContext {
+            execution_root: Some(".vizier/tmp-worktrees/ctx-a".to_string()),
+            worktree_path: Some(".vizier/tmp-worktrees/ctx-a".to_string()),
+            worktree_name: Some("ctx-a".to_string()),
+            worktree_owned: Some(true),
+        };
+
+        let first = apply_workflow_execution_context(&jobs_root, "job-target", &context, true)
+            .expect("first propagation");
+        assert!(first, "expected first propagation to update metadata");
+        let second = apply_workflow_execution_context(&jobs_root, "job-target", &context, true)
+            .expect("second propagation");
+        assert!(!second, "expected unchanged propagation to be idempotent");
+
+        update_job_record(&jobs_root, "job-target", |record| {
+            record.status = JobStatus::Running;
+        })
+        .expect("mark target running");
+        let changed_context = WorkflowExecutionContext {
+            execution_root: Some(".vizier/tmp-worktrees/ctx-b".to_string()),
+            worktree_path: Some(".vizier/tmp-worktrees/ctx-b".to_string()),
+            worktree_name: Some("ctx-b".to_string()),
+            worktree_owned: Some(true),
+        };
+        let active =
+            apply_workflow_execution_context(&jobs_root, "job-target", &changed_context, true)
+                .expect("active target propagation");
+        assert!(
+            !active,
+            "expected propagation to skip active target metadata"
+        );
+
+        let target = read_record(&jobs_root, "job-target").expect("target record");
+        let metadata = target.metadata.expect("target metadata");
+        assert_eq!(metadata.execution_root, context.execution_root);
+        assert_eq!(metadata.worktree_path, context.worktree_path);
+        assert_eq!(metadata.worktree_name, context.worktree_name);
+        assert_eq!(metadata.worktree_owned, context.worktree_owned);
+    }
+
+    #[test]
+    fn workflow_runtime_command_run_uses_worktree_then_repo_after_cleanup_reset() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-exec-root",
+            &["--help".to_string()],
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue");
+        let record = read_record(&jobs_root, "job-exec-root").expect("record");
+
+        let prepare = runtime_executor_node(
+            "prepare",
+            "job-exec-root",
+            "cap.env.builtin.worktree.prepare",
+            "worktree.prepare",
+            BTreeMap::from([(
+                "branch".to_string(),
+                "draft/execution-root-runtime".to_string(),
+            )]),
+        );
+        let prepare_result = execute_workflow_executor(project_root, &jobs_root, &record, &prepare)
+            .expect("prepare");
+        assert_eq!(prepare_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let prepare_meta = prepare_result.metadata.clone().expect("prepare metadata");
+        let worktree_rel = prepare_meta
+            .worktree_path
+            .as_deref()
+            .expect("worktree path metadata");
+        let worktree_abs = resolve_recorded_path(project_root, worktree_rel);
+
+        let mut in_worktree_record = record.clone();
+        in_worktree_record.metadata = Some(prepare_meta.clone());
+        let in_worktree = runtime_executor_node(
+            "in-worktree",
+            "job-exec-root",
+            "cap.env.shell.command.run",
+            "command.run",
+            BTreeMap::from([(
+                "script".to_string(),
+                "echo from-worktree > marker-in-worktree.txt".to_string(),
+            )]),
+        );
+        let in_worktree_result =
+            execute_workflow_executor(project_root, &jobs_root, &in_worktree_record, &in_worktree)
+                .expect("in-worktree command");
+        assert_eq!(in_worktree_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            worktree_abs.join("marker-in-worktree.txt").exists(),
+            "expected marker in propagated worktree root"
+        );
+        assert!(
+            !project_root.join("marker-in-worktree.txt").exists(),
+            "worktree command should not write marker in repository root"
+        );
+
+        let cleanup = runtime_executor_node(
+            "cleanup",
+            "job-exec-root",
+            "cap.env.builtin.worktree.cleanup",
+            "worktree.cleanup",
+            BTreeMap::new(),
+        );
+        let cleanup_result =
+            execute_workflow_executor(project_root, &jobs_root, &in_worktree_record, &cleanup)
+                .expect("cleanup");
+        assert_eq!(cleanup_result.outcome, WorkflowNodeOutcome::Succeeded);
+        let merged_meta = merge_metadata(Some(prepare_meta), cleanup_result.metadata.clone())
+            .expect("merged cleanup metadata");
+        assert_eq!(merged_meta.execution_root.as_deref(), Some("."));
+
+        let mut repo_root_record = record.clone();
+        repo_root_record.metadata = Some(merged_meta);
+        let in_repo = runtime_executor_node(
+            "in-repo",
+            "job-exec-root",
+            "cap.env.shell.command.run",
+            "command.run",
+            BTreeMap::from([(
+                "script".to_string(),
+                "echo from-repo > marker-in-repo.txt".to_string(),
+            )]),
+        );
+        let in_repo_result =
+            execute_workflow_executor(project_root, &jobs_root, &repo_root_record, &in_repo)
+                .expect("repo command");
+        assert_eq!(in_repo_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert!(
+            project_root.join("marker-in-repo.txt").exists(),
+            "expected marker in repository root after cleanup reset"
         );
     }
 

@@ -93,6 +93,8 @@ Out of scope:
   - `workflow_control_policy`
   - `workflow_policy_snapshot_hash`
   - `workflow_gates`
+  - `execution_root` (logical runtime root marker; `.` means repo root)
+  - `worktree_path` / `worktree_name` / `worktree_owned` (worktree lifecycle ownership/context)
 - Owner flows: all scheduler-backed commands.
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
 
@@ -204,6 +206,12 @@ Ephemeral operational artifacts:
     cleanup;
   - degraded cleanup keeps worktree metadata for subsequent retry/cancel
     recovery.
+- Runtime execution-root propagation is edge-local:
+  - `worktree.prepare` sets both `worktree_*` ownership metadata and
+    `execution_root`.
+  - runtime success edges propagate execution context to downstream nodes.
+  - `worktree.cleanup` success resets `execution_root` to `.` and clears
+    worktree ownership metadata.
 - Terminal policy nodes are sink-only runtime contracts and are invalid when
   configured with outgoing routes.
 - `vizier merge --complete-conflict` only operates on existing Vizier-managed sentinel state.

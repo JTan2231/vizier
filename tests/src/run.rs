@@ -561,3 +561,114 @@ uses = \"control.gate.approval\"\n",
 
     Ok(())
 }
+
+#[test]
+fn test_run_execution_root_propagates_to_successor_nodes() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflow/execution-root.toml",
+        "id = \"template.execution.root\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"prepare\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.worktree.prepare\"\n\
+[nodes.args]\n\
+branch = \"draft/execution-root-run\"\n\
+[nodes.on]\n\
+succeeded = [\"in_worktree\"]\n\
+[[nodes]]\n\
+id = \"in_worktree\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"pwd\"\n",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflow/execution-root.toml",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+
+    let manifest_path = repo.path().join(format!(".vizier/jobs/runs/{run_id}.json"));
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let nodes = manifest
+        .get("nodes")
+        .and_then(Value::as_object)
+        .ok_or("missing workflow nodes in run manifest")?;
+    let node_job = |node_id: &str| -> TestResult<String> {
+        Ok(nodes
+            .get(node_id)
+            .and_then(|node| node.get("job_id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("missing job id for node {node_id}"))?
+            .to_string())
+    };
+    let prepare_job = node_job("prepare")?;
+    let in_worktree_job = node_job("in_worktree")?;
+    for job_id in [&prepare_job, &in_worktree_job] {
+        wait_for_job_completion(&repo, job_id, Duration::from_secs(15))?;
+    }
+
+    let prepare = read_job_record(&repo, &prepare_job)?;
+    let in_worktree = read_job_record(&repo, &in_worktree_job)?;
+    for (name, record) in [("prepare", &prepare), ("in_worktree", &in_worktree)] {
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "{name} node should succeed: {record}"
+        );
+    }
+
+    let prepare_execution_root = prepare
+        .pointer("/metadata/execution_root")
+        .and_then(Value::as_str)
+        .ok_or("prepare missing execution_root metadata")?;
+    let prepare_worktree = prepare
+        .pointer("/metadata/worktree_path")
+        .and_then(Value::as_str)
+        .ok_or("prepare missing worktree_path metadata")?;
+    assert_eq!(
+        prepare_execution_root, prepare_worktree,
+        "prepare should set execution_root to prepared worktree"
+    );
+    assert_eq!(
+        in_worktree
+            .pointer("/metadata/execution_root")
+            .and_then(Value::as_str),
+        Some(prepare_execution_root),
+        "success-edge propagation should carry worktree execution_root to in_worktree node"
+    );
+
+    let worktree_stdout = fs::read_to_string(
+        repo.path()
+            .join(".vizier/jobs")
+            .join(&in_worktree_job)
+            .join("stdout.log"),
+    )?;
+    let observed_worktree_pwd = worktree_stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .ok_or("missing in_worktree pwd output")?;
+    let expected_worktree_pwd = repo.path().join(prepare_execution_root).canonicalize()?;
+    assert_eq!(
+        observed_worktree_pwd,
+        expected_worktree_pwd.display().to_string(),
+        "in_worktree node should execute from propagated worktree root"
+    );
+
+    Ok(())
+}

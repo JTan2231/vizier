@@ -1,0 +1,14 @@
+{
+  "plan_id": "pln_39eb5fa3e239421199f1bab63ea165a9",
+  "slug": "cd",
+  "branch": "draft/cd",
+  "source": "draft",
+  "intent": "file:CD.md",
+  "target_branch": "master",
+  "work_ref": "draft/cd",
+  "status": "draft",
+  "summary": "# Workflow Execution Root Propagation (CD)",
+  "created_at": "2026-02-15T01:04:47.286853+00:00",
+  "updated_at": "2026-02-15T01:04:47.286853+00:00",
+  "job_ids": {}
+}

@@ -843,6 +843,7 @@ fn jobs_show_field_value(field: JobsShowField, record: &jobs::JobRecord) -> Opti
         }),
         JobsShowField::Artifacts => schedule
             .map(|sched| join_or_none(sched.artifacts.iter().map(jobs::format_artifact).collect())),
+        JobsShowField::ExecutionRoot => metadata.and_then(|meta| meta.execution_root.clone()),
         JobsShowField::Worktree => metadata.and_then(|meta| meta.worktree_path.clone()),
         JobsShowField::WorktreeName => metadata.and_then(|meta| meta.worktree_name.clone()),
         JobsShowField::AgentBackend => metadata.and_then(|meta| meta.agent_backend.clone()),
@@ -1439,6 +1440,7 @@ mod tests {
             session_path: None,
             outcome_path: None,
             metadata: Some(jobs::JobMetadata {
+                execution_root: Some(".vizier/tmp-worktrees/job-1".to_string()),
                 workflow_executor_class: Some("environment_builtin".to_string()),
                 workflow_executor_operation: Some("plan.apply_once".to_string()),
                 workflow_control_policy: Some("gate.stop_condition".to_string()),
@@ -1459,6 +1461,10 @@ mod tests {
         assert_eq!(
             jobs_show_field_value(JobsShowField::WorkflowControlPolicy, &record).as_deref(),
             Some("gate.stop_condition")
+        );
+        assert_eq!(
+            jobs_show_field_value(JobsShowField::ExecutionRoot, &record).as_deref(),
+            Some(".vizier/tmp-worktrees/job-1")
         );
     }
 
