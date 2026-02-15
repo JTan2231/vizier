@@ -54,6 +54,7 @@ Workflow parameter input styles:
 - Template aliases: `[cli].named` can map friendly labels to canonical params (`--name` -> `slug`, `--file` -> `spec_file` in stage draft).
 - Ordered inputs: extra positional values after `<flow>` map using template `[cli].positional` order.
 - Explicit `--set key=value` remains supported and keeps last-write-wins behavior.
+- Stage draft now snapshots `spec_file` contents into `persist_plan.args.spec_text` at enqueue time when `spec_source=inline` and `spec_text` is empty, so the spec file does not need to be committed into the stage worktree.
 - For stage templates, `worktree_prepare` derives `branch=draft/<slug>` when `branch` is omitted.
 - Stage templates use repo-local prompt companions under `.vizier/prompts/` (`DRAFT_PROMPTS.md`, `APPROVE_PROMPTS.md`, `MERGE_PROMPTS.md`) so draft/approve runs do not require `prompt_text` overrides.
 - Executor arg contracts are validated before enqueue, and root-node preflight now prints entry-input guidance when required args are missing; current required-input checks include `worktree.prepare` (`branch|slug|plan`), `git.integrate_plan_branch` (`branch|source_branch|plan_branch|slug|plan`), `cicd.run` (`command/script` or a non-empty cicd gate script), and `patch.pipeline_prepare`/`patch.execute_pipeline` (`files_json`).

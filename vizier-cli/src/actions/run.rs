@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -23,8 +24,9 @@ pub(crate) fn run_workflow(
     let mut set_overrides = parse_set_overrides(&cmd.set)?;
     apply_named_input_aliases(&source, &input_spec, &mut set_overrides)?;
     apply_positional_inputs(&source, &input_spec, &cmd.inputs, &mut set_overrides)?;
-    let template = workflow_templates::load_template_with_params(&source, &set_overrides)?;
+    let mut template = workflow_templates::load_template_with_params(&source, &set_overrides)?;
     validate_entrypoint_input_requirements(&source, &input_spec, &cmd.inputs, &template)?;
+    inline_plan_persist_spec_files(project_root, &mut template)?;
 
     let run_id = format!("run_{}", Uuid::new_v4().simple());
     let enqueue = jobs::enqueue_workflow_run(
@@ -91,6 +93,56 @@ pub(crate) fn run_workflow(
     } else {
         std::process::exit(terminal.exit_code)
     }
+}
+
+fn inline_plan_persist_spec_files(
+    project_root: &Path,
+    template: &mut vizier_core::workflow_template::WorkflowTemplate,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for node in &mut template.nodes {
+        if node.uses != "cap.env.builtin.plan.persist" {
+            continue;
+        }
+
+        let spec_source = node
+            .args
+            .get("spec_source")
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "inline".to_string());
+        if !matches!(spec_source.as_str(), "inline" | "stdin") {
+            continue;
+        }
+
+        let has_spec_text = node
+            .args
+            .get("spec_text")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if has_spec_text {
+            continue;
+        }
+
+        let Some(spec_file) = node
+            .args
+            .get("spec_file")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+
+        let spec_path = project_root.join(spec_file);
+        let spec_text = fs::read_to_string(&spec_path).map_err(|err| {
+            format!(
+                "workflow node `{}` could not read spec file `{}` during enqueue: {err}",
+                node.id,
+                spec_path.display()
+            )
+        })?;
+        node.args.insert("spec_text".to_string(), spec_text);
+    }
+
+    Ok(())
 }
 
 fn parse_set_overrides(
@@ -773,6 +825,8 @@ fn emit_follow_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+    use vizier_core::workflow_template::{WorkflowNode, WorkflowTemplate};
 
     #[test]
     fn parse_set_overrides_accepts_last_write_wins() {
@@ -851,6 +905,84 @@ mod tests {
         assert!(
             err.to_string().contains("provided multiple ways"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn inline_plan_persist_spec_files_materializes_spec_text() {
+        let temp = TempDir::new().expect("temp dir");
+        let spec_rel = "specs/LOCAL.md";
+        let spec_path = temp.path().join(spec_rel);
+        std::fs::create_dir_all(spec_path.parent().expect("parent dir")).expect("mkdir");
+        std::fs::write(&spec_path, "Local draft spec\nline two\n").expect("write spec");
+
+        let mut template = WorkflowTemplate {
+            id: "template.test".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: Default::default(),
+            artifact_contracts: Vec::new(),
+            nodes: vec![WorkflowNode {
+                id: "persist_plan".to_string(),
+                kind: Default::default(),
+                uses: "cap.env.builtin.plan.persist".to_string(),
+                args: BTreeMap::from([
+                    ("spec_source".to_string(), "inline".to_string()),
+                    ("spec_text".to_string(), "".to_string()),
+                    ("spec_file".to_string(), spec_rel.to_string()),
+                ]),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: Default::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: Default::default(),
+                on: Default::default(),
+            }],
+        };
+
+        inline_plan_persist_spec_files(temp.path(), &mut template).expect("inline spec file");
+        assert_eq!(
+            template.nodes[0].args.get("spec_text"),
+            Some(&"Local draft spec\nline two\n".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_plan_persist_spec_files_respects_explicit_file_source() {
+        let temp = TempDir::new().expect("temp dir");
+
+        let mut template = WorkflowTemplate {
+            id: "template.test".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: Default::default(),
+            artifact_contracts: Vec::new(),
+            nodes: vec![WorkflowNode {
+                id: "persist_plan".to_string(),
+                kind: Default::default(),
+                uses: "cap.env.builtin.plan.persist".to_string(),
+                args: BTreeMap::from([
+                    ("spec_source".to_string(), "file".to_string()),
+                    ("spec_text".to_string(), "".to_string()),
+                    ("spec_file".to_string(), "specs/LOCAL.md".to_string()),
+                ]),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: Default::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: Default::default(),
+                on: Default::default(),
+            }],
+        };
+
+        inline_plan_persist_spec_files(temp.path(), &mut template).expect("skip file source");
+        assert_eq!(
+            template.nodes[0].args.get("spec_text"),
+            Some(&"".to_string())
         );
     }
 }

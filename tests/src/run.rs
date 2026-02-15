@@ -542,6 +542,7 @@ fn test_run_stage_named_alias_flags_map_to_params() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
     write_stage_alias_test_config(&repo)?;
+    repo.write("specs/DEFAULT.md", "Stage alias mapping smoke spec.\n")?;
 
     let payload = run_json(
         &repo,
@@ -552,6 +553,7 @@ fn test_run_stage_named_alias_flags_map_to_params() -> TestResult {
             "alias-flag-smoke",
             "--file",
             "specs/DEFAULT.md",
+            "--follow",
             "--format",
             "json",
         ],
@@ -576,6 +578,55 @@ fn test_run_stage_named_alias_flags_map_to_params() -> TestResult {
             .and_then(Value::as_str),
         Some("specs/DEFAULT.md"),
         "expected --file to map to persist_plan spec_file: {manifest}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_stage_file_input_is_inlined_at_enqueue() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let spec_rel = "specs/LOCAL_UNTRACKED.md";
+    let spec_text = "Untracked draft spec line 1.\nUntracked draft spec line 2.\n";
+    repo.write(spec_rel, spec_text)?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--name",
+            "inline-untracked",
+            "--file",
+            spec_rel,
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    assert_eq!(
+        manifest
+            .pointer("/nodes/persist_plan/args/spec_file")
+            .and_then(Value::as_str),
+        Some(spec_rel),
+        "expected persist_plan spec_file to keep the requested path: {manifest}"
+    );
+    assert_eq!(
+        manifest
+            .pointer("/nodes/persist_plan/args/spec_text")
+            .and_then(Value::as_str),
+        Some(spec_text),
+        "expected persist_plan spec_text to snapshot file contents at enqueue: {manifest}"
     );
 
     Ok(())
