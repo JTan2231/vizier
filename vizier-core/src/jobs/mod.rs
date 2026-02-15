@@ -1787,14 +1787,33 @@ fn job_is_active(status: JobStatus) -> bool {
     )
 }
 
+fn resolve_plan_artifact_branch(slug: &str, branch: &str) -> Option<String> {
+    let branch = branch.trim();
+    if !branch.is_empty() {
+        return Some(branch.to_string());
+    }
+    let slug = slug.trim();
+    if slug.is_empty() {
+        None
+    } else {
+        Some(crate::plan::default_branch_for_slug(slug))
+    }
+}
+
 fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
     match artifact {
-        JobArtifact::PlanBranch { branch, .. } | JobArtifact::PlanCommits { branch, .. } => {
-            repo.find_branch(branch, git2::BranchType::Local).is_ok()
+        JobArtifact::PlanBranch { slug, branch } | JobArtifact::PlanCommits { slug, branch } => {
+            let Some(branch) = resolve_plan_artifact_branch(slug, branch) else {
+                return false;
+            };
+            repo.find_branch(&branch, git2::BranchType::Local).is_ok()
         }
         JobArtifact::PlanDoc { slug, branch } => {
             let plan_path = crate::plan::plan_rel_path(slug);
-            let Ok(branch_ref) = repo.find_branch(branch, git2::BranchType::Local) else {
+            let Some(branch) = resolve_plan_artifact_branch(slug, branch) else {
+                return false;
+            };
+            let Ok(branch_ref) = repo.find_branch(&branch, git2::BranchType::Local) else {
                 return false;
             };
             let Ok(commit) = branch_ref.into_reference().peel_to_commit() else {
@@ -1839,6 +1858,24 @@ fn artifact_exists(repo: &Repository, artifact: &JobArtifact) -> bool {
             custom_artifact_marker_exists(repo_root, type_id, key)
         }
     }
+}
+
+fn plan_doc_paths_from_artifacts(artifacts: &[JobArtifact]) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for artifact in artifacts {
+        let JobArtifact::PlanDoc { slug, .. } = artifact else {
+            continue;
+        };
+        let slug = slug.trim();
+        if slug.is_empty() {
+            continue;
+        }
+        if seen.insert(slug.to_string()) {
+            paths.push(crate::plan::plan_rel_path(slug));
+        }
+    }
+    paths
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -4048,27 +4085,56 @@ fn execute_workflow_executor(
             Ok(result)
         }
         Some("git.stage_commit") => {
-            let add = Command::new("git")
-                .arg("-C")
-                .arg(&execution_root)
-                .arg("add")
-                .arg("-A")
-                .status()?;
-            if !add.success() {
+            if let Err(err) = crate::vcs::stage_all_in(&execution_root) {
                 return Ok(WorkflowNodeResult::failed(
-                    "git add -A failed during git.stage_commit",
-                    Some(add.code().unwrap_or(1)),
+                    format!("git.stage_commit failed to stage changes: {err}"),
+                    Some(1),
                 ));
             }
 
-            let diff = Command::new("git")
-                .arg("-C")
-                .arg(&execution_root)
-                .arg("diff")
-                .arg("--cached")
-                .arg("--quiet")
-                .status()?;
-            if diff.success() {
+            let plan_paths = plan_doc_paths_from_artifacts(&node.artifacts_by_outcome.succeeded);
+            for plan_rel in &plan_paths {
+                let plan_abs = execution_root.join(plan_rel);
+                if !plan_abs.is_file() {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!(
+                            "git.stage_commit expected plan doc `{}` for declared plan_doc artifact",
+                            plan_rel.display()
+                        ),
+                        Some(1),
+                    ));
+                }
+            }
+
+            if !plan_paths.is_empty() {
+                let plan_path_strings = plan_paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                    .collect::<Vec<_>>();
+                let plan_path_refs = plan_path_strings
+                    .iter()
+                    .map(|path| path.as_str())
+                    .collect::<Vec<_>>();
+                if let Err(err) =
+                    crate::vcs::stage_paths_allow_missing_in(&execution_root, &plan_path_refs)
+                {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.stage_commit failed to stage plan docs: {err}"),
+                        Some(1),
+                    ));
+                }
+            }
+
+            let staged = match crate::vcs::snapshot_staged(&execution_root.to_string_lossy()) {
+                Ok(staged) => staged,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.stage_commit could not inspect staged changes: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            if staged.is_empty() {
                 return Ok(WorkflowNodeResult::succeeded(
                     "git.stage_commit: no staged changes",
                 ));
@@ -4080,22 +4146,14 @@ fn execute_workflow_executor(
                 .filter(|value| !value.trim().is_empty())
                 .cloned()
                 .unwrap_or_else(|| "chore: workflow stage commit".to_string());
-            let commit = Command::new("git")
-                .arg("-C")
-                .arg(&execution_root)
-                .arg("commit")
-                .arg("-m")
-                .arg(&message)
-                .status()?;
-            if commit.success() {
-                Ok(WorkflowNodeResult::succeeded(
+            match crate::vcs::commit_staged_in(&execution_root, &message, false) {
+                Ok(_) => Ok(WorkflowNodeResult::succeeded(
                     "git.stage_commit committed changes",
-                ))
-            } else {
-                Ok(WorkflowNodeResult::failed(
-                    "git commit failed during git.stage_commit",
-                    Some(commit.code().unwrap_or(1)),
-                ))
+                )),
+                Err(err) => Ok(WorkflowNodeResult::failed(
+                    format!("git.stage_commit failed to create commit: {err}"),
+                    Some(1),
+                )),
             }
         }
         Some("git.integrate_plan_branch") => {
@@ -7800,6 +7858,42 @@ mod tests {
                 "expected artifact to be missing: {missing:?}"
             );
         }
+    }
+
+    #[test]
+    fn artifact_exists_derives_default_branch_when_plan_artifact_branch_is_empty() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+
+        commit_plan_doc(&repo, "alpha", "draft/alpha").expect("seed draft plan doc");
+
+        let plan_branch = JobArtifact::PlanBranch {
+            slug: "alpha".to_string(),
+            branch: String::new(),
+        };
+        assert!(
+            artifact_exists(&repo, &plan_branch),
+            "expected plan_branch artifact with empty branch to resolve via draft/<slug>"
+        );
+
+        let plan_doc = JobArtifact::PlanDoc {
+            slug: "alpha".to_string(),
+            branch: String::new(),
+        };
+        assert!(
+            artifact_exists(&repo, &plan_doc),
+            "expected plan_doc artifact with empty branch to resolve via draft/<slug>"
+        );
+
+        let plan_commits = JobArtifact::PlanCommits {
+            slug: "alpha".to_string(),
+            branch: String::new(),
+        };
+        assert!(
+            artifact_exists(&repo, &plan_commits),
+            "expected plan_commits artifact with empty branch to resolve via draft/<slug>"
+        );
     }
 
     #[test]

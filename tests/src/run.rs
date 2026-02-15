@@ -875,6 +875,71 @@ fn test_run_draft_stage_commits_plan_before_agent_invocation() -> TestResult {
 }
 
 #[test]
+fn test_run_draft_stage_force_stages_plan_doc_when_ignored() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let ignore_path = repo.path().join(".gitignore");
+    let mut ignore = fs::read_to_string(&ignore_path).unwrap_or_default();
+    if !ignore.contains(".vizier/implementation-plans") {
+        if !ignore.is_empty() && !ignore.ends_with('\n') {
+            ignore.push('\n');
+        }
+        ignore.push_str(".vizier/implementation-plans\n");
+        fs::write(&ignore_path, &ignore)?;
+        repo.git(&["add", ".gitignore"])?;
+        repo.git(&["commit", "-m", "test: ignore implementation plans"])?;
+    }
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            "slug=ignored-plan-doc",
+            "--set",
+            "spec_text=Ensure ignored plan docs are force-staged.",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing draft run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+    let persist_job = manifest_node_job_id(&manifest, "persist_plan")?;
+    let persist_record = read_job_record(&repo, &persist_job)?;
+    let branch = persist_record
+        .pointer("/metadata/branch")
+        .and_then(Value::as_str)
+        .ok_or("persist_plan missing metadata.branch")?;
+    let slug = persist_record
+        .pointer("/metadata/plan")
+        .and_then(Value::as_str)
+        .ok_or("persist_plan missing metadata.plan")?;
+
+    let plan_doc = Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args([
+            "show",
+            &format!("{branch}:.vizier/implementation-plans/{slug}.md"),
+        ])
+        .output()?;
+    assert!(
+        plan_doc.status.success(),
+        "expected ignored plan doc to be committed on {branch}: {}",
+        String::from_utf8_lossy(&plan_doc.stderr)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
@@ -1023,6 +1088,57 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
         subject.contains("feat: merge plan merge-smoke"),
         "expected merge commit subject to include slug, got: {subject}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_approve_stage_succeeds_after_draft_when_branch_is_implicit() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    run_json(
+        &repo,
+        &[
+            "run",
+            "draft",
+            "--set",
+            "slug=approve-implicit-branch",
+            "--set",
+            "spec_text=Seed approve dependency artifacts.",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    let approve_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "approve",
+            "approve-implicit-branch",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let approve_run_id = approve_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing approve run_id")?;
+    let approve_manifest = load_run_manifest(&repo, approve_run_id)?;
+
+    for node in ["worktree_prepare", "stage_commit", "stop_gate"] {
+        let job_id = manifest_node_job_id(&approve_manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "approve node `{node}` should succeed with implicit branch: {record}"
+        );
+    }
 
     Ok(())
 }
