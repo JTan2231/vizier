@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_c04b889addaf4683bf25bb8f02714181",
+  "slug": "jobs",
+  "branch": "draft/jobs",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_42d31f42feca482c9377925c8c576474-persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Scheduler/Jobs Refactor (`JOBS`)",
+  "created_at": "2026-02-15T18:49:11.134594+00:00",
+  "updated_at": "2026-02-15T18:49:11.134594+00:00",
+  "job_ids": {
+    "persist": "wf-run_42d31f42feca482c9377925c8c576474-persist_plan"
+  }
+}

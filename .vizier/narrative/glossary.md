@@ -24,6 +24,7 @@
 - **Help pager contract**: Help text auto-pages only on TTY via `$VIZIER_PAGER` (or fallback pager), prints directly on non-TTY, and can be internally suppressed with hidden `--no-pager`.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
+- **Jobs ownership split**: Scheduler/job/workflow runtime side effects now live in `vizier-core/src/jobs/mod.rs`; `vizier-cli/src/jobs.rs` is a compatibility re-export shim used by existing CLI call sites.
 - **Global workflow directory**: Default implicit alias source for `vizier run <flow>` at `<base_config_dir>/vizier/workflows` (or `[workflow.global_workflows].dir` override) when `[workflow.global_workflows].enabled = true`.
 - **Stage alias map**: Repo-local `[commands]` config mapping (for example `draft`, `approve`, `merge`) that resolves `vizier run <alias>` to workflow file selectors.
 - **Stage-template drift repair**: Repo-local recovery where `.vizier/config.toml` re-adds `[commands].draft|approve|merge` alias selectors and `.vizier/workflows/{draft,approve,merge}.toml` (with legacy `.vizier/workflow/*` fallback compatibility) is restored from legacy `vizier.*` `uses` labels to canonical `cap.env.*`/`cap.agent.invoke`/`control.*` DAGs, including draft cleanup via explicit `after` from `stage_commit` and merge CI gate terminal settling for operator-driven retries.

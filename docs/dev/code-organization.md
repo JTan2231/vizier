@@ -6,11 +6,16 @@ This refactor splits previously oversized Rust sources into focused modules. Beh
 - `vizier-cli/src/actions/` holds per-command handlers (`build`, `save`, `draft`, `approve`, `review`, `merge`, `release`, `list`, `plan`, `test_display`).
 - Shared helpers live in `vizier-cli/src/actions/shared.rs` and option/type definitions in `vizier-cli/src/actions/types.rs`.
 - Cross-command context + errors are in `vizier-cli/src/context.rs` and `vizier-cli/src/errors.rs`.
-- `vizier-cli/src/cli/` contains CLI-only wiring: argument parsing, help/pager rendering, prompt input resolution, job list/show formatting, and scheduler/background orchestration helpers.
+- `vizier-cli/src/cli/` contains CLI-only wiring: argument parsing, help/pager rendering, prompt input resolution, command dispatch, and jobs list/show/watch formatting.
 
 ## Kernel vs drivers
 - `vizier-kernel/` is the pure domain crate: scheduler semantics, config schema/defaults/merge, prompt templates + assembly, audit/outcome data types, and port traits.
-- `vizier-core/` remains the driver host: config resolution/precedence, prompt-context loading, agent execution, VCS, display, and filesystem orchestration.
+- `vizier-core/` remains the driver host: config resolution/precedence, prompt-context loading, agent execution, VCS, display, filesystem orchestration, and scheduler/job/workflow runtime side effects.
+
+## Jobs ownership
+- `vizier-core/src/jobs/mod.rs` owns scheduler/job lifecycle orchestration, persistence, workflow enqueue/runtime dispatch, retry/approval/cancel/gc operations, and log helpers.
+- `vizier-core/src/plan.rs` provides reusable plan-domain helpers consumed by workflow runtime handlers (`plan.persist`, merge plan-doc helpers).
+- `vizier-cli/src/jobs.rs` is a thin compatibility shim that re-exports the `vizier_core::jobs` API for existing CLI call sites.
 
 ## Config
 - `vizier-kernel/src/config/` holds schema + defaults + merge logic shared by all frontends.

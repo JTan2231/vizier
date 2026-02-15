@@ -50,7 +50,7 @@ Status
   - Integration coverage in `tests/src/run.rs` now asserts stage alias smoke runs, approve stop-condition retry-loop attempts, stage job control paths (`approve/cancel/tail/attach/retry`), and merge conflict-gate sentinel behavior.
   - Validation gates were re-run and are green (`cargo check --all --all-targets`, `cargo test --all --all-targets`, `./cicd.sh`).
 - Update (2026-02-15, execution-root propagation):
-  - `vizier-cli/src/jobs.rs` now carries additive workflow metadata `execution_root` and resolves runtime roots by precedence (`execution_root` -> legacy `worktree_path` -> repo root) with repo-boundary canonicalization checks.
+  - `vizier-core/src/jobs/mod.rs` now carries additive workflow metadata `execution_root` and resolves runtime roots by precedence (`execution_root` -> legacy `worktree_path` -> repo root) with repo-boundary canonicalization checks.
   - Runtime route handling now keeps `on.succeeded` topology unchanged (`after:success` bridge) while using explicit route metadata to propagate execution context edge-locally to downstream queued nodes; non-success retry routes now inject propagated context before scheduler requeue.
   - `worktree.prepare` now records execution-root context, successful `worktree.cleanup` resets execution root to `.` and clears worktree ownership metadata, and retry rewind mirrors that reset/preserve split for done/skipped vs degraded cleanup.
   - Jobs observability now exposes `execution_root` via `vizier jobs show` fields/json, and runtime/integration coverage now asserts propagation idempotence, running-target no-mutation guards, precedence/safety failures, and run-time successor propagation.

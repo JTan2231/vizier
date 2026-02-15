@@ -12,12 +12,13 @@ Drivers host all side effects and environment-specific behavior. They wire the p
 
 ## Current mapping
 - `vizier-kernel/`: pure domain logic (config schema/defaults/merge, prompt assembly, scheduler semantics, audit types, port traits).
-- `vizier-core/`: driver host implementing config loading, agent execution, VCS/FS helpers, display, session logging, and orchestration.
-- `vizier-cli/`: frontend wiring (CLI args, job scheduling, UX).
+- `vizier-core/`: driver host implementing config loading, agent execution, VCS/FS helpers, display, session logging, scheduler/job/workflow runtime orchestration, and plan persistence helpers.
+- `vizier-cli/`: frontend wiring (CLI args/dispatch, jobs UX rendering, and `run` operator summaries).
 
 ## Side-effectful modules (driver-owned)
 - `vizier-core/src/config/load.rs` + `vizier-core/src/config/driver.rs` (config resolution, prompt file discovery, agent runtime wiring)
 - `vizier-core/src/agent.rs` (agent execution and progress streaming)
+- `vizier-core/src/jobs/mod.rs` + `vizier-core/src/plan.rs` (scheduler/job persistence + workflow runtime bridge and plan record side effects)
 - `vizier-core/src/vcs/` (git operations and commit/worktree helpers)
 - `vizier-core/src/display.rs`, `vizier-core/src/observer.rs` (TTY rendering, stdout/stderr capture)
 - `vizier-core/src/tree.rs`, `vizier-core/src/walker.rs` (filesystem traversal/search)
