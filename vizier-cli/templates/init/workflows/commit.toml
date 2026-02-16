@@ -1,0 +1,123 @@
+id = "template.tools.commit"
+version = "v1"
+
+[policy.dependencies]
+missing_producer = "wait"
+
+[[artifact_contracts]]
+id = "prompt_text"
+version = "v1"
+
+[[artifact_contracts]]
+id = "commit_message"
+version = "v1"
+
+[[nodes]]
+id = "collect_context"
+kind = "shell"
+uses = "cap.env.shell.command.run"
+
+[nodes.args]
+script = """
+mkdir -p .vizier/tmp
+
+status="$(git status --short --untracked-files=no)"
+if [ -z "$status" ]; then
+  status="<none>"
+fi
+
+staged_diff="$(git diff --cached --no-ext-diff --unified=3 -- . | head -c 30000)"
+if [ -z "$staged_diff" ]; then
+  staged_diff="<none>"
+fi
+
+unstaged_diff="$(git diff --no-ext-diff --unified=3 -- . | head -c 30000)"
+if [ -z "$unstaged_diff" ]; then
+  unstaged_diff="<none>"
+fi
+
+{
+  printf '## Tracked Status\\n%s\\n\\n' "$status"
+  printf '## Staged Diff (truncated)\\n%s\\n\\n' "$staged_diff"
+  printf '## Unstaged Diff (truncated)\\n%s\\n' "$unstaged_diff"
+} > .vizier/tmp/commit-context.txt
+"""
+
+[nodes.on]
+succeeded = ["resolve_prompt"]
+
+[[nodes]]
+id = "resolve_prompt"
+kind = "builtin"
+uses = "cap.env.builtin.prompt.resolve"
+
+[nodes.args]
+prompt_file = ".vizier/prompts/COMMIT_PROMPTS.md"
+
+[nodes.produces]
+succeeded = [{ custom = { type_id = "prompt_text", key = "commit_prompt" } }]
+
+[nodes.on]
+succeeded = ["invoke_agent"]
+
+[[nodes.after]]
+node_id = "collect_context"
+
+[[nodes]]
+id = "invoke_agent"
+kind = "agent"
+uses = "cap.agent.invoke"
+
+[[nodes.needs]]
+custom = { type_id = "prompt_text", key = "commit_prompt" }
+
+[nodes.produces]
+succeeded = [{ custom = { type_id = "commit_message", key = "tracked_changes" } }]
+
+[nodes.on]
+succeeded = ["stage_tracked"]
+
+[[nodes.after]]
+node_id = "resolve_prompt"
+
+[[nodes]]
+id = "stage_tracked"
+kind = "shell"
+uses = "cap.env.shell.command.run"
+
+[nodes.args]
+script = """
+git reset --quiet
+git add -u
+"""
+
+[nodes.on]
+succeeded = ["commit_tracked"]
+
+[[nodes.after]]
+node_id = "invoke_agent"
+
+[[nodes]]
+id = "commit_tracked"
+kind = "builtin"
+uses = "cap.env.builtin.git.commit"
+
+[[nodes.needs]]
+custom = { type_id = "commit_message", key = "tracked_changes" }
+
+[nodes.args]
+message = "read_payload(commit_message)"
+
+[nodes.on]
+succeeded = ["terminal"]
+
+[[nodes.after]]
+node_id = "stage_tracked"
+
+[[nodes]]
+id = "terminal"
+kind = "gate"
+uses = "control.terminal"
+
+[[nodes.after]]
+node_id = "commit_tracked"
