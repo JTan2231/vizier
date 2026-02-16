@@ -25,3 +25,4 @@ This page is the landing guide for Vizier's current CLI surface.
 - `man vizier-jobs`
 - `man 5 vizier-config`
 - `man 7 vizier-workflow`
+- `man 7 vizier-workflow-template`

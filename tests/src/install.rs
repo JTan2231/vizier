@@ -162,6 +162,7 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         "usr/local/share/man/man1/vizier-jobs.1",
         "usr/local/share/man/man5/vizier-config.5",
         "usr/local/share/man/man7/vizier-workflow.7",
+        "usr/local/share/man/man7/vizier-workflow-template.7",
     ];
     let expected_manifest = stage.join("usr/local/share/vizier/install-manifest.txt");
     let expected_agents = [
@@ -346,6 +347,7 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
         "/usr/local/share/man/man1/vizier-jobs.1",
         "/usr/local/share/man/man5/vizier-config.5",
         "/usr/local/share/man/man7/vizier-workflow.7",
+        "/usr/local/share/man/man7/vizier-workflow-template.7",
         "/usr/local/share/vizier/workflows/draft.toml",
         "/usr/local/share/vizier/workflows/approve.toml",
         "/usr/local/share/vizier/workflows/merge.toml",

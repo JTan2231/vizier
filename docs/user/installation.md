@@ -25,6 +25,7 @@ This installs:
 - `"$HOME/.local/share/man/man1/vizier-jobs.1"`
 - `"$HOME/.local/share/man/man5/vizier-config.5"`
 - `"$HOME/.local/share/man/man7/vizier-workflow.7"`
+- `"$HOME/.local/share/man/man7/vizier-workflow-template.7"`
 
 ## Initialize a repository
 
@@ -107,6 +108,7 @@ man vizier
 man vizier-jobs
 man 5 vizier-config
 man 7 vizier-workflow
+man 7 vizier-workflow-template
 ```
 
 If your prefix is not on `MANPATH`, either pass `-M` directly:

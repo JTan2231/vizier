@@ -7,4 +7,4 @@ Use the retained commands:
 - `vizier jobs ...`
 - `vizier release`
 
-For command reference pages, see `man vizier`, `man vizier-jobs`, and `man 7 vizier-workflow`.
+For command reference pages, see `man vizier`, `man vizier-jobs`, `man 7 vizier-workflow`, and `man 7 vizier-workflow-template`.

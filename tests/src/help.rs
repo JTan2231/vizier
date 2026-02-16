@@ -207,6 +207,7 @@ fn test_manpage_layout_uses_sectioned_real_files() -> TestResult {
         "docs/man/man1/vizier-jobs.1",
         "docs/man/man5/vizier-config.5",
         "docs/man/man7/vizier-workflow.7",
+        "docs/man/man7/vizier-workflow-template.7",
     ];
 
     for rel in required {
