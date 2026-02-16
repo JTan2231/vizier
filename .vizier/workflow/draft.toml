@@ -104,15 +104,35 @@ succeeded = [
 ]
 
 [nodes.on]
-succeeded = ["stage_commit"]
+succeeded = ["stage_files"]
 
 [[nodes.after]]
 node_id = "invoke_agent"
 
 [[nodes]]
+id = "stage_files"
+kind = "builtin"
+uses = "cap.env.builtin.git.stage"
+
+[nodes.args]
+files_json = "[\".\"]"
+
+[nodes.produces]
+succeeded = [
+  { plan_branch = { slug = "${slug}", branch = "${branch}" } },
+  { plan_doc = { slug = "${slug}", branch = "${branch}" } },
+]
+
+[[nodes.after]]
+node_id = "persist_plan"
+
+[nodes.on]
+succeeded = ["stage_commit"]
+
+[[nodes]]
 id = "stage_commit"
 kind = "builtin"
-uses = "cap.env.builtin.git.stage_commit"
+uses = "cap.env.builtin.git.commit"
 
 [nodes.args]
 message = "${commit_message}"
@@ -124,7 +144,7 @@ succeeded = [
 ]
 
 [[nodes.after]]
-node_id = "persist_plan"
+node_id = "stage_files"
 
 [nodes.on]
 succeeded = ["stop_gate"]

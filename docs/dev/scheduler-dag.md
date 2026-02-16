@@ -87,6 +87,8 @@ Executor operations:
 - `worktree.prepare`
 - `worktree.cleanup`
 - `plan.persist`
+- `git.stage`
+- `git.commit`
 - `git.stage_commit`
 - `git.integrate_plan_branch`
 - `git.save_worktree_patch`

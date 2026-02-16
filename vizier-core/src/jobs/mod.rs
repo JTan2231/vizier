@@ -3212,18 +3212,32 @@ fn ensure_source_plan_doc_removed_before_merge(
     cleanup_result
 }
 
+fn parse_string_list_json_arg(
+    node: &WorkflowRuntimeNodeManifest,
+    arg_key: &str,
+    operation: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let Some(raw) = node.args.get(arg_key) else {
+        return Err(format!("{operation} requires args.{arg_key}").into());
+    };
+    let values = serde_json::from_str::<Vec<String>>(raw)
+        .map_err(|err| format!("{operation} has invalid {arg_key} payload: {err}"))?;
+    if values.is_empty() {
+        return Err(format!("{operation} requires at least one value in args.{arg_key}").into());
+    }
+    Ok(values)
+}
+
 fn parse_files_json(
     node: &WorkflowRuntimeNodeManifest,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let Some(raw) = node.args.get("files_json") else {
-        return Err("patch pipeline operation requires args.files_json".into());
-    };
-    let files = serde_json::from_str::<Vec<String>>(raw)
-        .map_err(|err| format!("invalid files_json payload: {err}"))?;
-    if files.is_empty() {
-        return Err("patch pipeline operation requires at least one file".into());
-    }
-    Ok(files)
+    parse_string_list_json_arg(node, "files_json", "patch pipeline operation")
+}
+
+fn parse_stage_files_json(
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    parse_string_list_json_arg(node, "files_json", "git.stage")
 }
 
 fn patch_pipeline_manifest_path(jobs_root: &Path, job_id: &str) -> PathBuf {
@@ -3539,6 +3553,141 @@ fn resolve_custom_payload_text(payload: &serde_json::Value) -> Option<String> {
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string())
         })
+}
+
+fn parse_read_payload_selector(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let open = "read_payload(";
+    if !trimmed.starts_with(open) || !trimmed.ends_with(')') {
+        return None;
+    }
+    let inner = trimmed[open.len()..trimmed.len() - 1].trim();
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
+}
+
+fn resolve_matching_custom_dependency(
+    record: &JobRecord,
+    selector: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let custom_dependencies = record
+        .schedule
+        .as_ref()
+        .map(|schedule| {
+            schedule
+                .dependencies
+                .iter()
+                .filter_map(|dependency| match &dependency.artifact {
+                    JobArtifact::Custom { type_id, key } => Some((type_id.clone(), key.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if custom_dependencies.is_empty() {
+        return Err(
+            format!("read_payload({selector}) requires at least one custom dependency").into(),
+        );
+    }
+
+    let mut matches = if let Some((type_id, key)) = selector.split_once(':') {
+        custom_dependencies
+            .into_iter()
+            .filter(|(candidate_type, candidate_key)| {
+                candidate_type == type_id && candidate_key == key
+            })
+            .collect::<Vec<_>>()
+    } else {
+        custom_dependencies
+            .into_iter()
+            .filter(|(type_id, key)| type_id == selector || key == selector)
+            .collect::<Vec<_>>()
+    };
+    matches.sort();
+    matches.dedup();
+    if matches.is_empty() {
+        return Err(format!("read_payload({selector}) did not match any custom dependency").into());
+    }
+    if matches.len() > 1 {
+        let labels = matches
+            .iter()
+            .map(|(type_id, key)| format!("custom:{type_id}:{key}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(
+            format!("read_payload({selector}) is ambiguous across dependencies: {labels}").into(),
+        );
+    }
+    matches
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing custom dependency match".into())
+}
+
+fn resolve_commit_message(
+    project_root: &Path,
+    record: &JobRecord,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let fallback = "chore: workflow stage commit".to_string();
+    let raw_message = first_non_empty_arg(&node.args, &["message", "commit_message"])
+        .unwrap_or_else(|| fallback.clone());
+    let message = if let Some(selector) = parse_read_payload_selector(raw_message.as_str()) {
+        let (type_id, key) = resolve_matching_custom_dependency(record, selector.as_str())?;
+        let (_producer_job, payload, _payload_path) = read_latest_custom_artifact_payload(
+            project_root,
+            &type_id,
+            &key,
+        )?
+        .ok_or_else(|| {
+            format!("read_payload({selector}) could not read payload for custom:{type_id}:{key}")
+        })?;
+        resolve_custom_payload_text(&payload).ok_or_else(|| {
+            format!(
+                "read_payload({selector}) payload missing text field for custom:{type_id}:{key}"
+            )
+        })?
+    } else {
+        raw_message
+    };
+    let normalized = message.trim();
+    if normalized.is_empty() {
+        return Err("git.commit resolved an empty commit message".into());
+    }
+    Ok(normalized.to_string())
+}
+
+fn stage_declared_plan_docs(
+    execution_root: &Path,
+    node: &WorkflowRuntimeNodeManifest,
+) -> Result<(), String> {
+    let plan_paths = plan_doc_paths_from_artifacts(&node.artifacts_by_outcome.succeeded);
+    for plan_rel in &plan_paths {
+        let plan_abs = execution_root.join(plan_rel);
+        if !plan_abs.is_file() {
+            return Err(format!(
+                "expected plan doc `{}` for declared plan_doc artifact",
+                plan_rel.display()
+            ));
+        }
+    }
+
+    if !plan_paths.is_empty() {
+        let plan_path_strings = plan_paths
+            .iter()
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect::<Vec<_>>();
+        let plan_path_refs = plan_path_strings
+            .iter()
+            .map(|path| path.as_str())
+            .collect::<Vec<_>>();
+        crate::vcs::stage_paths_allow_missing_in(execution_root, &plan_path_refs)
+            .map_err(|err| format!("failed to stage plan docs: {err}"))?;
+    }
+    Ok(())
 }
 
 fn execute_workflow_executor(
@@ -4039,6 +4188,66 @@ fn execute_workflow_executor(
             });
             Ok(result)
         }
+        Some("git.stage") => {
+            let files = match parse_stage_files_json(node) {
+                Ok(files) => files,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.stage {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            let file_refs = files.iter().map(String::as_str).collect::<Vec<_>>();
+            if let Err(err) = crate::vcs::stage_in(&execution_root, Some(file_refs)) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("git.stage failed to stage changes: {err}"),
+                    Some(1),
+                ));
+            }
+            if let Err(err) = stage_declared_plan_docs(&execution_root, node) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("git.stage {err}"),
+                    Some(1),
+                ));
+            }
+            Ok(WorkflowNodeResult::succeeded("git.stage staged changes"))
+        }
+        Some("git.commit") => {
+            let staged = match crate::vcs::snapshot_staged(&execution_root.to_string_lossy()) {
+                Ok(staged) => staged,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.commit could not inspect staged changes: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            if staged.is_empty() {
+                return Ok(WorkflowNodeResult::succeeded(
+                    "git.commit: no staged changes",
+                ));
+            }
+
+            let message = match resolve_commit_message(project_root, record, node) {
+                Ok(message) => message,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.commit could not resolve commit message: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+            match crate::vcs::commit_staged_in(&execution_root, &message, false) {
+                Ok(_) => Ok(WorkflowNodeResult::succeeded(
+                    "git.commit committed changes",
+                )),
+                Err(err) => Ok(WorkflowNodeResult::failed(
+                    format!("git.commit failed to create commit: {err}"),
+                    Some(1),
+                )),
+            }
+        }
         Some("git.stage_commit") => {
             if let Err(err) = crate::vcs::stage_all_in(&execution_root) {
                 return Ok(WorkflowNodeResult::failed(
@@ -4046,38 +4255,11 @@ fn execute_workflow_executor(
                     Some(1),
                 ));
             }
-
-            let plan_paths = plan_doc_paths_from_artifacts(&node.artifacts_by_outcome.succeeded);
-            for plan_rel in &plan_paths {
-                let plan_abs = execution_root.join(plan_rel);
-                if !plan_abs.is_file() {
-                    return Ok(WorkflowNodeResult::failed(
-                        format!(
-                            "git.stage_commit expected plan doc `{}` for declared plan_doc artifact",
-                            plan_rel.display()
-                        ),
-                        Some(1),
-                    ));
-                }
-            }
-
-            if !plan_paths.is_empty() {
-                let plan_path_strings = plan_paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().replace('\\', "/"))
-                    .collect::<Vec<_>>();
-                let plan_path_refs = plan_path_strings
-                    .iter()
-                    .map(|path| path.as_str())
-                    .collect::<Vec<_>>();
-                if let Err(err) =
-                    crate::vcs::stage_paths_allow_missing_in(&execution_root, &plan_path_refs)
-                {
-                    return Ok(WorkflowNodeResult::failed(
-                        format!("git.stage_commit failed to stage plan docs: {err}"),
-                        Some(1),
-                    ));
-                }
+            if let Err(err) = stage_declared_plan_docs(&execution_root, node) {
+                return Ok(WorkflowNodeResult::failed(
+                    format!("git.stage_commit {err}"),
+                    Some(1),
+                ));
             }
 
             let staged = match crate::vcs::snapshot_staged(&execution_root.to_string_lossy()) {
@@ -4095,12 +4277,15 @@ fn execute_workflow_executor(
                 ));
             }
 
-            let message = node
-                .args
-                .get("message")
-                .filter(|value| !value.trim().is_empty())
-                .cloned()
-                .unwrap_or_else(|| "chore: workflow stage commit".to_string());
+            let message = match resolve_commit_message(project_root, record, node) {
+                Ok(message) => message,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.stage_commit could not resolve commit message: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
             match crate::vcs::commit_staged_in(&execution_root, &message, false) {
                 Ok(_) => Ok(WorkflowNodeResult::succeeded(
                     "git.stage_commit committed changes",

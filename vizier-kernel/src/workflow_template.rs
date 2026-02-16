@@ -612,6 +612,12 @@ fn canonical_executor_operation(value: &str) -> Option<(WorkflowExecutorClass, &
         "cap.env.builtin.plan.persist" => {
             Some((WorkflowExecutorClass::EnvironmentBuiltin, "plan.persist"))
         }
+        "cap.env.builtin.git.stage" => {
+            Some((WorkflowExecutorClass::EnvironmentBuiltin, "git.stage"))
+        }
+        "cap.env.builtin.git.commit" => {
+            Some((WorkflowExecutorClass::EnvironmentBuiltin, "git.commit"))
+        }
         "cap.env.builtin.git.stage_commit" => Some((
             WorkflowExecutorClass::EnvironmentBuiltin,
             "git.stage_commit",
@@ -831,7 +837,9 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
                 validate_patch_files_contract(template, node, "patch.execute_pipeline")?
             }
             Some("build.materialize_step") => validate_build_materialize_contract(template, node)?,
-            Some("git.stage_commit") => validate_plan_apply_once_contract(template, &by_id, node)?,
+            Some("git.stage") => validate_git_stage_contract(template, node)?,
+            Some("git.commit") => validate_git_commit_contract(template, node)?,
+            Some("git.stage_commit") => validate_git_stage_commit_contract(template, &by_id, node)?,
             Some("git.integrate_plan_branch") => {
                 validate_integrate_plan_branch_contract(template, &by_id, node)?
             }
@@ -1038,7 +1046,124 @@ fn node_has_control_policy(node: &WorkflowNode, policy: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn validate_plan_apply_once_contract(
+fn validate_git_stage_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let files_json = node
+        .args
+        .get("files_json")
+        .ok_or_else(|| contract_error(template, "git.stage", node, "requires files_json"))?;
+    let files: Vec<String> = serde_json::from_str(files_json).map_err(|err| {
+        contract_error(
+            template,
+            "git.stage",
+            node,
+            &format!("has invalid files_json payload: {err}"),
+        )
+    })?;
+    if files.is_empty() {
+        return Err(contract_error(
+            template,
+            "git.stage",
+            node,
+            "requires at least one path in files_json",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_read_payload_selector(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let open = "read_payload(";
+    if !trimmed.starts_with(open) || !trimmed.ends_with(')') {
+        return None;
+    }
+    let inner = trimmed[open.len()..trimmed.len() - 1].trim();
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
+}
+
+fn resolve_matching_custom_dependencies<'a>(
+    node: &'a WorkflowNode,
+    selector: &str,
+) -> Vec<(&'a String, &'a String)> {
+    let custom_dependencies = node
+        .needs
+        .iter()
+        .filter_map(|dependency| match dependency {
+            JobArtifact::Custom { type_id, key } => Some((type_id, key)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some((type_id, key)) = selector.split_once(':') {
+        return custom_dependencies
+            .into_iter()
+            .filter(|(candidate_type, candidate_key)| {
+                candidate_type.as_str() == type_id && candidate_key.as_str() == key
+            })
+            .collect::<Vec<_>>();
+    }
+    custom_dependencies
+        .into_iter()
+        .filter(|(type_id, key)| type_id.as_str() == selector || key.as_str() == selector)
+        .collect::<Vec<_>>()
+}
+
+fn validate_git_commit_message_selector_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    let Some(raw_message) = node
+        .args
+        .get("message")
+        .or_else(|| node.args.get("commit_message"))
+    else {
+        return Ok(());
+    };
+    let Some(selector) = parse_read_payload_selector(raw_message) else {
+        return Ok(());
+    };
+    let matches = resolve_matching_custom_dependencies(node, selector.as_str());
+    if matches.is_empty() {
+        return Err(contract_error(
+            template,
+            "git.commit",
+            node,
+            &format!(
+                "declares message read_payload({selector}) but no matching custom dependency exists"
+            ),
+        ));
+    }
+    if matches.len() > 1 {
+        let labels = matches
+            .iter()
+            .map(|(type_id, key)| format!("custom:{}:{}", type_id, key))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(contract_error(
+            template,
+            "git.commit",
+            node,
+            &format!(
+                "declares message read_payload({selector}) but selector is ambiguous across dependencies: {labels}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_git_commit_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    validate_git_commit_message_selector_contract(template, node)
+}
+
+fn validate_git_stage_commit_contract(
     template: &WorkflowTemplate,
     by_id: &BTreeMap<String, &WorkflowNode>,
     node: &WorkflowNode,
@@ -1157,7 +1282,8 @@ fn validate_stop_condition_contract(
         .nodes
         .iter()
         .filter(|candidate| {
-            node_has_executor_operation(candidate, "git.stage_commit")
+            (node_has_executor_operation(candidate, "git.commit")
+                || node_has_executor_operation(candidate, "git.stage_commit"))
                 && candidate
                     .on
                     .succeeded
@@ -1170,7 +1296,7 @@ fn validate_stop_condition_contract(
             template,
             "gate.stop_condition",
             node,
-            "is not targeted from any git.stage_commit on.succeeded edge",
+            "is not targeted from any git.commit on.succeeded edge",
         ));
     }
     if parents.len() > 1 {
@@ -3244,6 +3370,119 @@ mod tests {
             "unexpected error: {error}"
         );
         assert!(error.contains("files_json"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_git_stage_without_files_json() {
+        let template = WorkflowTemplate {
+            id: "template.stage".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![WorkflowNode {
+                id: "stage_files".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.git.stage".to_string(),
+                args: BTreeMap::new(),
+                after: Vec::new(),
+                needs: Vec::new(),
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("git.stage without files_json should fail");
+        assert!(error.contains("git.stage"), "unexpected error: {error}");
+        assert!(error.contains("files_json"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_capability_contracts_accepts_git_commit_read_payload_selector() {
+        let template = WorkflowTemplate {
+            id: "template.commit".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: "commit_message".to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![WorkflowNode {
+                id: "commit".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.git.commit".to_string(),
+                args: BTreeMap::from([(
+                    "message".to_string(),
+                    "read_payload(commit_message)".to_string(),
+                )]),
+                after: Vec::new(),
+                needs: vec![JobArtifact::Custom {
+                    type_id: "commit_message".to_string(),
+                    key: "subject".to_string(),
+                }],
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        validate_workflow_capability_contracts(&template)
+            .expect("git.commit should accept read_payload selector with matching dependency");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_git_commit_ambiguous_read_payload_selector() {
+        let template = WorkflowTemplate {
+            id: "template.commit".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: "commit_message".to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![WorkflowNode {
+                id: "commit".to_string(),
+                kind: WorkflowNodeKind::Builtin,
+                uses: "cap.env.builtin.git.commit".to_string(),
+                args: BTreeMap::from([(
+                    "message".to_string(),
+                    "read_payload(commit_message)".to_string(),
+                )]),
+                after: Vec::new(),
+                needs: vec![
+                    JobArtifact::Custom {
+                        type_id: "commit_message".to_string(),
+                        key: "subject_a".to_string(),
+                    },
+                    JobArtifact::Custom {
+                        type_id: "commit_message".to_string(),
+                        key: "subject_b".to_string(),
+                    },
+                ],
+                produces: WorkflowOutcomeArtifacts::default(),
+                locks: Vec::new(),
+                preconditions: Vec::new(),
+                gates: Vec::new(),
+                retry: WorkflowRetryPolicy::default(),
+                on: WorkflowOutcomeEdges::default(),
+            }],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("ambiguous read_payload selector should fail");
+        assert!(error.contains("git.commit"), "unexpected error: {error}");
+        assert!(error.contains("ambiguous"), "unexpected error: {error}");
     }
 
     #[test]

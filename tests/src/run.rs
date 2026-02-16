@@ -837,7 +837,8 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "cap.env.builtin.plan.persist",
                 "plan_branch = { slug = \"${slug}\", branch = \"${branch}\" }",
                 "plan_doc = { slug = \"${slug}\", branch = \"${branch}\" }",
-                "cap.env.builtin.git.stage_commit",
+                "cap.env.builtin.git.stage",
+                "cap.env.builtin.git.commit",
             ],
         ),
         (
@@ -859,7 +860,8 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "cap.env.builtin.prompt.resolve",
                 "prompt_file = \".vizier/prompts/APPROVE_PROMPTS.md\"",
                 "cap.agent.invoke",
-                "cap.env.builtin.git.stage_commit",
+                "cap.env.builtin.git.stage",
+                "cap.env.builtin.git.commit",
                 "control.gate.stop_condition",
                 "type_id = \"stage_token\"",
                 "key = \"approve:${slug}\"",
@@ -1239,6 +1241,123 @@ fn test_run_approve_stage_succeeds_after_draft_when_branch_is_implicit() -> Test
             "approve node `{node}` should succeed with implicit branch: {record}"
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_run_git_commit_reads_message_from_custom_payload() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    repo.write(
+        ".vizier/workflows/commit-from-payload.toml",
+        "id = \"template.commit.from_payload\"\n\
+version = \"v1\"\n\
+[[artifact_contracts]]\n\
+id = \"prompt_text\"\n\
+version = \"v1\"\n\
+[[artifact_contracts]]\n\
+id = \"commit_message\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"seed_change\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"echo payload-commit >> payload-commit.txt\"\n\
+[nodes.on]\n\
+succeeded = [\"resolve_prompt\", \"stage_files\"]\n\
+[[nodes]]\n\
+id = \"resolve_prompt\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.prompt.resolve\"\n\
+[nodes.args]\n\
+prompt_text = \"Write a concise commit subject.\"\n\
+[nodes.produces]\n\
+succeeded = [{ custom = { type_id = \"prompt_text\", key = \"commit_prompt\" } }]\n\
+[[nodes.after]]\n\
+node_id = \"seed_change\"\n\
+[nodes.on]\n\
+succeeded = [\"invoke_agent\"]\n\
+[[nodes]]\n\
+id = \"invoke_agent\"\n\
+kind = \"agent\"\n\
+uses = \"cap.agent.invoke\"\n\
+[[nodes.needs]]\n\
+custom = { type_id = \"prompt_text\", key = \"commit_prompt\" }\n\
+[nodes.produces]\n\
+succeeded = [{ custom = { type_id = \"commit_message\", key = \"subject\" } }]\n\
+[[nodes.after]]\n\
+node_id = \"resolve_prompt\"\n\
+[[nodes]]\n\
+id = \"stage_files\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.git.stage\"\n\
+[nodes.args]\n\
+files_json = \"[\\\"payload-commit.txt\\\"]\"\n\
+[[nodes.after]]\n\
+node_id = \"seed_change\"\n\
+[[nodes]]\n\
+id = \"commit_changes\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.git.commit\"\n\
+[nodes.args]\n\
+message = \"read_payload(commit_message)\"\n\
+[[nodes.needs]]\n\
+custom = { type_id = \"commit_message\", key = \"subject\" }\n\
+[[nodes.after]]\n\
+node_id = \"stage_files\"\n\
+[[nodes.after]]\n\
+node_id = \"invoke_agent\"\n\
+[nodes.on]\n\
+succeeded = [\"terminal\"]\n\
+[[nodes]]\n\
+id = \"terminal\"\n\
+kind = \"gate\"\n\
+uses = \"control.terminal\"\n\
+[[nodes.after]]\n\
+node_id = \"commit_changes\"\n",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/commit-from-payload.toml",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+
+    for node in [
+        "seed_change",
+        "resolve_prompt",
+        "invoke_agent",
+        "stage_files",
+        "commit_changes",
+    ] {
+        let job_id = manifest_node_job_id(&manifest, node)?;
+        let record = read_job_record(&repo, &job_id)?;
+        assert_eq!(
+            record.get("status").and_then(Value::as_str),
+            Some("succeeded"),
+            "workflow node `{node}` should succeed: {record}"
+        );
+    }
+
+    let subject = head_subject(&repo)?;
+    assert!(
+        subject.contains("mock agent response"),
+        "expected commit subject from agent payload, got: {subject}"
+    );
 
     Ok(())
 }
@@ -1682,13 +1801,23 @@ uses = \"cap.env.shell.command.run\"\n\
 [nodes.args]\n\
 script = \"echo seed >> retry-smoke-seed.txt\"\n\
 [nodes.on]\n\
+succeeded = [\"stage_files\"]\n\
+[[nodes]]\n\
+id = \"stage_files\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.git.stage\"\n\
+[nodes.args]\n\
+files_json = \"[\\\"retry-smoke-seed.txt\\\"]\"\n\
+[nodes.on]\n\
 succeeded = [\"stage_commit\"]\n\
 [[nodes]]\n\
 id = \"stage_commit\"\n\
 kind = \"builtin\"\n\
-uses = \"cap.env.builtin.git.stage_commit\"\n\
+uses = \"cap.env.builtin.git.commit\"\n\
 [nodes.args]\n\
 message = \"feat: retry smoke\"\n\
+[[nodes.after]]\n\
+node_id = \"stage_files\"\n\
 [nodes.on]\n\
 succeeded = [\"stop_gate\"]\n\
 [[nodes]]\n\
