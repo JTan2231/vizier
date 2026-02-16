@@ -8,7 +8,7 @@ const REQUIRED_IGNORE_RULES: [&str; 5] = [
     ".vizier/implementation-plans",
 ];
 
-const REQUIRED_PROMPT_FILES: [(&str, &str); 3] = [
+const REQUIRED_PROMPT_FILES: [(&str, &str); 4] = [
     (
         ".vizier/prompts/DRAFT_PROMPTS.md",
         "vizier-cli/templates/init/prompts/DRAFT_PROMPTS.md",
@@ -20,6 +20,10 @@ const REQUIRED_PROMPT_FILES: [(&str, &str); 3] = [
     (
         ".vizier/prompts/MERGE_PROMPTS.md",
         "vizier-cli/templates/init/prompts/MERGE_PROMPTS.md",
+    ),
+    (
+        ".vizier/prompts/COMMIT_PROMPTS.md",
+        "vizier-cli/templates/init/prompts/COMMIT_PROMPTS.md",
     ),
 ];
 
@@ -93,6 +97,10 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
         config.contains("script = \"./ci.sh\""),
         "init config should point merge ci gate to ./ci.sh:\n{config}"
     );
+    assert!(
+        config.contains("commit = \"file:.vizier/workflows/commit.toml\""),
+        "init config should include the commit alias:\n{config}"
+    );
     assert_matches_repo_template(
         &repo,
         ".vizier/workflows/draft.toml",
@@ -107,6 +115,11 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
         &repo,
         ".vizier/workflows/merge.toml",
         ".vizier/workflows/merge.toml",
+    )?;
+    assert_matches_repo_template(
+        &repo,
+        ".vizier/workflows/commit.toml",
+        ".vizier/workflows/commit.toml",
     )?;
     for (actual_rel, template_rel) in REQUIRED_PROMPT_FILES {
         assert_matches_repo_template(&repo, actual_rel, template_rel)?;
@@ -239,6 +252,7 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     let glossary_before = repo.read(".vizier/narrative/glossary.md")?;
     let config_before = repo.read(".vizier/config.toml")?;
     let draft_before = repo.read(".vizier/workflows/draft.toml")?;
+    let commit_before = repo.read(".vizier/workflows/commit.toml")?;
     let prompts_before = REQUIRED_PROMPT_FILES
         .iter()
         .map(|(actual_rel, _)| repo.read(actual_rel))
@@ -276,6 +290,11 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     assert_eq!(
         draft_before,
         repo.read(".vizier/workflows/draft.toml")?,
+        "workflow templates should remain unchanged when init is already satisfied"
+    );
+    assert_eq!(
+        commit_before,
+        repo.read(".vizier/workflows/commit.toml")?,
         "workflow templates should remain unchanged when init is already satisfied"
     );
     for ((actual_rel, _), before) in REQUIRED_PROMPT_FILES.iter().zip(prompts_before.iter()) {

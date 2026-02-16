@@ -5,7 +5,7 @@ This page covers operational checks for the retained command surface.
 ## Initialization Gate
 
 Use `vizier init --check` in CI to fail fast when the repo is missing required Vizier scaffold files or `.gitignore` runtime entries.
-The init contract covers `.vizier/narrative/{snapshot,glossary}.md`, `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge}.toml`, root `ci.sh`, and required `.vizier/*` ignore rules.
+The init contract covers `.vizier/narrative/{snapshot,glossary}.md`, `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge,commit}.toml`, root `ci.sh`, and required `.vizier/*` ignore rules.
 
 ## Job Safety Controls
 

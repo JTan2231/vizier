@@ -4,7 +4,7 @@ This page summarizes command entry points, including the restored orchestration 
 
 ## Repository Setup
 
-Run `vizier init` once per repository (or `vizier init --check` in CI) to ensure required scaffold files and `.gitignore` coverage exist. The scaffold includes `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge}.toml`, `.vizier/prompts/{DRAFT,APPROVE,MERGE}_PROMPTS.md`, and a root `ci.sh` stub used by the default merge gate config.
+Run `vizier init` once per repository (or `vizier init --check` in CI) to ensure required scaffold files and `.gitignore` coverage exist. The scaffold includes `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge,commit}.toml`, `.vizier/prompts/{DRAFT,APPROVE,MERGE,COMMIT}_PROMPTS.md`, and a root `ci.sh` stub used by the default merge gate config.
 
 ## Pending Plan Visibility
 
