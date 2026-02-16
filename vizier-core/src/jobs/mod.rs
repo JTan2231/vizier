@@ -5140,6 +5140,35 @@ fn apply_workflow_execution_context(
     Ok(true)
 }
 
+#[cfg(test)]
+fn succeeded_completion_pause_barrier() -> &'static Mutex<Option<std::sync::Arc<std::sync::Barrier>>>
+{
+    static HOOK: OnceLock<Mutex<Option<std::sync::Arc<std::sync::Barrier>>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_succeeded_completion_pause_barrier(barrier: Option<std::sync::Arc<std::sync::Barrier>>) {
+    let mut guard = succeeded_completion_pause_barrier()
+        .lock()
+        .expect("lock succeeded-completion pause barrier");
+    *guard = barrier;
+}
+
+#[cfg(test)]
+fn pause_succeeded_completion_if_configured() {
+    let barrier = {
+        let guard = succeeded_completion_pause_barrier()
+            .lock()
+            .expect("lock succeeded-completion pause barrier");
+        guard.clone()
+    };
+    if let Some(barrier) = barrier {
+        barrier.wait();
+        barrier.wait();
+    }
+}
+
 fn execute_workflow_node_job(
     project_root: &Path,
     jobs_root: &Path,
@@ -5197,28 +5226,85 @@ fn execute_workflow_node_job(
         ..JobMetadata::default()
     };
     let metadata_update = merge_metadata(Some(metadata_update), result.metadata.clone());
-    let finalized_record = finalize_job_with_artifacts(
-        project_root,
-        jobs_root,
-        job_id,
-        status,
-        exit_code,
-        None,
-        metadata_update,
-        Some(&artifacts_written),
-    )?;
-
     let binary = std::env::current_exe()?;
-    apply_workflow_routes(
-        project_root,
-        jobs_root,
-        &binary,
-        &finalized_record,
-        node_manifest,
-        &manifest,
-        result.outcome,
-    );
-    let _ = scheduler_tick(project_root, jobs_root, &binary)?;
+    if result.outcome == WorkflowNodeOutcome::Succeeded {
+        display::debug(format!(
+            "workflow node {} (run {}, job {}) acquiring scheduler lock for succeeded completion",
+            node_id, run_id, job_id
+        ));
+        let _lock = SchedulerLock::acquire(jobs_root)?;
+        display::debug(format!(
+            "workflow node {} (run {}, job {}) acquired scheduler lock for succeeded completion",
+            node_id, run_id, job_id
+        ));
+
+        let finalized_record = finalize_job_with_artifacts(
+            project_root,
+            jobs_root,
+            job_id,
+            status,
+            exit_code,
+            None,
+            metadata_update,
+            Some(&artifacts_written),
+        )?;
+        display::debug(format!(
+            "workflow node {} (run {}, job {}) finalized succeeded source record",
+            node_id, run_id, job_id
+        ));
+
+        #[cfg(test)]
+        pause_succeeded_completion_if_configured();
+
+        apply_workflow_routes(
+            project_root,
+            jobs_root,
+            &binary,
+            &finalized_record,
+            node_manifest,
+            &manifest,
+            result.outcome,
+        );
+        display::debug(format!(
+            "workflow node {} (run {}, job {}) applied succeeded routes",
+            node_id, run_id, job_id
+        ));
+
+        let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, &binary)?;
+        display::debug(format!(
+            "workflow node {} (run {}, job {}) advanced scheduler tick under lock (started={}, updated={})",
+            node_id,
+            run_id,
+            job_id,
+            scheduler_outcome.started.len(),
+            scheduler_outcome.updated.len()
+        ));
+        display::debug(format!(
+            "workflow node {} (run {}, job {}) releasing scheduler lock after succeeded completion",
+            node_id, run_id, job_id
+        ));
+    } else {
+        let finalized_record = finalize_job_with_artifacts(
+            project_root,
+            jobs_root,
+            job_id,
+            status,
+            exit_code,
+            None,
+            metadata_update,
+            Some(&artifacts_written),
+        )?;
+        apply_workflow_routes(
+            project_root,
+            jobs_root,
+            &binary,
+            &finalized_record,
+            node_manifest,
+            &manifest,
+            result.outcome,
+        );
+        let _ = scheduler_tick(project_root, jobs_root, &binary)?;
+    }
     Ok(exit_code)
 }
 
@@ -6598,6 +6684,131 @@ mod tests {
         }
     }
 
+    fn worktree_command_template(script: &str) -> WorkflowTemplate {
+        WorkflowTemplate {
+            id: "template.runtime.worktree_command".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: Vec::new(),
+            nodes: vec![
+                WorkflowNode {
+                    id: "prepare_worktree".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.worktree.prepare".to_string(),
+                    args: BTreeMap::from([(
+                        "branch".to_string(),
+                        "draft/runtime-worktree-command".to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["run_target".to_string()],
+                        ..WorkflowOutcomeEdges::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "run_target".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([("script".to_string(), script.to_string())]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        }
+    }
+
+    fn worktree_prompt_invoke_template() -> WorkflowTemplate {
+        WorkflowTemplate {
+            id: "template.runtime.worktree_prompt_invoke".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "prepare_worktree".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.worktree.prepare".to_string(),
+                    args: BTreeMap::from([(
+                        "branch".to_string(),
+                        "draft/runtime-worktree-prompt".to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["resolve_prompt".to_string()],
+                        ..WorkflowOutcomeEdges::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::from([(
+                        "prompt_text".to_string(),
+                        "worktree chain prompt".to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![JobArtifact::Custom {
+                            type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                            key: "worktree_chain_prompt".to_string(),
+                        }],
+                        ..WorkflowOutcomeArtifacts::default()
+                    },
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["invoke_agent".to_string()],
+                        ..WorkflowOutcomeEdges::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "invoke_agent".to_string(),
+                    kind: WorkflowNodeKind::Agent,
+                    uses: "cap.agent.invoke".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: vec![JobArtifact::Custom {
+                        type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                        key: "worktree_chain_prompt".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        }
+    }
+
     fn runtime_executor_node(
         node_id: &str,
         job_id: &str,
@@ -6640,6 +6851,19 @@ mod tests {
             routes: WorkflowRouteTargets::default(),
             artifacts_by_outcome: WorkflowOutcomeArtifactsByOutcome::default(),
         }
+    }
+
+    struct SucceededCompletionPauseGuard;
+
+    impl Drop for SucceededCompletionPauseGuard {
+        fn drop(&mut self) {
+            set_succeeded_completion_pause_barrier(None);
+        }
+    }
+
+    fn install_succeeded_completion_pause(barrier: Arc<Barrier>) -> SucceededCompletionPauseGuard {
+        set_succeeded_completion_pause_barrier(Some(barrier));
+        SucceededCompletionPauseGuard
     }
 
     fn git_status(project_root: &Path, args: &[&str]) -> Result<(), String> {
@@ -9076,6 +9300,201 @@ mod tests {
         assert_eq!(metadata.worktree_path, propagated.worktree_path);
         assert_eq!(metadata.worktree_name, propagated.worktree_name);
         assert_eq!(metadata.worktree_owned, propagated.worktree_owned);
+    }
+
+    #[test]
+    fn execute_workflow_node_job_succeeded_path_applies_context_before_concurrent_tick_can_start_target()
+     {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = worktree_command_template("sleep 1");
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-lock-atomic",
+            "template.runtime.worktree_command@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let prepare_job = result
+            .job_ids
+            .get("prepare_worktree")
+            .expect("prepare job id")
+            .clone();
+        let target_job = result
+            .job_ids
+            .get("run_target")
+            .expect("target job id")
+            .clone();
+
+        update_job_record(&jobs_root, &prepare_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("mark prepare running");
+
+        let barrier = Arc::new(Barrier::new(2));
+        let _pause_guard = install_succeeded_completion_pause(barrier.clone());
+
+        let completion_root = project_root.to_path_buf();
+        let completion_jobs = jobs_root.clone();
+        let completion_job = prepare_job.clone();
+        let completion = std::thread::spawn(move || {
+            execute_workflow_node_job(&completion_root, &completion_jobs, &completion_job)
+                .map_err(|err| err.to_string())
+        });
+
+        barrier.wait();
+
+        let tick_root = project_root.to_path_buf();
+        let tick_jobs = jobs_root.clone();
+        let tick_binary = std::env::current_exe().expect("current exe");
+        let tick_handle = std::thread::spawn(move || {
+            scheduler_tick(&tick_root, &tick_jobs, &tick_binary).map_err(|err| err.to_string())
+        });
+
+        barrier.wait();
+
+        let prepare_exit = completion
+            .join()
+            .expect("completion thread should not panic")
+            .expect("prepare completion");
+        assert_eq!(prepare_exit, 0);
+
+        tick_handle
+            .join()
+            .expect("tick thread should not panic")
+            .expect("concurrent scheduler tick");
+
+        let prepare_record = read_record(&jobs_root, &prepare_job).expect("prepare record");
+        let prepare_meta = prepare_record.metadata.expect("prepare metadata");
+        assert!(
+            prepare_meta.execution_root.is_some(),
+            "prepare should produce execution_root metadata"
+        );
+
+        let target_record = read_record(&jobs_root, &target_job).expect("target record");
+        let target_meta = target_record.metadata.expect("target metadata");
+        assert_eq!(target_meta.execution_root, prepare_meta.execution_root);
+        assert_eq!(target_meta.worktree_path, prepare_meta.worktree_path);
+        assert_eq!(target_meta.worktree_name, prepare_meta.worktree_name);
+        assert_eq!(target_meta.worktree_owned, prepare_meta.worktree_owned);
+        assert!(
+            target_record.started_at.is_some() || target_record.finished_at.is_some(),
+            "target should become start-eligible after succeeded completion"
+        );
+
+        if job_is_active(target_record.status) {
+            let _ = cancel_job_with_cleanup(project_root, &jobs_root, &target_job, false);
+        }
+    }
+
+    #[test]
+    fn worktree_prepare_resolve_invoke_success_chain_preserves_non_null_execution_context() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = worktree_prompt_invoke_template();
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-worktree-chain",
+            "template.runtime.worktree_prompt_invoke@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+
+        let prepare_job = result
+            .job_ids
+            .get("prepare_worktree")
+            .expect("prepare job id")
+            .clone();
+        let resolve_job = result
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+        let invoke_job = result
+            .job_ids
+            .get("invoke_agent")
+            .expect("invoke job id")
+            .clone();
+
+        for job_id in [&resolve_job, &invoke_job] {
+            update_job_record(&jobs_root, job_id, |record| {
+                let schedule = record.schedule.get_or_insert_with(JobSchedule::default);
+                schedule.approval = Some(JobApproval::pending(Some("test".to_string())));
+            })
+            .expect("gate downstream node with pending approval");
+        }
+
+        update_job_record(&jobs_root, &prepare_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("mark prepare running");
+        let prepare_exit = execute_workflow_node_job(project_root, &jobs_root, &prepare_job)
+            .expect("execute prepare_worktree");
+        assert_eq!(prepare_exit, 0);
+
+        let prepare_record = read_record(&jobs_root, &prepare_job).expect("prepare record");
+        let prepare_meta = prepare_record.metadata.expect("prepare metadata");
+        assert!(
+            prepare_meta.execution_root.is_some(),
+            "prepare metadata should carry non-null execution_root"
+        );
+
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        let resolve_meta = resolve_record
+            .metadata
+            .expect("resolve metadata after prepare");
+        assert_eq!(resolve_meta.execution_root, prepare_meta.execution_root);
+        assert_eq!(resolve_meta.worktree_path, prepare_meta.worktree_path);
+        assert_eq!(resolve_meta.worktree_name, prepare_meta.worktree_name);
+        assert_eq!(resolve_meta.worktree_owned, prepare_meta.worktree_owned);
+
+        update_job_record(&jobs_root, &resolve_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+            if let Some(schedule) = record.schedule.as_mut() {
+                schedule.approval = None;
+            }
+        })
+        .expect("mark resolve running");
+        let resolve_exit = execute_workflow_node_job(project_root, &jobs_root, &resolve_job)
+            .expect("execute resolve_prompt");
+        assert_eq!(resolve_exit, 0);
+
+        let invoke_record = read_record(&jobs_root, &invoke_job).expect("invoke record");
+        let invoke_meta = invoke_record
+            .metadata
+            .expect("invoke metadata after resolve");
+        assert_eq!(invoke_meta.execution_root, prepare_meta.execution_root);
+        assert_eq!(invoke_meta.worktree_path, prepare_meta.worktree_path);
+        assert_eq!(invoke_meta.worktree_name, prepare_meta.worktree_name);
+        assert_eq!(invoke_meta.worktree_owned, prepare_meta.worktree_owned);
     }
 
     #[test]

@@ -17,6 +17,7 @@
 - **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that define canonical workflow identity for scheduler/job records.
 - **Execution-root metadata**: Job metadata field `execution_root` representing the logical filesystem root for workflow-node runtime (`.` = repo root).
 - **Execution-root edge propagation**: Runtime behavior that copies execution context (`execution_root` + worktree ownership fields) along explicit workflow routes before downstream queue/retry handling.
+- **Succeeded-edge atomic completion lock**: Workflow-node completion ordering where succeeded nodes perform source finalization, success-route context propagation, and one scheduler advancement inside a single `SchedulerLock` critical section so concurrent ticks cannot start successors before context persistence.
 - **Execution-root reset contract**: Cleanup/retry rule where successful worktree cleanup resets `execution_root` to `.` and clears `worktree_*` ownership fields; degraded cleanup preserves context for recovery.
 - **Git CLI invocation guard**: Codebase invariant that `rg -n 'Command::new\\(\"git\"\\)' vizier-core/src vizier-cli/src vizier-kernel/src tests/src` stays empty so runtime/test Git behavior cannot regress to shelling out.
 - **Libgit2-only workflow Git runtime**: Runtime/test posture where worktree/merge/stage/patch/retry-cleanup Git flows execute through `vizier-core/src/vcs/*` helpers and `git2` APIs instead of `git` subprocesses.

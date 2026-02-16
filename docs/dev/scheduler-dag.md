@@ -123,6 +123,12 @@ Runtime notes:
 - `on.succeeded` edges remain materialized as `after:success` dependencies for
   scheduler determinism, with runtime metadata propagation occurring along those
   explicit success edges.
+- workflow-node `succeeded` completions execute source finalization,
+  success-route context propagation, and one scheduler advancement inside a
+  single `SchedulerLock` critical section; this keeps
+  `skip_active_targets=true` semantics unchanged while preventing concurrent
+  ticks from starting successors before propagated execution context is
+  persisted.
 
 ## Job lifecycle
 Statuses:

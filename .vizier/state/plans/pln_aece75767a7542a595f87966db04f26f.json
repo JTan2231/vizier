@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_aece75767a7542a595f87966db04f26f",
+  "slug": "lock",
+  "branch": "draft/lock",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_220c636d996f4632b5d1bab8684f1f3f-persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Atomic Workflow Completion Lock (`LOCK`)",
+  "created_at": "2026-02-16T21:02:57.768517+00:00",
+  "updated_at": "2026-02-16T21:02:57.768517+00:00",
+  "job_ids": {
+    "persist": "wf-run_220c636d996f4632b5d1bab8684f1f3f-persist_plan"
+  }
+}

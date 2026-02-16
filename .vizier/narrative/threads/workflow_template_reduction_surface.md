@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-16, succeeded-edge atomic completion lock):
+  - `vizier-core/src/jobs/mod.rs` now executes `finalize_job_with_artifacts -> apply_workflow_routes -> scheduler_tick_locked` for `WorkflowNodeOutcome::Succeeded` inside one `SchedulerLock` critical section.
+  - Success-route conversion is unchanged (`on.succeeded` remains context propagation; failed/blocked/cancelled routes remain retry-driven), and non-succeeded completion flow behavior is unchanged in this phase.
+  - Succeeded completion now emits ordered debug traces for lock acquisition/finalization/route application/tick advancement/release to aid future race diagnosis.
+  - Runtime coverage adds deterministic concurrent-tick pressure assertions plus a `worktree.prepare -> resolve_prompt -> invoke_agent` chain regression that checks non-null execution-context propagation across succeeded edges.
 - Update (2026-02-15, hard-cut compatibility removal):
   - `vizier run <flow>` resolver is now canonical-only: explicit file/path, configured `[commands]` alias, or canonical selector (`template.name@vN`); implicit repo/global flow-name fallback discovery is removed.
   - Legacy selector/config bridges are hard-failed with migration guidance: dotted selectors (`template.name.vN`), `[workflow.templates]`, and legacy `[agents.<scope>]`.
