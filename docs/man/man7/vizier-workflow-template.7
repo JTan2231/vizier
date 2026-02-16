@@ -1,0 +1,207 @@
+.TH VIZIER-WORKFLOW-TEMPLATE 7 "UNRELEASED" "Vizier" "Miscellaneous Information Manual"
+.SH NAME
+vizier-workflow-template \- authoring workflow templates for \fBvizier run\fR
+.SH DESCRIPTION
+Vizier workflow templates are DAG definitions compiled and enqueued by
+\fBvizier run <flow>\fR. Templates are authored in TOML (or JSON) and can be
+selected directly (\fBfile:\fR / path), by \fB[commands]\fR alias, or by canonical
+selector (\fBtemplate.name@vN\fR).
+.PP
+This page covers authoring: capability IDs, dependency wiring, validation
+contracts, and a concrete stage-template example from this repository.
+.SH QUICK START
+.IP "1." 4
+Run \fBvizier init\fR to scaffold \fI.vizier/config.toml\fR and
+\fI.vizier/workflows/*.toml\fR.
+.IP "2." 4
+Copy an existing template (for example \fI.vizier/workflows/draft.toml\fR) and
+edit \fBid\fR / \fBversion\fR / \fBparams\fR / \fBnodes\fR.
+.IP "3." 4
+Map an alias in \fB[commands]\fR, for example:
+.nf
+[commands]
+myflow = "file:.vizier/workflows/myflow.toml"
+.fi
+.IP "4." 4
+Queue a run:
+.nf
+vizier run myflow --set slug=my-change --follow
+.fi
+.SH TEMPLATE SHAPE
+Typical fields:
+.TP
+\fBid\fR, \fBversion\fR
+Template identity (\fBtemplate.name@vN\fR).
+.TP
+\fB[params]\fR
+Default parameter values used for \fB${param}\fR interpolation.
+.TP
+\fB[cli]\fR and \fB[cli.named]\fR
+Positional and friendly flag aliases for \fBvizier run <flow>\fR inputs.
+.TP
+\fB[[artifact_contracts]]\fR
+Declares artifact type/version pairs used by \fBneeds\fR / \fBproduces\fR.
+.TP
+\fB[[nodes]]\fR
+One node per executor/control step; each node has \fBid\fR, \fBkind\fR, and
+canonical \fBuses\fR.
+.TP
+\fB[[nodes.after]]\fR
+Ordering dependency on another node.
+.TP
+\fB[[nodes.needs]]\fR and \fB[nodes.produces]\fR
+Artifact dependency and publication contracts.
+.TP
+\fB[nodes.on]\fR
+Outcome routes (\fBsucceeded\fR / \fBfailed\fR / \fBblocked\fR / \fBcancelled\fR).
+.TP
+\fB[policy.dependencies]\fR
+Missing artifact producer policy (\fBblock\fR or \fBwait\fR).
+.SH CANONICAL CAPABILITIES
+Only canonical \fBuses\fR IDs are accepted.
+.PP
+Executor capabilities:
+.IP "\(bu" 2
+\fBcap.agent.invoke\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.prompt.resolve\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.worktree.prepare\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.worktree.cleanup\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.plan.persist\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.git.stage\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.git.commit\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.git.stage_commit\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.git.integrate_plan_branch\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.git.save_worktree_patch\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.patch.pipeline_prepare\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.patch.pipeline_finalize\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.patch.execute_pipeline\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.build.materialize_step\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.merge.sentinel.write\fR
+.IP "\(bu" 2
+\fBcap.env.builtin.merge.sentinel.clear\fR
+.IP "\(bu" 2
+\fBcap.env.shell.prompt.resolve\fR
+.IP "\(bu" 2
+\fBcap.env.shell.command.run\fR
+.IP "\(bu" 2
+\fBcap.env.shell.cicd.run\fR
+.PP
+Control capabilities:
+.IP "\(bu" 2
+\fBcontrol.gate.stop_condition\fR
+.IP "\(bu" 2
+\fBcontrol.gate.conflict_resolution\fR
+.IP "\(bu" 2
+\fBcontrol.gate.cicd\fR
+.IP "\(bu" 2
+\fBcontrol.gate.approval\fR
+.IP "\(bu" 2
+\fBcontrol.terminal\fR
+.PP
+Legacy \fBvizier.*\fR labels and unknown \fBuses\fR IDs fail validation before
+any jobs are enqueued.
+.SH DEPENDENCY MODEL
+Use both graph-order and artifact dependencies:
+.TP
+\fB[[nodes.after]]\fR
+"Run after node X has been scheduled/completed in this run."
+.TP
+\fB[[nodes.needs]]\fR
+"Require artifact Y" (can be produced in this run or by another run).
+.TP
+\fB[nodes.produces]\fR
+Artifacts emitted on each outcome for downstream consumers.
+.PP
+\fB[policy.dependencies].missing_producer\fR behavior:
+.IP "\(bu" 2
+\fBblock\fR: unresolved artifact producer moves job to blocked state.
+.IP "\(bu" 2
+\fBwait\fR: unresolved artifact producer leaves job waiting for a producer.
+.PP
+Stage templates in this repository use \fBwait\fR so draft/approve/merge can be
+queued back-to-back and synchronize through artifact contracts.
+.SH VALIDATION CONTRACTS
+Queue-time validation enforces capability and argument contracts, including:
+.IP "\(bu" 2
+Canonical \fBuses\fR IDs only (\fBcap.env.*\fR, \fBcap.agent.invoke\fR, \fBcontrol.*\fR).
+.IP "\(bu" 2
+\fBcap.agent.invoke\fR must consume exactly one prompt artifact.
+.IP "\(bu" 2
+\fBprompt.resolve\fR nodes must produce exactly one prompt artifact.
+.IP "\(bu" 2
+\fBworktree.prepare\fR requires one of: \fBbranch\fR, \fBslug\fR, or \fBplan\fR.
+.IP "\(bu" 2
+\fBgit.integrate_plan_branch\fR requires one of: \fBbranch\fR, \fBsource_branch\fR,
+\fBplan_branch\fR, \fBslug\fR, or \fBplan\fR.
+.IP "\(bu" 2
+\fBcicd.run\fR requires \fBcommand\fR or \fBscript\fR (or a non-empty cicd gate script).
+.IP "\(bu" 2
+\fBpatch.pipeline_prepare\fR and \fBpatch.execute_pipeline\fR require \fBfiles_json\fR.
+.SH EXAMPLE: DRAFT STAGE TEMPLATE
+The shipped draft template is at \fI.vizier/workflows/draft.toml\fR.
+.PP
+Key shape:
+.IP "\(bu" 2
+\fBworktree_prepare -> resolve_prompt -> invoke_agent -> persist_plan -> stage_files -> stage_commit -> stop_gate -> worktree_cleanup -> terminal\fR
+.IP "\(bu" 2
+\fBpersist_plan\fR produces \fBplan_branch:{slug,branch}\fR and \fBplan_doc:{slug,branch}\fR.
+.IP "\(bu" 2
+\fBresolve_prompt\fR produces \fBcustom:prompt_text:draft_main\fR consumed by
+\fBinvoke_agent\fR.
+.PP
+Excerpt:
+.nf
+id = "template.stage.draft"
+version = "v2"
+
+[policy.dependencies]
+missing_producer = "wait"
+
+[[nodes]]
+id = "resolve_prompt"
+kind = "builtin"
+uses = "cap.env.builtin.prompt.resolve"
+[nodes.args]
+prompt_file = ".vizier/prompts/DRAFT_PROMPTS.md"
+[nodes.produces]
+succeeded = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
+
+[[nodes]]
+id = "invoke_agent"
+kind = "agent"
+uses = "cap.agent.invoke"
+[[nodes.needs]]
+custom = { type_id = "prompt_text", key = "draft_main" }
+.fi
+.SH COMPOSITION
+Templates can compose other templates using \fB[[imports]]\fR and \fB[[links]]\fR.
+This repository includes a composed example at \fI.vizier/develop.toml\fR that
+chains draft -> approve -> merge.
+.SH OPERATIONS
+Queue and inspect authored flows with:
+.IP "\(bu" 2
+\fBvizier run <flow> [--set key=value] [--after <job-id>] [--follow]\fR
+.IP "\(bu" 2
+\fBvizier jobs list|schedule|show|tail|attach|approve|retry|cancel\fR
+.PP
+Use \fBvizier run file:.vizier/workflows/<name>.toml\fR during template authoring
+before assigning a stable alias.
+.SH SEE ALSO
+.BR vizier (1),
+.BR vizier-jobs (1),
+.BR vizier-config (5),
+.BR vizier-workflow (7)
