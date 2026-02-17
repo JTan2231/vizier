@@ -178,6 +178,16 @@ fn load_run_manifest(repo: &IntegrationRepo, run_id: &str) -> TestResult<Value> 
     Ok(serde_json::from_str(&fs::read_to_string(manifest_path)?)?)
 }
 
+fn first_root_job_id(payload: &Value) -> TestResult<String> {
+    Ok(payload
+        .get("root_job_ids")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or("missing root job id")?
+        .to_string())
+}
+
 fn manifest_node_job_id(manifest: &Value, node_id: &str) -> TestResult<String> {
     Ok(manifest
         .pointer(&format!("/nodes/{node_id}/job_id"))
@@ -2350,6 +2360,252 @@ fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
     assert_eq!(
         approved_record.get("status").and_then(Value::as_str),
         Some("succeeded")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_after_run_reference_expands_to_terminal_sink_job_ids() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let first = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--format",
+            "json",
+        ],
+    )?;
+    let first_run_id = first
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing first run id")?;
+    let first_root = first_root_job_id(&first)?;
+    wait_for_job_completion(&repo, &first_root, Duration::from_secs(10))?;
+
+    let second = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--after",
+            &format!("run:{first_run_id}"),
+            "--format",
+            "json",
+        ],
+    )?;
+    let second_root = first_root_job_id(&second)?;
+    let second_record = read_job_record(&repo, &second_root)?;
+    let after_entries = second_record
+        .pointer("/schedule/after")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        after_entries
+            .iter()
+            .any(|entry| entry.get("job_id").and_then(Value::as_str) == Some(first_root.as_str())),
+        "expected expanded run sink dependency in root schedule: {second_record}"
+    );
+    assert!(
+        after_entries.iter().all(|entry| {
+            entry
+                .get("job_id")
+                .and_then(Value::as_str)
+                .map(|job_id| !job_id.starts_with("run:"))
+                .unwrap_or(true)
+        }),
+        "schedule.after should persist only concrete job ids: {second_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_after_supports_mixed_run_and_job_dependencies() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let seed = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--format",
+            "json",
+        ],
+    )?;
+    let seed_run_id = seed
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing seed run id")?;
+    let seed_root = first_root_job_id(&seed)?;
+    wait_for_job_completion(&repo, &seed_root, Duration::from_secs(10))?;
+
+    write_job_record_simple(
+        &repo,
+        "dep-running",
+        "running",
+        "2026-02-17T00:00:00Z",
+        None,
+        &["dep"],
+    )?;
+
+    let mixed = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--after",
+            &format!("run:{seed_run_id}"),
+            "--after",
+            "dep-running",
+            "--format",
+            "json",
+        ],
+    )?;
+    let mixed_root = first_root_job_id(&mixed)?;
+    let mixed_record = read_job_record(&repo, &mixed_root)?;
+    let after_job_ids = mixed_record
+        .pointer("/schedule/after")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("job_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        after_job_ids,
+        vec![seed_root.clone(), "dep-running".to_string()],
+        "expected mixed run/job dependencies in first-seen order: {mixed_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_after_missing_run_manifest_fails() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/single.toml",
+        "--after",
+        "run:run_missing",
+        "--format",
+        "json",
+    ])?;
+    assert!(!output.status.success(), "missing run manifest should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("run:run_missing") && stderr.contains("manifest not found"),
+        "expected missing manifest error with run id, got: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_after_manifest_without_success_sinks_fails() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let seed = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--format",
+            "json",
+        ],
+    )?;
+    let seed_run_id = seed
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing seed run id")?;
+    let manifest_path = repo
+        .path()
+        .join(format!(".vizier/jobs/runs/{seed_run_id}.json"));
+    let mut manifest = serde_json::from_str::<Value>(&fs::read_to_string(&manifest_path)?)?;
+    let nodes = manifest
+        .pointer_mut("/nodes")
+        .and_then(Value::as_object_mut)
+        .ok_or("missing nodes map in run manifest")?;
+    for node in nodes.values_mut() {
+        let node_obj = node
+            .as_object_mut()
+            .ok_or("manifest node is not an object")?;
+        let routes = node_obj
+            .entry("routes".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let routes_obj = routes
+            .as_object_mut()
+            .ok_or("manifest routes is not an object")?;
+        routes_obj.insert(
+            "succeeded".to_string(),
+            serde_json::json!([{"node_id": "synthetic", "mode": "propagate_context"}]),
+        );
+    }
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/single.toml",
+        "--after",
+        &format!("run:{seed_run_id}"),
+        "--format",
+        "json",
+    ])?;
+    assert!(
+        !output.status.success(),
+        "manifest with no sink nodes should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no success-terminal sink nodes") && stderr.contains(seed_run_id),
+        "expected sink error with run id, got: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_after_bare_run_id_requires_run_prefix() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/single.toml",
+        "--after",
+        "run_deadbeef",
+        "--format",
+        "json",
+    ])?;
+    assert!(!output.status.success(), "bare run id should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("use `run:run_deadbeef`"),
+        "expected run-prefix guidance, got: {stderr}"
     );
 
     Ok(())

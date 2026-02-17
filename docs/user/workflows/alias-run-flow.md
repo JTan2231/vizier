@@ -34,6 +34,7 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 - `vizier run develop`
 - `vizier run file:.vizier/workflows/custom.toml --set key=value`
 - `vizier run develop --after <job-id> --require-approval`
+- `vizier run develop --after run:<run-id>`
 - `vizier run develop --follow --format json`
 
 Recommended repo alias map:
@@ -63,6 +64,8 @@ Workflow parameter input styles:
 - Executor arg contracts are validated before enqueue, and root-node preflight now prints entry-input guidance when required args are missing; current required-input checks include `worktree.prepare` (`branch|slug|plan`), `git.integrate_plan_branch` (`branch|source_branch|plan_branch|slug|plan`), `cicd.run` (`command/script` or a non-empty cicd gate script), and `patch.pipeline_prepare`/`patch.execute_pipeline` (`files_json`).
 
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
+
+`--after` accepts either direct job ids or grouped run references (`run:<run_id>`). Run references expand to the previous run's success-terminal sink job ids before normal scheduler dependency validation.
 
 ## Release Flow
 

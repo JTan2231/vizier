@@ -186,8 +186,15 @@ were reset and which were restarted.
 7) Spawn
 
 ## Explicit `after` dependency resolution
-`after` dependencies are explicit job-id constraints (`--after <job-id>`) and are
-checked before artifact dependencies.
+`after` dependencies are checked before artifact dependencies.
+
+Queue-time CLI references accepted by `vizier run --after`:
+- direct job id (`--after <job-id>`)
+- run reference (`--after run:<run-id>`)
+
+Run references expand on the CLI to concrete job ids from
+`.vizier/jobs/runs/<run-id>.json` by selecting success-terminal sink nodes
+(`routes.succeeded` empty). The scheduler only sees concrete job-id dependencies.
 
 Policy today:
 - `success` (default and only policy): predecessor must finish with `succeeded`.

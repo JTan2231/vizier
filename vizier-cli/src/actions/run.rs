@@ -4,6 +4,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 use vizier_core::display;
@@ -12,6 +13,35 @@ use crate::actions::shared::format_block;
 use crate::cli::args::{RunCmd, RunFormatArg};
 use crate::jobs;
 use crate::workflow_templates::{self, ResolvedWorkflowSource, WorkflowTemplateInputSpec};
+
+const RUN_AFTER_PREFIX: &str = "run:";
+const RUN_ID_PREFIX: &str = "run_";
+
+#[derive(Debug)]
+enum AfterReference {
+    JobId(String),
+    RunId(String),
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AfterDependencyRunManifest {
+    #[serde(default)]
+    nodes: BTreeMap<String, AfterDependencyRunNode>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AfterDependencyRunNode {
+    #[serde(default)]
+    job_id: String,
+    #[serde(default)]
+    routes: AfterDependencyRunRoutes,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AfterDependencyRunRoutes {
+    #[serde(default)]
+    succeeded: Vec<serde_json::Value>,
+}
 
 pub(crate) fn run_workflow(
     project_root: &Path,
@@ -47,10 +77,11 @@ pub(crate) fn run_workflow(
         annotate_alias_metadata(jobs_root, &job_ids, alias.as_str())?;
     }
 
-    if !cmd.after.is_empty() {
+    let normalized_after = normalize_after_dependencies(jobs_root, &cmd.after)?;
+    if !normalized_after.is_empty() {
         for root in &root_jobs {
             let dependencies =
-                jobs::resolve_after_dependencies_for_enqueue(jobs_root, root, &cmd.after)?;
+                jobs::resolve_after_dependencies_for_enqueue(jobs_root, root, &normalized_after)?;
             apply_after_dependencies(jobs_root, root, &dependencies)?;
         }
     }
@@ -93,6 +124,124 @@ pub(crate) fn run_workflow(
     } else {
         std::process::exit(terminal.exit_code)
     }
+}
+
+fn normalize_after_dependencies(
+    jobs_root: &Path,
+    requested_after: &[String],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+
+    for raw in requested_after {
+        match parse_after_reference(raw)? {
+            AfterReference::JobId(job_id) => {
+                if seen.insert(job_id.clone()) {
+                    deduped.push(job_id);
+                }
+            }
+            AfterReference::RunId(run_id) => {
+                let expanded = expand_run_after_reference(jobs_root, &run_id)?;
+                for job_id in expanded {
+                    if seen.insert(job_id.clone()) {
+                        deduped.push(job_id);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(deduped)
+}
+
+fn parse_after_reference(raw: &str) -> Result<AfterReference, Box<dyn std::error::Error>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("unknown --after job id: <empty>".into());
+    }
+
+    if let Some(run_id) = trimmed.strip_prefix(RUN_AFTER_PREFIX) {
+        let run_id = run_id.trim();
+        if run_id.is_empty() {
+            return Err(
+                "invalid --after run reference `run:`; expected `run:<run_id>`"
+                    .to_string()
+                    .into(),
+            );
+        }
+        return Ok(AfterReference::RunId(run_id.to_string()));
+    }
+
+    if trimmed.starts_with(RUN_ID_PREFIX) {
+        return Err(format!(
+            "invalid --after reference `{trimmed}`; use `run:{trimmed}` for run dependencies"
+        )
+        .into());
+    }
+
+    Ok(AfterReference::JobId(trimmed.to_string()))
+}
+
+fn expand_run_after_reference(
+    jobs_root: &Path,
+    run_id: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let manifest_path = jobs_root.join("runs").join(format!("{run_id}.json"));
+    let bytes = fs::read(&manifest_path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "invalid --after run reference `run:{run_id}`: manifest not found at `{}`",
+                manifest_path.display()
+            )
+        } else {
+            format!(
+                "invalid --after run reference `run:{run_id}`: unable to read manifest `{}`: {err}",
+                manifest_path.display()
+            )
+        }
+    })?;
+    let manifest = serde_json::from_slice::<AfterDependencyRunManifest>(&bytes).map_err(|err| {
+        format!(
+            "invalid --after run reference `run:{run_id}`: unable to parse manifest `{}`: {err}",
+            manifest_path.display()
+        )
+    })?;
+
+    let mut sink_job_ids = Vec::new();
+    let mut sink_job_to_node = HashMap::<String, String>::new();
+    for (node_id, node) in &manifest.nodes {
+        if !node.routes.succeeded.is_empty() {
+            continue;
+        }
+
+        let sink_job_id = node.job_id.trim();
+        if sink_job_id.is_empty() {
+            return Err(format!(
+                "invalid --after run reference `run:{run_id}`: sink node `{node_id}` has an empty job_id"
+            )
+            .into());
+        }
+
+        if let Some(existing_node_id) =
+            sink_job_to_node.insert(sink_job_id.to_string(), node_id.clone())
+        {
+            return Err(format!(
+                "invalid --after run reference `run:{run_id}`: duplicate sink job_id `{sink_job_id}` across nodes `{existing_node_id}` and `{node_id}`"
+            )
+            .into());
+        }
+
+        sink_job_ids.push(sink_job_id.to_string());
+    }
+
+    if sink_job_ids.is_empty() {
+        return Err(format!(
+            "invalid --after run reference `run:{run_id}`: manifest has no success-terminal sink nodes"
+        )
+        .into());
+    }
+
+    Ok(sink_job_ids)
 }
 
 fn inline_plan_persist_spec_files(
@@ -982,6 +1131,80 @@ mod tests {
         assert_eq!(
             template.nodes[0].args.get("spec_text"),
             Some(&"".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_after_reference_rejects_bare_run_id() {
+        let err = parse_after_reference("run_deadbeef").expect_err("expected run-id guidance");
+        assert!(
+            err.to_string().contains("use `run:run_deadbeef`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn normalize_after_dependencies_expands_run_sinks_and_dedupes() {
+        let temp = TempDir::new().expect("temp dir");
+        let runs_dir = temp.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).expect("create runs dir");
+        std::fs::write(
+            runs_dir.join("run_prev.json"),
+            r#"{
+  "nodes": {
+    "node_a": {
+      "job_id": "job-a",
+      "routes": { "succeeded": [] }
+    },
+    "node_b": {
+      "job_id": "job-b",
+      "routes": { "succeeded": [] }
+    },
+    "node_c": {
+      "job_id": "job-c",
+      "routes": { "succeeded": [{ "node_id": "node_d", "mode": "propagate_context" }] }
+    }
+  }
+}"#,
+        )
+        .expect("write run manifest");
+
+        let dependencies = normalize_after_dependencies(
+            temp.path(),
+            &[
+                "run:run_prev".to_string(),
+                "manual-job".to_string(),
+                "job-a".to_string(),
+                "run:run_prev".to_string(),
+            ],
+        )
+        .expect("resolve dependencies");
+        assert_eq!(dependencies, vec!["job-a", "job-b", "manual-job"]);
+    }
+
+    #[test]
+    fn expand_run_after_reference_rejects_manifests_without_success_sinks() {
+        let temp = TempDir::new().expect("temp dir");
+        let runs_dir = temp.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).expect("create runs dir");
+        std::fs::write(
+            runs_dir.join("run_prev.json"),
+            r#"{
+  "nodes": {
+    "node_only": {
+      "job_id": "job-only",
+      "routes": { "succeeded": [{ "node_id": "node_only", "mode": "propagate_context" }] }
+    }
+  }
+}"#,
+        )
+        .expect("write run manifest");
+
+        let err = expand_run_after_reference(temp.path(), "run_prev")
+            .expect_err("expected zero-sink error");
+        assert!(
+            err.to_string().contains("no success-terminal sink nodes"),
+            "unexpected error: {err}"
         );
     }
 }

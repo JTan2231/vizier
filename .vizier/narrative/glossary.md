@@ -75,4 +75,6 @@
 - **Run `--set` strict coercion**: Queue-time typed coercion for expanded placeholders: bool tokens (`true|false|1|0|yes|no|on|off`), retry budget as decimal `u32`, and retry mode via canonical enum parsing; failures are field-path errors that prevent enqueue.
 - **Run `--set` topology deferral**: Explicitly deferred interpolation scope for topology/identity fields (`after`, `on`, template `id/version`, imports, links) pending deterministic-graph policy decisions.
 - **Run root overrides**: `vizier run` queue-time root-job schedule overrides: external `--after` dependencies and approval policy toggles (`--require-approval` / `--no-require-approval`).
+- **Run grouped `--after` reference**: `vizier run --after run:<run_id>` queue-time expansion that reads `.vizier/jobs/runs/<run_id>.json`, selects success-terminal sink nodes (`routes.succeeded` empty), and converts the reference to concrete `schedule.after[*].job_id` dependencies.
+- **Run bare-id `--after` rejection**: CLI guard that rejects bare `run_<id>` tokens for `--after` and instructs operators to use `run:<run_id>` when targeting workflow runs.
 - **Run follow exit contract**: `vizier run --follow` aggregate terminal mapping: `0` all succeeded, `10` blocked-only terminal set, non-zero when any failed/cancelled job is terminal.

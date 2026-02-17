@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-17, grouped run `--after` references):
+  - `vizier-cli/src/actions/run.rs` now normalizes `--after` references into concrete job dependencies before root enqueue validation, accepting both direct `job_id` values and `run:<run_id>` tokens.
+  - `run:<run_id>` expansion reads `.vizier/jobs/runs/<run_id>.json`, selects success-terminal sinks (`routes.succeeded` empty), rejects missing/unreadable manifests or zero-sink manifests, and rejects duplicate/empty sink `job_id` values with run-id-attributed errors.
+  - Bare `run_<id>` references are now rejected with explicit guidance to use `run:<run_id>`.
+  - Operator/docs surfaces now describe the expanded contract (`vizier-cli/src/cli/args.rs`, `docs/man/man7/vizier-workflow-template.7`, `docs/user/workflows/alias-run-flow.md`, `docs/dev/scheduler-dag.md`).
+  - Integration coverage in `tests/src/run.rs` now asserts happy-path sink expansion, mixed run+job references, missing-manifest failure, zero-sink failure, and bare-id rejection guidance.
 - Update (2026-02-16, succeeded-edge atomic completion lock):
   - `vizier-core/src/jobs/mod.rs` now executes `finalize_job_with_artifacts -> apply_workflow_routes -> scheduler_tick_locked` for `WorkflowNodeOutcome::Succeeded` inside one `SchedulerLock` critical section.
   - Success-route conversion is unchanged (`on.succeeded` remains context propagation; failed/blocked/cancelled routes remain retry-driven), and non-succeeded completion flow behavior is unchanged in this phase.

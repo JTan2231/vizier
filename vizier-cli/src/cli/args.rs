@@ -591,8 +591,8 @@ pub(crate) struct RunCmd {
     #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
     pub(crate) set: Vec<String>,
 
-    /// External predecessor dependency; root jobs wait for these jobs to succeed
-    #[arg(long = "after", value_name = "JOB_ID", action = ArgAction::Append)]
+    /// External predecessor dependency; root jobs wait on JOB_ID or run:RUN_ID
+    #[arg(long = "after", value_name = "REF", action = ArgAction::Append)]
     pub(crate) after: Vec<String>,
 
     /// Require explicit approval before root jobs can start
