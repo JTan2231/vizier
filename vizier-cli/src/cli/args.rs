@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
@@ -607,6 +608,10 @@ pub(crate) struct RunCmd {
     #[arg(long = "follow", action = ArgAction::SetTrue)]
     pub(crate) follow: bool,
 
+    /// Number of times to enqueue and execute the same workflow in strict sequence
+    #[arg(long = "repeat", value_name = "N", default_value_t = NonZeroU32::MIN)]
+    pub(crate) repeat: NonZeroU32,
+
     /// Output format (text, json)
     #[arg(long = "format", value_enum, default_value_t = RunFormatArg::Text)]
     pub(crate) format: RunFormatArg,
@@ -868,4 +873,51 @@ where
         }
     }
     fields
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn run_repeat_defaults_to_one() {
+        let cli = Cli::try_parse_from(["vizier", "run", "draft"]).expect("parse run args");
+        let Commands::Run(cmd) = cli.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(cmd.repeat.get(), 1);
+    }
+
+    #[test]
+    fn run_repeat_accepts_positive_values() {
+        let cli =
+            Cli::try_parse_from(["vizier", "run", "draft", "--repeat", "3"]).expect("parse repeat");
+        let Commands::Run(cmd) = cli.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(cmd.repeat.get(), 3);
+    }
+
+    #[test]
+    fn run_repeat_rejects_zero() {
+        let err = Cli::try_parse_from(["vizier", "run", "draft", "--repeat", "0"])
+            .expect_err("zero repeat should fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--repeat"),
+            "expected clap error to mention --repeat: {rendered}"
+        );
+    }
+
+    #[test]
+    fn run_repeat_rejects_negative() {
+        let err = Cli::try_parse_from(["vizier", "run", "draft", "--repeat=-2"])
+            .expect_err("negative repeat should fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--repeat"),
+            "expected clap error to mention --repeat: {rendered}"
+        );
+    }
 }

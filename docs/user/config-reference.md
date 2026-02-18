@@ -78,6 +78,13 @@ Current user-facing commands are:
 
 `vizier run <flow> --set key=value` applies queue-time interpolation after template composition (`imports` + `links`) and after defaults from `[params]` are merged.
 
+Run-local orchestration controls include:
+
+- `--after <job_id|run:<run_id>>` (repeatable)
+- `--require-approval` / `--no-require-approval`
+- `--repeat <N>` (default `1`, valid values `>= 1`)
+- `--follow`
+
 - `vizier run <flow> --param value` is accepted for workflow params; kebab-case flag names are normalized to snake_case keys (`--spec-file` => `spec_file`).
 - Templates may define `[cli].named` aliases so friendly entry flags map to canonical params (`--name` => `slug`, `--file` => `spec_file` for stage draft).
 - `vizier run <flow> <value...>` is accepted when the template defines `[cli].positional = ["param_a", "param_b", ...]`.
@@ -96,6 +103,8 @@ Current user-facing commands are:
   - retry mode accepts canonical enum values (for example `never`, `on_failure`, `until_gate`)
 - Unresolved placeholders or invalid coercions fail before enqueue; no run manifest or node jobs are created.
 - Phase 2 topology/identity expansion (`nodes.after`, `nodes.on.*`, template `id/version`, `imports`, `links`) is intentionally deferred.
+
+`vizier run --repeat <N>` enqueues the same resolved flow `N` times in strict sequence. Iteration `i>1` depends on iteration `i-1` success sinks (equivalent to appending `--after run:<previous_run_id>` internally), so repeats do not run in parallel.
 
 ## Workflow Dependency Policy
 

@@ -188,6 +188,49 @@ fn first_root_job_id(payload: &Value) -> TestResult<String> {
         .to_string())
 }
 
+fn repeated_runs(payload: &Value) -> TestResult<&Vec<Value>> {
+    payload
+        .get("runs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "missing runs array in repeat payload".into())
+}
+
+fn repeated_run_id(payload: &Value, index: usize) -> TestResult<String> {
+    Ok(repeated_runs(payload)?
+        .get(index)
+        .and_then(|entry| entry.get("run_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing run_id for repeat index {}", index + 1))?
+        .to_string())
+}
+
+fn repeated_root_job_id(payload: &Value, index: usize) -> TestResult<String> {
+    Ok(repeated_runs(payload)?
+        .get(index)
+        .and_then(|entry| entry.get("root_job_ids"))
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing root_job_ids[0] for repeat index {}", index + 1))?
+        .to_string())
+}
+
+fn schedule_after_job_ids(record: &Value) -> Vec<String> {
+    record
+        .pointer("/schedule/after")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("job_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>()
+}
+
 fn manifest_node_job_id(manifest: &Value, node_id: &str) -> TestResult<String> {
     Ok(manifest
         .pointer(&format!("/nodes/{node_id}/job_id"))
@@ -2606,6 +2649,311 @@ fn test_run_after_bare_run_id_requires_run_prefix() -> TestResult {
     assert!(
         stderr.contains("use `run:run_deadbeef`"),
         "expected run-prefix guidance, got: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_repeat_one_preserves_single_run_json_shape() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--repeat",
+            "1",
+            "--format",
+            "json",
+        ],
+    )?;
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_run_enqueued")
+    );
+    assert!(
+        payload.get("run_id").and_then(Value::as_str).is_some(),
+        "repeat=1 should keep single-run payload shape: {payload}"
+    );
+    assert!(
+        payload.get("runs").is_none(),
+        "repeat=1 should not emit aggregate runs payload: {payload}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_repeat_enqueues_chained_runs_and_manifests() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--repeat",
+            "2",
+            "--format",
+            "json",
+        ],
+    )?;
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_runs_enqueued")
+    );
+    assert_eq!(payload.get("repeat").and_then(Value::as_u64), Some(2));
+    assert_eq!(repeated_runs(&payload)?.len(), 2);
+
+    let first_run_id = repeated_run_id(&payload, 0)?;
+    let second_run_id = repeated_run_id(&payload, 1)?;
+    assert_ne!(first_run_id, second_run_id, "repeat runs must be distinct");
+
+    let _ = load_run_manifest(&repo, &first_run_id)?;
+    let _ = load_run_manifest(&repo, &second_run_id)?;
+
+    let first_root = repeated_root_job_id(&payload, 0)?;
+    let second_root = repeated_root_job_id(&payload, 1)?;
+    let second_record = read_job_record(&repo, &second_root)?;
+    let second_after = schedule_after_job_ids(&second_record);
+    assert!(
+        second_after.iter().any(|job_id| job_id == &first_root),
+        "repeat iteration 2 root must depend on iteration 1 sink root: {second_record}"
+    );
+
+    wait_for_job_completion(&repo, &first_root, Duration::from_secs(10))?;
+    wait_for_job_completion(&repo, &second_root, Duration::from_secs(10))?;
+
+    Ok(())
+}
+
+#[test]
+fn test_run_repeat_composes_after_dependencies_and_approval_overrides() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    write_job_record_simple(
+        &repo,
+        "dep-running",
+        "running",
+        "2026-02-18T00:00:00Z",
+        None,
+        &["dep"],
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--repeat",
+            "2",
+            "--after",
+            "dep-running",
+            "--require-approval",
+            "--format",
+            "json",
+        ],
+    )?;
+    assert_eq!(repeated_runs(&payload)?.len(), 2);
+
+    let first_root = repeated_root_job_id(&payload, 0)?;
+    let second_root = repeated_root_job_id(&payload, 1)?;
+
+    let first_record = read_job_record(&repo, &first_root)?;
+    let first_after = schedule_after_job_ids(&first_record);
+    assert_eq!(
+        first_record
+            .pointer("/schedule/approval/state")
+            .and_then(Value::as_str),
+        Some("pending"),
+        "repeat iteration 1 root should require approval: {first_record}"
+    );
+    assert!(
+        first_after.iter().any(|job_id| job_id == "dep-running"),
+        "repeat iteration 1 root should include user --after dependency: {first_record}"
+    );
+
+    let second_record = read_job_record(&repo, &second_root)?;
+    let second_after = schedule_after_job_ids(&second_record);
+    assert_eq!(
+        second_record
+            .pointer("/schedule/approval/state")
+            .and_then(Value::as_str),
+        Some("pending"),
+        "repeat iteration 2 root should require approval: {second_record}"
+    );
+    assert!(
+        second_after.iter().any(|job_id| job_id == "dep-running"),
+        "repeat iteration 2 root should include user --after dependency: {second_record}"
+    );
+    assert!(
+        second_after.iter().any(|job_id| job_id == &first_root),
+        "repeat iteration 2 root should include previous run sink dependency: {second_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_follow_repeat_success_reports_aggregate_terminal_summary() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(
+        &repo,
+        ".vizier/workflows/follow-repeat-success.toml",
+        "true",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/follow-repeat-success.toml",
+            "--repeat",
+            "2",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_runs_terminal")
+    );
+    assert_eq!(payload.get("repeat").and_then(Value::as_u64), Some(2));
+    assert_eq!(
+        payload.get("terminal_state").and_then(Value::as_str),
+        Some("succeeded")
+    );
+    assert_eq!(payload.get("exit_code").and_then(Value::as_i64), Some(0));
+
+    let runs = repeated_runs(&payload)?;
+    assert_eq!(runs.len(), 2);
+    for (index, entry) in runs.iter().enumerate() {
+        assert_eq!(
+            entry.get("index").and_then(Value::as_u64),
+            Some((index + 1) as u64)
+        );
+        assert_eq!(
+            entry.get("terminal_state").and_then(Value::as_str),
+            Some("succeeded")
+        );
+        assert_eq!(entry.get("exit_code").and_then(Value::as_i64), Some(0));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_run_follow_repeat_short_circuits_on_first_blocked_run() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflows/follow-repeat-blocked.toml",
+        "id = \"template.follow.repeat.blocked\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"approval_gate\"\n\
+kind = \"gate\"\n\
+uses = \"control.gate.approval\"\n",
+    )?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/follow-repeat-blocked.toml",
+        "--repeat",
+        "2",
+        "--follow",
+        "--format",
+        "json",
+    ])?;
+    assert_eq!(
+        output.status.code(),
+        Some(10),
+        "blocked repeat follow should exit 10: stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let payload = serde_json::from_slice::<Value>(&output.stdout)?;
+    assert_eq!(
+        payload.get("terminal_state").and_then(Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(payload.get("exit_code").and_then(Value::as_i64), Some(10));
+    assert_eq!(
+        repeated_runs(&payload)?.len(),
+        1,
+        "follow should stop after the first blocked repeat iteration"
+    );
+
+    let runs_dir = repo.path().join(".vizier/jobs/runs");
+    let manifest_count = fs::read_dir(runs_dir)?.count();
+    assert_eq!(
+        manifest_count, 2,
+        "repeat enqueue should persist both run manifests before follow short-circuit"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_follow_repeat_short_circuits_on_first_failed_run() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(
+        &repo,
+        ".vizier/workflows/follow-repeat-fail.toml",
+        "echo failing >&2; exit 7",
+    )?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/follow-repeat-fail.toml",
+        "--repeat",
+        "2",
+        "--follow",
+        "--format",
+        "json",
+    ])?;
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "failed repeat follow should map to exit 1: stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let payload = serde_json::from_slice::<Value>(&output.stdout)?;
+    assert_eq!(
+        payload.get("terminal_state").and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(payload.get("exit_code").and_then(Value::as_i64), Some(1));
+    assert_eq!(
+        repeated_runs(&payload)?.len(),
+        1,
+        "follow should stop after the first failed repeat iteration"
+    );
+
+    let runs_dir = repo.path().join(".vizier/jobs/runs");
+    let manifest_count = fs::read_dir(runs_dir)?.count();
+    assert_eq!(
+        manifest_count, 2,
+        "repeat enqueue should persist both run manifests before follow short-circuit"
     );
 
     Ok(())

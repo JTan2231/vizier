@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-18, run-local repeat orchestration):
+  - `vizier-cli/src/cli/args.rs` adds run-local `--repeat <N>` (`NonZeroU32`, default `1`), and run arg normalization in `vizier-cli/src/cli/util.rs` now preserves `--repeat N` / `--repeat=N` instead of rewriting to `--set`.
+  - `vizier-cli/src/actions/run.rs` now supports repeat enqueue cycles with deterministic serial chaining (`i>1` appends `run:<prev_run_id>` sink dependencies), applies alias metadata + approval overrides for every iteration, and ticks scheduler once per iteration after root overrides persist.
+  - Repeat-mode output contracts now emit aggregate summaries (`workflow_runs_enqueued` / `workflow_runs_terminal`, `repeat`, ordered per-run entries), while `repeat=1` preserves the single-run JSON shape for compatibility.
+  - Repeat follow mode tracks runs in enqueue order and short-circuits on the first non-success terminal run (`blocked`/`failed`) with existing exit-code mapping.
+  - Coverage additions include CLI parse/normalization checks and integration assertions for repeat enqueue chaining, `--after` composition, approval propagation, and follow short-circuit behavior (`tests/src/run.rs`).
 - Update (2026-02-17, grouped run `--after` references):
   - `vizier-cli/src/actions/run.rs` now normalizes `--after` references into concrete job dependencies before root enqueue validation, accepting both direct `job_id` values and `run:<run_id>` tokens.
   - `run:<run_id>` expansion reads `.vizier/jobs/runs/<run_id>.json`, selects success-terminal sinks (`routes.succeeded` empty), rejects missing/unreadable manifests or zero-sink manifests, and rejects duplicate/empty sink `job_id` values with run-id-attributed errors.

@@ -35,6 +35,8 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 - `vizier run file:.vizier/workflows/custom.toml --set key=value`
 - `vizier run develop --after <job-id> --require-approval`
 - `vizier run develop --after run:<run-id>`
+- `vizier run develop --repeat 3`
+- `vizier run develop --repeat 2 --follow --format json`
 - `vizier run develop --follow --format json`
 
 Recommended repo alias map:
@@ -57,6 +59,7 @@ Workflow parameter input styles:
 - Template aliases: `[cli].named` can map friendly labels to canonical params (`--name` -> `slug`, `--file` -> `spec_file` in stage draft).
 - Ordered inputs: extra positional values after `<flow>` map using template `[cli].positional` order.
 - Explicit `--set key=value` remains supported and keeps last-write-wins behavior.
+- `--repeat <N>` is run-local (`N >= 1`, default `1`): Vizier enqueues `N` runs with unique run IDs and chains repeat iteration `i>1` on iteration `i-1` success sinks (`run:<prev_run_id>` expansion) for deterministic serial execution.
 - Stage draft now snapshots `spec_file` contents into `persist_plan.args.spec_text` at enqueue time when `spec_source=inline` and `spec_text` is empty, so the spec file does not need to be committed into the stage worktree.
 - For stage templates, `worktree_prepare` derives `branch=draft/<slug>` when `branch` is omitted.
 - Stage templates use repo-local prompt files under `.vizier/prompts/` (`DRAFT_PROMPTS.md`, `APPROVE_PROMPTS.md`, `MERGE_PROMPTS.md`) so draft/approve runs do not require `prompt_text` overrides.

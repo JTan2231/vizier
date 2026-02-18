@@ -40,6 +40,7 @@ pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
 
         if is_option_with_value(token, "--set")
             || is_option_with_value(token, "--after")
+            || is_option_with_value(token, "--repeat")
             || is_option_with_value(token, "--format")
             || is_option_with_value(token, "--load-session")
             || is_option_with_value(token, "--config-file")
@@ -273,8 +274,23 @@ mod tests {
             "draft".to_string(),
             "--after".to_string(),
             "job-123".to_string(),
+            "--repeat".to_string(),
+            "3".to_string(),
             "--format".to_string(),
             "json".to_string(),
+            "--follow".to_string(),
+        ];
+
+        assert_eq!(normalize_run_invocation_args(&args), args);
+    }
+
+    #[test]
+    fn normalize_run_preserves_repeat_equals_form() {
+        let args = vec![
+            "vizier".to_string(),
+            "run".to_string(),
+            "draft".to_string(),
+            "--repeat=2".to_string(),
             "--follow".to_string(),
         ];
 

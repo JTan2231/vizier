@@ -83,6 +83,7 @@ With these contracts in place, `vizier run draft`, `vizier run approve`, and `vi
 - During `merge_integrate`, Vizier now loads `.vizier/implementation-plans/<slug>.md` from the source branch (or source history fallback), appends that content to the merge commit message body, and commits removal of the plan doc from the source branch tip before finalizing merge integration.
 - Queue-time capability validation now enforces executor arg contracts before any jobs are enqueued. Examples: `worktree.prepare` requires one of `args.branch|args.slug|args.plan`; `git.integrate_plan_branch` requires one of `args.branch|args.source_branch|args.plan_branch|args.slug|args.plan`; `cicd.run` requires `args.command`/`args.script` or a non-empty `cicd` gate script; `patch.pipeline_prepare` and `patch.execute_pipeline` require `args.files_json`.
 - `vizier run --set` still applies queue-time interpolation and typed coercion before enqueue.
+- `vizier run --repeat <N>` applies to stage aliases as well (`draft`, `approve`, `merge`), enqueuing repeated stage runs in strict sequence by chaining each iteration on the previous iteration's success sinks.
 - `vizier run --after`, `--require-approval`, and `--follow` remain available stage orchestration controls.
 - Job log streaming is command-local: `vizier jobs tail <job> --follow`.
 - Help output is pager-aware on TTY and plain in non-TTY contexts.

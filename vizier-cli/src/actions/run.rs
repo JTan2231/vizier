@@ -43,6 +43,22 @@ struct AfterDependencyRunRoutes {
     succeeded: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Clone)]
+struct EnqueuedRunSummary {
+    index: u32,
+    run_id: String,
+    enqueue: jobs::EnqueueWorkflowRunResult,
+    job_ids: Vec<String>,
+    root_jobs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FollowedRunSummary {
+    index: u32,
+    run_id: String,
+    terminal: FollowResult,
+}
+
 pub(crate) fn run_workflow(
     project_root: &Path,
     jobs_root: &Path,
@@ -58,34 +74,7 @@ pub(crate) fn run_workflow(
     validate_entrypoint_input_requirements(&source, &input_spec, &cmd.inputs, &template)?;
     inline_plan_persist_spec_files(project_root, &mut template)?;
 
-    let run_id = format!("run_{}", Uuid::new_v4().simple());
-    let enqueue = jobs::enqueue_workflow_run(
-        project_root,
-        jobs_root,
-        &run_id,
-        &source.selector,
-        &template,
-        &std::env::args().collect::<Vec<_>>(),
-        None,
-    )?;
-
-    let mut job_ids = enqueue.job_ids.values().cloned().collect::<Vec<_>>();
-    job_ids.sort();
-    let mut root_jobs = resolve_root_jobs(jobs_root, &job_ids)?;
-
-    if let Some(alias) = source.command_alias.as_ref() {
-        annotate_alias_metadata(jobs_root, &job_ids, alias.as_str())?;
-    }
-
-    let normalized_after = normalize_after_dependencies(jobs_root, &cmd.after)?;
-    if !normalized_after.is_empty() {
-        for root in &root_jobs {
-            let dependencies =
-                jobs::resolve_after_dependencies_for_enqueue(jobs_root, root, &normalized_after)?;
-            apply_after_dependencies(jobs_root, root, &dependencies)?;
-        }
-    }
-
+    let repeat = cmd.repeat.get();
     let approval_override = if cmd.require_approval {
         Some(true)
     } else if cmd.no_require_approval {
@@ -93,36 +82,180 @@ pub(crate) fn run_workflow(
     } else {
         None
     };
-    if let Some(required) = approval_override {
-        for root in &root_jobs {
-            apply_approval_override(jobs_root, root, required)?;
+    let binary = std::env::current_exe()?;
+    let invocation_args = std::env::args().collect::<Vec<_>>();
+
+    if repeat == 1 {
+        let run_id = format!("run_{}", Uuid::new_v4().simple());
+        let enqueue = jobs::enqueue_workflow_run(
+            project_root,
+            jobs_root,
+            &run_id,
+            &source.selector,
+            &template,
+            &invocation_args,
+            None,
+        )?;
+
+        let mut job_ids = enqueue.job_ids.values().cloned().collect::<Vec<_>>();
+        job_ids.sort();
+        let mut root_jobs = resolve_root_jobs(jobs_root, &job_ids)?;
+
+        if let Some(alias) = source.command_alias.as_ref() {
+            annotate_alias_metadata(jobs_root, &job_ids, alias.as_str())?;
         }
+
+        let normalized_after = normalize_after_dependencies(jobs_root, &cmd.after)?;
+        if !normalized_after.is_empty() {
+            for root in &root_jobs {
+                let dependencies = jobs::resolve_after_dependencies_for_enqueue(
+                    jobs_root,
+                    root,
+                    &normalized_after,
+                )?;
+                apply_after_dependencies(jobs_root, root, &dependencies)?;
+            }
+        }
+
+        if let Some(required) = approval_override {
+            for root in &root_jobs {
+                apply_approval_override(jobs_root, root, required)?;
+            }
+        }
+
+        // Trigger initial scheduling once after enqueue and root-level overrides.
+        let _ = jobs::scheduler_tick(project_root, jobs_root, &binary)?;
+
+        root_jobs.sort();
+        if !cmd.follow {
+            emit_enqueue_summary(cmd.format, &source, &enqueue, &root_jobs)?;
+            return Ok(());
+        }
+
+        let terminal = follow_run(
+            project_root,
+            jobs_root,
+            &binary,
+            &run_id,
+            &job_ids,
+            cmd.format,
+        )?;
+        emit_follow_summary(cmd.format, &source, &enqueue, &root_jobs, &terminal)?;
+
+        if terminal.exit_code == 0 {
+            return Ok(());
+        }
+        std::process::exit(terminal.exit_code);
     }
 
-    // Trigger initial scheduling once after enqueue and root-level overrides.
-    let binary = std::env::current_exe()?;
-    let _ = jobs::scheduler_tick(project_root, jobs_root, &binary)?;
+    let mut summaries = Vec::<EnqueuedRunSummary>::with_capacity(repeat as usize);
+    let mut previous_run_id = None::<String>;
+    for index in 1..=repeat {
+        let run_id = format!("run_{}", Uuid::new_v4().simple());
+        let enqueue = jobs::enqueue_workflow_run(
+            project_root,
+            jobs_root,
+            &run_id,
+            &source.selector,
+            &template,
+            &invocation_args,
+            None,
+        )?;
 
-    root_jobs.sort();
+        let mut job_ids = enqueue.job_ids.values().cloned().collect::<Vec<_>>();
+        job_ids.sort();
+        let mut root_jobs = resolve_root_jobs(jobs_root, &job_ids)?;
+
+        if let Some(alias) = source.command_alias.as_ref() {
+            annotate_alias_metadata(jobs_root, &job_ids, alias.as_str())?;
+        }
+
+        let mut requested_after = cmd.after.clone();
+        if let Some(previous) = previous_run_id.as_ref() {
+            requested_after.push(format!("{RUN_AFTER_PREFIX}{previous}"));
+        }
+        let normalized_after = normalize_after_dependencies(jobs_root, &requested_after)?;
+        if !normalized_after.is_empty() {
+            for root in &root_jobs {
+                let dependencies = jobs::resolve_after_dependencies_for_enqueue(
+                    jobs_root,
+                    root,
+                    &normalized_after,
+                )?;
+                apply_after_dependencies(jobs_root, root, &dependencies)?;
+            }
+        }
+
+        if let Some(required) = approval_override {
+            for root in &root_jobs {
+                apply_approval_override(jobs_root, root, required)?;
+            }
+        }
+
+        // Keep deterministic startup by applying per-iteration root overrides before ticking.
+        let _ = jobs::scheduler_tick(project_root, jobs_root, &binary)?;
+
+        root_jobs.sort();
+        summaries.push(EnqueuedRunSummary {
+            index,
+            run_id: run_id.clone(),
+            enqueue,
+            job_ids,
+            root_jobs,
+        });
+        previous_run_id = Some(run_id);
+    }
+
     if !cmd.follow {
-        emit_enqueue_summary(cmd.format, &source, &enqueue, &root_jobs)?;
+        emit_repeat_enqueue_summary(cmd.format, &source, repeat, &summaries)?;
         return Ok(());
     }
 
-    let terminal = follow_run(
-        project_root,
-        jobs_root,
-        &binary,
-        &run_id,
-        &job_ids,
-        cmd.format,
-    )?;
-    emit_follow_summary(cmd.format, &source, &enqueue, &root_jobs, &terminal)?;
+    let mut followed_runs = Vec::<FollowedRunSummary>::new();
+    for summary in &summaries {
+        let terminal = follow_run(
+            project_root,
+            jobs_root,
+            &binary,
+            &summary.run_id,
+            &summary.job_ids,
+            cmd.format,
+        )?;
+        let should_stop = terminal.exit_code != 0;
+        followed_runs.push(FollowedRunSummary {
+            index: summary.index,
+            run_id: summary.run_id.clone(),
+            terminal,
+        });
+        if should_stop {
+            break;
+        }
+    }
 
-    if terminal.exit_code == 0 {
+    let aggregate = followed_runs
+        .last()
+        .map(|entry| {
+            (
+                entry.terminal.terminal_state.clone(),
+                entry.terminal.exit_code,
+            )
+        })
+        .unwrap_or_else(|| ("succeeded".to_string(), 0));
+
+    emit_repeat_follow_summary(
+        cmd.format,
+        &source,
+        repeat,
+        &summaries,
+        &followed_runs,
+        aggregate.0.as_str(),
+        aggregate.1,
+    )?;
+
+    if aggregate.1 == 0 {
         Ok(())
     } else {
-        std::process::exit(terminal.exit_code)
+        std::process::exit(aggregate.1)
     }
 }
 
@@ -806,6 +939,91 @@ fn emit_enqueue_summary(
     Ok(())
 }
 
+fn emit_repeat_enqueue_summary(
+    format: RunFormatArg,
+    source: &ResolvedWorkflowSource,
+    repeat: u32,
+    summaries: &[EnqueuedRunSummary],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(format, RunFormatArg::Json) {
+        let runs = summaries
+            .iter()
+            .map(|summary| {
+                json!({
+                    "index": summary.index,
+                    "run_id": &summary.run_id,
+                    "workflow_template_id": &summary.enqueue.template_id,
+                    "workflow_template_version": &summary.enqueue.template_version,
+                    "root_job_ids": &summary.root_jobs,
+                })
+            })
+            .collect::<Vec<_>>();
+        let payload = json!({
+            "outcome": "workflow_runs_enqueued",
+            "repeat": repeat,
+            "workflow_template_selector": source.selector,
+            "runs": runs,
+            "next": {
+                "schedule": "vizier jobs schedule",
+                "show": "vizier jobs show <job-id>",
+                "tail": "vizier jobs tail <job-id> --follow"
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    let run_ids = summaries
+        .iter()
+        .map(|summary| summary.run_id.clone())
+        .collect::<Vec<_>>();
+    let root_map = summaries
+        .iter()
+        .map(|summary| {
+            let roots = if summary.root_jobs.is_empty() {
+                "none".to_string()
+            } else {
+                summary.root_jobs.join(", ")
+            };
+            format!("{}: {roots}", summary.run_id)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let template = summaries
+        .first()
+        .map(|summary| {
+            format!(
+                "{}@{}",
+                summary.enqueue.template_id, summary.enqueue.template_version
+            )
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let next_hint = summaries
+        .first()
+        .and_then(|summary| summary.root_jobs.first())
+        .map(|root| {
+            format!(
+                "vizier jobs schedule --job {root}\nvizier jobs show {root}\nvizier jobs tail {root} --follow"
+            )
+        })
+        .unwrap_or_else(|| "vizier jobs schedule".to_string());
+
+    println!(
+        "{}",
+        format_block(vec![
+            ("Outcome".to_string(), "Workflow runs enqueued".to_string()),
+            ("Repeat".to_string(), repeat.to_string()),
+            ("Runs".to_string(), run_ids.join(", ")),
+            ("Template".to_string(), template),
+            ("Selector".to_string(), source.selector.clone()),
+            ("Root jobs".to_string(), root_map),
+            ("Next".to_string(), next_hint),
+        ])
+    );
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct FollowResult {
     exit_code: i32,
@@ -964,6 +1182,104 @@ fn emit_follow_summary(
 
     println!("{}", format_block(rows));
     if result.exit_code == 10 {
+        display::warn("run reached a blocked terminal state");
+    }
+
+    Ok(())
+}
+
+fn emit_repeat_follow_summary(
+    format: RunFormatArg,
+    source: &ResolvedWorkflowSource,
+    repeat: u32,
+    summaries: &[EnqueuedRunSummary],
+    followed_runs: &[FollowedRunSummary],
+    terminal_state: &str,
+    exit_code: i32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(format, RunFormatArg::Json) {
+        let runs = followed_runs
+            .iter()
+            .map(|entry| {
+                json!({
+                    "index": entry.index,
+                    "run_id": &entry.run_id,
+                    "terminal_state": &entry.terminal.terminal_state,
+                    "exit_code": entry.terminal.exit_code,
+                    "succeeded": &entry.terminal.succeeded,
+                    "failed": &entry.terminal.failed,
+                    "blocked": &entry.terminal.blocked,
+                    "cancelled": &entry.terminal.cancelled,
+                })
+            })
+            .collect::<Vec<_>>();
+        let payload = json!({
+            "outcome": "workflow_runs_terminal",
+            "repeat": repeat,
+            "terminal_state": terminal_state,
+            "exit_code": exit_code,
+            "workflow_template_selector": source.selector,
+            "runs": runs,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    let outcome = match terminal_state {
+        "succeeded" => "Workflow runs succeeded",
+        "blocked" => "Workflow runs blocked",
+        _ => "Workflow runs failed",
+    };
+    let all_runs = summaries
+        .iter()
+        .map(|summary| summary.run_id.clone())
+        .collect::<Vec<_>>();
+    let followed = followed_runs
+        .iter()
+        .map(|entry| entry.run_id.clone())
+        .collect::<Vec<_>>();
+    let run_states = followed_runs
+        .iter()
+        .map(|entry| {
+            format!(
+                "#{} {} => {} ({})",
+                entry.index, entry.run_id, entry.terminal.terminal_state, entry.terminal.exit_code
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let template = summaries
+        .first()
+        .map(|summary| {
+            format!(
+                "{}@{}",
+                summary.enqueue.template_id, summary.enqueue.template_version
+            )
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut rows = vec![
+        ("Outcome".to_string(), outcome.to_string()),
+        ("Repeat".to_string(), repeat.to_string()),
+        ("Runs".to_string(), all_runs.join(", ")),
+        (
+            "Followed".to_string(),
+            if followed.is_empty() {
+                "none".to_string()
+            } else {
+                followed.join(", ")
+            },
+        ),
+        ("Template".to_string(), template),
+        ("Selector".to_string(), source.selector.clone()),
+        ("Exit".to_string(), exit_code.to_string()),
+    ];
+    if !run_states.is_empty() {
+        rows.push(("Run states".to_string(), run_states));
+    }
+
+    println!("{}", format_block(rows));
+    if exit_code == 10 {
         display::warn("run reached a blocked terminal state");
     }
 

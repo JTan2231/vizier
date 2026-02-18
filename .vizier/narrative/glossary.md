@@ -78,3 +78,6 @@
 - **Run grouped `--after` reference**: `vizier run --after run:<run_id>` queue-time expansion that reads `.vizier/jobs/runs/<run_id>.json`, selects success-terminal sink nodes (`routes.succeeded` empty), and converts the reference to concrete `schedule.after[*].job_id` dependencies.
 - **Run bare-id `--after` rejection**: CLI guard that rejects bare `run_<id>` tokens for `--after` and instructs operators to use `run:<run_id>` when targeting workflow runs.
 - **Run follow exit contract**: `vizier run --follow` aggregate terminal mapping: `0` all succeeded, `10` blocked-only terminal set, non-zero when any failed/cancelled job is terminal.
+- **Run repeat chaining**: `vizier run --repeat <N>` queue-time behavior that enqueues `N` unique runs and appends prior-run success-sink dependencies (`run:<prev_run_id>`) for iterations `i>1` so repeats execute serially.
+- **Run repeat aggregate payload**: Multi-run JSON/text summary shape used when `repeat>1` (`workflow_runs_enqueued` / `workflow_runs_terminal`, `repeat`, and ordered per-run records) while `repeat=1` keeps the single-run payload contract.
+- **Run repeat follow short-circuit**: Repeat follow policy where runs are observed in enqueue order and follow returns immediately on the first non-success terminal run (`blocked` or `failed`), preserving deterministic exit codes.
