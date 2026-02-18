@@ -39,6 +39,8 @@ errors in scheduler-managed environments.
 There is no implicit repo/global flow-name fallback.
 \fB[workflow.global_workflows]\fR only controls whether explicit file selectors
 outside the repo are allowed under the configured global workflows directory.
+For validation-only preflight, use \fBvizier run --check <flow>\fR; it performs
+queue-time checks and exits without enqueueing jobs.
 .SH JOB OPERATIONS
 Use \fBvizier jobs\fR to inspect and control background job records:
 .IP "\(bu" 2

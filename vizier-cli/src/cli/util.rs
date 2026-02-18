@@ -59,6 +59,7 @@ pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
         if is_flag_option(token, "--require-approval")
             || is_flag_option(token, "--no-require-approval")
             || is_flag_option(token, "--follow")
+            || is_flag_option(token, "--check")
             || is_flag_option(token, "--verbose")
             || is_flag_option(token, "--quiet")
             || is_flag_option(token, "--debug")
@@ -292,6 +293,18 @@ mod tests {
             "draft".to_string(),
             "--repeat=2".to_string(),
             "--follow".to_string(),
+        ];
+
+        assert_eq!(normalize_run_invocation_args(&args), args);
+    }
+
+    #[test]
+    fn normalize_run_preserves_check_flag() {
+        let args = vec![
+            "vizier".to_string(),
+            "run".to_string(),
+            "draft".to_string(),
+            "--check".to_string(),
         ];
 
         assert_eq!(normalize_run_invocation_args(&args), args);

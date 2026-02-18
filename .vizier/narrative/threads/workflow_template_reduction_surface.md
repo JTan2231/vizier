@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-18, run validate-only preflight):
+  - `vizier-cli/src/cli/args.rs` adds run-local `--check` with explicit conflicts against enqueue/runtime flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`), and run arg normalization now preserves `--check` instead of rewriting it into `--set`.
+  - `vizier-core/src/jobs/mod.rs` now exposes shared pre-enqueue validation (`validate_workflow_run_template`) that reuses capability validation + full node compilation (resolved-after mapping plus single-parent succeeded-edge checks) for parity between validate-only and enqueue paths.
+  - `vizier-cli/src/actions/run.rs` now branches after existing queue-time preprocessing (`resolve/load`, input mapping, entry preflight, stage `spec_file` inlining): `--check` emits validate-only output (`workflow_validation_passed`) and exits before run-id generation, manifest writes, job enqueue, and scheduler ticks.
+  - Coverage in `tests/src/run.rs` now asserts check-mode success JSON shape, no side effects (no run manifests/jobs), unresolved/coercion/legacy-uses failure parity, and invalid flag-combination rejection.
+  - Operator docs now include `vizier run --check` authoring guidance (`docs/user/workflows/alias-run-flow.md`, `docs/man/man7/vizier-workflow-template.7`, `docs/man/man7/vizier-workflow.7`).
 - Update (2026-02-18, run-local repeat orchestration):
   - `vizier-cli/src/cli/args.rs` adds run-local `--repeat <N>` (`NonZeroU32`, default `1`), and run arg normalization in `vizier-cli/src/cli/util.rs` now preserves `--repeat N` / `--repeat=N` instead of rewriting to `--set`.
   - `vizier-cli/src/actions/run.rs` now supports repeat enqueue cycles with deterministic serial chaining (`i>1` appends `run:<prev_run_id>` sink dependencies), applies alias metadata + approval overrides for every iteration, and ticks scheduler once per iteration after root overrides persist.

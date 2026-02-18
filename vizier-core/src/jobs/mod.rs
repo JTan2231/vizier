@@ -1295,20 +1295,62 @@ fn load_workflow_run_manifest(
     Ok(serde_json::from_slice::<WorkflowRunManifest>(&bytes)?)
 }
 
-fn compiled_node_lookup(
+#[derive(Debug)]
+struct WorkflowRunCompilation {
+    incoming_success: BTreeMap<String, Vec<String>>,
+    compiled_nodes: BTreeMap<String, CompiledWorkflowNode>,
+}
+
+fn compile_workflow_run_nodes_with_resolved_after(
     template: &WorkflowTemplate,
-) -> Result<BTreeMap<String, CompiledWorkflowNode>, Box<dyn std::error::Error>> {
-    let mut resolved_after = BTreeMap::new();
-    for node in &template.nodes {
-        resolved_after.insert(node.id.clone(), workflow_job_id(&template.id, &node.id));
+    resolved_after: &BTreeMap<String, String>,
+) -> Result<WorkflowRunCompilation, Box<dyn std::error::Error>> {
+    validate_workflow_capability_contracts(template)?;
+    if template.nodes.is_empty() {
+        return Err("workflow template has no nodes".into());
     }
 
-    let mut compiled = BTreeMap::new();
-    for node in &template.nodes {
-        let node_compiled = compile_workflow_node(template, &node.id, &resolved_after)?;
-        compiled.insert(node.id.clone(), node_compiled);
+    let mut incoming_success = BTreeMap::<String, Vec<String>>::new();
+    for source in &template.nodes {
+        for target in &source.on.succeeded {
+            incoming_success
+                .entry(target.clone())
+                .or_default()
+                .push(source.id.clone());
+        }
     }
-    Ok(compiled)
+
+    for (target, parents) in &incoming_success {
+        if parents.len() > 1 {
+            let list = parents.join(", ");
+            return Err(format!(
+                "template {}@{} node `{}` has multiple on.succeeded parents ({list}); runtime bridge currently requires a single parent",
+                template.id, template.version, target
+            )
+            .into());
+        }
+    }
+
+    let mut compiled_nodes = BTreeMap::new();
+    for node in &template.nodes {
+        let node_compiled = compile_workflow_node(template, &node.id, resolved_after)?;
+        compiled_nodes.insert(node.id.clone(), node_compiled);
+    }
+    Ok(WorkflowRunCompilation {
+        incoming_success,
+        compiled_nodes,
+    })
+}
+
+pub fn validate_workflow_run_template(
+    template: &WorkflowTemplate,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut resolved_after = BTreeMap::new();
+    for node in &template.nodes {
+        resolved_after.insert(node.id.clone(), format!("preflight-{}", node.id));
+    }
+    let _ = compile_workflow_run_nodes_with_resolved_after(template, &resolved_after)?;
+    Ok(())
 }
 
 fn convert_outcome_edges_to_routes(edges: &WorkflowOutcomeEdges) -> WorkflowRouteTargets {
@@ -1339,11 +1381,6 @@ pub fn enqueue_workflow_run(
     recorded_args: &[String],
     config_snapshot: Option<serde_json::Value>,
 ) -> Result<EnqueueWorkflowRunResult, Box<dyn std::error::Error>> {
-    validate_workflow_capability_contracts(template)?;
-    if template.nodes.is_empty() {
-        return Err("workflow template has no nodes".into());
-    }
-
     let mut node_to_job_id = BTreeMap::new();
     for node in &template.nodes {
         let job_id = workflow_job_id(run_id, &node.id);
@@ -1357,32 +1394,17 @@ pub fn enqueue_workflow_run(
         resolved_after.insert(node_id.clone(), job_id.clone());
     }
 
-    let mut incoming_success = BTreeMap::<String, Vec<String>>::new();
-    for source in &template.nodes {
-        for target in &source.on.succeeded {
-            incoming_success
-                .entry(target.clone())
-                .or_default()
-                .push(source.id.clone());
-        }
-    }
-
-    for (target, parents) in &incoming_success {
-        if parents.len() > 1 {
-            let list = parents.join(", ");
-            return Err(format!(
-                "template {}@{} node `{}` has multiple on.succeeded parents ({list}); runtime bridge currently requires a single parent",
-                template.id, template.version, target
-            )
-            .into());
-        }
-    }
+    let compilation = compile_workflow_run_nodes_with_resolved_after(template, &resolved_after)?;
+    let incoming_success = &compilation.incoming_success;
 
     let policy_snapshot_hash = template.policy_snapshot().stable_hash_hex()?;
     let mut manifest_nodes = BTreeMap::new();
 
     for node in &template.nodes {
-        let compiled = compile_workflow_node(template, &node.id, &resolved_after)?;
+        let compiled = compilation
+            .compiled_nodes
+            .get(&node.id)
+            .ok_or_else(|| format!("missing compiled node for `{}`", node.id))?;
         let job_id = node_to_job_id
             .get(&node.id)
             .cloned()

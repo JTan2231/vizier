@@ -74,6 +74,12 @@ pub(crate) fn run_workflow(
     validate_entrypoint_input_requirements(&source, &input_spec, &cmd.inputs, &template)?;
     inline_plan_persist_spec_files(project_root, &mut template)?;
 
+    if cmd.check {
+        jobs::validate_workflow_run_template(&template)?;
+        emit_validation_summary(cmd.format, &source, &template)?;
+        return Ok(());
+    }
+
     let repeat = cmd.repeat.get();
     let approval_override = if cmd.require_approval {
         Some(true)
@@ -416,7 +422,7 @@ fn inline_plan_persist_spec_files(
         let spec_path = project_root.join(spec_file);
         let spec_text = fs::read_to_string(&spec_path).map_err(|err| {
             format!(
-                "workflow node `{}` could not read spec file `{}` during enqueue: {err}",
+                "workflow node `{}` could not read spec file `{}` during queue-time validation: {err}",
                 node.id,
                 spec_path.display()
             )
@@ -933,6 +939,42 @@ fn emit_enqueue_summary(
                 },
             ),
             ("Next".to_string(), next_hint),
+        ])
+    );
+
+    Ok(())
+}
+
+fn emit_validation_summary(
+    format: RunFormatArg,
+    source: &ResolvedWorkflowSource,
+    template: &vizier_core::workflow_template::WorkflowTemplate,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(format, RunFormatArg::Json) {
+        let payload = json!({
+            "outcome": "workflow_validation_passed",
+            "workflow_template_selector": source.selector,
+            "workflow_template_id": &template.id,
+            "workflow_template_version": &template.version,
+            "node_count": template.nodes.len(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        format_block(vec![
+            (
+                "Outcome".to_string(),
+                "Workflow validation passed".to_string(),
+            ),
+            ("Selector".to_string(), source.selector.clone()),
+            (
+                "Template".to_string(),
+                format!("{}@{}", template.id, template.version),
+            ),
+            ("Nodes".to_string(), template.nodes.len().to_string()),
         ])
     );
 

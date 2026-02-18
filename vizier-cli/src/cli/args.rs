@@ -489,7 +489,7 @@ pub(crate) enum Commands {
     /// Inspect detached Vizier background jobs
     Jobs(JobsCmd),
 
-    /// Compile and enqueue a workflow run from an alias, selector, or template file
+    /// Compile a workflow run from an alias, selector, or template file (validate-only or enqueue)
     Run(RunCmd),
 
     /// Generate shell completion scripts
@@ -591,6 +591,20 @@ pub(crate) struct RunCmd {
     /// Template parameter override (KEY=VALUE); repeatable
     #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
     pub(crate) set: Vec<String>,
+
+    /// Validate queue-time workflow checks without enqueueing jobs or manifests
+    #[arg(
+        long = "check",
+        action = ArgAction::SetTrue,
+        conflicts_with_all = [
+            "after",
+            "require_approval",
+            "no_require_approval",
+            "follow",
+            "repeat"
+        ]
+    )]
+    pub(crate) check: bool,
 
     /// External predecessor dependency; root jobs wait on JOB_ID or run:RUN_ID
     #[arg(long = "after", value_name = "REF", action = ArgAction::Append)]
@@ -879,6 +893,33 @@ where
 mod tests {
     use super::{Cli, Commands};
     use clap::Parser;
+
+    #[test]
+    fn run_check_parses() {
+        let cli = Cli::try_parse_from(["vizier", "run", "draft", "--check"]).expect("parse check");
+        let Commands::Run(cmd) = cli.command else {
+            panic!("expected run command");
+        };
+        assert!(cmd.check, "expected --check to set RunCmd::check");
+    }
+
+    #[test]
+    fn run_check_conflicts_with_runtime_flags() {
+        for args in [
+            vec!["vizier", "run", "draft", "--check", "--follow"],
+            vec!["vizier", "run", "draft", "--check", "--after", "job-1"],
+            vec!["vizier", "run", "draft", "--check", "--require-approval"],
+            vec!["vizier", "run", "draft", "--check", "--no-require-approval"],
+            vec!["vizier", "run", "draft", "--check", "--repeat", "2"],
+        ] {
+            let err = Cli::try_parse_from(args).expect_err("expected clap conflict");
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains("--check"),
+                "expected clap error to mention --check: {rendered}"
+            );
+        }
+    }
 
     #[test]
     fn run_repeat_defaults_to_one() {

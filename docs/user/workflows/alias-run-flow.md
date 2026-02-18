@@ -38,6 +38,8 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 - `vizier run develop --repeat 3`
 - `vizier run develop --repeat 2 --follow --format json`
 - `vizier run develop --follow --format json`
+- `vizier run develop --check`
+- `vizier run file:.vizier/workflows/custom.toml --check --set key=value --format json`
 
 Recommended repo alias map:
 
@@ -69,6 +71,8 @@ Workflow parameter input styles:
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
 
 `--after` accepts either direct job ids or grouped run references (`run:<run_id>`). Run references expand to the previous run's success-terminal sink job ids before normal scheduler dependency validation.
+
+Use `vizier run --check` for validate-only preflight (queue-time checks only): flow resolution, template load/composition, parameter expansion/coercion, entry input checks, capability validation, and per-node compile checks all run, but Vizier does not create run manifests, enqueue jobs, or tick the scheduler. `--check` conflicts with enqueue/runtime flags: `--follow`, `--after`, `--require-approval`, `--no-require-approval`, and `--repeat`.
 
 ## Release Flow
 

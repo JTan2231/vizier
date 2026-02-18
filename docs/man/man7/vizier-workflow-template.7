@@ -23,6 +23,11 @@ Map an alias in \fB[commands]\fR, for example:
 myflow = "file:.vizier/workflows/myflow.toml"
 .fi
 .IP "4." 4
+Validate before queueing:
+.nf
+vizier run myflow --set slug=my-change --check
+.fi
+.IP "5." 4
 Queue a run:
 .nf
 vizier run myflow --set slug=my-change --follow
@@ -194,12 +199,20 @@ chains draft -> approve -> merge.
 .SH OPERATIONS
 Queue and inspect authored flows with:
 .IP "\(bu" 2
+\fBvizier run <flow> --check [--set key=value] [--format text|json]\fR
+.IP "\(bu" 2
 \fBvizier run <flow> [--set key=value] [--after <job-id|run:<run-id>>] [--follow]\fR
 .IP "\(bu" 2
 \fBvizier jobs list|schedule|show|tail|attach|approve|retry|cancel\fR
 .PP
 Use \fBvizier run file:.vizier/workflows/<name>.toml\fR during template authoring
 before assigning a stable alias.
+.PP
+\fB--check\fR runs queue-time validation only (flow resolution, parse/composition,
+parameter expansion/coercion, capability validation, and per-node compile checks)
+and exits without creating run manifests, enqueueing jobs, or ticking the scheduler.
+\fB--check\fR conflicts with enqueue/runtime flags (\fB--follow\fR, \fB--after\fR,
+\fB--require-approval\fR, \fB--no-require-approval\fR, \fB--repeat\fR).
 .SH SEE ALSO
 .BR vizier (1),
 .BR vizier-jobs (1),

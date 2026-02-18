@@ -231,6 +231,33 @@ fn schedule_after_job_ids(record: &Value) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+fn count_run_manifests(repo: &IntegrationRepo) -> TestResult<usize> {
+    let runs_dir = repo.path().join(".vizier/jobs/runs");
+    if !runs_dir.is_dir() {
+        return Ok(0);
+    }
+    Ok(fs::read_dir(runs_dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .count())
+}
+
+fn count_job_records(repo: &IntegrationRepo) -> TestResult<usize> {
+    let jobs_dir = repo.path().join(".vizier/jobs");
+    if !jobs_dir.is_dir() {
+        return Ok(0);
+    }
+
+    let mut count = 0usize;
+    for entry in fs::read_dir(jobs_dir)? {
+        let path = entry?.path();
+        if path.is_dir() && path.join("job.json").is_file() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 fn manifest_node_job_id(manifest: &Value, node_id: &str) -> TestResult<String> {
     Ok(manifest
         .pointer(&format!("/nodes/{node_id}/job_id"))
@@ -639,6 +666,281 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
     assert!(
         manifest_path.exists(),
         "missing run manifest: {manifest_path:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_check_validates_and_writes_no_manifests_or_jobs() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_validation_passed")
+    );
+    assert_eq!(
+        payload.get("workflow_template_id").and_then(Value::as_str),
+        Some("template.single")
+    );
+    assert_eq!(
+        payload
+            .get("workflow_template_version")
+            .and_then(Value::as_str),
+        Some("v1")
+    );
+    assert_eq!(payload.get("node_count").and_then(Value::as_u64), Some(1));
+    assert!(
+        payload
+            .get("workflow_template_selector")
+            .and_then(Value::as_str)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+        "expected non-empty workflow selector: {payload}"
+    );
+
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "check mode must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "check mode must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_check_text_output_contract() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    let output = repo.vizier_output(&["run", "file:.vizier/workflows/single.toml", "--check"])?;
+    assert!(
+        output.status.success(),
+        "check mode should succeed for valid flow: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Outcome") && stdout.contains("Workflow validation passed"),
+        "missing check-mode outcome line: {stdout}"
+    );
+    assert!(
+        stdout.contains("Selector") && stdout.contains("file:.vizier/workflows/single.toml"),
+        "missing selector line in check-mode output: {stdout}"
+    );
+    assert!(
+        stdout.contains("Template") && stdout.contains("template.single@v1"),
+        "missing template line in check-mode output: {stdout}"
+    );
+    assert!(
+        stdout.contains("Nodes") && stdout.contains("1"),
+        "missing node count line in check-mode output: {stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_check_rejects_runtime_only_flags() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+
+    for args in [
+        vec![
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
+            "--follow",
+        ],
+        vec![
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
+            "--after",
+            "job-123",
+        ],
+        vec![
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
+            "--require-approval",
+        ],
+        vec![
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
+            "--no-require-approval",
+        ],
+        vec![
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
+            "--repeat",
+            "2",
+        ],
+    ] {
+        let output = repo.vizier_output(&args)?;
+        assert!(
+            !output.status.success(),
+            "expected args {:?} to fail in check mode",
+            args
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--check"),
+            "expected clap conflict mentioning --check, got: {stderr}"
+        );
+    }
+
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "invalid check invocations must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "invalid check invocations must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_check_reuses_queue_time_validation_failures_without_side_effects() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/check-unresolved-needs.json",
+        "{\n\
+  \"id\": \"template.check.unresolved.needs\",\n\
+  \"version\": \"v1\",\n\
+  \"nodes\": [\n\
+    {\n\
+      \"id\": \"single\",\n\
+      \"kind\": \"shell\",\n\
+      \"uses\": \"cap.env.shell.command.run\",\n\
+      \"args\": {\"script\": \"true\"},\n\
+      \"needs\": [\n\
+        {\"plan_doc\": {\"slug\": \"${missing}\", \"branch\": \"main\"}}\n\
+      ]\n\
+    }\n\
+  ]\n\
+}\n",
+    )?;
+    repo.write(
+        ".vizier/check-invalid-coercion.json",
+        "{\n\
+  \"id\": \"template.check.invalid.coercion\",\n\
+  \"version\": \"v1\",\n\
+  \"params\": {\n\
+    \"require_gate\": \"true\"\n\
+  },\n\
+  \"nodes\": [\n\
+    {\n\
+      \"id\": \"single\",\n\
+      \"kind\": \"shell\",\n\
+      \"uses\": \"cap.env.shell.command.run\",\n\
+      \"args\": {\"script\": \"true\"},\n\
+      \"gates\": [\n\
+        {\"kind\": \"approval\", \"required\": \"${require_gate}\"}\n\
+      ]\n\
+    }\n\
+  ]\n\
+}\n",
+    )?;
+    repo.write(
+        ".vizier/check-legacy.toml",
+        "id = \"template.check.legacy\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"legacy\"\n\
+kind = \"builtin\"\n\
+uses = \"vizier.merge.integrate\"\n",
+    )?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+
+    let unresolved =
+        repo.vizier_output(&["run", "file:.vizier/check-unresolved-needs.json", "--check"])?;
+    assert!(
+        !unresolved.status.success(),
+        "unresolved placeholders should fail in check mode"
+    );
+    let unresolved_stderr = String::from_utf8_lossy(&unresolved.stderr);
+    assert!(
+        unresolved_stderr.contains("unresolved parameter `missing`")
+            && unresolved_stderr.contains("nodes[single].needs[0].plan_doc.slug"),
+        "expected unresolved placeholder field-path error in check mode, got: {unresolved_stderr}"
+    );
+
+    let coercion = repo.vizier_output(&[
+        "run",
+        "file:.vizier/check-invalid-coercion.json",
+        "--set",
+        "require_gate=maybe",
+        "--check",
+    ])?;
+    assert!(
+        !coercion.status.success(),
+        "invalid bool coercion should fail in check mode"
+    );
+    let coercion_stderr = String::from_utf8_lossy(&coercion.stderr);
+    assert!(
+        coercion_stderr.contains("invalid bool value `maybe`")
+            && coercion_stderr.contains("nodes[single].gates[0].approval.required"),
+        "expected typed coercion error in check mode, got: {coercion_stderr}"
+    );
+
+    let legacy = repo.vizier_output(&["run", "file:.vizier/check-legacy.toml", "--check"])?;
+    assert!(
+        !legacy.status.success(),
+        "legacy uses label should fail in check mode"
+    );
+    let legacy_stderr = String::from_utf8_lossy(&legacy.stderr);
+    assert!(
+        legacy_stderr.contains("uses unknown label") || legacy_stderr.contains("validation"),
+        "expected legacy uses validation failure, got: {legacy_stderr}"
+    );
+
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "failed check-mode validation must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "failed check-mode validation must not enqueue jobs"
     );
 
     Ok(())
