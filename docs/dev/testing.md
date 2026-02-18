@@ -55,7 +55,8 @@ When touching scheduler metadata:
 - Per-test repos link (hard link/symlink when possible, copy fallback) to the staged fixture binary instead of copying a full binary payload every time.
 - Integration fixtures prepend local `codex`/`gemini` backend stubs on `PATH` so tests cannot accidentally invoke paid external agent binaries even if a command resolves to the default shims.
 - By default, fixture build roots are ephemeral for the current test process and stale Vizier-owned roots are cleaned up opportunistically before new fixture setup.
-- Cleanup is intentionally scoped to Vizier-owned prefixes/markers (`vizier-tests-build-*`, `vizier-tests-repo-*`, and legacy `.tmp*` repos that match Vizier fixture markers) so unrelated temp directories are not touched.
+- Cleanup roots follow `env::temp_dir()` and, on macOS, also include `/private/tmp` to catch legacy roots created outside user-scoped temp dirs.
+- Cleanup is intentionally scoped to Vizier-owned prefixes/markers (`vizier-tests-build-*`, `vizier-tests-repo-*`, legacy `.tmp*` repos that match Vizier fixture markers, and legacy `vizier-debug-*` roots that match the old `repo/` fixture layout) so unrelated temp directories are not touched.
 - Fixture job polling defaults to 50ms; set `VIZIER_TEST_JOB_POLL_MS` to tune it for debugging noisy/slow environments.
 - Set `VIZIER_TEST_KEEP_TEMP=1` when debugging to preserve fixture build roots across process exit.
 - Set `VIZIER_TEST_SERIAL=1` to force fixture-level serialization when debugging ordering-sensitive integration flakes.

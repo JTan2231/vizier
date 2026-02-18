@@ -170,9 +170,12 @@ If `CARGO_TARGET_DIR` is unset, the script now defaults to
 `.vizier/tmp/cargo-target` so leftover permission-restricted `target/` folders do
 not block local gate runs. Set `CARGO_TARGET_DIR` explicitly to override.
 
-The integration fixtures now clean up stale Vizier-owned temp roots before each run:
-`vizier-tests-build-*`, `vizier-tests-repo-*`, and legacy `.tmp*` roots that match
-the Vizier fixture markers. Normal test runs should not leave new temp build roots
+The integration fixtures now clean up stale Vizier-owned temp roots before each run.
+Cleanup scans `env::temp_dir()` and also `/private/tmp` on macOS to catch legacy
+roots created outside user-scoped temp dirs:
+`vizier-tests-build-*`, `vizier-tests-repo-*`, legacy `.tmp*` roots that match
+the Vizier fixture markers, and legacy `vizier-debug-*` roots that match the old
+`repo/` fixture layout. Normal test runs should not leave new temp build roots
 behind after process exit.
 
 Integration fixture binaries now reuse the shared Cargo target cache

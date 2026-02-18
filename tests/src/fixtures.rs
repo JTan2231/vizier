@@ -23,6 +23,7 @@ pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const BUILD_ROOT_PREFIX: &str = "vizier-tests-build-";
 const REPO_ROOT_PREFIX: &str = "vizier-tests-repo-";
 const LEGACY_TMP_PREFIX: &str = ".tmp";
+const LEGACY_DEBUG_PREFIX: &str = "vizier-debug-";
 const BUILD_ROOT_MARKER: &str = ".vizier-test-build-root";
 const REPO_ROOT_MARKER: &str = ".vizier-test-integration-repo";
 const ACTIVE_PID_MARKER: &str = ".vizier-test-active-pid";
@@ -114,7 +115,41 @@ fn ensure_fixture_temp_hygiene() {
 }
 
 fn cleanup_stale_fixture_temp_dirs() -> io::Result<TempCleanupStats> {
-    cleanup_stale_fixture_temp_dirs_in(&env::temp_dir(), SystemTime::now(), stale_temp_window())
+    cleanup_stale_fixture_temp_dirs_across_roots(
+        fixture_temp_roots(),
+        SystemTime::now(),
+        stale_temp_window(),
+    )
+}
+
+fn cleanup_stale_fixture_temp_dirs_across_roots(
+    roots: Vec<PathBuf>,
+    now: SystemTime,
+    stale_after: Duration,
+) -> io::Result<TempCleanupStats> {
+    let mut stats = TempCleanupStats::default();
+    for root in roots {
+        let root_stats = cleanup_stale_fixture_temp_dirs_in(&root, now, stale_after)?;
+        stats.removed_build_roots += root_stats.removed_build_roots;
+        stats.removed_repo_roots += root_stats.removed_repo_roots;
+    }
+    Ok(stats)
+}
+
+fn fixture_temp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![canonicalize_or_original(env::temp_dir())];
+    #[cfg(target_os = "macos")]
+    {
+        let private_tmp = canonicalize_or_original(PathBuf::from("/private/tmp"));
+        if !roots.iter().any(|root| root == &private_tmp) {
+            roots.push(private_tmp);
+        }
+    }
+    roots
+}
+
+fn canonicalize_or_original(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn cleanup_stale_fixture_temp_dirs_in(
@@ -159,6 +194,13 @@ fn cleanup_stale_fixture_temp_dirs_in(
             }
             continue;
         }
+
+        if name.starts_with(LEGACY_DEBUG_PREFIX) {
+            if is_legacy_debug_root(path.as_path()) && remove_if_stale(&path, now, stale_after) {
+                stats.removed_repo_roots += 1;
+            }
+            continue;
+        }
     }
 
     Ok(stats)
@@ -178,11 +220,19 @@ fn remove_if_stale(path: &Path, now: SystemTime, stale_after: Duration) -> bool 
 }
 
 fn is_legacy_vizier_repo(path: &Path) -> bool {
-    path.join(".git").is_dir()
-        && path.join(".vizier").is_dir()
+    path.join(".git").is_dir() && has_legacy_vizier_scaffold(path)
+}
+
+fn has_legacy_vizier_scaffold(path: &Path) -> bool {
+    path.join(".vizier").is_dir()
         && path.join("a").is_file()
         && path.join("b").is_file()
         && path.join("c").is_file()
+}
+
+fn is_legacy_debug_root(path: &Path) -> bool {
+    let repo = path.join("repo");
+    has_legacy_vizier_scaffold(&repo)
 }
 
 fn is_stale(path: &Path, now: SystemTime, stale_after: Duration) -> bool {
@@ -1567,6 +1617,21 @@ mod tests {
         fs::write(stale_legacy.join("b"), "b")?;
         fs::write(stale_legacy.join("c"), "c")?;
 
+        let stale_debug = temp_root.path().join("vizier-debug-legacy");
+        let stale_debug_repo = stale_debug.join("repo");
+        fs::create_dir_all(stale_debug_repo.join(".git"))?;
+        fs::create_dir_all(stale_debug_repo.join(".vizier"))?;
+        fs::write(stale_debug_repo.join("a"), "a")?;
+        fs::write(stale_debug_repo.join("b"), "b")?;
+        fs::write(stale_debug_repo.join("c"), "c")?;
+
+        let stale_debug_no_git = temp_root.path().join("vizier-debug-legacy-no-git");
+        let stale_debug_no_git_repo = stale_debug_no_git.join("repo");
+        fs::create_dir_all(stale_debug_no_git_repo.join(".vizier"))?;
+        fs::write(stale_debug_no_git_repo.join("a"), "a")?;
+        fs::write(stale_debug_no_git_repo.join("b"), "b")?;
+        fs::write(stale_debug_no_git_repo.join("c"), "c")?;
+
         let stats = cleanup_stale_fixture_temp_dirs_in(
             temp_root.path(),
             SystemTime::now(),
@@ -1581,13 +1646,21 @@ mod tests {
             !stale_legacy.exists(),
             "legacy stale repo root should be cleaned up"
         );
+        assert!(
+            !stale_debug.exists(),
+            "legacy vizier-debug stale root should be cleaned up"
+        );
+        assert!(
+            !stale_debug_no_git.exists(),
+            "legacy vizier-debug stale root without .git should be cleaned up"
+        );
         assert_eq!(
             stats.removed_build_roots, 1,
             "expected one stale build root to be removed"
         );
         assert_eq!(
-            stats.removed_repo_roots, 2,
-            "expected one stale fixture repo and one legacy repo to be removed"
+            stats.removed_repo_roots, 4,
+            "expected one stale fixture repo and three legacy repo roots to be removed"
         );
         Ok(())
     }
@@ -1605,6 +1678,10 @@ mod tests {
         fs::create_dir_all(&non_owned_tmp)?;
         fs::write(non_owned_tmp.join("README.md"), "not a vizier fixture")?;
 
+        let non_owned_debug = temp_root.path().join("vizier-debug-other-project");
+        fs::create_dir_all(&non_owned_debug)?;
+        fs::write(non_owned_debug.join("README.md"), "not a vizier fixture")?;
+
         let stats = cleanup_stale_fixture_temp_dirs_in(
             temp_root.path(),
             SystemTime::now(),
@@ -1614,6 +1691,10 @@ mod tests {
         assert!(
             non_owned_tmp.exists(),
             "non-owned .tmp directory should not be removed"
+        );
+        assert!(
+            non_owned_debug.exists(),
+            "non-owned vizier-debug directory should not be removed"
         );
         assert_eq!(
             stats.removed_repo_roots, 0,
@@ -1660,6 +1741,50 @@ mod tests {
         assert_eq!(
             stats.removed_repo_roots, 0,
             "expected no repo roots to be removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_cleanup_across_roots_accumulates_stats() -> TestResult {
+        let temp_root_a = tempfile::tempdir()?;
+        let temp_root_b = tempfile::tempdir()?;
+
+        let stale_build = temp_root_a.path().join("vizier-tests-build-stale");
+        fs::create_dir_all(&stale_build)?;
+        mark_fixture_owner(&stale_build, BUILD_ROOT_MARKER)?;
+        fs::write(stale_build.join(ACTIVE_PID_MARKER), "999999\n")?;
+
+        let stale_debug = temp_root_b.path().join("vizier-debug-legacy");
+        let stale_debug_repo = stale_debug.join("repo");
+        fs::create_dir_all(stale_debug_repo.join(".vizier"))?;
+        fs::write(stale_debug_repo.join("a"), "a")?;
+        fs::write(stale_debug_repo.join("b"), "b")?;
+        fs::write(stale_debug_repo.join("c"), "c")?;
+
+        let stats = cleanup_stale_fixture_temp_dirs_across_roots(
+            vec![
+                temp_root_a.path().to_path_buf(),
+                temp_root_b.path().to_path_buf(),
+            ],
+            SystemTime::now(),
+            Duration::from_secs(0),
+        )?;
+        assert!(
+            !stale_build.exists(),
+            "stale build root from first temp root should be cleaned up"
+        );
+        assert!(
+            !stale_debug.exists(),
+            "stale debug root from second temp root should be cleaned up"
+        );
+        assert_eq!(
+            stats.removed_build_roots, 1,
+            "expected one stale build root to be removed"
+        );
+        assert_eq!(
+            stats.removed_repo_roots, 1,
+            "expected one stale debug repo root to be removed"
         );
         Ok(())
     }
