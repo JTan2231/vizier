@@ -72,6 +72,8 @@ Workflow parameter input styles:
 
 Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payloads, lock keys, custom precondition args, gate fields, retry policy, and artifact-contract IDs/versions. Unresolved placeholders and invalid coercions fail before enqueue (no partial manifests/jobs). Topology/identity expansion (`after`, `on`, template/import/link identity) remains deferred.
 
+Runtime nodes now follow one I/O contract behind `vizier __workflow-node`: lifecycle/progress diagnostics on `stderr`, operational output on `stdout`, and a persisted `vizier.operation_output.v1` payload under `.vizier/jobs/artifacts/data/...`. Each node implicitly publishes `custom:operation_output:<node_id>` for downstream `needs` + `read_payload(...)` consumption patterns.
+
 `--after` accepts either direct job ids or grouped run references (`run:<run_id>`). Run references expand to the previous run's success-terminal sink job ids before normal scheduler dependency validation.
 
 Use `vizier run --check` for validate-only preflight (queue-time checks only): flow resolution, template load/composition, parameter expansion/coercion, entry input checks, capability validation, and per-node compile checks all run, but Vizier does not create run manifests, enqueue jobs, or tick the scheduler. `--check` conflicts with enqueue/runtime flags: `--follow`, `--after`, `--require-approval`, `--no-require-approval`, and `--repeat`.

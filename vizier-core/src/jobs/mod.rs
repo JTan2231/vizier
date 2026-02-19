@@ -11,9 +11,9 @@ pub use crate::scheduler::{
     PinnedHead, format_artifact,
 };
 use crate::workflow_template::{
-    CompiledWorkflowNode, PROMPT_ARTIFACT_TYPE_ID, WorkflowGate, WorkflowNodeKind,
-    WorkflowOutcomeEdges, WorkflowPrecondition, WorkflowRetryMode, WorkflowTemplate,
-    compile_workflow_node, validate_workflow_capability_contracts,
+    CompiledWorkflowNode, OPERATION_OUTPUT_ARTIFACT_TYPE_ID, PROMPT_ARTIFACT_TYPE_ID, WorkflowGate,
+    WorkflowNodeKind, WorkflowOutcomeEdges, WorkflowPrecondition, WorkflowRetryMode,
+    WorkflowTemplate, compile_workflow_node, validate_workflow_capability_contracts,
 };
 use crate::{
     agent::{AgentError, AgentRequest, DEFAULT_AGENT_TIMEOUT},
@@ -38,6 +38,7 @@ use std::{
 };
 
 const PLAN_TEXT_ARTIFACT_TYPE_ID: &str = "plan_text";
+const OPERATION_OUTPUT_SCHEMA_ID: &str = "vizier.operation_output.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobDependency {
@@ -359,6 +360,10 @@ pub struct WorkflowNodeResult {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stderr_lines: Vec<String>,
 }
 
 impl WorkflowNodeResult {
@@ -370,6 +375,8 @@ impl WorkflowNodeResult {
             metadata: None,
             summary: Some(summary.into()),
             exit_code: Some(0),
+            stdout_text: None,
+            stderr_lines: Vec::new(),
         }
     }
 
@@ -381,6 +388,8 @@ impl WorkflowNodeResult {
             metadata: None,
             summary: Some(summary.into()),
             exit_code,
+            stdout_text: None,
+            stderr_lines: Vec::new(),
         }
     }
 
@@ -392,8 +401,31 @@ impl WorkflowNodeResult {
             metadata: None,
             summary: Some(summary.into()),
             exit_code,
+            stdout_text: None,
+            stderr_lines: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkflowOperationOutputPayload {
+    schema: String,
+    run_id: String,
+    job_id: String,
+    node_id: String,
+    uses: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executor_operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    control_policy: Option<String>,
+    outcome: String,
+    exit_code: i32,
+    stdout_text: String,
+    stderr_lines: Vec<String>,
+    started_at: String,
+    finished_at: String,
+    duration_ms: i64,
+    result: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1191,6 +1223,68 @@ fn workflow_job_id(run_id: &str, node_id: &str) -> String {
     )
 }
 
+fn workflow_operation_output_artifact(node_id: &str) -> JobArtifact {
+    JobArtifact::Custom {
+        type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+        key: node_id.trim().to_string(),
+    }
+}
+
+fn dedup_artifacts_preserve_order(artifacts: Vec<JobArtifact>) -> Vec<JobArtifact> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for artifact in artifacts {
+        if seen.insert(artifact.clone()) {
+            deduped.push(artifact);
+        }
+    }
+    deduped
+}
+
+fn emit_workflow_node_lifecycle_line(
+    node: &WorkflowRuntimeNodeManifest,
+    stage: &str,
+    message: impl AsRef<str>,
+) -> String {
+    let operation = node
+        .executor_operation
+        .as_deref()
+        .or(node.control_policy.as_deref())
+        .unwrap_or("unknown");
+    let line = format!(
+        "[workflow-node] {stage} node={} uses={} op={} {}",
+        node.node_id,
+        node.uses,
+        operation,
+        message.as_ref()
+    );
+    eprintln!("{line}");
+    line
+}
+
+fn stderr_lines_from_text(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect()
+}
+
+fn print_stdout_text(text: &str) {
+    if !text.is_empty() {
+        print!("{text}");
+        let _ = io::stdout().flush();
+    }
+}
+
+fn print_stderr_text(text: &str) {
+    if !text.is_empty() {
+        eprint!("{text}");
+        let _ = io::stderr().flush();
+    }
+}
+
 fn workflow_node_artifacts_by_outcome(
     template: &WorkflowTemplate,
     node_id: &str,
@@ -1200,11 +1294,22 @@ fn workflow_node_artifacts_by_outcome(
         .iter()
         .find(|entry| entry.id == node_id)
         .ok_or_else(|| format!("template node `{node_id}` is missing"))?;
+    let operation_output = workflow_operation_output_artifact(node_id);
+
+    let mut succeeded = node.produces.succeeded.clone();
+    succeeded.push(operation_output.clone());
+    let mut failed = node.produces.failed.clone();
+    failed.push(operation_output.clone());
+    let mut blocked = node.produces.blocked.clone();
+    blocked.push(operation_output.clone());
+    let mut cancelled = node.produces.cancelled.clone();
+    cancelled.push(operation_output);
+
     Ok(WorkflowOutcomeArtifactsByOutcome {
-        succeeded: node.produces.succeeded.clone(),
-        failed: node.produces.failed.clone(),
-        blocked: node.produces.blocked.clone(),
-        cancelled: node.produces.cancelled.clone(),
+        succeeded: dedup_artifacts_preserve_order(succeeded),
+        failed: dedup_artifacts_preserve_order(failed),
+        blocked: dedup_artifacts_preserve_order(blocked),
+        cancelled: dedup_artifacts_preserve_order(cancelled),
     })
 }
 
@@ -1435,6 +1540,9 @@ pub fn enqueue_workflow_run(
                 artifact: artifact.clone(),
             })
             .collect::<Vec<_>>();
+        let mut schedule_artifacts = compiled.artifacts.clone();
+        schedule_artifacts.push(workflow_operation_output_artifact(&node.id));
+        schedule_artifacts = dedup_job_artifacts(schedule_artifacts);
 
         let schedule = JobSchedule {
             after,
@@ -1443,7 +1551,7 @@ pub fn enqueue_workflow_run(
                 missing_producer: template.policy.dependencies.missing_producer,
             },
             locks: compiled.locks.clone(),
-            artifacts: compiled.artifacts.clone(),
+            artifacts: schedule_artifacts,
             pinned_head: None,
             preconditions,
             approval,
@@ -3559,6 +3667,12 @@ fn resolve_custom_payload_text(payload: &serde_json::Value) -> Option<String> {
         .map(|value| value.to_string())
         .or_else(|| {
             payload
+                .get("stdout_text")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+        })
+        .or_else(|| {
+            payload
                 .get("assistant_text")
                 .and_then(|value| value.as_str())
                 .map(|value| value.to_string())
@@ -3888,6 +4002,8 @@ fn execute_workflow_executor(
                 metadata: None,
                 summary: Some("prompt resolved".to_string()),
                 exit_code: Some(0),
+                stdout_text: None,
+                stderr_lines: Vec::new(),
             })
         }
         Some("agent.invoke") => {
@@ -3951,10 +4067,7 @@ fn execute_workflow_executor(
                 Ok(response) => {
                     let assistant_text = response.assistant_text.clone();
                     let stderr_lines = response.stderr.clone();
-                    if !assistant_text.is_empty() {
-                        print!("{assistant_text}");
-                        let _ = io::stdout().flush();
-                    }
+                    print_stdout_text(&assistant_text);
                     for line in &stderr_lines {
                         eprintln!("{line}");
                     }
@@ -3962,10 +4075,16 @@ fn execute_workflow_executor(
                     let mut result = WorkflowNodeResult::succeeded(
                         "agent.invoke completed via configured runner",
                     );
+                    if !assistant_text.is_empty() {
+                        result.stdout_text = Some(assistant_text.clone());
+                    }
+                    result.stderr_lines = stderr_lines.clone();
                     result.payload_refs = vec![relative_path(project_root, &payload_path)];
                     let mut produced_custom = HashSet::new();
                     for artifact in &node.artifacts_by_outcome.succeeded {
-                        if let JobArtifact::Custom { type_id, key } = artifact {
+                        if let JobArtifact::Custom { type_id, key } = artifact
+                            && type_id != OPERATION_OUTPUT_ARTIFACT_TYPE_ID
+                        {
                             produced_custom.insert((type_id.clone(), key.clone()));
                         }
                     }
@@ -4008,13 +4127,15 @@ fn execute_workflow_executor(
                     Ok(result)
                 }
                 Err(AgentError::NonZeroExit(code, lines)) => {
-                    for line in lines {
+                    for line in &lines {
                         eprintln!("{line}");
                     }
-                    Ok(WorkflowNodeResult::failed(
+                    let mut result = WorkflowNodeResult::failed(
                         format!("agent.invoke failed (exit {code})"),
                         Some(code),
-                    ))
+                    );
+                    result.stderr_lines = lines;
+                    Ok(result)
                 }
                 Err(AgentError::Timeout(secs)) => Ok(WorkflowNodeResult::failed(
                     format!("agent.invoke timed out after {secs}s"),
@@ -4757,21 +4878,26 @@ fn execute_workflow_executor(
                 ));
             };
             let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
-            if !stdout.is_empty() {
-                print!("{stdout}");
-                let _ = io::stdout().flush();
-            }
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-                let _ = io::stderr().flush();
-            }
+            print_stdout_text(&stdout);
+            print_stderr_text(&stderr);
+            let stderr_lines = stderr_lines_from_text(&stderr);
             if status == 0 {
-                Ok(WorkflowNodeResult::succeeded("command.run succeeded"))
+                let mut result = WorkflowNodeResult::succeeded("command.run succeeded");
+                if !stdout.is_empty() {
+                    result.stdout_text = Some(stdout);
+                }
+                result.stderr_lines = stderr_lines;
+                Ok(result)
             } else {
-                Ok(WorkflowNodeResult::failed(
+                let mut result = WorkflowNodeResult::failed(
                     format!("command.run failed (exit {status})"),
                     Some(status),
-                ))
+                );
+                if !stdout.is_empty() {
+                    result.stdout_text = Some(stdout);
+                }
+                result.stderr_lines = stderr_lines;
+                Ok(result)
             }
         }
         Some("cicd.run") => {
@@ -4783,21 +4909,26 @@ fn execute_workflow_executor(
                 ));
             };
             let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
-            if !stdout.is_empty() {
-                print!("{stdout}");
-                let _ = io::stdout().flush();
-            }
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-                let _ = io::stderr().flush();
-            }
+            print_stdout_text(&stdout);
+            print_stderr_text(&stderr);
+            let stderr_lines = stderr_lines_from_text(&stderr);
             if status == 0 {
-                Ok(WorkflowNodeResult::succeeded("cicd.run passed"))
+                let mut result = WorkflowNodeResult::succeeded("cicd.run passed");
+                if !stdout.is_empty() {
+                    result.stdout_text = Some(stdout);
+                }
+                result.stderr_lines = stderr_lines;
+                Ok(result)
             } else {
-                Ok(WorkflowNodeResult::failed(
+                let mut result = WorkflowNodeResult::failed(
                     format!("cicd.run failed (exit {status})"),
                     Some(status),
-                ))
+                );
+                if !stdout.is_empty() {
+                    result.stdout_text = Some(stdout);
+                }
+                result.stderr_lines = stderr_lines;
+                Ok(result)
             }
         }
         Some(other) => Ok(WorkflowNodeResult::failed(
@@ -4842,9 +4973,17 @@ fn execute_workflow_control(
                 ));
             }
 
-            let (status, _stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
+            let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
+            print_stdout_text(&stdout);
+            print_stderr_text(&stderr);
+            let stderr_lines = stderr_lines_from_text(&stderr);
             if status == 0 {
-                return Ok(WorkflowNodeResult::succeeded("stop-condition gate passed"));
+                let mut result = WorkflowNodeResult::succeeded("stop-condition gate passed");
+                if !stdout.is_empty() {
+                    result.stdout_text = Some(stdout);
+                }
+                result.stderr_lines = stderr_lines;
+                return Ok(result);
             }
 
             let attempt = record
@@ -4854,7 +4993,7 @@ fn execute_workflow_control(
                 .unwrap_or(1);
             let retry_budget = node.retry.budget.saturating_add(1);
             if matches!(node.retry.mode, WorkflowRetryMode::UntilGate) && attempt > retry_budget {
-                return Ok(WorkflowNodeResult {
+                let result = WorkflowNodeResult {
                     outcome: WorkflowNodeOutcome::Blocked,
                     artifacts_written: Vec::new(),
                     payload_refs: Vec::new(),
@@ -4864,7 +5003,14 @@ fn execute_workflow_control(
                         node.retry.budget
                     )),
                     exit_code: Some(10),
-                });
+                    stdout_text: if stdout.is_empty() {
+                        None
+                    } else {
+                        Some(stdout)
+                    },
+                    stderr_lines,
+                };
+                return Ok(result);
             }
 
             let detail = stderr.trim();
@@ -4873,7 +5019,12 @@ fn execute_workflow_control(
             } else {
                 format!("stop-condition failed on attempt {attempt}: {detail}")
             };
-            Ok(WorkflowNodeResult::failed(summary, Some(status)))
+            let mut result = WorkflowNodeResult::failed(summary, Some(status));
+            if !stdout.is_empty() {
+                result.stdout_text = Some(stdout);
+            }
+            result.stderr_lines = stderr_lines;
+            Ok(result)
         }
         Some("gate.conflict_resolution") => {
             let slug = workflow_slug_from_record(record, node);
@@ -4889,24 +5040,29 @@ fn execute_workflow_control(
             let auto_resolve = bool_arg(&node.args, "auto_resolve")
                 .or_else(|| conflict_auto_resolve_from_gate(node))
                 .unwrap_or(false);
+            let mut stdout_text = String::new();
+            let mut stderr_lines = Vec::new();
             let mut auto_resolve_warning: Option<String> = None;
             if conflicts_present && auto_resolve {
                 if let Some(script) = resolve_node_shell_script(node, None) {
                     let (status, stdout, stderr) =
                         run_shell_text_command(&execution_root, &script)?;
+                    print_stdout_text(&stdout);
+                    print_stderr_text(&stderr);
                     if !stdout.is_empty() {
-                        print!("{stdout}");
-                        let _ = io::stdout().flush();
+                        stdout_text.push_str(&stdout);
                     }
-                    if !stderr.is_empty() {
-                        eprint!("{stderr}");
-                        let _ = io::stderr().flush();
-                    }
+                    stderr_lines.extend(stderr_lines_from_text(&stderr));
                     if status != 0 {
-                        return Ok(WorkflowNodeResult::failed(
+                        let mut result = WorkflowNodeResult::failed(
                             format!("conflict auto-resolve script failed (exit {status})"),
                             Some(status),
-                        ));
+                        );
+                        if !stdout_text.is_empty() {
+                            result.stdout_text = Some(stdout_text);
+                        }
+                        result.stderr_lines = stderr_lines;
+                        return Ok(result);
                     }
                 } else if let Some(detail) = run_merge_conflict_auto_resolve_agent(
                     &execution_root,
@@ -4918,6 +5074,9 @@ fn execute_workflow_control(
                 ) {
                     display::warn(detail.clone());
                     auto_resolve_warning = Some(detail);
+                    if let Some(detail) = auto_resolve_warning.as_ref() {
+                        stderr_lines.push(detail.clone());
+                    }
                 }
                 conflict_paths = list_unmerged_paths(&execution_root);
                 conflicts_present = !conflict_paths.is_empty();
@@ -4932,13 +5091,21 @@ fn execute_workflow_control(
                 let mut blocked = WorkflowNodeResult::blocked(summary, Some(10));
                 blocked.artifacts_written = vec![JobArtifact::MergeSentinel { slug }];
                 blocked.payload_refs = vec![relative_path(project_root, &sentinel)];
+                if !stdout_text.is_empty() {
+                    blocked.stdout_text = Some(stdout_text);
+                }
+                blocked.stderr_lines = stderr_lines;
                 return Ok(blocked);
             }
 
             remove_file_if_exists(&sentinel)?;
-            Ok(WorkflowNodeResult::succeeded(
-                "merge conflicts resolved and sentinel cleared",
-            ))
+            let mut result =
+                WorkflowNodeResult::succeeded("merge conflicts resolved and sentinel cleared");
+            if !stdout_text.is_empty() {
+                result.stdout_text = Some(stdout_text);
+            }
+            result.stderr_lines = stderr_lines;
+            Ok(result)
         }
         Some("gate.cicd") => {
             let gate_cfg = cicd_gate_config(node);
@@ -4959,20 +5126,24 @@ fn execute_workflow_control(
                 .as_ref()
                 .and_then(|meta| meta.workflow_node_attempt)
                 .unwrap_or(1);
+            let mut stdout_text = String::new();
+            let mut stderr_lines = Vec::new();
 
             let (status, stdout, stderr) = run_shell_text_command(&execution_root, &script)?;
+            print_stdout_text(&stdout);
+            print_stderr_text(&stderr);
             if !stdout.is_empty() {
-                print!("{stdout}");
-                let _ = io::stdout().flush();
+                stdout_text.push_str(&stdout);
             }
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
-                let _ = io::stderr().flush();
-            }
+            stderr_lines.extend(stderr_lines_from_text(&stderr));
             if status == 0 {
-                return Ok(WorkflowNodeResult::succeeded(format!(
-                    "cicd gate passed on attempt {attempt}"
-                )));
+                let mut result =
+                    WorkflowNodeResult::succeeded(format!("cicd gate passed on attempt {attempt}"));
+                if !stdout_text.is_empty() {
+                    result.stdout_text = Some(stdout_text);
+                }
+                result.stderr_lines = stderr_lines;
+                return Ok(result);
             }
 
             if auto_resolve
@@ -4983,37 +5154,43 @@ fn execute_workflow_control(
             {
                 let (fix_status, fix_stdout, fix_stderr) =
                     run_shell_text_command(&execution_root, &fix_script)?;
+                print_stdout_text(&fix_stdout);
+                print_stderr_text(&fix_stderr);
                 if !fix_stdout.is_empty() {
-                    print!("{fix_stdout}");
-                    let _ = io::stdout().flush();
+                    stdout_text.push_str(&fix_stdout);
                 }
-                if !fix_stderr.is_empty() {
-                    eprint!("{fix_stderr}");
-                    let _ = io::stderr().flush();
-                }
+                stderr_lines.extend(stderr_lines_from_text(&fix_stderr));
                 if fix_status == 0 {
                     let (retry_status, retry_stdout, retry_stderr) =
                         run_shell_text_command(&execution_root, &script)?;
+                    print_stdout_text(&retry_stdout);
+                    print_stderr_text(&retry_stderr);
                     if !retry_stdout.is_empty() {
-                        print!("{retry_stdout}");
-                        let _ = io::stdout().flush();
+                        stdout_text.push_str(&retry_stdout);
                     }
-                    if !retry_stderr.is_empty() {
-                        eprint!("{retry_stderr}");
-                        let _ = io::stderr().flush();
-                    }
+                    stderr_lines.extend(stderr_lines_from_text(&retry_stderr));
                     if retry_status == 0 {
-                        return Ok(WorkflowNodeResult::succeeded(format!(
+                        let mut result = WorkflowNodeResult::succeeded(format!(
                             "cicd gate passed after auto-resolve on attempt {attempt}"
-                        )));
+                        ));
+                        if !stdout_text.is_empty() {
+                            result.stdout_text = Some(stdout_text);
+                        }
+                        result.stderr_lines = stderr_lines;
+                        return Ok(result);
                     }
                 }
             }
 
-            Ok(WorkflowNodeResult::failed(
+            let mut result = WorkflowNodeResult::failed(
                 format!("cicd gate failed on attempt {attempt} (exit {status})"),
                 Some(status),
-            ))
+            );
+            if !stdout_text.is_empty() {
+                result.stdout_text = Some(stdout_text);
+            }
+            result.stderr_lines = stderr_lines;
+            Ok(result)
         }
         Some("gate.approval") => {
             let required = bool_arg(&node.args, "required").unwrap_or(true);
@@ -5191,6 +5368,31 @@ fn pause_succeeded_completion_if_configured() {
     }
 }
 
+fn workflow_node_has_natural_stdout(node: &WorkflowRuntimeNodeManifest) -> bool {
+    matches!(
+        node.executor_operation.as_deref(),
+        Some("agent.invoke" | "command.run" | "cicd.run")
+    ) || matches!(
+        node.control_policy.as_deref(),
+        Some("gate.stop_condition" | "gate.conflict_resolution" | "gate.cicd")
+    )
+}
+
+fn workflow_operation_result_payload(
+    result: &WorkflowNodeResult,
+    artifacts_written: &[JobArtifact],
+) -> serde_json::Value {
+    serde_json::json!({
+        "summary": result.summary,
+        "artifacts_written": artifacts_written
+            .iter()
+            .map(format_artifact)
+            .collect::<Vec<_>>(),
+        "payload_refs": result.payload_refs,
+        "metadata": result.metadata,
+    })
+}
+
 fn execute_workflow_node_job(
     project_root: &Path,
     jobs_root: &Path,
@@ -5215,6 +5417,19 @@ fn execute_workflow_node_job(
         .get(node_id)
         .ok_or_else(|| format!("workflow run {} missing node {}", run_id, node_id))?;
 
+    let started_at = Utc::now();
+    let mut lifecycle_stderr_lines = Vec::new();
+    lifecycle_stderr_lines.push(emit_workflow_node_lifecycle_line(
+        node_manifest,
+        "start",
+        format!("run={run_id} job={job_id}"),
+    ));
+    lifecycle_stderr_lines.push(emit_workflow_node_lifecycle_line(
+        node_manifest,
+        "progress",
+        "dispatching runtime handler",
+    ));
+
     set_current_job_id(Some(job_id.to_string()));
     let result = match (
         node_manifest.executor_operation.as_deref(),
@@ -5228,16 +5443,86 @@ fn execute_workflow_node_job(
         )),
     };
     set_current_job_id(None);
-    let result = result?;
+    let mut result = result?;
 
     let mut artifacts_written = node_manifest
         .artifacts_by_outcome
         .for_outcome(result.outcome)
         .to_vec();
     artifacts_written.extend(result.artifacts_written.clone());
+    artifacts_written.push(workflow_operation_output_artifact(node_id));
     artifacts_written = dedup_job_artifacts(artifacts_written);
 
     let (status, exit_code) = map_workflow_outcome_to_job_status(result.outcome, result.exit_code);
+    lifecycle_stderr_lines.push(emit_workflow_node_lifecycle_line(
+        node_manifest,
+        "complete",
+        format!("outcome={} exit_code={exit_code}", result.outcome.as_str()),
+    ));
+
+    let canonical_stdout = serde_json::json!({
+        "schema": "vizier.operation_result.v1",
+        "run_id": run_id,
+        "job_id": job_id,
+        "node_id": node_manifest.node_id.as_str(),
+        "uses": node_manifest.uses.as_str(),
+        "outcome": result.outcome.as_str(),
+        "exit_code": exit_code,
+        "summary": result.summary.clone(),
+    });
+    let mut canonical_stdout_text = None;
+    if !workflow_node_has_natural_stdout(node_manifest) {
+        let text = format!("{}\n", serde_json::to_string(&canonical_stdout)?);
+        print_stdout_text(&text);
+        canonical_stdout_text = Some(text);
+    }
+
+    let mut payload_stdout_text = result.stdout_text.clone().unwrap_or_default();
+    if payload_stdout_text.is_empty()
+        && let Some(canonical_text) = canonical_stdout_text.as_ref()
+    {
+        payload_stdout_text = canonical_text.clone();
+    }
+
+    let mut payload_stderr_lines = lifecycle_stderr_lines.clone();
+    payload_stderr_lines.extend(result.stderr_lines.clone());
+
+    let finished_at = Utc::now();
+    let duration_ms = finished_at
+        .signed_duration_since(started_at)
+        .num_milliseconds()
+        .max(0);
+    let operation_output_payload = WorkflowOperationOutputPayload {
+        schema: OPERATION_OUTPUT_SCHEMA_ID.to_string(),
+        run_id: run_id.to_string(),
+        job_id: job_id.to_string(),
+        node_id: node_manifest.node_id.clone(),
+        uses: node_manifest.uses.clone(),
+        executor_operation: node_manifest.executor_operation.clone(),
+        control_policy: node_manifest.control_policy.clone(),
+        outcome: result.outcome.as_str().to_string(),
+        exit_code,
+        stdout_text: payload_stdout_text.clone(),
+        stderr_lines: payload_stderr_lines,
+        started_at: started_at.to_rfc3339(),
+        finished_at: finished_at.to_rfc3339(),
+        duration_ms,
+        result: workflow_operation_result_payload(&result, &artifacts_written),
+    };
+    let operation_output_payload_value = serde_json::to_value(&operation_output_payload)?;
+    let operation_output_path = write_custom_artifact_payload(
+        project_root,
+        job_id,
+        OPERATION_OUTPUT_ARTIFACT_TYPE_ID,
+        node_id,
+        &operation_output_payload_value,
+    )?;
+    result
+        .payload_refs
+        .push(relative_path(project_root, &operation_output_path));
+    result.payload_refs.sort();
+    result.payload_refs.dedup();
+
     let metadata_update = JobMetadata {
         workflow_node_outcome: Some(result.outcome.as_str().to_string()),
         workflow_payload_refs: if result.payload_refs.is_empty() {
@@ -9570,6 +9855,21 @@ mod tests {
             resolve_meta.workflow_executor_operation.as_deref(),
             Some("prompt.resolve")
         );
+        let resolve_artifacts = resolve_record
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.artifacts.clone())
+            .unwrap_or_default();
+        assert!(
+            resolve_artifacts.iter().any(|artifact| {
+                matches!(
+                    artifact,
+                    JobArtifact::Custom { type_id, key }
+                    if type_id == OPERATION_OUTPUT_ARTIFACT_TYPE_ID && key == "resolve_prompt"
+                )
+            }),
+            "expected implicit operation-output artifact on resolve node schedule"
+        );
 
         let invoke_record = read_record(&jobs_root, &invoke_job).expect("invoke record");
         let after = invoke_record
@@ -9583,6 +9883,21 @@ mod tests {
                 .any(|dependency| dependency.job_id == resolve_job),
             "expected invoke node to depend on resolve node via on.succeeded routing"
         );
+        let invoke_artifacts = invoke_record
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.artifacts.clone())
+            .unwrap_or_default();
+        assert!(
+            invoke_artifacts.iter().any(|artifact| {
+                matches!(
+                    artifact,
+                    JobArtifact::Custom { type_id, key }
+                    if type_id == OPERATION_OUTPUT_ARTIFACT_TYPE_ID && key == "invoke_agent"
+                )
+            }),
+            "expected implicit operation-output artifact on invoke node schedule"
+        );
 
         let manifest =
             load_workflow_run_manifest(project_root, "run-runtime").expect("workflow run manifest");
@@ -9594,11 +9909,257 @@ mod tests {
             .get("resolve_prompt")
             .expect("resolve manifest");
         assert!(
+            resolve_manifest
+                .artifacts_by_outcome
+                .succeeded
+                .iter()
+                .any(|artifact| {
+                    matches!(
+                        artifact,
+                        JobArtifact::Custom { type_id, key }
+                        if type_id == OPERATION_OUTPUT_ARTIFACT_TYPE_ID && key == "resolve_prompt"
+                    )
+                }),
+            "expected implicit operation-output artifact in manifest outcome artifacts"
+        );
+        assert!(
             resolve_manifest.routes.succeeded.iter().any(|target| {
                 target.node_id == "invoke_agent"
                     && matches!(target.mode, WorkflowRouteMode::PropagateContext)
             }),
             "expected success edge to materialize as context-propagation route"
+        );
+    }
+
+    #[test]
+    fn workflow_node_execution_persists_operation_output_payload_and_refs() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = prompt_invoke_template();
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-operation-output",
+            "template.runtime.prompt_invoke@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let resolve_job = result
+            .job_ids
+            .get("resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+
+        update_job_record(&jobs_root, &resolve_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("mark resolve running");
+
+        let exit_code =
+            execute_workflow_node_job(project_root, &jobs_root, &resolve_job).expect("execute");
+        assert_eq!(exit_code, 0);
+
+        let operation_payload_path = custom_artifact_payload_path(
+            project_root,
+            &resolve_job,
+            OPERATION_OUTPUT_ARTIFACT_TYPE_ID,
+            "resolve_prompt",
+        );
+        assert!(
+            operation_payload_path.exists(),
+            "expected operation output payload file"
+        );
+        let operation_payload_raw =
+            fs::read_to_string(&operation_payload_path).expect("read operation output payload");
+        let operation_payload: serde_json::Value =
+            serde_json::from_str(&operation_payload_raw).expect("parse payload");
+        assert_eq!(
+            operation_payload
+                .get("schema")
+                .and_then(|value| value.as_str()),
+            Some(OPERATION_OUTPUT_SCHEMA_ID)
+        );
+        assert_eq!(
+            operation_payload
+                .get("executor_operation")
+                .and_then(|value| value.as_str()),
+            Some("prompt.resolve")
+        );
+        assert_eq!(
+            operation_payload
+                .get("node_id")
+                .and_then(|value| value.as_str()),
+            Some("resolve_prompt")
+        );
+        assert!(
+            operation_payload
+                .get("stdout_text")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .contains("vizier.operation_result.v1"),
+            "expected canonical operation-result stdout for prompt.resolve payload: {}",
+            operation_payload
+        );
+        assert!(
+            operation_payload
+                .get("stderr_lines")
+                .and_then(|value| value.as_array())
+                .map(|lines| lines.iter().any(|line| {
+                    line.as_str()
+                        .unwrap_or("")
+                        .contains("[workflow-node] start node=resolve_prompt")
+                }))
+                .unwrap_or(false),
+            "expected lifecycle stderr start line in payload: {}",
+            operation_payload
+        );
+
+        let operation_marker = custom_artifact_marker_path(
+            project_root,
+            &resolve_job,
+            OPERATION_OUTPUT_ARTIFACT_TYPE_ID,
+            "resolve_prompt",
+        );
+        assert!(
+            operation_marker.exists(),
+            "expected operation-output marker to be written"
+        );
+
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        let workflow_payload_refs = resolve_record
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.workflow_payload_refs.clone())
+            .unwrap_or_default();
+        let expected_ref = relative_path(project_root, &operation_payload_path);
+        assert!(
+            workflow_payload_refs
+                .iter()
+                .any(|value| value == &expected_ref),
+            "expected metadata.workflow_payload_refs to include operation output payload ref"
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_can_consume_operation_output_via_read_payload_dependency() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(&temp).expect("init repo");
+        seed_repo(&repo).expect("seed repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = WorkflowTemplate {
+            id: "template.runtime.operation_output_read_payload".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: Vec::new(),
+            nodes: vec![
+                WorkflowNode {
+                    id: "emit_message".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([(
+                        "script".to_string(),
+                        "printf 'runtime operation output\\n' > op-output.txt && git add op-output.txt && printf 'commit-message-from-operation-output'".to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["stage_commit".to_string()],
+                        ..WorkflowOutcomeEdges::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "stage_commit".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.git.commit".to_string(),
+                    args: BTreeMap::from([(
+                        "message".to_string(),
+                        "read_payload(emit_message)".to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: vec![JobArtifact::Custom {
+                        type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+                        key: "emit_message".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let enqueue = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-operation-output-read",
+            "template.runtime.operation_output_read_payload@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue run");
+        let emit_job = enqueue
+            .job_ids
+            .get("emit_message")
+            .expect("emit job id")
+            .clone();
+        let commit_job = enqueue
+            .job_ids
+            .get("stage_commit")
+            .expect("commit job id")
+            .clone();
+
+        update_job_record(&jobs_root, &emit_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("mark emit running");
+        let emit_exit = execute_workflow_node_job(project_root, &jobs_root, &emit_job)
+            .expect("execute emit_message");
+        assert_eq!(emit_exit, 0);
+
+        update_job_record(&jobs_root, &commit_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("mark commit running");
+        let commit_exit = execute_workflow_node_job(project_root, &jobs_root, &commit_job)
+            .expect("execute stage_commit");
+        assert_eq!(commit_exit, 0);
+
+        let head = git_output(project_root, &["log", "-1", "--pretty=%B"])
+            .expect("read head commit message");
+        let message = String::from_utf8_lossy(&head);
+        assert!(
+            message.contains("commit-message-from-operation-output"),
+            "expected read_payload(commit_message) to consume operation output text: {message}"
         );
     }
 

@@ -57,6 +57,9 @@ exactly one such artifact as input.
   `workflow_executor_class`, `workflow_executor_operation`,
   `workflow_control_policy`,
   `workflow_policy_snapshot_hash`, and `workflow_gates`.
+- `workflow_payload_refs` now includes the normalized operation-output payload
+  for each runtime node (`vizier.operation_output.v1`) plus any operation-specific
+  payload refs already emitted by handlers.
 - **Workflow runtime entrypoint** is an internal hidden command:
   `vizier __workflow-node --job-id <id>`. Scheduler jobs materialized from
   template nodes execute through this entrypoint and are intentionally excluded
@@ -64,6 +67,8 @@ exactly one such artifact as input.
 - **Workflow-template compile validation** rejects jobs that reference undeclared
   artifact contracts, unknown template `after` nodes, or invalid `on.<outcome>`
   multiplexers before enqueue.
+- `custom:operation_output:<node_id>` is a reserved implicit artifact contract.
+  Templates must not declare an explicit `operation_output` contract entry.
 - **Scheduler lock** lives at `.vizier/jobs/scheduler.lock` and serializes scheduler
   ticks.
 
@@ -109,6 +114,8 @@ Control policies:
 - `terminal`
 
 Runtime notes:
+- every runtime operation now follows one I/O contract:
+  lifecycle/progress/diagnostic lines on `stderr`, operational output on `stdout`.
 - handlers resolve execution root in metadata precedence order:
   `metadata.execution_root` -> repo root, and reject out-of-repo paths.
 - `agent.invoke` uses resolved configured runner settings (no prompt-echo
@@ -129,6 +136,10 @@ Runtime notes:
   `skip_active_targets=true` semantics unchanged while preventing concurrent
   ticks from starting successors before propagated execution context is
   persisted.
+- each workflow node implicitly publishes
+  `custom:operation_output:<node_id>` and writes payload JSON under
+  `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; downstream
+  nodes can depend on that artifact through existing `needs` mechanics.
 
 ## Job lifecycle
 Statuses:
@@ -218,6 +229,8 @@ Dependencies are checked in order. For each dependency:
   Prompt-text custom artifacts can additionally persist typed payload JSON under
   `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; marker
   existence remains the scheduler readiness source of truth.
+  Runtime operation output uses the same custom marker/data pattern via
+  `custom:operation_output:<node_id>`.
 - If the artifact is missing and any producer is active (queued/waiting/running), the
   consumer waits with `waiting_on_deps` and a wait reason of `waiting on <artifact>`.
 - If the artifact is missing and no producer is active:

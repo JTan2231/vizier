@@ -55,6 +55,8 @@ Positional and friendly flag aliases for \fBvizier run <flow>\fR inputs.
 .TP
 \fBartifact_contracts = [ ... ]\fR
 Declares artifact type/version pairs used by \fBneeds\fR / \fBproduces\fR.
+Do not declare \fBoperation_output\fR explicitly; runtime output contracts for
+workflow nodes are implicit.
 .TP
 \fBnodes = [ ... ]\fR
 One node per executor/control step; each node has \fBid\fR, \fBkind\fR, and
@@ -165,6 +167,9 @@ Canonical \fBuses\fR IDs only (\fBcap.env.*\fR, \fBcap.agent.invoke\fR, \fBcontr
 \fBcicd.run\fR requires \fBcommand\fR or \fBscript\fR (or a non-empty cicd gate script).
 .IP "\(bu" 2
 \fBpatch.pipeline_prepare\fR and \fBpatch.execute_pipeline\fR require \fBfiles_json\fR.
+.IP "\(bu" 2
+\fBcustom:operation_output:<node_id>\fR is an implicit reserved artifact contract;
+keys must reference an existing template node id.
 .SH EXAMPLE: DRAFT STAGE TEMPLATE
 The shipped draft template is at \fI.vizier/workflows/draft.hcl\fR.
 .PP

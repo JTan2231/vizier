@@ -104,6 +104,8 @@ Out of scope:
   - `workflow_gates`
   - `execution_root` (logical runtime root marker; `.` means repo root)
   - `worktree_name` / `worktree_owned` (worktree lifecycle ownership/context)
+  - `workflow_payload_refs` includes per-node normalized operation output payload refs
+    (`vizier.operation_output.v1`) and any operation-specific refs emitted during runtime.
 - Owner flows: all scheduler-backed commands.
 - Durability: scheduler-durable operational material (subject to `vizier jobs gc` policy).
 
@@ -111,6 +113,8 @@ Custom artifact payload adjunct:
 - Prompt artifact markers under `.vizier/jobs/artifacts/custom/...` are still the scheduler gating contract.
 - Optional typed payload data for custom artifacts is stored under
   `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`.
+- Runtime nodes now implicitly publish `custom:operation_output:<node_id>` using
+  the same marker/data layout; payload schema is `vizier.operation_output.v1`.
 
 Compatibility policy:
 - Workflow template identity is canonical-only (`cap.env.*`, `cap.agent.invoke`,
@@ -147,6 +151,8 @@ Compatibility policy:
 - `JobRecord` edges form a DAG through:
   - explicit `after` dependencies (job-id level), and
   - artifact dependencies (`plan_branch`, `plan_doc`, `plan_commits`, `target_branch`, `merge_sentinel`, `command_patch`, plus `custom:<type_id>:<key>` extension artifacts).
+  Runtime nodes implicitly add `custom:operation_output:<node_id>` to schedulable
+  artifact outputs for downstream consumption.
   Readiness is additionally gated by optional `pinned_head`, declarative `preconditions`, approval facts, and lock acquisition.
 - `MergeConflictSentinel(slug)` links pending merge state to plan slug, source branch, target branch, and resume metadata.
 - `SessionLog(session_id)` is attached to audited operations and referenced by outcomes/commits.
@@ -210,6 +216,9 @@ Ephemeral operational artifacts:
   operation/policy inventory accepted by template validation (all
   `cap.env.*`/`cap.agent.invoke` executor operations and `control.*` policies
   mapped in `vizier-kernel/src/workflow_template.rs`).
+- Runtime-node I/O is standardized: lifecycle/progress/diagnostics emit on
+  `stderr`, operational output emits on `stdout`, and each node persists a
+  normalized operation-output payload (`vizier.operation_output.v1`).
 - Worktree lifecycle artifacts are ownership-bound:
   - only job-owned worktrees recorded in metadata are eligible for automatic
     cleanup;

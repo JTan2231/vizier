@@ -46,6 +46,9 @@ Update (2026-02-13, watch-mode follow-up)
 - `vizier jobs schedule --watch` now hard-gates interactive output: it fails fast unless stdout+stderr are TTY and ANSI is enabled, and it rejects `--format dag|json` so non-watch paths keep deterministic static output contracts.
 Update (2026-02-13, merge follow-surface test hardening)
 - `tests/src/merge.rs::test_merge_complete_conflict_without_pending_state` now accepts both `Outcome: Job started` and `Outcome: Job failed` as valid `--follow` terminal surfaces when merge completion fails immediately without a pending sentinel. This keeps coverage focused on failure semantics (non-zero status + no sentinel) while Outcome standardization remains in progress.
+Update (2026-02-19, workflow-node runtime I/O standardization)
+- Canonical runtime-node handlers now share one I/O contract: lifecycle/progress/diagnostics on `stderr`, operational output on `stdout`, and per-node normalized payload persistence as `vizier.operation_output.v1`.
+- Workflow runtime now publishes implicit `custom:operation_output:<node_id>` artifacts so downstream nodes can consume operation outputs through existing `needs` + `read_payload(...)` patterns without introducing new scheduler artifact primitives.
 
 Pointers
 - vizier-cli/src/main.rs (global flags → display config)

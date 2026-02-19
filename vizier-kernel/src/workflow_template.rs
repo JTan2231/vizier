@@ -463,6 +463,7 @@ pub struct WorkflowPolicySnapshotLock {
 }
 
 pub const PROMPT_ARTIFACT_TYPE_ID: &str = "prompt_text";
+pub const OPERATION_OUTPUT_ARTIFACT_TYPE_ID: &str = "operation_output";
 
 #[derive(Debug, Clone)]
 struct WorkflowNodeResolution {
@@ -770,6 +771,17 @@ pub fn compile_workflow_node(
 }
 
 pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Result<(), String> {
+    if template
+        .artifact_contracts
+        .iter()
+        .any(|contract| contract.id == OPERATION_OUTPUT_ARTIFACT_TYPE_ID)
+    {
+        return Err(format!(
+            "template {}@{} declares reserved artifact contract `{}`; this contract is implicit for workflow runtime output and must not be declared explicitly",
+            template.id, template.version, OPERATION_OUTPUT_ARTIFACT_TYPE_ID
+        ));
+    }
+
     let mut by_id = BTreeMap::new();
     let mut node_resolutions = BTreeMap::new();
     for node in &template.nodes {
@@ -1880,6 +1892,11 @@ fn validate_node_artifact_contracts(
     template: &WorkflowTemplate,
     node: &WorkflowNode,
 ) -> Result<(), String> {
+    let node_ids = template
+        .nodes
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<BTreeSet<_>>();
     let mut declared = BTreeMap::new();
     for contract in &template.artifact_contracts {
         let compiled_schema = if let Some(schema) = contract.schema.as_ref() {
@@ -1894,6 +1911,9 @@ fn validate_node_artifact_contracts(
         };
         declared.insert(contract.id.clone(), compiled_schema);
     }
+    declared
+        .entry(OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string())
+        .or_insert(None);
 
     for artifact in node
         .needs
@@ -1903,6 +1923,24 @@ fn validate_node_artifact_contracts(
         .chain(node.produces.blocked.iter())
         .chain(node.produces.cancelled.iter())
     {
+        if let JobArtifact::Custom { type_id, key } = artifact
+            && type_id == OPERATION_OUTPUT_ARTIFACT_TYPE_ID
+        {
+            let key = key.trim();
+            if key.is_empty() {
+                return Err(format!(
+                    "template {}@{} node `{}` references operation-output artifact with empty key",
+                    template.id, template.version, node.id
+                ));
+            }
+            if !node_ids.contains(key) {
+                return Err(format!(
+                    "template {}@{} node `{}` references operation-output artifact key `{}` but no template node has that id",
+                    template.id, template.version, node.id, key
+                ));
+            }
+        }
+
         let contract_id = artifact_contract_id(artifact);
         let Some(compiled_schema) = declared.get(contract_id.as_str()) else {
             return Err(format!(
@@ -2746,6 +2784,97 @@ mod tests {
             .expect_err("missing custom artifact contract should fail");
         assert!(
             error.contains("without declared artifact contract `acme.diff`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn compile_node_accepts_implicit_operation_output_dependencies() {
+        let template = WorkflowTemplate {
+            id: "template.operation_output_dependency".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: Vec::new(),
+            nodes: vec![
+                WorkflowNode {
+                    id: "producer".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([("command".to_string(), "printf producer".to_string())]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "consumer".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([("command".to_string(), "printf consumer".to_string())]),
+                    after: vec![WorkflowAfterDependency {
+                        node_id: "producer".to_string(),
+                        policy: AfterPolicy::Success,
+                    }],
+                    needs: vec![JobArtifact::Custom {
+                        type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+                        key: "producer".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let resolved_after = BTreeMap::from([("producer".to_string(), "job-producer".to_string())]);
+        let compiled = compile_workflow_node(&template, "consumer", &resolved_after)
+            .expect("operation-output dependency should compile without explicit contract");
+        assert_eq!(
+            compiled.dependencies,
+            vec![JobArtifact::Custom {
+                type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+                key: "producer".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compile_node_rejects_operation_output_dependency_for_unknown_node() {
+        let mut template = custom_artifact_template();
+        template.artifact_contracts.clear();
+        template.nodes[0].needs = vec![JobArtifact::Custom {
+            type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+            key: "missing_node".to_string(),
+        }];
+        template.nodes[0].produces = WorkflowOutcomeArtifacts::default();
+        let error = compile_workflow_node(&template, "custom_node", &BTreeMap::new())
+            .expect_err("unknown operation-output key should fail");
+        assert!(
+            error.contains("no template node has that id"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_explicit_operation_output_contract_declaration() {
+        let mut template = sample_template();
+        template.artifact_contracts.push(WorkflowArtifactContract {
+            id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+            version: "v1".to_string(),
+            schema: None,
+        });
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("reserved operation-output contract should be rejected");
+        assert!(
+            error.contains("reserved artifact contract"),
             "unexpected error: {error}"
         );
     }
