@@ -4,5 +4,6 @@ members = [ "tests",
     "vizier-core",
     "vizier-kernel",
 ]
+exclude = ["third_party/rshcl"]
 
 resolver = "3"

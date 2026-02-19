@@ -9,7 +9,7 @@ job process.
 
 Stage orchestration is front-doored through `vizier run` aliases (for example
 `draft`, `approve`, `merge`) that resolve repo-local templates under
-`.vizier/workflows/*.toml` and materialize one scheduler job per template node.
+`.vizier/workflows/*.hcl` and materialize one scheduler job per template node.
 
 For the full non-agent `.vizier/*` material contract (including jobs/build/sessions/sentinels
 durability and compatibility notes), see `docs/dev/vizier-material-model.md`.

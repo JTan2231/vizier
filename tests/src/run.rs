@@ -126,10 +126,10 @@ fn write_stage_alias_test_config_with_agent_command(
         ".vizier/config.toml",
         &format!(
             r#"[commands]
-draft = "file:.vizier/workflows/draft.toml"
-approve = "file:.vizier/workflows/approve.toml"
-merge = "file:.vizier/workflows/merge.toml"
-develop = "file:.vizier/develop.toml"
+draft = "file:.vizier/workflows/draft.hcl"
+approve = "file:.vizier/workflows/approve.hcl"
+merge = "file:.vizier/workflows/merge.hcl"
+develop = "file:.vizier/develop.hcl"
 
 [agents.default]
 selector = "mock"
@@ -402,18 +402,16 @@ fn test_run_alias_composes_and_applies_set_overrides() -> TestResult {
     clean_workdir(&repo)?;
 
     repo.write(
-        ".vizier/develop.toml",
+        ".vizier/develop.hcl",
         "id = \"template.develop\"\n\
 version = \"v1\"\n\
-[[imports]]\n\
-name = \"stage_one\"\n\
-path = \"workflows/stage_one.toml\"\n\
-[[imports]]\n\
-name = \"stage_two\"\n\
-path = \"workflows/stage_two.toml\"\n\
-[[links]]\n\
-from = \"stage_one\"\n\
-to = \"stage_two\"\n",
+imports = [\n\
+  { name = \"stage_one\", path = \"workflows/stage_one.toml\" },\n\
+  { name = \"stage_two\", path = \"workflows/stage_two.toml\" }\n\
+]\n\
+links = [\n\
+  { from = \"stage_one\", to = \"stage_two\" }\n\
+]\n",
     )?;
     repo.write(
         ".vizier/workflows/stage_one.toml",
@@ -473,7 +471,7 @@ script = \"test -f compose.txt\"\n",
             .get("template_selector")
             .and_then(Value::as_str)
             .unwrap_or(""),
-        "file:.vizier/develop.toml"
+        "file:.vizier/develop.hcl"
     );
 
     let stage_one_script = manifest
@@ -497,7 +495,7 @@ script = \"test -f compose.txt\"\n",
         root_record
             .pointer("/metadata/workflow_template_selector")
             .and_then(Value::as_str),
-        Some("file:.vizier/develop.toml")
+        Some("file:.vizier/develop.hcl")
     );
 
     Ok(())
@@ -1170,48 +1168,46 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
 
     let checks: [(&str, &[&str]); 3] = [
         (
-            ".vizier/workflows/draft.toml",
+            ".vizier/workflows/draft.hcl",
             &[
                 "version = \"v2\"",
                 "positional = [\"spec_file\", \"slug\", \"branch\"]",
-                "[cli.named]",
+                "named = {",
                 "file = \"spec_file\"",
                 "name = \"slug\"",
-                "[policy.dependencies]",
                 "missing_producer = \"wait\"",
                 "id = \"plan_text\"",
                 "id = \"plan_branch\"",
                 "id = \"plan_doc\"",
                 "cap.env.builtin.worktree.prepare",
-                "slug = \"${slug}\"",
+                "slug = \"$${slug}\"",
                 "cap.env.builtin.prompt.resolve",
                 "prompt_file = \".vizier/prompts/DRAFT_PROMPTS.md\"",
                 "cap.agent.invoke",
                 "type_id = \"plan_text\"",
-                "key = \"draft_plan:${slug}\"",
+                "key = \"draft_plan:$${slug}\"",
                 "cap.env.builtin.plan.persist",
-                "plan_branch = { slug = \"${slug}\", branch = \"${branch}\" }",
-                "plan_doc = { slug = \"${slug}\", branch = \"${branch}\" }",
+                "plan_branch = { slug = \"$${slug}\", branch = \"$${branch}\" }",
+                "plan_doc = { slug = \"$${slug}\", branch = \"$${branch}\" }",
                 "cap.env.builtin.git.stage",
                 "cap.env.builtin.git.commit",
             ],
         ),
         (
-            ".vizier/workflows/approve.toml",
+            ".vizier/workflows/approve.hcl",
             &[
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\"]",
-                "[cli.named]",
+                "named = {",
                 "name = \"slug\"",
-                "[policy.dependencies]",
                 "missing_producer = \"wait\"",
                 "id = \"plan_branch\"",
                 "id = \"plan_doc\"",
                 "id = \"stage_token\"",
                 "cap.env.builtin.worktree.prepare",
-                "slug = \"${slug}\"",
-                "plan_branch = { slug = \"${slug}\", branch = \"${branch}\" }",
-                "plan_doc = { slug = \"${slug}\", branch = \"${branch}\" }",
+                "slug = \"$${slug}\"",
+                "plan_branch = { slug = \"$${slug}\", branch = \"$${branch}\" }",
+                "plan_doc = { slug = \"$${slug}\", branch = \"$${branch}\" }",
                 "cap.env.builtin.prompt.resolve",
                 "prompt_file = \".vizier/prompts/APPROVE_PROMPTS.md\"",
                 "cap.agent.invoke",
@@ -1219,25 +1215,24 @@ fn test_seeded_stage_templates_use_canonical_labels() -> TestResult {
                 "cap.env.builtin.git.commit",
                 "control.gate.stop_condition",
                 "type_id = \"stage_token\"",
-                "key = \"approve:${slug}\"",
+                "key = \"approve:$${slug}\"",
             ],
         ),
         (
-            ".vizier/workflows/merge.toml",
+            ".vizier/workflows/merge.hcl",
             &[
                 "version = \"v2\"",
                 "positional = [\"slug\", \"branch\", \"target_branch\"]",
-                "[cli.named]",
+                "named = {",
                 "name = \"slug\"",
                 "source = \"branch\"",
                 "target = \"target_branch\"",
-                "[policy.dependencies]",
                 "missing_producer = \"wait\"",
                 "conflict_auto_resolve = \"true\"",
                 "id = \"stage_token\"",
                 "cap.env.builtin.git.integrate_plan_branch",
                 "type_id = \"stage_token\"",
-                "key = \"approve:${slug}\"",
+                "key = \"approve:$${slug}\"",
                 "control.gate.conflict_resolution",
                 "prompt_file = \".vizier/prompts/MERGE_PROMPTS.md\"",
                 "control.gate.cicd",

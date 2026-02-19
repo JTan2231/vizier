@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-19, HCL template cutover):
+  - `vizier-cli/src/workflow_templates.rs` now parses `.hcl` workflow sources via vendored `rshcl` (`third_party/rshcl`), converts evaluated values to JSON/serde for `WorkflowTemplateFile`, reports path-anchored HCL diagnostics, and keeps legacy `.toml`/`.json` loading during migration.
+  - Resolver identity scanning now includes `.hcl` candidates and applies deterministic same-stem precedence (`.hcl` wins over `.toml`), while explicit/global-flow resolution posture remains unchanged (no implicit alias fallback discovery).
+  - Init/install/default assets moved to `.hcl`: stage/commit templates under `.vizier/workflows/*.hcl`, composed alias file `.vizier/develop.hcl`, `[commands]` defaults pointing to `file:.vizier/workflows/*.hcl`, and `install.sh` global seeding/manifests targeting `draft.hcl`, `approve.hcl`, and `merge.hcl`.
+  - Docs/man/test surfaces were updated to HCL-first authoring guidance, including `$${key}` placeholder-escaping guidance for queue-time `${key}` interpolation boundaries.
 - Update (2026-02-18, run validate-only preflight):
   - `vizier-cli/src/cli/args.rs` adds run-local `--check` with explicit conflicts against enqueue/runtime flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`), and run arg normalization now preserves `--check` instead of rewriting it into `--set`.
   - `vizier-core/src/jobs/mod.rs` now exposes shared pre-enqueue validation (`validate_workflow_run_template`) that reuses capability validation + full node compilation (resolved-after mapping plus single-parent succeeded-edge checks) for parity between validate-only and enqueue paths.

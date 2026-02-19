@@ -1359,7 +1359,7 @@ mod tests {
     fn test_source() -> ResolvedWorkflowSource {
         ResolvedWorkflowSource {
             selector: "draft".to_string(),
-            path: std::path::PathBuf::from(".vizier/workflows/draft.toml"),
+            path: std::path::PathBuf::from(".vizier/workflows/draft.hcl"),
             command_alias: None,
         }
     }

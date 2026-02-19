@@ -2,6 +2,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rshcl::{
+    api,
+    diagnostics::{Diagnostic as HclDiagnostic, Severity as HclSeverity},
+    eval::{EvalContext, Value as HclValue},
+};
 use serde::Deserialize;
 use vizier_core::{
     config,
@@ -246,7 +251,7 @@ pub(crate) fn resolve_workflow_source(
     }
 
     Err(format!(
-        "unable to resolve FLOW `{flow}`; pass file:<path>, a direct .toml/.json path, a configured [commands] alias, or a canonical template selector (`template.name@vN`)"
+        "unable to resolve FLOW `{flow}`; pass file:<path>, a direct .hcl/.toml/.json path, a configured [commands] alias, or a canonical template selector (`template.name@vN`)"
     )
     .into())
 }
@@ -675,26 +680,125 @@ fn find_cycle(graph: &HashMap<String, Vec<String>>) -> Option<Vec<String>> {
     None
 }
 
+fn template_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+}
+
 fn parse_template_file(path: &Path) -> Result<WorkflowTemplateFile, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)
         .map_err(|err| format!("unable to read template source {}: {err}", path.display()))?;
 
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
+    match template_extension(path).as_deref() {
+        Some("hcl") => parse_hcl_template_file(path, &contents),
         Some("toml") => toml::from_str::<WorkflowTemplateFile>(&contents)
             .map_err(|err| format!("invalid TOML template {}: {err}", path.display()).into()),
         Some("json") => serde_json::from_str::<WorkflowTemplateFile>(&contents)
             .map_err(|err| format!("invalid JSON template {}: {err}", path.display()).into()),
         _ => Err(format!(
-            "unsupported template source {}; expected .toml or .json",
+            "unsupported template source {}; expected .hcl, .toml, or .json",
             path.display()
         )
         .into()),
     }
+}
+
+fn parse_hcl_template_file(
+    path: &Path,
+    contents: &str,
+) -> Result<WorkflowTemplateFile, Box<dyn std::error::Error>> {
+    let json_value = evaluate_hcl_to_json(path, contents)?;
+    serde_json::from_value::<WorkflowTemplateFile>(json_value)
+        .map_err(|err| format!("invalid HCL template {}: {err}", path.display()).into())
+}
+
+fn evaluate_hcl_to_json(
+    path: &Path,
+    contents: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let evaluated = api::evaluate_config_str(contents, None, &EvalContext::default());
+    let diagnostics = evaluated
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == HclSeverity::Error)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !diagnostics.is_empty() {
+        return Err(format!(
+            "invalid HCL template {}:\n{}",
+            path.display(),
+            format_hcl_diagnostics(path, contents, &diagnostics)
+        )
+        .into());
+    }
+
+    let value = evaluated.value.ok_or_else(|| {
+        format!(
+            "invalid HCL template {}: evaluation produced no value",
+            path.display()
+        )
+    })?;
+    hcl_value_to_json(&value)
+}
+
+fn format_hcl_diagnostics(path: &Path, source: &str, diagnostics: &[HclDiagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let (line, column) = line_col_for_offset(source, diagnostic.span.start);
+            format!(
+                "{}:{}:{}: {}",
+                path.display(),
+                line,
+                column,
+                diagnostic.message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn line_col_for_offset(source: &str, offset: usize) -> (usize, usize) {
+    let clamped = offset.min(source.len());
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for ch in source[..clamped].chars() {
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
+fn hcl_value_to_json(value: &HclValue) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(match value {
+        HclValue::Null => serde_json::Value::Null,
+        HclValue::Bool(value) => serde_json::Value::Bool(*value),
+        HclValue::Number(value) => {
+            let number = serde_json::Number::from_f64(*value)
+                .ok_or_else(|| format!("invalid non-finite number `{value}` in HCL value"))?;
+            serde_json::Value::Number(number)
+        }
+        HclValue::String(value) => serde_json::Value::String(value.clone()),
+        HclValue::Tuple(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for entry in values {
+                out.push(hcl_value_to_json(entry)?);
+            }
+            serde_json::Value::Array(out)
+        }
+        HclValue::Object(values) => {
+            let mut out = serde_json::Map::new();
+            for (key, entry) in values {
+                out.insert(key.clone(), hcl_value_to_json(entry)?);
+            }
+            serde_json::Value::Object(out)
+        }
+    })
 }
 
 fn apply_parameter_expansion(
@@ -1095,7 +1199,35 @@ fn find_selector_file_candidates(
             matches.push(path);
         }
     }
-    Ok(matches)
+    Ok(prefer_hcl_over_legacy_extensions(matches))
+}
+
+fn prefer_hcl_over_legacy_extensions(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut sorted = paths;
+    sorted.sort();
+
+    let mut preferred = HashMap::<PathBuf, PathBuf>::new();
+    for path in sorted {
+        let key = path.with_extension("");
+        match preferred.get(&key) {
+            Some(existing) if is_hcl_path(existing) => {}
+            _ if is_hcl_path(&path) => {
+                preferred.insert(key, path);
+            }
+            None => {
+                preferred.insert(key, path);
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = preferred.into_values().collect::<Vec<_>>();
+    out.sort();
+    out
+}
+
+fn is_hcl_path(path: &Path) -> bool {
+    template_extension(path).as_deref() == Some("hcl")
 }
 
 fn candidate_template_paths(
@@ -1119,7 +1251,7 @@ fn candidate_template_paths(
                 .extension()
                 .and_then(|value| value.to_str())
                 .map(|value| value.to_ascii_lowercase());
-            if matches!(ext.as_deref(), Some("toml") | Some("json")) {
+            if matches!(ext.as_deref(), Some("hcl") | Some("toml") | Some("json")) {
                 out.push(path);
             }
         }
@@ -1131,12 +1263,16 @@ fn read_template_identity(
     path: &Path,
 ) -> Result<Option<(String, String)>, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)?;
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .as_deref()
-    {
+    match template_extension(path).as_deref() {
+        Some("hcl") => {
+            let value = evaluate_hcl_to_json(path, &contents)?;
+            let id = value.get("id").and_then(serde_json::Value::as_str);
+            let version = value.get("version").and_then(serde_json::Value::as_str);
+            Ok(match (id, version) {
+                (Some(id), Some(version)) => Some((id.to_string(), version.to_string())),
+                _ => None,
+            })
+        }
         Some("toml") => {
             let value = toml::from_str::<toml::Value>(&contents)?;
             let id = value.get("id").and_then(toml::Value::as_str);
@@ -1180,6 +1316,7 @@ fn is_explicit_file_source(value: &str) -> bool {
         || value.starts_with('/')
         || value.contains('/')
         || value.contains('\\')
+        || value.ends_with(".hcl")
         || value.ends_with(".toml")
         || value.ends_with(".json")
 }
@@ -1223,7 +1360,7 @@ fn resolve_source_path(
         if let Some(relative) = canonical_relative {
             if relative.starts_with(".vizier/workflow/") {
                 return Err(
-                    "legacy workflow path `.vizier/workflow/*` is unsupported; migrate to `.vizier/workflows/*.toml`"
+                    "legacy workflow path `.vizier/workflow/*` is unsupported; migrate to `.vizier/workflows/*.hcl`"
                         .into(),
                 );
             }
@@ -1235,7 +1372,7 @@ fn resolve_source_path(
                     .unwrap_or(false)
             {
                 return Err(
-                    "legacy JSON stage workflows are unsupported; use `.vizier/workflows/*.toml`"
+                    "legacy JSON stage workflows are unsupported; use `.vizier/workflows/*.hcl`"
                         .into(),
                 );
             }
@@ -1372,6 +1509,74 @@ mod tests {
             .find(|node| node.id == "stage_a__a1")
             .expect("stage_a node");
         assert_eq!(stage_a.on.succeeded, vec!["stage_b__b1".to_string()]);
+    }
+
+    #[test]
+    fn hcl_parse_expands_escaped_placeholders() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/flow.hcl"),
+            "id = \"template.flow\"\n\
+version = \"v1\"\n\
+params = {\n\
+  slug = \"alpha\"\n\
+}\n\
+nodes = [\n\
+  {\n\
+    id = \"n1\"\n\
+    kind = \"shell\"\n\
+    uses = \"cap.env.shell.command.run\"\n\
+    args = {\n\
+      script = \"echo $${slug}\"\n\
+    }\n\
+  }\n\
+]\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/flow.hcl".to_string(),
+            path: root.path().join(".vizier/flow.hcl"),
+            command_alias: None,
+        };
+
+        let template =
+            load_template_with_params(&source, &BTreeMap::new()).expect("load hcl template");
+        let node = template.nodes.first().expect("first node");
+        assert_eq!(
+            node.args.get("script").map(String::as_str),
+            Some("echo alpha")
+        );
+    }
+
+    #[test]
+    fn hcl_parse_errors_include_path_anchors() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let bad_path = root.path().join(".vizier/bad.hcl");
+        write(
+            &bad_path,
+            "id = \"template.bad\"\n\
+version = \"v1\"\n\
+nodes = [\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/bad.hcl".to_string(),
+            path: bad_path.clone(),
+            command_alias: None,
+        };
+
+        let err = load_template_with_params(&source, &BTreeMap::new())
+            .expect_err("expected hcl parse failure");
+        let error_text = err.to_string();
+        assert!(
+            error_text.contains("invalid HCL template"),
+            "unexpected error: {error_text}"
+        );
+        let anchored_path = format!("{}:", bad_path.display());
+        assert!(
+            error_text.contains(&anchored_path),
+            "error should include path-anchored diagnostics: {error_text}"
+        );
     }
 
     #[test]
@@ -1684,6 +1889,39 @@ mode = \"${mode}\"\n",
     }
 
     #[test]
+    fn canonical_selector_prefers_hcl_over_toml_for_same_stem() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/workflows/draft.toml"),
+            "id = \"template.draft\"\nversion = \"v1\"\n[[nodes]]\nid = \"toml\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"echo toml\"\n",
+        );
+        write(
+            &root.path().join(".vizier/workflows/draft.hcl"),
+            "id = \"template.draft\"\n\
+version = \"v1\"\n\
+nodes = [\n\
+  {\n\
+    id = \"hcl\"\n\
+    kind = \"shell\"\n\
+    uses = \"cap.env.shell.command.run\"\n\
+    args = {\n\
+      script = \"echo hcl\"\n\
+    }\n\
+  }\n\
+]\n",
+        );
+
+        let cfg = config::Config::default();
+        let resolved = resolve_workflow_source(root.path(), "template.draft@v1", &cfg)
+            .expect("selector should resolve");
+        assert!(
+            resolved.path.ends_with(".vizier/workflows/draft.hcl"),
+            "expected hcl precedence for same-stem selector match: {}",
+            resolved.path.display()
+        );
+    }
+
+    #[test]
     fn legacy_dotted_selector_is_rejected_with_migration_hint() {
         let root = tempfile::tempdir().expect("tempdir");
         write(
@@ -1756,6 +1994,10 @@ mode = \"${mode}\"\n",
                 .contains("legacy workflow path `.vizier/workflow/*` is unsupported"),
             "unexpected error: {err}"
         );
+        assert!(
+            err.to_string().contains(".vizier/workflows/*.hcl"),
+            "error should point to .hcl migration target: {err}"
+        );
     }
 
     #[test]
@@ -1772,6 +2014,10 @@ mode = \"${mode}\"\n",
             err.to_string()
                 .contains("legacy JSON stage workflows are unsupported"),
             "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains(".vizier/workflows/*.hcl"),
+            "error should point to .hcl migration target: {err}"
         );
     }
 

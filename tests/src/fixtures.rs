@@ -471,6 +471,10 @@ fn seed_vizier_dir(source_repo_root: &Path, target_repo_root: &Path) -> io::Resu
         &source_vizier.join("develop.toml"),
         &target_vizier.join("develop.toml"),
     )?;
+    copy_file_if_exists(
+        &source_vizier.join("develop.hcl"),
+        &target_vizier.join("develop.hcl"),
+    )?;
 
     let source_workflow = source_vizier.join("workflow");
     if source_workflow.is_dir() {
@@ -1912,11 +1916,11 @@ mod tests {
             "{ \"agent\": \"gemini\" }\n",
         )?;
         fs::write(
-            source.join(".vizier/develop.toml"),
+            source.join(".vizier/develop.hcl"),
             "id = \"template.develop\"\n",
         )?;
         fs::write(
-            source.join(".vizier/workflows/draft.toml"),
+            source.join(".vizier/workflows/draft.hcl"),
             "id = \"template.stage.draft\"\n",
         )?;
         fs::write(
@@ -1956,11 +1960,11 @@ mod tests {
             "expected narrative threads to be copied"
         );
         assert!(
-            target.join(".vizier/develop.toml").is_file(),
+            target.join(".vizier/develop.hcl").is_file(),
             "expected develop workflow composition template to be copied"
         );
         assert!(
-            target.join(".vizier/workflows/draft.toml").is_file(),
+            target.join(".vizier/workflows/draft.hcl").is_file(),
             "expected workflow stage templates to be copied"
         );
         assert!(

@@ -98,28 +98,28 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
         "init config should point merge ci gate to ./ci.sh:\n{config}"
     );
     assert!(
-        config.contains("commit = \"file:.vizier/workflows/commit.toml\""),
+        config.contains("commit = \"file:.vizier/workflows/commit.hcl\""),
         "init config should include the commit alias:\n{config}"
     );
     assert_matches_repo_template(
         &repo,
-        ".vizier/workflows/draft.toml",
-        ".vizier/workflows/draft.toml",
+        ".vizier/workflows/draft.hcl",
+        ".vizier/workflows/draft.hcl",
     )?;
     assert_matches_repo_template(
         &repo,
-        ".vizier/workflows/approve.toml",
-        ".vizier/workflows/approve.toml",
+        ".vizier/workflows/approve.hcl",
+        ".vizier/workflows/approve.hcl",
     )?;
     assert_matches_repo_template(
         &repo,
-        ".vizier/workflows/merge.toml",
-        ".vizier/workflows/merge.toml",
+        ".vizier/workflows/merge.hcl",
+        ".vizier/workflows/merge.hcl",
     )?;
     assert_matches_repo_template(
         &repo,
-        ".vizier/workflows/commit.toml",
-        ".vizier/workflows/commit.toml",
+        ".vizier/workflows/commit.hcl",
+        ".vizier/workflows/commit.hcl",
     )?;
     for (actual_rel, template_rel) in REQUIRED_PROMPT_FILES {
         assert_matches_repo_template(&repo, actual_rel, template_rel)?;
@@ -161,11 +161,11 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
     clean_workdir(&repo)?;
 
     let snapshot_before = repo.read(".vizier/narrative/snapshot.md")?;
-    let draft_before = repo.read(".vizier/workflows/draft.toml")?;
+    let draft_before = repo.read(".vizier/workflows/draft.hcl")?;
     let merge_prompt_before = repo.read(".vizier/prompts/MERGE_PROMPTS.md")?;
     fs::remove_file(repo.path().join(".vizier/narrative/glossary.md"))?;
     fs::remove_file(repo.path().join(".vizier/config.toml"))?;
-    fs::remove_file(repo.path().join(".vizier/workflows/approve.toml"))?;
+    fs::remove_file(repo.path().join(".vizier/workflows/approve.hcl"))?;
     fs::remove_file(repo.path().join(".vizier/prompts/APPROVE_PROMPTS.md"))?;
     let ci_path = repo.path().join("ci.sh");
     if ci_path.exists() {
@@ -202,7 +202,7 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
         "init should restore missing .vizier/config.toml"
     );
     assert!(
-        repo.path().join(".vizier/workflows/approve.toml").is_file(),
+        repo.path().join(".vizier/workflows/approve.hcl").is_file(),
         "init should restore missing approve workflow"
     );
     assert!(
@@ -214,7 +214,7 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
     assert!(ci_path.is_file(), "init should restore missing ci.sh");
     assert_eq!(
         draft_before,
-        repo.read(".vizier/workflows/draft.toml")?,
+        repo.read(".vizier/workflows/draft.hcl")?,
         "init should not overwrite existing workflow files"
     );
     assert_eq!(
@@ -251,8 +251,8 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     let snapshot_before = repo.read(".vizier/narrative/snapshot.md")?;
     let glossary_before = repo.read(".vizier/narrative/glossary.md")?;
     let config_before = repo.read(".vizier/config.toml")?;
-    let draft_before = repo.read(".vizier/workflows/draft.toml")?;
-    let commit_before = repo.read(".vizier/workflows/commit.toml")?;
+    let draft_before = repo.read(".vizier/workflows/draft.hcl")?;
+    let commit_before = repo.read(".vizier/workflows/commit.hcl")?;
     let prompts_before = REQUIRED_PROMPT_FILES
         .iter()
         .map(|(actual_rel, _)| repo.read(actual_rel))
@@ -289,12 +289,12 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     );
     assert_eq!(
         draft_before,
-        repo.read(".vizier/workflows/draft.toml")?,
+        repo.read(".vizier/workflows/draft.hcl")?,
         "workflow templates should remain unchanged when init is already satisfied"
     );
     assert_eq!(
         commit_before,
-        repo.read(".vizier/workflows/commit.toml")?,
+        repo.read(".vizier/workflows/commit.hcl")?,
         "workflow templates should remain unchanged when init is already satisfied"
     );
     for ((actual_rel, _), before) in REQUIRED_PROMPT_FILES.iter().zip(prompts_before.iter()) {

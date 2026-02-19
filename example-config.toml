@@ -207,10 +207,10 @@ dir = ""
 # Optional alias mapping for `vizier run <alias>` stage orchestration.
 # Stage aliases can point directly to repo-local workflow templates.
 [commands]
-draft = "file:.vizier/workflows/draft.toml"
-approve = "file:.vizier/workflows/approve.toml"
-merge = "file:.vizier/workflows/merge.toml"
-develop = "file:.vizier/develop.toml"
+draft = "file:.vizier/workflows/draft.hcl"
+approve = "file:.vizier/workflows/approve.hcl"
+merge = "file:.vizier/workflows/merge.hcl"
+develop = "file:.vizier/develop.hcl"
 
 # Optional cleanup for cancelled background jobs (never runs on failures)
 [jobs.cancel]

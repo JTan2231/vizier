@@ -4,8 +4,8 @@ auto_resolve = true
 retries = 2
 
 [commands]
-draft = "file:.vizier/workflows/draft.toml"
-approve = "file:.vizier/workflows/approve.toml"
-merge = "file:.vizier/workflows/merge.toml"
-develop = "file:.vizier/develop.toml"
-commit = "file:.vizier/workflows/commit.toml"
+draft = "file:.vizier/workflows/draft.hcl"
+approve = "file:.vizier/workflows/approve.hcl"
+merge = "file:.vizier/workflows/merge.hcl"
+develop = "file:.vizier/develop.hcl"
+commit = "file:.vizier/workflows/commit.hcl"

@@ -4,7 +4,7 @@ This page summarizes command entry points, including the restored orchestration 
 
 ## Repository Setup
 
-Run `vizier init` once per repository (or `vizier init --check` in CI) to ensure required scaffold files and `.gitignore` coverage exist. The scaffold includes `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge,commit}.toml`, `.vizier/prompts/{DRAFT,APPROVE,MERGE,COMMIT}_PROMPTS.md`, and a root `ci.sh` stub used by the default merge gate config.
+Run `vizier init` once per repository (or `vizier init --check` in CI) to ensure required scaffold files and `.gitignore` coverage exist. The scaffold includes `.vizier/config.toml`, `.vizier/workflows/{draft,approve,merge,commit}.hcl`, `.vizier/prompts/{DRAFT,APPROVE,MERGE,COMMIT}_PROMPTS.md`, and a root `ci.sh` stub used by the default merge gate config.
 
 ## Pending Plan Visibility
 
@@ -32,28 +32,30 @@ Use `vizier run <flow>` to compile and enqueue repo-local workflow templates thr
 - `vizier run approve --set slug=my-change --set branch=draft/my-change --follow`
 - `vizier run merge --set slug=my-change --set branch=draft/my-change --set target_branch=master --follow`
 - `vizier run develop`
-- `vizier run file:.vizier/workflows/custom.toml --set key=value`
+- `vizier run file:.vizier/workflows/custom.hcl --set key=value`
 - `vizier run develop --after <job-id> --require-approval`
 - `vizier run develop --after run:<run-id>`
 - `vizier run develop --repeat 3`
 - `vizier run develop --repeat 2 --follow --format json`
 - `vizier run develop --follow --format json`
 - `vizier run develop --check`
-- `vizier run file:.vizier/workflows/custom.toml --check --set key=value --format json`
+- `vizier run file:.vizier/workflows/custom.hcl --check --set key=value --format json`
 
 Recommended repo alias map:
 
 ```toml
 [commands]
-draft = "file:.vizier/workflows/draft.toml"
-approve = "file:.vizier/workflows/approve.toml"
-merge = "file:.vizier/workflows/merge.toml"
-develop = "file:.vizier/develop.toml"
+draft = "file:.vizier/workflows/draft.hcl"
+approve = "file:.vizier/workflows/approve.hcl"
+merge = "file:.vizier/workflows/merge.hcl"
+develop = "file:.vizier/develop.hcl"
 ```
 
 Resolution order for `vizier run <flow>` is: explicit file source, configured `[commands]` alias, then selector identity lookup (`template.name@vN`). There is no implicit repo/global `<flow>` fallback discovery.
 
 `[workflow.global_workflows]` only controls whether explicit file selectors are allowed to resolve outside the repo root under the configured global workflows directory.
+
+HCL templates should author queue-time placeholders as `$${key}` (escaped for HCL). Vizier receives `${key}` after HCL decoding and applies normal queue-time expansion.
 
 Workflow parameter input styles:
 

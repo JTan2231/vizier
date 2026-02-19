@@ -580,7 +580,7 @@ pub(crate) struct JobsCmd {
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct RunCmd {
-    /// Workflow source: alias, selector, file:<path>, or direct .toml/.json path
+    /// Workflow source: alias, selector, file:<path>, or direct .hcl/.toml/.json path
     #[arg(value_name = "FLOW")]
     pub(crate) flow: String,
 

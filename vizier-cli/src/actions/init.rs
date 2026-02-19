@@ -22,10 +22,10 @@ const GLOSSARY_STARTER: &str = "\
 ";
 
 const CONFIG_STARTER: &str = include_str!("../../templates/init/config.toml");
-const WORKFLOW_DRAFT_STARTER: &str = include_str!("../../templates/init/workflows/draft.toml");
-const WORKFLOW_APPROVE_STARTER: &str = include_str!("../../templates/init/workflows/approve.toml");
-const WORKFLOW_MERGE_STARTER: &str = include_str!("../../templates/init/workflows/merge.toml");
-const WORKFLOW_COMMIT_STARTER: &str = include_str!("../../templates/init/workflows/commit.toml");
+const WORKFLOW_DRAFT_STARTER: &str = include_str!("../../templates/init/workflows/draft.hcl");
+const WORKFLOW_APPROVE_STARTER: &str = include_str!("../../templates/init/workflows/approve.hcl");
+const WORKFLOW_MERGE_STARTER: &str = include_str!("../../templates/init/workflows/merge.hcl");
+const WORKFLOW_COMMIT_STARTER: &str = include_str!("../../templates/init/workflows/commit.hcl");
 const PROMPT_DRAFT_STARTER: &str = include_str!("../../templates/init/prompts/DRAFT_PROMPTS.md");
 const PROMPT_APPROVE_STARTER: &str =
     include_str!("../../templates/init/prompts/APPROVE_PROMPTS.md");
@@ -200,22 +200,22 @@ fn required_files() -> Vec<RequiredFile> {
             executable: false,
         },
         RequiredFile {
-            relative_path: format!("{}workflows/draft.toml", tools::VIZIER_DIR),
+            relative_path: format!("{}workflows/draft.hcl", tools::VIZIER_DIR),
             starter_template: WORKFLOW_DRAFT_STARTER,
             executable: false,
         },
         RequiredFile {
-            relative_path: format!("{}workflows/approve.toml", tools::VIZIER_DIR),
+            relative_path: format!("{}workflows/approve.hcl", tools::VIZIER_DIR),
             starter_template: WORKFLOW_APPROVE_STARTER,
             executable: false,
         },
         RequiredFile {
-            relative_path: format!("{}workflows/merge.toml", tools::VIZIER_DIR),
+            relative_path: format!("{}workflows/merge.hcl", tools::VIZIER_DIR),
             starter_template: WORKFLOW_MERGE_STARTER,
             executable: false,
         },
         RequiredFile {
-            relative_path: format!("{}workflows/commit.toml", tools::VIZIER_DIR),
+            relative_path: format!("{}workflows/commit.hcl", tools::VIZIER_DIR),
             starter_template: WORKFLOW_COMMIT_STARTER,
             executable: false,
         },

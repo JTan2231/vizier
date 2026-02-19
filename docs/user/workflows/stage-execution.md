@@ -13,9 +13,9 @@ No top-level `vizier draft|approve|merge` wrappers are part of the active CLI su
 
 Stage templates live at:
 
-- `.vizier/workflows/draft.toml`
-- `.vizier/workflows/approve.toml`
-- `.vizier/workflows/merge.toml`
+- `.vizier/workflows/draft.hcl`
+- `.vizier/workflows/approve.hcl`
+- `.vizier/workflows/merge.hcl`
 
 The repository-shipped stage templates are `template.stage.*@v2`.
 
@@ -32,9 +32,9 @@ Stage aliases should be mapped in `.vizier/config.toml` so `vizier run <alias>` 
 
 ```toml
 [commands]
-draft = "file:.vizier/workflows/draft.toml"
-approve = "file:.vizier/workflows/approve.toml"
-merge = "file:.vizier/workflows/merge.toml"
+draft = "file:.vizier/workflows/draft.hcl"
+approve = "file:.vizier/workflows/approve.hcl"
+merge = "file:.vizier/workflows/merge.hcl"
 ```
 
 ## Canonical Stage Shapes

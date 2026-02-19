@@ -20,7 +20,7 @@ Environment variables:
 Install layout:
   $BINDIR/vizier
   $DATADIR/vizier/agents/<label>/{agent.sh,filter.sh,...}
-  $WORKFLOWSDIR/{draft.toml,approve.toml,merge.toml}
+  $WORKFLOWSDIR/{draft.hcl,approve.hcl,merge.hcl}
   $MANDIR/man1/*.1
   $MANDIR/man5/*.5
   $MANDIR/man7/*.7
@@ -113,7 +113,7 @@ fi
 agents_src="examples/agents"
 man_src_root="docs/man"
 workflow_src_root=".vizier/workflows"
-workflow_seed_files="draft.toml approve.toml merge.toml"
+workflow_seed_files="draft.hcl approve.hcl merge.hcl"
 
 manifest_rel="$DATADIR/vizier/install-manifest.txt"
 manifest_path="$DESTDIR$manifest_rel"

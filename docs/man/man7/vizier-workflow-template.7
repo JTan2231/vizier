@@ -3,7 +3,8 @@
 vizier-workflow-template \- authoring workflow templates for \fBvizier run\fR
 .SH DESCRIPTION
 Vizier workflow templates are DAG definitions compiled and enqueued by
-\fBvizier run <flow>\fR. Templates are authored in TOML (or JSON) and can be
+\fBvizier run <flow>\fR. Templates are authored in HCL (legacy TOML/JSON files
+still load during migration) and can be
 selected directly (\fBfile:\fR / path), by \fB[commands]\fR alias, or by canonical
 selector (\fBtemplate.name@vN\fR).
 .PP
@@ -12,15 +13,15 @@ contracts, and a concrete stage-template example from this repository.
 .SH QUICK START
 .IP "1." 4
 Run \fBvizier init\fR to scaffold \fI.vizier/config.toml\fR and
-\fI.vizier/workflows/*.toml\fR.
+\fI.vizier/workflows/*.hcl\fR.
 .IP "2." 4
-Copy an existing template (for example \fI.vizier/workflows/draft.toml\fR) and
+Copy an existing template (for example \fI.vizier/workflows/draft.hcl\fR) and
 edit \fBid\fR / \fBversion\fR / \fBparams\fR / \fBnodes\fR.
 .IP "3." 4
 Map an alias in \fB[commands]\fR, for example:
 .nf
 [commands]
-myflow = "file:.vizier/workflows/myflow.toml"
+myflow = "file:.vizier/workflows/myflow.hcl"
 .fi
 .IP "4." 4
 Validate before queueing:
@@ -32,35 +33,43 @@ Queue a run:
 .nf
 vizier run myflow --set slug=my-change --follow
 .fi
+.SH HCL PLACEHOLDERS
+Queue-time parameter interpolation still uses \fB${param}\fR at Vizier compile
+boundaries.
+Because HCL template interpolation also uses \fB${...}\fR, author literal
+Vizier placeholders as \fB$${param}\fR in \fI.hcl\fR source.
+After HCL decoding, Vizier receives the literal \fB${param}\fR string and
+applies normal \fB--set\fR / defaults expansion.
 .SH TEMPLATE SHAPE
 Typical fields:
 .TP
 \fBid\fR, \fBversion\fR
 Template identity (\fBtemplate.name@vN\fR).
 .TP
-\fB[params]\fR
-Default parameter values used for \fB${param}\fR interpolation.
+\fBparams\fR
+Default parameter values used for \fB${param}\fR interpolation (authored as
+\fB$${param}\fR inside HCL strings).
 .TP
-\fB[cli]\fR and \fB[cli.named]\fR
+\fBcli\fR and \fBcli.named\fR
 Positional and friendly flag aliases for \fBvizier run <flow>\fR inputs.
 .TP
-\fB[[artifact_contracts]]\fR
+\fBartifact_contracts = [ ... ]\fR
 Declares artifact type/version pairs used by \fBneeds\fR / \fBproduces\fR.
 .TP
-\fB[[nodes]]\fR
+\fBnodes = [ ... ]\fR
 One node per executor/control step; each node has \fBid\fR, \fBkind\fR, and
 canonical \fBuses\fR.
 .TP
-\fB[[nodes.after]]\fR
+\fBnodes[*].after = [{ node_id = ... }]\fR
 Ordering dependency on another node.
 .TP
-\fB[[nodes.needs]]\fR and \fB[nodes.produces]\fR
+\fBnodes[*].needs\fR and \fBnodes[*].produces\fR
 Artifact dependency and publication contracts.
 .TP
-\fB[nodes.on]\fR
+\fBnodes[*].on\fR
 Outcome routes (\fBsucceeded\fR / \fBfailed\fR / \fBblocked\fR / \fBcancelled\fR).
 .TP
-\fB[policy.dependencies]\fR
+\fBpolicy.dependencies\fR
 Missing artifact producer policy (\fBblock\fR or \fBwait\fR).
 .SH CANONICAL CAPABILITIES
 Only canonical \fBuses\fR IDs are accepted.
@@ -157,7 +166,7 @@ Canonical \fBuses\fR IDs only (\fBcap.env.*\fR, \fBcap.agent.invoke\fR, \fBcontr
 .IP "\(bu" 2
 \fBpatch.pipeline_prepare\fR and \fBpatch.execute_pipeline\fR require \fBfiles_json\fR.
 .SH EXAMPLE: DRAFT STAGE TEMPLATE
-The shipped draft template is at \fI.vizier/workflows/draft.toml\fR.
+The shipped draft template is at \fI.vizier/workflows/draft.hcl\fR.
 .PP
 Key shape:
 .IP "\(bu" 2
@@ -173,28 +182,35 @@ Excerpt:
 id = "template.stage.draft"
 version = "v2"
 
-[policy.dependencies]
-missing_producer = "wait"
+policy = {
+  dependencies = {
+    missing_producer = "wait"
+  }
+}
 
-[[nodes]]
-id = "resolve_prompt"
-kind = "builtin"
-uses = "cap.env.builtin.prompt.resolve"
-[nodes.args]
-prompt_file = ".vizier/prompts/DRAFT_PROMPTS.md"
-[nodes.produces]
-succeeded = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
-
-[[nodes]]
-id = "invoke_agent"
-kind = "agent"
-uses = "cap.agent.invoke"
-[[nodes.needs]]
-custom = { type_id = "prompt_text", key = "draft_main" }
+nodes = [
+  {
+    id = "resolve_prompt"
+    kind = "builtin"
+    uses = "cap.env.builtin.prompt.resolve"
+    args = {
+      prompt_file = ".vizier/prompts/DRAFT_PROMPTS.md"
+    }
+    produces = {
+      succeeded = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
+    }
+  },
+  {
+    id = "invoke_agent"
+    kind = "agent"
+    uses = "cap.agent.invoke"
+    needs = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
+  }
+]
 .fi
 .SH COMPOSITION
 Templates can compose other templates using \fB[[imports]]\fR and \fB[[links]]\fR.
-This repository includes a composed example at \fI.vizier/develop.toml\fR that
+This repository includes a composed example at \fI.vizier/develop.hcl\fR that
 chains draft -> approve -> merge.
 .SH OPERATIONS
 Queue and inspect authored flows with:
@@ -205,7 +221,7 @@ Queue and inspect authored flows with:
 .IP "\(bu" 2
 \fBvizier jobs list|schedule|show|tail|attach|approve|retry|cancel\fR
 .PP
-Use \fBvizier run file:.vizier/workflows/<name>.toml\fR during template authoring
+Use \fBvizier run file:.vizier/workflows/<name>.hcl\fR during template authoring
 before assigning a stable alias.
 .PP
 \fB--check\fR runs queue-time validation only (flow resolution, parse/composition,

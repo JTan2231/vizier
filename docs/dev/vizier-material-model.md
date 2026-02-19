@@ -34,10 +34,10 @@ Out of scope:
 
 ### 2a) Stage template material
 - Paths:
-  - `.vizier/workflows/draft.toml`
-  - `.vizier/workflows/approve.toml`
-  - `.vizier/workflows/merge.toml`
-  - optional composed flows such as `.vizier/develop.toml`
+  - `.vizier/workflows/draft.hcl`
+  - `.vizier/workflows/approve.hcl`
+  - `.vizier/workflows/merge.hcl`
+  - optional composed flows such as `.vizier/develop.hcl`
 - Owner flows: `vizier run <alias|selector>` queue-time template resolution and compilation.
 - Durability: durable repository orchestration contract.
 

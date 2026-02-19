@@ -20,7 +20,7 @@ This installs:
 
 - `"$HOME/.local/bin/vizier"`
 - `"$HOME/.local/share/vizier/agents/*"`
-- `"$HOME/.config/vizier/workflows/{draft,approve,merge}.toml"` (or platform equivalent)
+- `"$HOME/.config/vizier/workflows/{draft,approve,merge}.hcl"` (or platform equivalent)
 - `"$HOME/.local/share/man/man1/vizier.1"`
 - `"$HOME/.local/share/man/man1/vizier-jobs.1"`
 - `"$HOME/.local/share/man/man5/vizier-config.5"`
@@ -40,7 +40,7 @@ vizier init
 - `.vizier/narrative/snapshot.md`
 - `.vizier/narrative/glossary.md`
 - `.vizier/config.toml`
-- `.vizier/workflows/{draft,approve,merge,commit}.toml`
+- `.vizier/workflows/{draft,approve,merge,commit}.hcl`
 - `.vizier/prompts/{DRAFT,APPROVE,MERGE,COMMIT}_PROMPTS.md`
 - `./ci.sh`
 
@@ -94,7 +94,7 @@ This writes into:
 
 - `"$DESTDIR/usr/local/bin/vizier"`
 - `"$DESTDIR/usr/local/share/vizier/agents/*"`
-- `"$DESTDIR$WORKFLOWSDIR/{draft,approve,merge}.toml"`
+- `"$DESTDIR$WORKFLOWSDIR/{draft,approve,merge}.hcl"`
 - `"$DESTDIR/usr/local/share/man/man1/*.1"`
 - `"$DESTDIR/usr/local/share/man/man5/*.5"`
 - `"$DESTDIR/usr/local/share/man/man7/*.7"`

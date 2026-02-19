@@ -33,20 +33,21 @@ Legacy workflow-global flags are no longer supported.
 - `[agents.default]`, `[agents.commands.<alias>]`, `[agents.templates."<selector>"]`: agent/prompt/runtime overrides.
 
 `vizier run <flow>` accepts only:
-- explicit `file:<path>` or direct `.toml`/`.json` path inputs,
+- explicit `file:<path>` or direct `.hcl` path inputs (legacy `.toml`/`.json` templates still load during migration),
 - configured `[commands]` aliases,
 - canonical selectors (`template.name@vN`).
 
 Legacy dotted selectors (`template.name.vN`), legacy `[workflow.templates]`, and implicit repo/global `<flow>` fallback discovery are unsupported and fail with migration guidance.
+For HCL-authored templates, escape literal queue-time placeholders as `$${key}`.
 
 Recommended stage aliases:
 
 ```toml
 [commands]
-draft = "file:.vizier/workflows/draft.toml"
-approve = "file:.vizier/workflows/approve.toml"
-merge = "file:.vizier/workflows/merge.toml"
-develop = "file:.vizier/develop.toml"
+draft = "file:.vizier/workflows/draft.hcl"
+approve = "file:.vizier/workflows/approve.hcl"
+merge = "file:.vizier/workflows/merge.hcl"
+develop = "file:.vizier/develop.hcl"
 ```
 
 Global workflow defaults:
@@ -110,9 +111,12 @@ Run-local orchestration controls include:
 
 Workflow templates can opt into optimistic dependency-derived scheduling for missing artifact producers:
 
-```toml
-[policy.dependencies]
-missing_producer = "wait" # default is "block"
+```hcl
+policy = {
+  dependencies = {
+    missing_producer = "wait" # default is "block"
+  }
+}
 ```
 
 - `block`: missing artifact with no known producer transitions the job to `blocked_by_dependency`.

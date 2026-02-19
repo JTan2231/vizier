@@ -174,9 +174,9 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         "usr/local/share/vizier/agents/claude/filter.sh",
     ];
     let expected_workflows = [
-        "usr/local/share/vizier/workflows/draft.toml",
-        "usr/local/share/vizier/workflows/approve.toml",
-        "usr/local/share/vizier/workflows/merge.toml",
+        "usr/local/share/vizier/workflows/draft.hcl",
+        "usr/local/share/vizier/workflows/approve.hcl",
+        "usr/local/share/vizier/workflows/merge.hcl",
     ];
 
     assert!(expected_exe.is_file(), "missing {}", expected_exe.display());
@@ -348,9 +348,9 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
         "/usr/local/share/man/man5/vizier-config.5",
         "/usr/local/share/man/man7/vizier-workflow.7",
         "/usr/local/share/man/man7/vizier-workflow-template.7",
-        "/usr/local/share/vizier/workflows/draft.toml",
-        "/usr/local/share/vizier/workflows/approve.toml",
-        "/usr/local/share/vizier/workflows/merge.toml",
+        "/usr/local/share/vizier/workflows/draft.hcl",
+        "/usr/local/share/vizier/workflows/approve.hcl",
+        "/usr/local/share/vizier/workflows/merge.hcl",
     ] {
         assert!(
             stdout.contains(rel),
@@ -539,7 +539,7 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     fs::create_dir_all(&stage)?;
     let workflows_dir = stage.join("usr/local/share/vizier/workflows");
     fs::create_dir_all(&workflows_dir)?;
-    fs::write(workflows_dir.join("draft.toml"), "custom draft workflow\n")?;
+    fs::write(workflows_dir.join("draft.hcl"), "custom draft workflow\n")?;
 
     let mut paths = vec![bin_dir.clone()];
     if let Some(existing) = env::var_os("PATH") {
@@ -570,25 +570,25 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     );
 
     assert_eq!(
-        fs::read_to_string(workflows_dir.join("draft.toml"))?,
+        fs::read_to_string(workflows_dir.join("draft.hcl"))?,
         "custom draft workflow\n",
         "existing workflow should be preserved"
     );
-    assert!(workflows_dir.join("approve.toml").is_file());
-    assert!(workflows_dir.join("merge.toml").is_file());
+    assert!(workflows_dir.join("approve.hcl").is_file());
+    assert!(workflows_dir.join("merge.hcl").is_file());
 
     let manifest = fs::read_to_string(stage.join("usr/local/share/vizier/install-manifest.txt"))?;
     let manifest_lines: HashSet<&str> = manifest.lines().collect();
     assert!(
-        !manifest_lines.contains("/usr/local/share/vizier/workflows/draft.toml"),
+        !manifest_lines.contains("/usr/local/share/vizier/workflows/draft.hcl"),
         "preserved existing workflow should not be tracked for uninstall: {manifest}"
     );
     assert!(
-        manifest_lines.contains("/usr/local/share/vizier/workflows/approve.toml"),
+        manifest_lines.contains("/usr/local/share/vizier/workflows/approve.hcl"),
         "installed approve workflow should be tracked: {manifest}"
     );
     assert!(
-        manifest_lines.contains("/usr/local/share/vizier/workflows/merge.toml"),
+        manifest_lines.contains("/usr/local/share/vizier/workflows/merge.hcl"),
         "installed merge workflow should be tracked: {manifest}"
     );
 
@@ -614,16 +614,16 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     );
 
     assert_eq!(
-        fs::read_to_string(workflows_dir.join("draft.toml"))?,
+        fs::read_to_string(workflows_dir.join("draft.hcl"))?,
         "custom draft workflow\n",
         "preserved workflow should remain after uninstall"
     );
     assert!(
-        !workflows_dir.join("approve.toml").exists(),
+        !workflows_dir.join("approve.hcl").exists(),
         "installed approve workflow should be removed by uninstall"
     );
     assert!(
-        !workflows_dir.join("merge.toml").exists(),
+        !workflows_dir.join("merge.hcl").exists(),
         "installed merge workflow should be removed by uninstall"
     );
 
