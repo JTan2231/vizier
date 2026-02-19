@@ -1,5 +1,22 @@
 use crate::fixtures::*;
 
+fn write_single_run_template(repo: &IntegrationRepo, rel: &str, script: &str) -> TestResult {
+    repo.write(
+        rel,
+        &format!(
+            "id = \"template.single\"\nversion = \"v1\"\n\
+[[nodes]]\n\
+id = \"single\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"{}\"\n",
+            script.replace('"', "\\\"")
+        ),
+    )?;
+    Ok(())
+}
+
 #[test]
 fn test_help_respects_no_ansi_and_quiet() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -196,6 +213,99 @@ fn test_help_command_matches_subcommand_help() -> TestResult {
         help_jobs.stdout, jobs_help.stdout,
         "`vizier help <command>` should match `<command> --help` output"
     );
+
+    let help_run = repo.vizier_output(&["help", "run", "--no-ansi"])?;
+    assert!(
+        help_run.status.success(),
+        "`vizier help run` failed: {}",
+        String::from_utf8_lossy(&help_run.stderr)
+    );
+
+    let run_help = repo.vizier_output(&["run", "--help", "--no-ansi"])?;
+    assert!(
+        run_help.status.success(),
+        "`vizier run --help` failed: {}",
+        String::from_utf8_lossy(&run_help.stderr)
+    );
+
+    assert_eq!(
+        help_run.stdout, run_help.stdout,
+        "`vizier help run` should match `vizier run --help` output"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_run_workflow_help_uses_resolved_alias_context() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    let output = repo.vizier_output(&["run", "draft", "--help", "--no-ansi"])?;
+    assert!(
+        output.status.success(),
+        "`vizier run draft --help` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Workflow: draft"),
+        "expected workflow alias label in flow help: {stdout}"
+    );
+    assert!(
+        stdout.contains("Source: file:.vizier/workflows/draft.hcl"),
+        "expected resolved workflow source in flow help: {stdout}"
+    );
+    assert!(
+        stdout.contains("Usage:")
+            && stdout.contains("Inputs:")
+            && stdout.contains("Examples:")
+            && stdout.contains("Run options:"),
+        "missing workflow help sections: {stdout}"
+    );
+    assert!(
+        stdout.contains("--file <file> -> spec_file") && stdout.contains("--name <name> -> slug"),
+        "expected alias mappings in flow help: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Usage: vizier run [OPTIONS] <FLOW> [INPUT]..."),
+        "flow help should not fall back to generic run help: {stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_workflow_help_file_selector_without_cli_shows_set_guidance() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/single.toml",
+        "--help",
+        "--no-ansi",
+    ])?;
+    assert!(
+        output.status.success(),
+        "`vizier run file:.vizier/workflows/single.toml --help` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Workflow: file:.vizier/workflows/single.toml")
+            && stdout.contains("Source: file:.vizier/workflows/single.toml"),
+        "expected file-based workflow identity in help: {stdout}"
+    );
+    assert!(
+        stdout.contains("vizier run file:.vizier/workflows/single.toml [--set <KEY=VALUE>]...")
+            && stdout
+                .contains("No [cli] aliases are defined; pass parameters with --set key=value."),
+        "expected no-cli fallback guidance in workflow help: {stdout}"
+    );
+
     Ok(())
 }
 

@@ -19,6 +19,120 @@ pub(crate) fn flag_present(args: &[String], short: Option<char>, long: &str) -> 
     })
 }
 
+pub(crate) fn global_option_value(
+    args: &[String],
+    short: Option<char>,
+    long: &str,
+) -> Option<String> {
+    let short_prefix = short.map(|value| format!("-{value}"));
+    let mut resolved = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        let token = &args[index];
+        if token == "--" {
+            break;
+        }
+
+        if let Some((flag, value)) = token.split_once('=')
+            && flag == long
+        {
+            resolved = Some(value.to_string());
+            index += 1;
+            continue;
+        }
+
+        if token == long {
+            if let Some(next) = args.get(index + 1) {
+                resolved = Some(next.clone());
+                index += 2;
+                continue;
+            }
+            break;
+        }
+
+        if let Some(prefix) = short_prefix.as_ref() {
+            if token == prefix {
+                if let Some(next) = args.get(index + 1) {
+                    resolved = Some(next.clone());
+                    index += 2;
+                    continue;
+                }
+                break;
+            }
+            if token.starts_with(prefix) && token.len() > prefix.len() {
+                resolved = Some(token[prefix.len()..].to_string());
+                index += 1;
+                continue;
+            }
+        }
+
+        index += 1;
+    }
+
+    resolved
+}
+
+pub(crate) fn run_flow_help_target(args: &[String]) -> Option<String> {
+    let run_index = find_run_subcommand_index(args)?;
+    if run_index + 1 >= args.len() {
+        return None;
+    }
+
+    let mut flow = None::<String>;
+    let mut index = run_index + 1;
+    while index < args.len() {
+        let token = &args[index];
+        if token == "--" {
+            return None;
+        }
+
+        if flow.is_none() {
+            if run_option_with_value(token)
+                || is_option_with_value(token, "--load-session")
+                || is_option_with_value(token, "--config-file")
+                || is_short_option_with_value(token, 'l')
+                || is_short_option_with_value(token, 'C')
+            {
+                if option_token_requires_next_value(token) && index + 1 < args.len() {
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+
+            if token == "--help" || short_flag_contains(token, 'h') {
+                return None;
+            }
+
+            if run_flag_option(token) || is_short_flag_token(token) {
+                index += 1;
+                continue;
+            }
+
+            if token.starts_with('-') {
+                index += 1;
+                continue;
+            }
+
+            flow = Some(token.clone());
+            index += 1;
+            continue;
+        }
+
+        if token == "--help" || short_flag_contains(token, 'h') {
+            return flow;
+        }
+        if token == "--" {
+            break;
+        }
+
+        index += 1;
+    }
+
+    None
+}
+
 pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
     let Some(run_index) = find_run_subcommand_index(args) else {
         return args.to_vec();
@@ -99,6 +213,27 @@ pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
     }
 
     normalized
+}
+
+fn run_option_with_value(token: &str) -> bool {
+    is_option_with_value(token, "--set")
+        || is_option_with_value(token, "--after")
+        || is_option_with_value(token, "--repeat")
+        || is_option_with_value(token, "--format")
+}
+
+fn run_flag_option(token: &str) -> bool {
+    is_flag_option(token, "--require-approval")
+        || is_flag_option(token, "--no-require-approval")
+        || is_flag_option(token, "--follow")
+        || is_flag_option(token, "--check")
+        || is_flag_option(token, "--verbose")
+        || is_flag_option(token, "--quiet")
+        || is_flag_option(token, "--debug")
+        || is_flag_option(token, "--no-ansi")
+        || is_flag_option(token, "--no-pager")
+        || is_flag_option(token, "--no-session")
+        || is_flag_option(token, "--version")
 }
 
 fn find_run_subcommand_index(args: &[String]) -> Option<usize> {
@@ -193,9 +328,15 @@ fn looks_like_option(value: &str) -> bool {
     value.len() > 1 && value.starts_with('-')
 }
 
+fn short_flag_contains(token: &str, short: char) -> bool {
+    token.starts_with('-')
+        && !token.starts_with("--")
+        && token.chars().skip(1).any(|ch| ch == short)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::normalize_run_invocation_args;
+    use super::{global_option_value, normalize_run_invocation_args, run_flow_help_target};
 
     #[test]
     fn normalize_run_rewrites_unknown_long_flags_to_set() {
@@ -308,5 +449,69 @@ mod tests {
         ];
 
         assert_eq!(normalize_run_invocation_args(&args), args);
+    }
+
+    #[test]
+    fn detects_run_workflow_help_target_with_alias() {
+        let args = vec![
+            "vizier".to_string(),
+            "run".to_string(),
+            "draft".to_string(),
+            "--help".to_string(),
+        ];
+        assert_eq!(run_flow_help_target(&args), Some("draft".to_string()));
+    }
+
+    #[test]
+    fn run_help_without_flow_does_not_report_target() {
+        let args = vec![
+            "vizier".to_string(),
+            "run".to_string(),
+            "--help".to_string(),
+        ];
+        assert_eq!(run_flow_help_target(&args), None);
+    }
+
+    #[test]
+    fn detects_run_workflow_help_target_after_run_options() {
+        let args = vec![
+            "vizier".to_string(),
+            "run".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "file:.vizier/workflows/draft.hcl".to_string(),
+            "--help".to_string(),
+        ];
+        assert_eq!(
+            run_flow_help_target(&args),
+            Some("file:.vizier/workflows/draft.hcl".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_global_option_value_from_long_short_and_equals() {
+        let args = vec![
+            "vizier".to_string(),
+            "--config-file=config/global.toml".to_string(),
+            "-C".to_string(),
+            "config/repo.toml".to_string(),
+            "run".to_string(),
+            "draft".to_string(),
+        ];
+        assert_eq!(
+            global_option_value(&args, Some('C'), "--config-file"),
+            Some("config/repo.toml".to_string())
+        );
+
+        let args_short_joined = vec![
+            "vizier".to_string(),
+            "-Cconfig/alt.toml".to_string(),
+            "run".to_string(),
+            "draft".to_string(),
+        ];
+        assert_eq!(
+            global_option_value(&args_short_joined, Some('C'), "--config-file"),
+            Some("config/alt.toml".to_string())
+        );
     }
 }

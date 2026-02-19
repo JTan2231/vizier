@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 use clap::{ColorChoice, CommandFactory, FromArgMatches, error::ErrorKind};
 use vizier_core::{
@@ -10,12 +11,14 @@ use crate::actions::{run_cd, run_clean, run_init, run_list, run_release, run_wor
 use crate::cli::args::*;
 use crate::cli::help::{
     curated_help_text, pager_mode_from_args, render_clap_help_text,
-    render_clap_subcommand_help_text, render_help_with_pager, strip_ansi_codes,
-    subcommand_from_raw_args,
+    render_clap_subcommand_help_text, render_help_with_pager, render_run_workflow_help_text,
+    strip_ansi_codes, subcommand_from_raw_args,
 };
 use crate::cli::jobs_view::run_jobs_command;
 use crate::cli::resolve::{resolve_cd_options, resolve_clean_options, resolve_list_options};
-use crate::cli::util::{flag_present, normalize_run_invocation_args};
+use crate::cli::util::{
+    flag_present, global_option_value, normalize_run_invocation_args, run_flow_help_target,
+};
 use crate::jobs;
 
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,6 +47,22 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Ok(matches) => matches,
         Err(err) => match err.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                if let Some(flow) = run_flow_help_target(&normalized_args) {
+                    let project_root = resolve_project_root()?;
+                    let explicit_config_file =
+                        global_option_value(&normalized_args, Some('C'), "--config-file");
+                    let cfg =
+                        load_effective_config(&project_root, explicit_config_file.as_deref())?;
+                    let rendered = render_run_workflow_help_text(&project_root, &flow, &cfg)?;
+                    let help_text = if color_choice != ColorChoice::Never {
+                        rendered
+                    } else {
+                        strip_ansi_codes(&rendered)
+                    };
+                    render_help_with_pager(&help_text, pager_mode, stdout_is_tty, quiet_requested)?;
+                    return Ok(());
+                }
+
                 let rendered = match err.kind() {
                     ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                         curated_help_text().to_string()
@@ -126,54 +145,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let project_root = match auditor::find_project_root() {
-        Ok(Some(root)) => root,
-        Ok(None) => {
-            display::emit(
-                LogLevel::Error,
-                "vizier cannot be used outside a git repository",
-            );
-            return Err("not a git repository".into());
-        }
-        Err(e) => {
-            display::emit(LogLevel::Error, format!("Error finding project root: {e}"));
-            return Err(Box::<dyn std::error::Error>::from(e));
-        }
-    };
-
-    let mut cfg = if let Some(ref config_file) = cli.global.config_file {
-        config::load_config_from_path(std::path::PathBuf::from(config_file))?
-    } else {
-        let mut layers = Vec::new();
-
-        if let Some(path) = config::global_config_path().filter(|path| path.exists()) {
-            display::emit(
-                LogLevel::Info,
-                format!("Loading global config from {}", path.display()),
-            );
-            layers.push(config::load_config_layer_from_path(path)?);
-        }
-
-        if let Some(path) = config::project_config_path(&project_root) {
-            display::emit(
-                LogLevel::Info,
-                format!("Loading repo config from {}", path.display()),
-            );
-            layers.push(config::load_config_layer_from_path(path)?);
-        }
-
-        if !layers.is_empty() {
-            config::Config::from_layers(&layers)
-        } else if let Some(path) = config::env_config_path().filter(|path| path.exists()) {
-            display::emit(
-                LogLevel::Info,
-                format!("Loading env config from {}", path.display()),
-            );
-            config::load_config_from_path(path)?
-        } else {
-            config::get_config()
-        }
-    };
+    let project_root = resolve_project_root()?;
+    let mut cfg = load_effective_config(&project_root, cli.global.config_file.as_deref())?;
 
     if let Some(session_id) = &cli.global.load_session {
         let repo_session = project_root
@@ -215,4 +188,62 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Release(cmd) => run_release(cmd),
     }
+}
+
+fn resolve_project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    match auditor::find_project_root() {
+        Ok(Some(root)) => Ok(root),
+        Ok(None) => {
+            display::emit(
+                LogLevel::Error,
+                "vizier cannot be used outside a git repository",
+            );
+            Err("not a git repository".into())
+        }
+        Err(e) => {
+            display::emit(LogLevel::Error, format!("Error finding project root: {e}"));
+            Err(Box::<dyn std::error::Error>::from(e))
+        }
+    }
+}
+
+fn load_effective_config(
+    project_root: &Path,
+    explicit_config_file: Option<&str>,
+) -> Result<config::Config, Box<dyn std::error::Error>> {
+    if let Some(config_file) = explicit_config_file {
+        return config::load_config_from_path(PathBuf::from(config_file));
+    }
+
+    let mut layers = Vec::new();
+
+    if let Some(path) = config::global_config_path().filter(|path| path.exists()) {
+        display::emit(
+            LogLevel::Info,
+            format!("Loading global config from {}", path.display()),
+        );
+        layers.push(config::load_config_layer_from_path(path)?);
+    }
+
+    if let Some(path) = config::project_config_path(project_root) {
+        display::emit(
+            LogLevel::Info,
+            format!("Loading repo config from {}", path.display()),
+        );
+        layers.push(config::load_config_layer_from_path(path)?);
+    }
+
+    if !layers.is_empty() {
+        return Ok(config::Config::from_layers(&layers));
+    }
+
+    if let Some(path) = config::env_config_path().filter(|path| path.exists()) {
+        display::emit(
+            LogLevel::Info,
+            format!("Loading env config from {}", path.display()),
+        );
+        return config::load_config_from_path(path);
+    }
+
+    Ok(config::get_config())
 }

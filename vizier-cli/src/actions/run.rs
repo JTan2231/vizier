@@ -71,7 +71,7 @@ pub(crate) fn run_workflow(
     apply_named_input_aliases(&source, &input_spec, &mut set_overrides)?;
     apply_positional_inputs(&source, &input_spec, &cmd.inputs, &mut set_overrides)?;
     let mut template = workflow_templates::load_template_with_params(&source, &set_overrides)?;
-    validate_entrypoint_input_requirements(&source, &input_spec, &cmd.inputs, &template)?;
+    validate_entrypoint_input_requirements(&source, &input_spec, &template)?;
     inline_plan_persist_spec_files(project_root, &mut template)?;
 
     if cmd.check {
@@ -585,7 +585,6 @@ fn apply_positional_inputs(
 fn validate_entrypoint_input_requirements(
     source: &ResolvedWorkflowSource,
     input_spec: &WorkflowTemplateInputSpec,
-    positional_values: &[String],
     template: &vizier_core::workflow_template::WorkflowTemplate,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if template.nodes.is_empty() {
@@ -675,15 +674,7 @@ fn validate_entrypoint_input_requirements(
                 .unwrap_or(usize::MAX)
         });
 
-        return Err(build_entrypoint_input_error(
-            source,
-            input_spec,
-            positional_values,
-            &node.id,
-            operation,
-            &required_inputs,
-        )
-        .into());
+        return Err(build_entrypoint_input_error(source, input_spec, &required_inputs).into());
     }
 
     Ok(())
@@ -692,9 +683,6 @@ fn validate_entrypoint_input_requirements(
 fn build_entrypoint_input_error(
     source: &ResolvedWorkflowSource,
     input_spec: &WorkflowTemplateInputSpec,
-    positional_values: &[String],
-    node_id: &str,
-    operation: &str,
     required_inputs: &[String],
 ) -> String {
     let flow_label = source
@@ -702,94 +690,114 @@ fn build_entrypoint_input_error(
         .as_ref()
         .map(|alias| alias.as_str().to_string())
         .unwrap_or_else(|| source.selector.clone());
-    let required_flags = required_inputs
-        .iter()
-        .map(|param| {
-            if let Some(alias) = preferred_cli_alias_for_param(input_spec, param)
-                && alias != param
-            {
-                return format!(
-                    "`--{}` (maps to `{}`)",
-                    kebab_case_key(alias),
-                    kebab_case_key(param)
-                );
-            }
-            format!("`--{}`", kebab_case_key(param))
-        })
-        .collect::<Vec<_>>();
 
-    let mut lines = vec![format!(
-        "workflow `{}` entry node `{}` (`{operation}`) requires at least one non-empty input: {}",
-        flow_label,
-        node_id,
-        required_flags.join(", ")
-    )];
-
-    if !positional_values.is_empty() && !input_spec.positional.is_empty() {
-        let mapped = positional_values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let key = input_spec
-                    .positional
-                    .get(index)
-                    .map(String::as_str)
-                    .unwrap_or("extra_input");
-                format!("{}=`{value}`", cli_label_for_param(input_spec, key))
-            })
-            .collect::<Vec<_>>();
-        lines.push(format!("received positional inputs: {}", mapped.join(", ")));
-    }
-
-    let named_param = required_inputs
-        .iter()
-        .min_by_key(|param| {
-            input_spec
-                .positional
-                .iter()
-                .position(|entry| entry == *param)
-                .unwrap_or(usize::MAX)
-        })
-        .or_else(|| required_inputs.first());
-
-    let named_example = named_param
-        .map(|param| {
-            format!(
-                "vizier run {} --{} {}",
-                flow_label,
-                kebab_case_key(&cli_label_for_param(input_spec, param)),
-                cli_placeholder_for_param(input_spec, param)
-            )
-        })
-        .unwrap_or_else(|| format!("vizier run {flow_label}"));
-
-    let positional_example = required_inputs
-        .iter()
-        .filter_map(|param| {
+    let mut usage_params = ordered_cli_params(input_spec);
+    if usage_params.is_empty() {
+        usage_params = required_inputs.to_vec();
+        usage_params.sort_by_key(|param| {
             input_spec
                 .positional
                 .iter()
                 .position(|entry| entry == param)
-                .map(|index| (param, index))
-        })
-        .min_by_key(|(_, index)| *index)
-        .map(|(_, index)| {
-            let placeholders = input_spec.positional[..=index]
-                .iter()
-                .map(|param| cli_placeholder_for_param(input_spec, param))
-                .collect::<Vec<_>>();
-            format!("vizier run {} {}", flow_label, placeholders.join(" "))
+                .unwrap_or(usize::MAX)
         });
+        usage_params.dedup();
+    }
 
-    lines.push("examples:".to_string());
-    lines.push(format!("  {named_example}"));
+    let usage = if usage_params.is_empty() {
+        format!("vizier run {flow_label} [--set <KEY=VALUE>]...")
+    } else {
+        let flags = usage_params
+            .iter()
+            .map(|param| {
+                let label = cli_label_for_param(input_spec, param);
+                format!(
+                    "[--{} <{}>]",
+                    kebab_case_key(&label),
+                    kebab_case_key(&label)
+                )
+            })
+            .collect::<Vec<_>>();
+        format!("vizier run {flow_label} {}", flags.join(" "))
+    };
+
+    let named_example = named_example(&flow_label, input_spec, &usage_params);
+    let positional_example = positional_example(&flow_label, input_spec);
+
+    let mut lines = vec![
+        format!("error: missing required input for workflow `{flow_label}`"),
+        format!("usage: {usage}"),
+        format!("example: {named_example}"),
+    ];
     if let Some(example) = positional_example
         && example != named_example
     {
-        lines.push(format!("  {example}"));
+        lines.push(format!("example (positional): {example}"));
     }
+    lines.push(format!("hint: vizier run {flow_label} --help"));
 
     lines.join("\n")
+}
+
+fn ordered_cli_params(input_spec: &WorkflowTemplateInputSpec) -> Vec<String> {
+    let mut ordered = Vec::<String>::new();
+    for param in &input_spec.positional {
+        if !ordered.contains(param) {
+            ordered.push(param.clone());
+        }
+    }
+    for target in input_spec.named.values() {
+        if !ordered.contains(target) {
+            ordered.push(target.clone());
+        }
+    }
+    for param in &input_spec.params {
+        if !ordered.contains(param) {
+            ordered.push(param.clone());
+        }
+    }
+    ordered
+}
+
+fn named_example(
+    flow_label: &str,
+    input_spec: &WorkflowTemplateInputSpec,
+    ordered_params: &[String],
+) -> String {
+    if ordered_params.is_empty() {
+        return format!("vizier run {flow_label} --set key=value");
+    }
+
+    let mut parts = vec![format!("vizier run {flow_label}")];
+    let take = ordered_params.len().clamp(1, 2);
+    for param in ordered_params.iter().take(take) {
+        let label = cli_label_for_param(input_spec, param);
+        parts.push(format!(
+            "--{} {}",
+            kebab_case_key(&label),
+            example_value(input_spec, param)
+        ));
+    }
+
+    parts.join(" ")
+}
+
+fn positional_example(flow_label: &str, input_spec: &WorkflowTemplateInputSpec) -> Option<String> {
+    if input_spec.positional.is_empty() {
+        return None;
+    }
+
+    let values = input_spec
+        .positional
+        .iter()
+        .take(2)
+        .map(|param| example_value(input_spec, param))
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        None
+    } else {
+        Some(format!("vizier run {flow_label} {}", values.join(" ")))
+    }
 }
 
 fn preferred_cli_alias_for_param<'a>(
@@ -811,15 +819,23 @@ fn cli_label_for_param(input_spec: &WorkflowTemplateInputSpec, param: &str) -> S
         .to_string()
 }
 
-fn cli_placeholder_for_param(input_spec: &WorkflowTemplateInputSpec, param: &str) -> String {
-    format!(
-        "<{}>",
-        kebab_case_key(&cli_label_for_param(input_spec, param))
-    )
-}
-
 fn kebab_case_key(value: &str) -> String {
     value.trim().replace('_', "-")
+}
+
+fn example_value(input_spec: &WorkflowTemplateInputSpec, param: &str) -> String {
+    let label = cli_label_for_param(input_spec, param).to_ascii_lowercase();
+    if label.contains("file") || label.contains("path") {
+        "LIBRARY.md".to_string()
+    } else if label.contains("name") || label.contains("slug") {
+        "my-change".to_string()
+    } else if label.contains("target") {
+        "main".to_string()
+    } else if label.contains("branch") {
+        "draft/my-change".to_string()
+    } else {
+        format!("example-{}", kebab_case_key(&label))
+    }
 }
 
 fn resolve_root_jobs(

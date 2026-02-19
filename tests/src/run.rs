@@ -670,6 +670,47 @@ fn test_run_file_selector_enqueues_workflow() -> TestResult {
 }
 
 #[test]
+fn test_run_workflow_help_writes_no_manifests_or_jobs() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/single.toml",
+        "--help",
+        "--no-ansi",
+    ])?;
+    assert!(
+        output.status.success(),
+        "workflow help should succeed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Workflow: file:.vizier/workflows/single.toml")
+            && stdout.contains("Run options:"),
+        "expected workflow-specific help output, got: {stdout}"
+    );
+
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "workflow help must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "workflow help must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_run_check_validates_and_writes_no_manifests_or_jobs() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
@@ -1151,11 +1192,18 @@ fn test_run_entrypoint_preflight_reports_missing_root_inputs() -> TestResult {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("entry node `worktree_prepare`")
-            && stderr.contains("requires at least one non-empty input")
-            && stderr.contains("--name")
-            && stderr.contains("vizier run draft <file> <name>"),
-        "expected actionable entrypoint guidance, got: {stderr}"
+        stderr.contains("error: missing required input for workflow `draft`")
+            && stderr.contains(
+                "usage: vizier run draft [--file <file>] [--name <name>] [--branch <branch>]"
+            )
+            && stderr.contains("example: vizier run draft --file LIBRARY.md --name my-change")
+            && stderr.contains("example (positional): vizier run draft LIBRARY.md my-change")
+            && stderr.contains("hint: vizier run draft --help"),
+        "expected concise CLI-style input guidance, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("entry node `worktree_prepare`") && !stderr.contains("`worktree.prepare`"),
+        "internal node/capability IDs should not be exposed in the primary error text: {stderr}"
     );
 
     Ok(())

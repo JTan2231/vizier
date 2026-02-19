@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_9644863589954ada9717587091102364",
+  "slug": "help",
+  "branch": "draft/help",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_401dd7c47a3c44c5a4416bd4852720ae-persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Workflow-Specific Help and Input Errors for `vizier run`",
+  "created_at": "2026-02-19T17:35:07.824064+00:00",
+  "updated_at": "2026-02-19T17:35:07.824064+00:00",
+  "job_ids": {
+    "persist": "wf-run_401dd7c47a3c44c5a4416bd4852720ae-persist_plan"
+  }
+}

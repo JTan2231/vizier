@@ -32,6 +32,11 @@ Status
   - Resolver identity scanning now includes `.hcl` candidates and applies deterministic same-stem precedence (`.hcl` wins over `.toml`), while explicit/global-flow resolution posture remains unchanged (no implicit alias fallback discovery).
   - Init/install/default assets moved to `.hcl`: stage/commit templates under `.vizier/workflows/*.hcl`, composed alias file `.vizier/develop.hcl`, `[commands]` defaults pointing to `file:.vizier/workflows/*.hcl`, and `install.sh` global seeding/manifests targeting `draft.hcl`, `approve.hcl`, and `merge.hcl`.
   - Docs/man/test surfaces were updated to HCL-first authoring guidance, including `$${key}` placeholder-escaping guidance for queue-time `${key}` interpolation boundaries.
+- Update (2026-02-19, run help + preflight UX contract):
+  - `vizier-cli/src/cli/dispatch.rs` now intercepts `vizier run <flow> --help` before generic Clap help short-circuiting, resolves flow/config with the same run path (alias/file/selector + config layering), and renders workflow-scoped help text.
+  - `vizier-cli/src/cli/help.rs` now emits flow-scoped sections (`Workflow`, `Usage`, `Inputs`, `Examples`, `Run options`), including alias-to-param mappings and no-`[cli]` fallback guidance (`--set key=value`).
+  - `vizier-cli/src/actions/run.rs` entry preflight now emits CLI-shaped missing-input guidance (`error`, `usage`, `example`, `hint`) and removes internal node/capability wording from primary user-facing text.
+  - Coverage in `tests/src/help.rs` + `tests/src/run.rs` now asserts alias/file help parity, unchanged generic `vizier run --help`, no enqueue side effects for help paths, and the new missing-input error contract.
 - Update (2026-02-18, run validate-only preflight):
   - `vizier-cli/src/cli/args.rs` adds run-local `--check` with explicit conflicts against enqueue/runtime flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`), and run arg normalization now preserves `--check` instead of rewriting it into `--set`.
   - `vizier-core/src/jobs/mod.rs` now exposes shared pre-enqueue validation (`validate_workflow_run_template`) that reuses capability validation + full node compilation (resolved-after mapping plus single-parent succeeded-edge checks) for parity between validate-only and enqueue paths.
