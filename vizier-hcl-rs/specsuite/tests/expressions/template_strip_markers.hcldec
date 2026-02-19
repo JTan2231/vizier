@@ -1,0 +1,5 @@
+variables {
+  value = "X"
+  enabled = true
+  items = ["x", "y"]
+}

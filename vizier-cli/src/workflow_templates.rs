@@ -2,11 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rshcl::{
-    api,
-    diagnostics::{Diagnostic as HclDiagnostic, Severity as HclSeverity},
-    eval::{EvalContext, Value as HclValue},
-};
 use serde::Deserialize;
 use vizier_core::{
     config,
@@ -17,6 +12,11 @@ use vizier_core::{
         WorkflowPrecondition, WorkflowRetryMode, WorkflowRetryPolicy, WorkflowTemplate,
         WorkflowTemplatePolicy,
     },
+};
+use vizier_hcl_rs::{
+    api,
+    diagnostics::{Diagnostic as HclDiagnostic, Severity as HclSeverity},
+    eval::{EvalContext, Value as HclValue},
 };
 
 #[derive(Debug, Clone)]

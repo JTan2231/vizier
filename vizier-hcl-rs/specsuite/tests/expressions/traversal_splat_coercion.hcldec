@@ -1,0 +1,4 @@
+variables {
+  scalar = 7
+  maybe = null
+}

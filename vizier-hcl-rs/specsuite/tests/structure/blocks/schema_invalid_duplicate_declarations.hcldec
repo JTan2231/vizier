@@ -1,0 +1,14 @@
+object {
+  attr "dup" {
+    type = string
+  }
+  attr "dup" {
+    type = string
+  }
+  block "svc" {
+    object {}
+  }
+  block "svc" {
+    object {}
+  }
+}

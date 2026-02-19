@@ -1,0 +1,8 @@
+variables {
+  str = "rust"
+  tuple = ["x", "yy"]
+  obj = {
+    b = 2
+    a = 1
+  }
+}

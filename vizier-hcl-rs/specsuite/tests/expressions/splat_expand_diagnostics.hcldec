@@ -1,0 +1,6 @@
+variables {
+  obj = {
+    key = 1
+  }
+  tuple = [10, 20]
+}

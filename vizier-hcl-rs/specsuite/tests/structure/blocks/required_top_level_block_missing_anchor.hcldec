@@ -1,0 +1,9 @@
+object {
+  attr "present" {
+    type = string
+  }
+  block "svc" {
+    required = true
+    object {}
+  }
+}

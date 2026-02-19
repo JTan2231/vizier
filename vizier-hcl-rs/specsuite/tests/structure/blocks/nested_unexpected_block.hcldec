@@ -1,0 +1,8 @@
+block_list {
+  block_type = "a"
+  object {
+    block_list "d" {
+      object {}
+    }
+  }
+}

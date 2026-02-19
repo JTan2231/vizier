@@ -1,0 +1,5 @@
+variables {
+  enabled = true
+  items = ["a", "b", "c"]
+  skip = "b"
+}

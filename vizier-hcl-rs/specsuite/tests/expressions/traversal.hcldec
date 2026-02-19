@@ -1,0 +1,36 @@
+variables {
+  obj = {
+    name = "vizier"
+    nested = {
+      value = 2
+    }
+    "0" = "zero"
+  }
+  tuple = ["a", "b", "c"]
+  servers = [
+    {
+      name = "api"
+      nested = {
+        value = 10
+      }
+    },
+    {
+      name = "worker"
+      nested = {
+        value = 20
+      }
+    },
+  ]
+  matrix = [
+    [1, 2],
+    [3, 4],
+  ]
+  obj_map = {
+    first = {
+      name = "left"
+    }
+    second = {
+      name = "right"
+    }
+  }
+}

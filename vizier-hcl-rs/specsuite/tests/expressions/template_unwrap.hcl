@@ -1,0 +1,5 @@
+single_bool = "${true}"
+single_object = "${{ answer = 42 }}"
+nested = "${"${true}"}"
+multi_interp_counterexample = "${""}${true}"
+directive_counterexample = "%{ for v in [true] }${v}%{ endfor }"

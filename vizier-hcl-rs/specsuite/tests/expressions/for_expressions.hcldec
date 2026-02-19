@@ -1,0 +1,17 @@
+variables {
+  nums = [1, 2, 3]
+  records = {
+    a = {
+      group = "x"
+      value = 1
+    }
+    b = {
+      group = "x"
+      value = 2
+    }
+    c = {
+      group = "y"
+      value = 3
+    }
+  }
+}

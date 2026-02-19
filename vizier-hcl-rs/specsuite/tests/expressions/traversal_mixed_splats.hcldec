@@ -1,0 +1,54 @@
+variables {
+  tuple = [
+    {
+      foo = [
+        {
+          bar = "a0"
+        },
+        {
+          bar = "a1"
+        },
+      ]
+    },
+    {
+      foo = [
+        {
+          bar = "b0"
+        },
+      ]
+    },
+  ]
+
+  scalar = 7
+  maybe = null
+
+  branch_first_index_fail = [
+    {
+      foo = [
+        {
+          bar = "alpha"
+        },
+      ]
+    },
+    {
+      foo = [
+        7,
+      ]
+    },
+  ]
+
+  branch_first_attr_fail = [
+    {
+      foo = [
+        7,
+      ]
+    },
+    {
+      foo = [
+        {
+          bar = "alpha"
+        },
+      ]
+    },
+  ]
+}

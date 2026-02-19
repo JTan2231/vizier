@@ -1,0 +1,6 @@
+variables {
+  obj = {
+    present = "ok"
+  }
+  tuple = [10, 20]
+}

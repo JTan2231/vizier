@@ -1,0 +1,9 @@
+block {
+  block_type = "a"
+  object {
+    attr "b" {
+      required = true
+      type     = string
+    }
+  }
+}

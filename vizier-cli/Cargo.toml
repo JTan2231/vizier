@@ -18,5 +18,5 @@ tempfile = "3"
 uuid = { version = "1.4", features = ["v4"] }
 git2 = "0.20"
 sha2 = "0.10"
-rshcl = { path = "../third_party/rshcl" }
+vizier_hcl_rs = { package = "vizier-hcl-rs", path = "../vizier-hcl-rs" }
 vizier-core = { path = "../vizier-core" }

@@ -1,0 +1,9 @@
+object {
+  block {
+    object {}
+  }
+  block_list {
+    required = "yes"
+    object {}
+  }
+}

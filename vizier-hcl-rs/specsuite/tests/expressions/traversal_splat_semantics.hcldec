@@ -1,0 +1,18 @@
+variables {
+  tuple = [
+    {
+      foo = [
+        {
+          bar = "a"
+        },
+      ]
+    },
+    {
+      foo = [
+        {
+          bar = "b"
+        },
+      ]
+    },
+  ]
+}

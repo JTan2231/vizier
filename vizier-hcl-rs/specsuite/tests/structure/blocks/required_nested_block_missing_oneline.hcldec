@@ -1,0 +1,11 @@
+block "a" {
+  object {
+    attr "b" {
+      type = string
+    }
+    block "d" {
+      required = true
+      object {}
+    }
+  }
+}

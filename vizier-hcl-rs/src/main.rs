@@ -2,12 +2,12 @@ use std::env;
 use std::fs;
 use std::process;
 
-use rshcl::api::validate_bytes;
-use rshcl::diagnostics::{Diagnostic, Severity};
+use vizier_hcl_rs::api::validate_bytes;
+use vizier_hcl_rs::diagnostics::{Diagnostic, Severity};
 
 fn main() {
     let mut args = env::args();
-    let program = args.next().unwrap_or_else(|| "rshcl".to_owned());
+    let program = args.next().unwrap_or_else(|| "vizier-hcl-rs".to_owned());
     let Some(config_path) = args.next() else {
         eprintln!("usage: {program} <path> [schema-path]");
         process::exit(2);

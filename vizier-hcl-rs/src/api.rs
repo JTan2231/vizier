@@ -47,7 +47,7 @@ fn diagnostics_have_errors(diagnostics: &[Diagnostic]) -> bool {
 /// # Examples
 ///
 /// ```
-/// use rshcl::api::validate_str;
+/// use vizier_hcl_rs::api::validate_str;
 ///
 /// let result = validate_str("a = 1\n", None);
 /// assert!(!result.has_errors());
@@ -87,8 +87,8 @@ pub fn validate_str(source: &str, schema_source: Option<&str>) -> ValidateResult
 /// # Examples
 ///
 /// ```
-/// use rshcl::api::evaluate_config_str;
-/// use rshcl::eval::EvalContext;
+/// use vizier_hcl_rs::api::evaluate_config_str;
+/// use vizier_hcl_rs::eval::EvalContext;
 ///
 /// let source = "name = \"vizier\"\n";
 /// let schema = "object {\n  attr \"name\" {\n    type = string\n  }\n}\n";
@@ -102,8 +102,8 @@ pub fn validate_str(source: &str, schema_source: Option<&str>) -> ValidateResult
 /// In that case, eval diagnostics are appended and `value` remains `Some(...)`.
 ///
 /// ```
-/// use rshcl::api::evaluate_config_str;
-/// use rshcl::eval::{EvalContext, Value};
+/// use vizier_hcl_rs::api::evaluate_config_str;
+/// use vizier_hcl_rs::eval::{EvalContext, Value};
 ///
 /// let source = "name = unknown\n";
 /// let schema = "object {\n  attr \"name\" {\n    type = string\n  }\n}\n";
