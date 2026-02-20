@@ -3572,11 +3572,32 @@ fn collect_prompt_template_variables(
         let manifest = load_workflow_run_manifest(project_root, run_id).map_err(|err| {
             format!("prompt.resolve could not load workflow run manifest `{run_id}`: {err}")
         })?;
+        let mut composed_suffix_counts = BTreeMap::<&str, usize>::new();
         for runtime_node in manifest.nodes.values() {
+            if let Some((_, suffix)) = runtime_node.node_id.rsplit_once("__")
+                && !suffix.is_empty()
+            {
+                *composed_suffix_counts.entry(suffix).or_insert(0) += 1;
+            }
+        }
+
+        for runtime_node in manifest.nodes.values() {
+            let unique_suffix = runtime_node
+                .node_id
+                .rsplit_once("__")
+                .map(|(_, suffix)| suffix)
+                .filter(|suffix| !suffix.is_empty())
+                .filter(|suffix| composed_suffix_counts.get(*suffix).copied() == Some(1));
             for (arg_key, arg_value) in &runtime_node.args {
                 variables
                     .entry(format!("{}.{}", runtime_node.node_id, arg_key))
                     .or_insert_with(|| arg_value.clone());
+                if let Some(suffix) = unique_suffix {
+                    // Keep composed-template prompt placeholders stable for unique node-id suffixes.
+                    variables
+                        .entry(format!("{suffix}.{arg_key}"))
+                        .or_insert_with(|| arg_value.clone());
+                }
             }
         }
     }
@@ -10353,6 +10374,115 @@ mod tests {
             Some(
                 "slug=jobs\nlocal=from-resolve\nsnapshot=Snapshot focus: scheduler runtime.\n\nspec=Spec body from node\n"
             )
+        );
+    }
+
+    #[test]
+    fn workflow_runtime_prompt_resolve_supports_unique_composed_node_suffix_placeholders() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = WorkflowTemplate {
+            id: "template.runtime.prompt_placeholders.composed".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "develop_draft__resolve_prompt".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.prompt.resolve".to_string(),
+                    args: BTreeMap::from([(
+                        "prompt_text".to_string(),
+                        "slug={{persist_plan.name_override}}\nspec={{persist_plan.spec_text}}\n"
+                            .to_string(),
+                    )]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts {
+                        succeeded: vec![JobArtifact::Custom {
+                            type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                            key: "draft_main".to_string(),
+                        }],
+                        ..WorkflowOutcomeArtifacts::default()
+                    },
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "develop_draft__persist_plan".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.plan.persist".to_string(),
+                    args: BTreeMap::from([
+                        ("spec_source".to_string(), "inline".to_string()),
+                        (
+                            "spec_text".to_string(),
+                            "Spec body from composed node".to_string(),
+                        ),
+                        ("name_override".to_string(), "jobs".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let result = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-prompt-placeholders-composed",
+            "template.runtime.prompt_placeholders.composed@v1",
+            &template,
+            &[
+                "vizier".to_string(),
+                "jobs".to_string(),
+                "schedule".to_string(),
+            ],
+            None,
+        )
+        .expect("enqueue workflow run");
+        let manifest = load_workflow_run_manifest(project_root, "run-prompt-placeholders-composed")
+            .expect("workflow manifest");
+
+        let resolve_job = result
+            .job_ids
+            .get("develop_draft__resolve_prompt")
+            .expect("resolve job id")
+            .clone();
+        let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+        let resolve_node = manifest
+            .nodes
+            .get("develop_draft__resolve_prompt")
+            .expect("resolve node manifest");
+        let resolve_result =
+            execute_workflow_executor(project_root, &jobs_root, &resolve_record, resolve_node)
+                .expect("execute prompt.resolve");
+        assert_eq!(resolve_result.outcome, WorkflowNodeOutcome::Succeeded);
+        assert_eq!(resolve_result.payload_refs.len(), 1);
+
+        let payload_ref = project_root.join(resolve_result.payload_refs[0].as_str());
+        let payload_raw = fs::read_to_string(payload_ref).expect("read payload");
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload_raw).expect("parse payload json");
+        assert_eq!(
+            payload.get("text").and_then(|value| value.as_str()),
+            Some("slug=jobs\nspec=Spec body from composed node\n")
         );
     }
 

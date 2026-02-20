@@ -27,6 +27,10 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-20, composed prompt placeholder compatibility):
+  - `vizier-core/src/jobs/mod.rs` prompt variable collection now emits unique composed-node suffix aliases (`<import_prefix>__<node_id>.<arg>` also available as `<node_id>.<arg>` when suffixes are unique), preserving legacy prompt placeholders such as `persist_plan.*` under composed template imports.
+  - This restores end-to-end composed `develop` execution when stage prompt files reference canonical stage node IDs while runtime manifests carry import-prefixed node IDs.
+  - Coverage now includes `jobs::tests::workflow_runtime_prompt_resolve_supports_unique_composed_node_suffix_placeholders` and flagship alias outcome assertions for `vizier run develop` in `tests/src/run.rs`.
 - Update (2026-02-20, read-only workflow audit command):
   - `vizier-cli/src/cli/args.rs`, `vizier-cli/src/cli/dispatch.rs`, and `vizier-cli/src/actions/audit.rs` now add top-level `vizier audit <flow> [INPUT...] [--set ...] [--format text|json] [--strict]` with no enqueue/runtime flags.
   - Queue-time preprocessing was factored into `vizier-cli/src/actions/workflow_preflight.rs` and is now shared by `run --check` and `audit` (flow resolution, input mapping, `--set` expansion/coercion, entry-input preflight, and stage `spec_file` inlining).
