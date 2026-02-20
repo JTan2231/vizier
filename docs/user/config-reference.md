@@ -83,6 +83,25 @@ Current user-facing commands are:
 - `vizier completions`
 - `vizier release`
 
+## `vizier clean` Runtime Cleanup
+
+`vizier clean <job-id>` cleans scheduler/runtime residue keyed to a job id:
+
+- single-job scope when the record has no `workflow_run_id`,
+- run scope (all node jobs + run manifest) when `metadata.workflow_run_id` is present.
+
+Flags:
+
+- `-y, --yes`: skip confirmation prompt.
+- `--format text|json`: select output contract.
+- `--keep-branches`: skip branch deletion while still cleaning records/artifacts/worktrees.
+- `--force`: bypass dependency/reference guards (unsafe worktree path protections are never bypassed).
+
+Safety behavior:
+
+- default guard failures return exit `10`,
+- degraded cleanup returns non-zero unless `--force` requests best-effort completion.
+
 ## `vizier run --set` Expansion Surface
 
 `vizier run <flow> --set key=value` applies queue-time interpolation after template composition (`imports` + `links`) and after defaults from `[params]` are merged.

@@ -109,6 +109,12 @@ pub(crate) enum AuditFormatArg {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum CleanFormatArg {
+    Text,
+    Json,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum JobsListField {
     Job,
@@ -489,7 +495,7 @@ pub(crate) enum Commands {
     /// Create or reuse a plan workspace and print its path
     Cd(CdCmd),
 
-    /// Remove Vizier-managed plan workspaces
+    /// Remove Vizier-managed runtime residue for a job or workflow run
     Clean(CleanCmd),
 
     /// Inspect detached Vizier background jobs
@@ -572,13 +578,25 @@ pub(crate) struct CdCmd {
 
 #[derive(ClapArgs, Debug)]
 pub(crate) struct CleanCmd {
-    /// Plan slug to clean (omit to remove all Vizier-managed workspaces)
-    #[arg(value_name = "PLAN", add = crate::completions::plan_slug_completer())]
-    pub(crate) plan: Option<String>,
+    /// Scheduler job id to clean (workflow jobs clean the whole run scope)
+    #[arg(value_name = "JOB_ID")]
+    pub(crate) job_id: String,
 
-    /// Remove workspaces without prompting for confirmation
-    #[arg(long = "yes", short = 'y')]
+    /// Skip cleanup confirmation prompt
+    #[arg(long = "yes", short = 'y', action = ArgAction::SetTrue)]
     pub(crate) assume_yes: bool,
+
+    /// Output format (text, json)
+    #[arg(long = "format", value_enum, default_value_t = CleanFormatArg::Text)]
+    pub(crate) format: CleanFormatArg,
+
+    /// Skip local draft-branch deletion
+    #[arg(long = "keep-branches", action = ArgAction::SetTrue)]
+    pub(crate) keep_branches: bool,
+
+    /// Continue despite dependency/reference guards; still refuses unsafe paths
+    #[arg(long = "force", action = ArgAction::SetTrue)]
+    pub(crate) force: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1068,5 +1086,28 @@ mod tests {
         };
         assert!(matches!(format, Some(super::ListFormatArg::Json)));
         assert!(raw, "expected --raw on jobs list");
+    }
+
+    #[test]
+    fn clean_parse_contract_accepts_scope_and_flags() {
+        let cli = Cli::try_parse_from([
+            "vizier",
+            "clean",
+            "job-123",
+            "--yes",
+            "--format",
+            "json",
+            "--keep-branches",
+            "--force",
+        ])
+        .expect("parse clean args");
+        let Commands::Clean(cmd) = cli.command else {
+            panic!("expected clean command");
+        };
+        assert_eq!(cmd.job_id, "job-123");
+        assert!(cmd.assume_yes);
+        assert!(matches!(cmd.format, super::CleanFormatArg::Json));
+        assert!(cmd.keep_branches);
+        assert!(cmd.force);
     }
 }

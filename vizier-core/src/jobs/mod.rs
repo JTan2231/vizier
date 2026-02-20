@@ -22,7 +22,7 @@ use crate::{
     config, display,
 };
 use chrono::{DateTime, Duration, Utc};
-use git2::{Oid, Repository, WorktreePruneOptions};
+use git2::{ErrorCode, Oid, Repository, WorktreePruneOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
@@ -6695,6 +6695,122 @@ pub struct CancelJobOutcome {
     pub cleanup: CancelCleanupResult,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanScope {
+    Job,
+    Run,
+}
+
+impl CleanScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            CleanScope::Job => "job",
+            CleanScope::Run => "run",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CleanRemovedCounts {
+    pub jobs: usize,
+    pub run_manifests: usize,
+    pub artifact_markers: usize,
+    pub artifact_payloads: usize,
+    pub plan_state_deleted: usize,
+    pub plan_state_rewritten: usize,
+    pub worktrees: usize,
+    pub branches: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CleanSkippedItems {
+    #[serde(default)]
+    pub branches: Vec<String>,
+    #[serde(default)]
+    pub worktrees: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CleanJobOutcome {
+    pub scope: CleanScope,
+    pub requested_job_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub removed: CleanRemovedCounts,
+    pub skipped: CleanSkippedItems,
+    pub degraded: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degraded_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CleanJobOptions {
+    pub requested_job_id: String,
+    pub keep_branches: bool,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanJobErrorKind {
+    NotFound,
+    Guard,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct CleanJobError {
+    kind: CleanJobErrorKind,
+    message: String,
+    reasons: Vec<String>,
+}
+
+impl CleanJobError {
+    fn not_found(job_id: &str) -> Self {
+        Self {
+            kind: CleanJobErrorKind::NotFound,
+            message: format!("job {job_id} not found"),
+            reasons: Vec::new(),
+        }
+    }
+
+    fn guard(reasons: Vec<String>) -> Self {
+        Self {
+            kind: CleanJobErrorKind::Guard,
+            message: "cleanup blocked by safety guards".to_string(),
+            reasons,
+        }
+    }
+
+    fn other(message: impl Into<String>) -> Self {
+        Self {
+            kind: CleanJobErrorKind::Other,
+            message: message.into(),
+            reasons: Vec::new(),
+        }
+    }
+
+    pub fn kind(&self) -> CleanJobErrorKind {
+        self.kind
+    }
+
+    pub fn reasons(&self) -> &[String] {
+        &self.reasons
+    }
+}
+
+impl std::fmt::Display for CleanJobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.reasons.is_empty() {
+            write!(f, "{}", self.message)
+        } else {
+            write!(f, "{}: {}", self.message, self.reasons.join("; "))
+        }
+    }
+}
+
+impl std::error::Error for CleanJobError {}
+
 pub fn cancel_job_with_cleanup(
     project_root: &Path,
     jobs_root: &Path,
@@ -7039,6 +7155,740 @@ fn pid_is_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone)]
+struct CleanScopedWorktree {
+    job_id: String,
+    worktree_name: Option<String>,
+    worktree_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct CleanScopeInventory {
+    scope: CleanScope,
+    job_ids: Vec<String>,
+    run_id: Option<String>,
+    worktrees: Vec<CleanScopedWorktree>,
+    branches: Vec<String>,
+    plan_state_refs: Vec<PathBuf>,
+    plan_state_scan_errors: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct CleanSafetyEvaluation {
+    active_scoped: Vec<String>,
+    active_after_dependents: Vec<String>,
+    active_artifact_dependents: Vec<String>,
+}
+
+pub fn clean_job_scope(
+    project_root: &Path,
+    jobs_root: &Path,
+    options: CleanJobOptions,
+) -> Result<CleanJobOutcome, CleanJobError> {
+    let _lock =
+        SchedulerLock::acquire(jobs_root).map_err(|err| CleanJobError::other(err.to_string()))?;
+    let records = list_records(jobs_root).map_err(|err| CleanJobError::other(err.to_string()))?;
+    let inventory =
+        resolve_clean_scope_inventory(project_root, &records, &options.requested_job_id)?;
+
+    let scoped_job_ids = inventory.job_ids.iter().cloned().collect::<HashSet<_>>();
+    let safety = evaluate_cleanup_safety(&records, &scoped_job_ids);
+
+    if !safety.active_scoped.is_empty() {
+        return Err(CleanJobError::guard(safety.active_scoped));
+    }
+
+    let mut bypassable_reasons = Vec::new();
+    bypassable_reasons.extend(safety.active_after_dependents);
+    bypassable_reasons.extend(safety.active_artifact_dependents);
+
+    if !options.force && !bypassable_reasons.is_empty() {
+        return Err(CleanJobError::guard(bypassable_reasons));
+    }
+    if options.force {
+        for reason in &bypassable_reasons {
+            display::warn(format!("--force: {reason}"));
+        }
+    }
+
+    let mut outcome = CleanJobOutcome {
+        scope: inventory.scope,
+        requested_job_id: options.requested_job_id,
+        run_id: inventory.run_id.clone(),
+        removed: CleanRemovedCounts::default(),
+        skipped: CleanSkippedItems::default(),
+        degraded: false,
+        degraded_notes: Vec::new(),
+    };
+
+    for note in inventory.plan_state_scan_errors {
+        mark_clean_degraded(&mut outcome, note);
+    }
+
+    clean_scoped_worktrees(project_root, &inventory.worktrees, &mut outcome);
+    remove_scoped_job_dirs(jobs_root, &inventory.job_ids, &mut outcome);
+    remove_scoped_artifact_files(project_root, &scoped_job_ids, &mut outcome);
+    delete_run_manifest_if_needed(project_root, inventory.run_id.as_deref(), &mut outcome);
+    rewrite_scoped_plan_state_refs(&inventory.plan_state_refs, &scoped_job_ids, &mut outcome);
+
+    if !options.keep_branches {
+        delete_scoped_branches(project_root, &inventory.branches, &mut outcome);
+    }
+
+    if let Err(err) = prune_empty_artifact_dirs(project_root) {
+        mark_clean_degraded(
+            &mut outcome,
+            format!("unable to prune empty artifact directories: {err}"),
+        );
+    }
+
+    outcome.skipped.branches.sort();
+    outcome.skipped.branches.dedup();
+    outcome.skipped.worktrees.sort();
+    outcome.skipped.worktrees.dedup();
+    outcome.degraded_notes.sort();
+    outcome.degraded_notes.dedup();
+    outcome.degraded = !outcome.degraded_notes.is_empty();
+
+    Ok(outcome)
+}
+
+fn resolve_clean_scope_inventory(
+    project_root: &Path,
+    records: &[JobRecord],
+    requested_job_id: &str,
+) -> Result<CleanScopeInventory, CleanJobError> {
+    let requested = records
+        .iter()
+        .find(|record| record.id == requested_job_id)
+        .ok_or_else(|| CleanJobError::not_found(requested_job_id))?;
+
+    let run_id = requested
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.workflow_run_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+
+    let scope = if run_id.is_some() {
+        CleanScope::Run
+    } else {
+        CleanScope::Job
+    };
+
+    let mut job_ids = if let Some(run_id) = run_id.as_deref() {
+        records
+            .iter()
+            .filter(|record| {
+                record
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.workflow_run_id.as_deref())
+                    .map(str::trim)
+                    == Some(run_id)
+            })
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>()
+    } else {
+        vec![requested.id.clone()]
+    };
+    if job_ids.is_empty() {
+        job_ids.push(requested.id.clone());
+    }
+    job_ids.sort();
+    job_ids.dedup();
+
+    let scoped_job_ids = job_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut worktrees = Vec::new();
+    let mut branches = Vec::new();
+
+    for record in records
+        .iter()
+        .filter(|record| scoped_job_ids.contains(&record.id))
+    {
+        if let Some(metadata) = record.metadata.as_ref() {
+            if metadata.worktree_owned == Some(true) {
+                let worktree_path = metadata
+                    .worktree_path
+                    .as_deref()
+                    .map(|recorded| resolve_recorded_path(project_root, recorded));
+                worktrees.push(CleanScopedWorktree {
+                    job_id: record.id.clone(),
+                    worktree_name: metadata.worktree_name.clone(),
+                    worktree_path,
+                });
+            }
+
+            if let Some(branch) = metadata
+                .branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                branches.push(branch.to_string());
+            }
+        }
+
+        if let Some(schedule) = record.schedule.as_ref() {
+            branches.extend(collect_candidate_branches_for_schedule(schedule));
+        }
+    }
+    branches.sort();
+    branches.dedup();
+
+    let (plan_state_refs, plan_state_scan_errors) =
+        collect_plan_state_refs(project_root, &scoped_job_ids);
+
+    Ok(CleanScopeInventory {
+        scope,
+        job_ids,
+        run_id,
+        worktrees,
+        branches,
+        plan_state_refs,
+        plan_state_scan_errors,
+    })
+}
+
+fn collect_candidate_branches_for_schedule(schedule: &JobSchedule) -> Vec<String> {
+    let mut branches = Vec::new();
+    for artifact in &schedule.artifacts {
+        match artifact {
+            JobArtifact::PlanBranch { branch, .. }
+            | JobArtifact::PlanDoc { branch, .. }
+            | JobArtifact::PlanCommits { branch, .. } => {
+                let branch = branch.trim();
+                if !branch.is_empty() {
+                    branches.push(branch.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    branches
+}
+
+fn collect_plan_state_refs(
+    project_root: &Path,
+    scoped_job_ids: &HashSet<String>,
+) -> (Vec<PathBuf>, Vec<String>) {
+    let plan_state_dir = project_root.join(crate::plan::PLAN_STATE_DIR);
+    if !plan_state_dir.exists() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut refs = Vec::new();
+    let mut errors = Vec::new();
+    let entries = match fs::read_dir(&plan_state_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            errors.push(format!(
+                "unable to read plan state directory {}: {}",
+                plan_state_dir.display(),
+                err
+            ));
+            return (refs, errors);
+        }
+    };
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            errors.push(format!(
+                "unable to read entry in {}",
+                plan_state_dir.display()
+            ));
+            continue;
+        };
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) => {
+                errors.push(format!(
+                    "unable to read plan state {}: {}",
+                    path.display(),
+                    err
+                ));
+                continue;
+            }
+        };
+
+        let record = match serde_json::from_str::<crate::plan::PlanRecord>(&raw) {
+            Ok(record) => record,
+            Err(err) => {
+                errors.push(format!(
+                    "unable to parse plan state {}: {}",
+                    path.display(),
+                    err
+                ));
+                continue;
+            }
+        };
+
+        if plan_record_references_scoped_jobs(&record, scoped_job_ids) {
+            refs.push(path);
+        }
+    }
+
+    refs.sort();
+    (refs, errors)
+}
+
+fn plan_record_references_scoped_jobs(
+    record: &crate::plan::PlanRecord,
+    scoped_job_ids: &HashSet<String>,
+) -> bool {
+    if let Some(job_id) = record.work_ref.as_deref().and_then(parse_workflow_job_ref)
+        && scoped_job_ids.contains(job_id)
+    {
+        return true;
+    }
+
+    record
+        .job_ids
+        .values()
+        .any(|job_id| scoped_job_ids.contains(job_id))
+}
+
+fn parse_workflow_job_ref(work_ref: &str) -> Option<&str> {
+    work_ref
+        .trim()
+        .strip_prefix("workflow-job:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn evaluate_cleanup_safety(
+    records: &[JobRecord],
+    scoped_job_ids: &HashSet<String>,
+) -> CleanSafetyEvaluation {
+    let mut evaluation = CleanSafetyEvaluation::default();
+    let graph = ScheduleGraph::new(records.to_vec());
+
+    for record in records {
+        if scoped_job_ids.contains(&record.id) {
+            if job_is_active(record.status) {
+                evaluation.active_scoped.push(format!(
+                    "scoped job {} is active ({})",
+                    record.id,
+                    status_label(record.status)
+                ));
+            }
+            continue;
+        }
+
+        if !job_is_active(record.status) {
+            continue;
+        }
+
+        for after in graph.after_for(&record.id) {
+            if scoped_job_ids.contains(&after.job_id) {
+                evaluation.active_after_dependents.push(format!(
+                    "active job {} has --after dependency on scoped job {}",
+                    record.id, after.job_id
+                ));
+            }
+        }
+
+        for artifact in graph.dependencies_for(&record.id) {
+            let mut producers = graph.producers_for(&artifact);
+            if producers.is_empty() {
+                continue;
+            }
+            producers.sort();
+            producers.dedup();
+            if producers
+                .iter()
+                .all(|producer| scoped_job_ids.contains(producer))
+            {
+                evaluation.active_artifact_dependents.push(format!(
+                    "active job {} depends on {} produced only by scoped jobs ({})",
+                    record.id,
+                    format_artifact(&artifact),
+                    producers.join(", ")
+                ));
+            }
+        }
+    }
+
+    evaluation.active_scoped.sort();
+    evaluation.active_scoped.dedup();
+    evaluation.active_after_dependents.sort();
+    evaluation.active_after_dependents.dedup();
+    evaluation.active_artifact_dependents.sort();
+    evaluation.active_artifact_dependents.dedup();
+    evaluation
+}
+
+fn clean_scoped_worktrees(
+    project_root: &Path,
+    worktrees: &[CleanScopedWorktree],
+    outcome: &mut CleanJobOutcome,
+) {
+    let mut seen_paths = HashSet::new();
+    for worktree in worktrees {
+        let Some(path) = worktree.worktree_path.as_ref() else {
+            let label = format!("{}:<missing-worktree-path>", worktree.job_id);
+            outcome.skipped.worktrees.push(label.clone());
+            mark_clean_degraded(
+                outcome,
+                format!(
+                    "job {} is marked worktree-owned but has no worktree_path metadata",
+                    worktree.job_id
+                ),
+            );
+            continue;
+        };
+
+        let path_label = relative_path(project_root, path);
+        if !seen_paths.insert(path_label.clone()) {
+            continue;
+        }
+
+        if !worktree_safe_to_remove(project_root, path, worktree.worktree_name.as_deref()) {
+            outcome.skipped.worktrees.push(path_label.clone());
+            mark_clean_degraded(
+                outcome,
+                format!("refusing to clean unsafe worktree path {}", path.display()),
+            );
+            continue;
+        }
+
+        match cleanup_worktree(project_root, path, worktree.worktree_name.as_deref()) {
+            Ok(()) => outcome.removed.worktrees += 1,
+            Err(err) => {
+                outcome.skipped.worktrees.push(path_label.clone());
+                mark_clean_degraded(
+                    outcome,
+                    format!("worktree cleanup degraded for {}: {}", path.display(), err),
+                );
+            }
+        }
+    }
+}
+
+fn remove_scoped_job_dirs(jobs_root: &Path, job_ids: &[String], outcome: &mut CleanJobOutcome) {
+    for job_id in job_ids {
+        let job_dir = paths_for(jobs_root, job_id).job_dir;
+        if !job_dir.exists() {
+            continue;
+        }
+        match fs::remove_dir_all(&job_dir) {
+            Ok(()) => outcome.removed.jobs += 1,
+            Err(err) => mark_clean_degraded(
+                outcome,
+                format!(
+                    "unable to remove job directory {}: {}",
+                    job_dir.display(),
+                    err
+                ),
+            ),
+        }
+    }
+}
+
+fn remove_scoped_artifact_files(
+    project_root: &Path,
+    scoped_job_ids: &HashSet<String>,
+    outcome: &mut CleanJobOutcome,
+) {
+    let marker_root = project_root.join(".vizier/jobs/artifacts/custom");
+    match remove_scoped_artifact_files_in_root(&marker_root, scoped_job_ids) {
+        Ok(removed) => outcome.removed.artifact_markers += removed,
+        Err(err) => mark_clean_degraded(
+            outcome,
+            format!(
+                "unable to remove artifact markers in {}: {}",
+                marker_root.display(),
+                err
+            ),
+        ),
+    }
+
+    let payload_root = project_root.join(".vizier/jobs/artifacts/data");
+    match remove_scoped_artifact_files_in_root(&payload_root, scoped_job_ids) {
+        Ok(removed) => outcome.removed.artifact_payloads += removed,
+        Err(err) => mark_clean_degraded(
+            outcome,
+            format!(
+                "unable to remove artifact payloads in {}: {}",
+                payload_root.display(),
+                err
+            ),
+        ),
+    }
+}
+
+fn remove_scoped_artifact_files_in_root(
+    root: &Path,
+    scoped_job_ids: &HashSet<String>,
+) -> io::Result<usize> {
+    if !root.exists() {
+        return Ok(0);
+    }
+
+    let mut removed = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !scoped_job_ids.contains(stem) {
+                continue;
+            }
+            remove_file_if_exists(&path)?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
+fn delete_run_manifest_if_needed(
+    project_root: &Path,
+    run_id: Option<&str>,
+    outcome: &mut CleanJobOutcome,
+) {
+    let Some(run_id) = run_id else {
+        return;
+    };
+    let path = workflow_run_manifest_path(project_root, run_id);
+    if !path.exists() {
+        return;
+    }
+    match remove_file_if_exists(&path) {
+        Ok(()) => outcome.removed.run_manifests += 1,
+        Err(err) => mark_clean_degraded(
+            outcome,
+            format!("unable to remove run manifest {}: {}", path.display(), err),
+        ),
+    }
+}
+
+fn rewrite_scoped_plan_state_refs(
+    plan_state_refs: &[PathBuf],
+    scoped_job_ids: &HashSet<String>,
+    outcome: &mut CleanJobOutcome,
+) {
+    for path in plan_state_refs {
+        let raw = match fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(err) => {
+                mark_clean_degraded(
+                    outcome,
+                    format!("unable to read plan state {}: {}", path.display(), err),
+                );
+                continue;
+            }
+        };
+
+        let mut record = match serde_json::from_str::<crate::plan::PlanRecord>(&raw) {
+            Ok(record) => record,
+            Err(err) => {
+                mark_clean_degraded(
+                    outcome,
+                    format!("unable to parse plan state {}: {}", path.display(), err),
+                );
+                continue;
+            }
+        };
+
+        let mut changed = false;
+        if let Some(scoped_ref_job) = record.work_ref.as_deref().and_then(parse_workflow_job_ref)
+            && scoped_job_ids.contains(scoped_ref_job)
+        {
+            record.work_ref = None;
+            changed = true;
+        }
+
+        let before = record.job_ids.len();
+        record
+            .job_ids
+            .retain(|_, job_id| !scoped_job_ids.contains(job_id));
+        if record.job_ids.len() != before {
+            changed = true;
+        }
+
+        if !changed {
+            continue;
+        }
+
+        if record.work_ref.is_none() && record.job_ids.is_empty() {
+            match remove_file_if_exists(path) {
+                Ok(()) => outcome.removed.plan_state_deleted += 1,
+                Err(err) => mark_clean_degraded(
+                    outcome,
+                    format!("unable to delete plan state {}: {}", path.display(), err),
+                ),
+            }
+            continue;
+        }
+
+        match serde_json::to_string_pretty(&record)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
+            .and_then(|contents| fs::write(path, contents))
+        {
+            Ok(()) => outcome.removed.plan_state_rewritten += 1,
+            Err(err) => mark_clean_degraded(
+                outcome,
+                format!("unable to rewrite plan state {}: {}", path.display(), err),
+            ),
+        }
+    }
+}
+
+fn delete_scoped_branches(project_root: &Path, branches: &[String], outcome: &mut CleanJobOutcome) {
+    let repo = match Repository::open(project_root) {
+        Ok(repo) => repo,
+        Err(err) => {
+            mark_clean_degraded(
+                outcome,
+                format!("unable to open repository for branch cleanup: {err}"),
+            );
+            return;
+        }
+    };
+
+    let mut protected = collect_checked_out_branches_from_linked_worktrees(&repo);
+    if let Ok(head) = repo.head()
+        && head.is_branch()
+        && let Some(name) = head
+            .shorthand()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    {
+        protected.insert(name.to_string());
+    }
+
+    let mut candidates = branches
+        .iter()
+        .map(|branch| branch.trim())
+        .filter(|branch| !branch.is_empty())
+        .filter(|branch| branch.starts_with("draft/"))
+        .map(|branch| branch.to_string())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+
+    for branch in candidates {
+        if protected.contains(&branch) {
+            outcome.skipped.branches.push(branch);
+            continue;
+        }
+
+        match repo.find_branch(&branch, git2::BranchType::Local) {
+            Ok(mut local_branch) => match local_branch.delete() {
+                Ok(()) => outcome.removed.branches += 1,
+                Err(err) if branch_delete_checked_out_error(&err) => {
+                    outcome.skipped.branches.push(branch);
+                }
+                Err(err) => mark_clean_degraded(
+                    outcome,
+                    format!("unable to delete branch {}: {}", branch, err),
+                ),
+            },
+            Err(err) if err.code() == ErrorCode::NotFound => {}
+            Err(err) => mark_clean_degraded(
+                outcome,
+                format!("unable to inspect branch {}: {}", branch, err),
+            ),
+        }
+    }
+}
+
+fn collect_checked_out_branches_from_linked_worktrees(repo: &Repository) -> HashSet<String> {
+    let mut branches = HashSet::new();
+    let Ok(worktrees) = repo.worktrees() else {
+        return branches;
+    };
+
+    for name in worktrees.iter().flatten() {
+        let Ok(worktree) = repo.find_worktree(name) else {
+            continue;
+        };
+        let Ok(worktree_repo) = Repository::open(worktree.path()) else {
+            continue;
+        };
+        let Ok(head) = worktree_repo.head() else {
+            continue;
+        };
+        if !head.is_branch() {
+            continue;
+        }
+        if let Some(branch) = head
+            .shorthand()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            branches.insert(branch.to_string());
+        }
+    }
+
+    branches
+}
+
+fn branch_delete_checked_out_error(err: &git2::Error) -> bool {
+    err.message().to_ascii_lowercase().contains("checked out")
+}
+
+fn prune_empty_artifact_dirs(project_root: &Path) -> io::Result<()> {
+    for root in [
+        project_root.join(".vizier/jobs/artifacts/custom"),
+        project_root.join(".vizier/jobs/artifacts/data"),
+    ] {
+        prune_empty_dirs_non_root(&root)?;
+    }
+    Ok(())
+}
+
+fn prune_empty_dirs_non_root(dir: &Path) -> io::Result<bool> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+
+    let mut has_entries = false;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            let child_empty = prune_empty_dirs_non_root(&path)?;
+            if child_empty {
+                let _ = fs::remove_dir(&path);
+            } else {
+                has_entries = true;
+            }
+        } else {
+            has_entries = true;
+        }
+    }
+
+    Ok(!has_entries)
+}
+
+fn mark_clean_degraded(outcome: &mut CleanJobOutcome, note: impl Into<String>) {
+    outcome.degraded_notes.push(note.into());
+    outcome.degraded = true;
+}
+
 pub fn gc_jobs(
     _project_root: &Path,
     jobs_root: &Path,
@@ -7106,7 +7956,7 @@ mod tests {
     };
     use chrono::TimeZone;
     use git2::{BranchType, Signature};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::path::Path;
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
@@ -12420,6 +13270,379 @@ mod tests {
         assert!(
             paths_for(&jobs_root, "job-predecessor").job_dir.exists(),
             "expected referenced predecessor to remain after GC"
+        );
+    }
+
+    #[test]
+    fn clean_job_scope_single_job_removes_job_record_artifacts_and_plan_state() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-clean-single",
+            &["--help".to_string()],
+            &["vizier".to_string(), "run".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue clean job");
+        update_job_record(&jobs_root, "job-clean-single", |record| {
+            record.status = JobStatus::Succeeded;
+        })
+        .expect("mark succeeded");
+
+        let marker =
+            custom_artifact_marker_path(project_root, "job-clean-single", "acme.clean", "result");
+        let payload =
+            custom_artifact_payload_path(project_root, "job-clean-single", "acme.clean", "result");
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent).expect("create marker dir");
+        }
+        if let Some(parent) = payload.parent() {
+            fs::create_dir_all(parent).expect("create payload dir");
+        }
+        fs::write(&marker, "{}").expect("write marker");
+        fs::write(&payload, "{}").expect("write payload");
+
+        let plan_state_rel = crate::plan::plan_state_rel_path("pln_clean_single");
+        let plan_state_path = project_root.join(&plan_state_rel);
+        if let Some(parent) = plan_state_path.parent() {
+            fs::create_dir_all(parent).expect("create plan state dir");
+        }
+        let timestamp = Utc::now().to_rfc3339();
+        let plan_state = crate::plan::PlanRecord {
+            plan_id: "pln_clean_single".to_string(),
+            slug: Some("clean-single".to_string()),
+            branch: Some("draft/clean-single".to_string()),
+            source: None,
+            intent: None,
+            target_branch: None,
+            work_ref: Some("workflow-job:job-clean-single".to_string()),
+            status: None,
+            summary: None,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+            job_ids: HashMap::from([("persist".to_string(), "job-clean-single".to_string())]),
+        };
+        fs::write(
+            &plan_state_path,
+            serde_json::to_string_pretty(&plan_state).expect("serialize plan state"),
+        )
+        .expect("write plan state");
+
+        let outcome = clean_job_scope(
+            project_root,
+            &jobs_root,
+            CleanJobOptions {
+                requested_job_id: "job-clean-single".to_string(),
+                keep_branches: true,
+                force: false,
+            },
+        )
+        .expect("clean succeeds");
+
+        assert_eq!(outcome.scope, CleanScope::Job);
+        assert_eq!(outcome.removed.jobs, 1);
+        assert_eq!(outcome.removed.artifact_markers, 1);
+        assert_eq!(outcome.removed.artifact_payloads, 1);
+        assert_eq!(outcome.removed.plan_state_deleted, 1);
+        assert!(
+            !paths_for(&jobs_root, "job-clean-single").job_dir.exists(),
+            "expected scoped job directory removed"
+        );
+        assert!(!marker.exists(), "expected marker removed");
+        assert!(!payload.exists(), "expected payload removed");
+        assert!(
+            !plan_state_path.exists(),
+            "expected plan state with only scoped refs removed"
+        );
+    }
+
+    #[test]
+    fn clean_job_scope_expands_to_run_scope_and_removes_run_manifest() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        let run_id = "run_clean_scope";
+
+        for job_id in ["job-run-node-a", "job-run-node-b"] {
+            enqueue_job(
+                project_root,
+                &jobs_root,
+                job_id,
+                &["--help".to_string()],
+                &["vizier".to_string(), "__workflow-node".to_string()],
+                Some(JobMetadata {
+                    workflow_run_id: Some(run_id.to_string()),
+                    ..JobMetadata::default()
+                }),
+                None,
+                Some(JobSchedule::default()),
+            )
+            .expect("enqueue run node");
+            update_job_record(&jobs_root, job_id, |record| {
+                record.status = JobStatus::Succeeded;
+            })
+            .expect("mark run node succeeded");
+
+            let marker = custom_artifact_marker_path(project_root, job_id, "acme.clean", "run");
+            let payload = custom_artifact_payload_path(project_root, job_id, "acme.clean", "run");
+            if let Some(parent) = marker.parent() {
+                fs::create_dir_all(parent).expect("create marker dir");
+            }
+            if let Some(parent) = payload.parent() {
+                fs::create_dir_all(parent).expect("create payload dir");
+            }
+            fs::write(marker, "{}").expect("write marker");
+            fs::write(payload, "{}").expect("write payload");
+        }
+
+        let manifest_path = workflow_run_manifest_path(project_root, run_id);
+        if let Some(parent) = manifest_path.parent() {
+            fs::create_dir_all(parent).expect("create runs dir");
+        }
+        fs::write(&manifest_path, "{}").expect("write run manifest");
+
+        let outcome = clean_job_scope(
+            project_root,
+            &jobs_root,
+            CleanJobOptions {
+                requested_job_id: "job-run-node-a".to_string(),
+                keep_branches: true,
+                force: false,
+            },
+        )
+        .expect("run-scoped clean succeeds");
+
+        assert_eq!(outcome.scope, CleanScope::Run);
+        assert_eq!(outcome.run_id.as_deref(), Some(run_id));
+        assert_eq!(outcome.removed.jobs, 2);
+        assert_eq!(outcome.removed.run_manifests, 1);
+        assert_eq!(outcome.removed.artifact_markers, 2);
+        assert_eq!(outcome.removed.artifact_payloads, 2);
+        assert!(!manifest_path.exists(), "expected run manifest removed");
+        assert!(!paths_for(&jobs_root, "job-run-node-a").job_dir.exists());
+        assert!(!paths_for(&jobs_root, "job-run-node-b").job_dir.exists());
+    }
+
+    #[test]
+    fn clean_job_scope_blocks_active_scoped_jobs_even_with_force() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-clean-active",
+            &["--help".to_string()],
+            &["vizier".to_string(), "run".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue active job");
+
+        let err = clean_job_scope(
+            project_root,
+            &jobs_root,
+            CleanJobOptions {
+                requested_job_id: "job-clean-active".to_string(),
+                keep_branches: true,
+                force: true,
+            },
+        )
+        .expect_err("active scoped job should block cleanup");
+        assert_eq!(err.kind(), CleanJobErrorKind::Guard);
+        assert!(
+            err.reasons()
+                .iter()
+                .any(|reason| reason.contains("is active")),
+            "expected active guard reason: {:?}",
+            err.reasons()
+        );
+    }
+
+    #[test]
+    fn clean_job_scope_requires_force_for_active_non_scoped_after_dependents() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-clean-source",
+            &["--help".to_string()],
+            &["vizier".to_string(), "run".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue source job");
+        update_job_record(&jobs_root, "job-clean-source", |record| {
+            record.status = JobStatus::Succeeded;
+        })
+        .expect("mark source succeeded");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-clean-dependent",
+            &["--help".to_string()],
+            &["vizier".to_string(), "run".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                after: vec![after_dependency("job-clean-source")],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue dependent");
+        update_job_record(&jobs_root, "job-clean-dependent", |record| {
+            record.status = JobStatus::Queued;
+        })
+        .expect("mark dependent active");
+
+        let err = clean_job_scope(
+            project_root,
+            &jobs_root,
+            CleanJobOptions {
+                requested_job_id: "job-clean-source".to_string(),
+                keep_branches: true,
+                force: false,
+            },
+        )
+        .expect_err("expected dependency safety guard");
+        assert_eq!(err.kind(), CleanJobErrorKind::Guard);
+        assert!(
+            err.reasons()
+                .iter()
+                .any(|reason| reason.contains("--after dependency")),
+            "expected after-dependency guard reason: {:?}",
+            err.reasons()
+        );
+
+        let outcome = clean_job_scope(
+            project_root,
+            &jobs_root,
+            CleanJobOptions {
+                requested_job_id: "job-clean-source".to_string(),
+                keep_branches: true,
+                force: true,
+            },
+        )
+        .expect("force should bypass dependency guard");
+        assert_eq!(outcome.removed.jobs, 1);
+        assert!(!paths_for(&jobs_root, "job-clean-source").job_dir.exists());
+        assert!(
+            paths_for(&jobs_root, "job-clean-dependent")
+                .job_dir
+                .exists()
+        );
+    }
+
+    #[test]
+    fn clean_job_scope_rewrites_plan_state_when_non_scoped_refs_remain() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-clean-plan-target",
+            &["--help".to_string()],
+            &["vizier".to_string(), "run".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue target");
+        update_job_record(&jobs_root, "job-clean-plan-target", |record| {
+            record.status = JobStatus::Succeeded;
+        })
+        .expect("mark target succeeded");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "job-clean-plan-keep",
+            &["--help".to_string()],
+            &["vizier".to_string(), "run".to_string()],
+            None,
+            None,
+            Some(JobSchedule::default()),
+        )
+        .expect("enqueue keep");
+        update_job_record(&jobs_root, "job-clean-plan-keep", |record| {
+            record.status = JobStatus::Succeeded;
+        })
+        .expect("mark keep succeeded");
+
+        let plan_state_rel = crate::plan::plan_state_rel_path("pln_clean_rewrite");
+        let plan_state_path = project_root.join(&plan_state_rel);
+        if let Some(parent) = plan_state_path.parent() {
+            fs::create_dir_all(parent).expect("create plan state dir");
+        }
+        let timestamp = Utc::now().to_rfc3339();
+        let plan_state = crate::plan::PlanRecord {
+            plan_id: "pln_clean_rewrite".to_string(),
+            slug: Some("clean-rewrite".to_string()),
+            branch: Some("draft/clean-rewrite".to_string()),
+            source: None,
+            intent: None,
+            target_branch: None,
+            work_ref: Some("workflow-job:job-clean-plan-target".to_string()),
+            status: None,
+            summary: None,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+            job_ids: HashMap::from([
+                ("persist".to_string(), "job-clean-plan-target".to_string()),
+                ("other".to_string(), "job-clean-plan-keep".to_string()),
+            ]),
+        };
+        fs::write(
+            &plan_state_path,
+            serde_json::to_string_pretty(&plan_state).expect("serialize plan state"),
+        )
+        .expect("write plan state");
+
+        let outcome = clean_job_scope(
+            project_root,
+            &jobs_root,
+            CleanJobOptions {
+                requested_job_id: "job-clean-plan-target".to_string(),
+                keep_branches: true,
+                force: false,
+            },
+        )
+        .expect("clean succeeds");
+        assert_eq!(outcome.removed.plan_state_rewritten, 1);
+        assert!(
+            plan_state_path.exists(),
+            "expected rewritten plan state to remain"
+        );
+
+        let rewritten: crate::plan::PlanRecord = serde_json::from_str(
+            &fs::read_to_string(&plan_state_path).expect("read rewritten plan state"),
+        )
+        .expect("parse rewritten plan state");
+        assert_eq!(rewritten.work_ref, None);
+        assert_eq!(rewritten.job_ids.len(), 1);
+        assert_eq!(
+            rewritten.job_ids.get("other").map(String::as_str),
+            Some("job-clean-plan-keep")
         );
     }
 }

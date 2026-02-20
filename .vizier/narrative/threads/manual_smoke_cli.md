@@ -26,3 +26,6 @@ Pointers
 - vizier-cli (retained command flows and removed-command negative coverage)
 - docs/user/workflows/draft-approve-merge.md
 - .vizier/sessions/
+
+Update (2026-02-20): `vizier clean` smoke scope changed from deprecation-failure checks to functional cleanup verification.
+- Smoke runs should now cover: single-job cleanup, run-scoped cleanup via workflow node job id, guard refusal exit `10` for active/dependent jobs, `--force` best-effort bypass behavior, and `--keep-branches` branch-preservation behavior.

@@ -38,6 +38,15 @@ pub struct CdOptions {
 
 #[derive(Debug, Clone)]
 pub struct CleanOptions {
-    pub slug: Option<String>,
+    pub job_id: String,
     pub assume_yes: bool,
+    pub format: CleanOutputFormat,
+    pub keep_branches: bool,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanOutputFormat {
+    Text,
+    Json,
 }

@@ -175,7 +175,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Init(cmd) => run_init(&project_root, cmd.check),
         Commands::List(cmd) => run_list(resolve_list_options(&cmd)?),
         Commands::Cd(cmd) => run_cd(resolve_cd_options(&cmd)?),
-        Commands::Clean(cmd) => run_clean(resolve_clean_options(&cmd)?),
+        Commands::Clean(cmd) => run_clean(&project_root, resolve_clean_options(&cmd)?),
         Commands::Jobs(cmd) => {
             let jobs_root = jobs::ensure_jobs_root(&project_root)?;
             run_jobs_command(&project_root, &jobs_root, cmd, cli.global.no_ansi)

@@ -4,6 +4,9 @@
 - **`cap.agent.invoke`**: Canonical agent executor capability ID; runtime primitive that reads one prompt artifact and streams assistant output/telemetry without inline prompt construction.
 - **Auditor**: Component that records run facts, summarizes repo edits, and writes session metadata.
 - **Change discipline**: AGENTS.md contract that code changes must update docs/tests and pass `./cicd.sh`.
+- **Clean scope expansion**: `vizier clean <job-id>` resolves to one job by default, or to the full workflow run scope when the requested job record carries `metadata.workflow_run_id`.
+- **Clean safety guard**: Cleanup refusal contract (exit `10`) when scoped jobs are active or when non-scoped active jobs depend on scoped jobs via `after` or artifact-only producer sets.
+- **Clean degraded outcome**: Best-effort cleanup state where at least one scoped item could not be removed safely (for example unsafe worktree path or filesystem failure); non-zero exit unless `--force`.
 - **Clap unknown-subcommand path**: Standard parser failure surface used for removed commands; no custom migration text.
 - **Code state**: Snapshot slice for user-visible behavior, interfaces, and constraints.
 - **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
@@ -74,7 +77,7 @@
 - **Thread doc**: Focused narrative file under `.vizier/narrative/threads/` for one tension.
 - **Worktree**: Separate checkout under `.vizier/tmp-worktrees/`.
 - **Worktree inventory refresh**: Periodic evidence check that captures local `draft/*` branches, on-disk `.vizier/implementation-plans/*.md` files, and tracked plan-doc deletions for the current worktree slug so legacy drift reporting stays current.
-- **Workspace commands (`cd`/`clean`)**: Deprecated-but-retained worktree helpers currently still available on the reduced CLI surface.
+- **Workspace command (`cd`)**: Deprecated-but-retained worktree helper that still fails intentionally on invocation.
 - **`__workflow-node` entrypoint**: Hidden scheduler-only CLI command (`vizier __workflow-node --job-id <id>`) that executes one compiled workflow node and finalizes its job record.
 - **Workflow node runtime metadata**: Job metadata fields `workflow_run_id`, `workflow_node_attempt`, `workflow_node_outcome`, and `workflow_payload_refs` used by runtime node execution and retry rewinds; workflow jobs may also carry `execution_root` + worktree ownership context.
 - **Workflow run manifest**: Queue-time runtime file `.vizier/jobs/runs/<run_id>.json` containing per-node executor/control identity, args, retry policy, routing targets, and outcome artifact maps.

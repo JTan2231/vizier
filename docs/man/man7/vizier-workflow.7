@@ -17,6 +17,8 @@ Primary user-facing commands are:
 .IP "\(bu" 2
 \fBvizier list\fR
 .IP "\(bu" 2
+\fBvizier clean <job-id>\fR
+.IP "\(bu" 2
 \fBvizier jobs ...\fR
 .IP "\(bu" 2
 \fBvizier run <flow>\fR
@@ -33,8 +35,16 @@ Primary user-facing commands are:
 \fI.vizier/prompts/{DRAFT,APPROVE,MERGE,COMMIT}_PROMPTS.md\fR, root \fIci.sh\fR, and
 required \fI.gitignore\fR runtime entries.
 .PP
-\fBvizier cd\fR and \fBvizier clean\fR remain exposed but return deprecation
-errors in scheduler-managed environments.
+\fBvizier cd\fR remains exposed but returns a deprecation error in
+scheduler-managed environments.
+.PP
+\fBvizier clean <job-id>\fR removes Vizier-managed runtime residue for one
+job or an entire workflow run scope (when the requested job carries
+\fBworkflow_run_id\fR metadata). Default safety guards refuse cleanup when
+scoped jobs are active or referenced by non-scoped active jobs; these exits use
+status code \fB10\fR. \fB--force\fR bypasses dependency/reference guards (but
+never unsafe-path checks), and \fB--keep-branches\fR skips local draft-branch
+deletion.
 .PP
 \fBvizier run <flow>\fR resolves in this order: explicit file path, configured
 \fB[commands]\fR alias, then canonical selector identity (\fBtemplate.name@vN\fR).

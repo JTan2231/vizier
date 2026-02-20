@@ -1,7 +1,10 @@
+use crate::cli::prompt::prompt_yes_no;
 use crate::{jobs, plan};
 
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::path::Path;
 
 use vizier_core::{
     config,
@@ -9,7 +12,7 @@ use vizier_core::{
 };
 
 use super::shared::{format_block, format_block_with_indent, format_table};
-use super::types::{CdOptions, CleanOptions, ListOptions};
+use super::types::{CdOptions, CleanOptions, CleanOutputFormat, ListOptions};
 
 fn is_active_job(status: jobs::JobStatus) -> bool {
     matches!(
@@ -291,20 +294,166 @@ pub(crate) fn run_cd(opts: CdOptions) -> Result<(), Box<dyn std::error::Error>> 
     Err("vizier cd is deprecated; use scheduler-managed jobs instead".into())
 }
 
-pub(crate) fn run_clean(opts: CleanOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let target = opts.slug.clone().unwrap_or_else(|| "all".to_string());
-    let note = if opts.assume_yes {
-        " (--yes ignored)"
-    } else {
-        ""
+pub(crate) fn run_clean(
+    project_root: &Path,
+    opts: CleanOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    confirm_clean_if_needed(&opts)?;
+
+    let jobs_root = jobs::ensure_jobs_root(project_root)?;
+    let outcome = match jobs::clean_job_scope(
+        project_root,
+        &jobs_root,
+        jobs::CleanJobOptions {
+            requested_job_id: opts.job_id.clone(),
+            keep_branches: opts.keep_branches,
+            force: opts.force,
+        },
+    ) {
+        Ok(outcome) => outcome,
+        Err(err) if err.kind() == jobs::CleanJobErrorKind::Guard => {
+            display::emit(display::LogLevel::Error, "cleanup blocked by safety guards");
+            for reason in err.reasons() {
+                display::emit(display::LogLevel::Error, format!("  - {reason}"));
+            }
+            std::process::exit(10);
+        }
+        Err(err) => return Err(Box::new(err)),
     };
-    display::emit(
-        display::LogLevel::Error,
-        format!(
-            "vizier clean is deprecated; scheduler-managed temp worktrees replace workspaces (target: {target}){note}"
+
+    emit_clean_summary(opts.format, &outcome)?;
+
+    if outcome.degraded && !opts.force {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn confirm_clean_if_needed(opts: &CleanOptions) -> Result<(), Box<dyn std::error::Error>> {
+    if opts.assume_yes {
+        return Ok(());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Err("vizier clean requires --yes when stdin is not a TTY".into());
+    }
+
+    let prompt = format!("Clean Vizier runtime residue for `{}`?", opts.job_id);
+    let confirmed = prompt_yes_no(&prompt)?;
+    if !confirmed {
+        return Err("aborted by user".into());
+    }
+
+    Ok(())
+}
+
+fn emit_clean_summary(
+    format: CleanOutputFormat,
+    outcome: &jobs::CleanJobOutcome,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(format, CleanOutputFormat::Json) {
+        let payload = json!({
+            "outcome": "clean_completed",
+            "scope": outcome.scope.label(),
+            "requested_job_id": outcome.requested_job_id,
+            "run_id": outcome.run_id,
+            "removed": {
+                "jobs": outcome.removed.jobs,
+                "run_manifests": outcome.removed.run_manifests,
+                "artifact_markers": outcome.removed.artifact_markers,
+                "artifact_payloads": outcome.removed.artifact_payloads,
+                "plan_state_deleted": outcome.removed.plan_state_deleted,
+                "plan_state_rewritten": outcome.removed.plan_state_rewritten,
+                "worktrees": outcome.removed.worktrees,
+                "branches": outcome.removed.branches,
+            },
+            "skipped": {
+                "branches": outcome.skipped.branches,
+                "worktrees": outcome.skipped.worktrees,
+            },
+            "degraded": outcome.degraded,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    let mut rows = vec![
+        ("Outcome".to_string(), "Cleanup completed".to_string()),
+        ("Scope".to_string(), outcome.scope.label().to_string()),
+        (
+            "Requested job".to_string(),
+            outcome.requested_job_id.to_string(),
         ),
-    );
-    Err("vizier clean is deprecated; use scheduler-managed jobs instead".into())
+        ("Jobs removed".to_string(), outcome.removed.jobs.to_string()),
+        (
+            "Run manifests removed".to_string(),
+            outcome.removed.run_manifests.to_string(),
+        ),
+        (
+            "Artifact markers removed".to_string(),
+            outcome.removed.artifact_markers.to_string(),
+        ),
+        (
+            "Artifact payloads removed".to_string(),
+            outcome.removed.artifact_payloads.to_string(),
+        ),
+        (
+            "Plan states deleted".to_string(),
+            outcome.removed.plan_state_deleted.to_string(),
+        ),
+        (
+            "Plan states rewritten".to_string(),
+            outcome.removed.plan_state_rewritten.to_string(),
+        ),
+        (
+            "Worktrees removed".to_string(),
+            outcome.removed.worktrees.to_string(),
+        ),
+        (
+            "Branches removed".to_string(),
+            outcome.removed.branches.to_string(),
+        ),
+        (
+            "Degraded".to_string(),
+            if outcome.degraded {
+                "yes".to_string()
+            } else {
+                "no".to_string()
+            },
+        ),
+    ];
+    if let Some(run_id) = outcome.run_id.as_deref() {
+        rows.insert(3, ("Run".to_string(), run_id.to_string()));
+    }
+
+    println!("{}", format_block(rows));
+
+    if !outcome.skipped.worktrees.is_empty() {
+        println!();
+        println!("Skipped worktrees:");
+        for worktree in &outcome.skipped.worktrees {
+            println!("- {worktree}");
+        }
+    }
+
+    if !outcome.skipped.branches.is_empty() {
+        println!();
+        println!("Skipped branches:");
+        for branch in &outcome.skipped.branches {
+            println!("- {branch}");
+        }
+    }
+
+    if !outcome.degraded_notes.is_empty() {
+        println!();
+        println!("Degraded details:");
+        for detail in &outcome.degraded_notes {
+            println!("- {detail}");
+        }
+    }
+
+    Ok(())
 }
 
 fn list_pending_plans(opts: ListOptions) -> Result<(), Box<dyn std::error::Error>> {

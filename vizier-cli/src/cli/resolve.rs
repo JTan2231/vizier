@@ -1,7 +1,7 @@
 use std::io;
 
-use crate::actions::{CdOptions, CleanOptions, ListOptions};
-use crate::cli::args::{CdCmd, CleanCmd, ListCmd};
+use crate::actions::{CdOptions, CleanOptions, CleanOutputFormat, ListOptions};
+use crate::cli::args::{CdCmd, CleanCmd, CleanFormatArg, ListCmd};
 use crate::plan;
 
 pub(crate) fn resolve_list_options(
@@ -56,16 +56,16 @@ pub(crate) fn resolve_cd_options(cmd: &CdCmd) -> Result<CdOptions, Box<dyn std::
 pub(crate) fn resolve_clean_options(
     cmd: &CleanCmd,
 ) -> Result<CleanOptions, Box<dyn std::error::Error>> {
-    let slug = if let Some(plan) = cmd.plan.as_deref() {
-        Some(plan::sanitize_name_override(plan).map_err(|err| {
-            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::InvalidInput, err))
-        })?)
-    } else {
-        None
+    let format = match cmd.format {
+        CleanFormatArg::Text => CleanOutputFormat::Text,
+        CleanFormatArg::Json => CleanOutputFormat::Json,
     };
 
     Ok(CleanOptions {
-        slug,
+        job_id: cmd.job_id.clone(),
         assume_yes: cmd.assume_yes,
+        format,
+        keep_branches: cmd.keep_branches,
+        force: cmd.force,
     })
 }
