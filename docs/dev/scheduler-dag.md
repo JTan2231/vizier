@@ -276,6 +276,19 @@ Locks are shared or exclusive by key. When a lock cannot be acquired the job wai
 - `wait_reason.kind = locks`
 - `wait_reason.detail = "waiting on locks"`
 
+Workflow nodes enqueued through `vizier run` now receive effective locks by default:
+- Explicit override path: if a node declares one or more `locks`, those explicit locks are used as-is.
+- Implicit path: if a node does not declare locks, queue-time compile infers locks for all canonical executor/control nodes except `control.terminal` and `control.gate.approval`.
+- Inferred lock mode is `exclusive`.
+- Branch scope discovery order for inferred locks:
+  - node args (`branch`, `source_branch`, `plan_branch`, `target`, `target_branch`)
+  - node artifacts in `needs`/`produces` (`plan_branch.branch`, `plan_doc.branch`, `plan_commits.branch`, `target_branch.name`)
+  - template params (`branch`, `source_branch`, `plan_branch`, `target`, `target_branch`)
+- One lock per distinct branch value is emitted as `branch:<value>`.
+- If no branch scope is discoverable, compile emits one fallback lock: `repo_serial` (`exclusive`).
+
+Because template parsing currently models `locks` as a vector, `locks = []` and omitted `locks` are treated the same (both use implicit inference).
+
 ## Wait reasons and waited_on
 - `wait_reason.kind` is one of `dependencies`, `pinned_head`, `preconditions`, `approval`, or `locks` and includes
   a detail string describing the blocking condition.
@@ -316,6 +329,10 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 - `workflow template` / `workflow node` / `workflow policy snapshot` / `workflow gates`
 - `workflow capability` (legacy) / `workflow executor class` / `workflow executor operation` / `workflow control policy`
 - `execution_root` (effective runtime filesystem root marker)
+
+Read-only queue-time audit observability:
+- `vizier audit <flow>` now includes `effective_locks` per node (the same lock set persisted to `JobSchedule.locks` on enqueue).
+- `vizier run --check` remains validate-only and does not emit/persist schedule state.
 
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).

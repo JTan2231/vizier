@@ -19,6 +19,9 @@
 - **Execution-root edge propagation**: Runtime behavior that copies execution context (`execution_root` + worktree ownership fields) along explicit workflow routes before downstream queue/retry handling.
 - **Succeeded-edge atomic completion lock**: Workflow-node completion ordering where succeeded nodes perform source finalization, success-route context propagation, and one scheduler advancement inside a single `SchedulerLock` critical section so concurrent ticks cannot start successors before context persistence.
 - **Execution-root reset contract**: Cleanup/retry rule where successful worktree cleanup resets `execution_root` to `.` and clears `worktree_*` ownership fields; degraded cleanup preserves context for recovery.
+- **Implicit workflow lock inference**: Queue-time compile behavior where lockless canonical workflow nodes infer exclusive branch locks from args/artifacts/template params and use `repo_serial` when no branch scope is discoverable.
+- **Effective workflow locks**: The resolved per-node lock set used by scheduler enqueue (`JobSchedule.locks`) after explicit override or implicit inference resolution.
+- **`repo_serial` fallback lock**: Default exclusive lock key emitted by compile for lockless nodes with no branch context.
 - **Git CLI invocation guard**: Codebase invariant that `rg -n 'Command::new\\(\"git\"\\)' vizier-core/src vizier-cli/src vizier-kernel/src tests/src` stays empty so runtime/test Git behavior cannot regress to shelling out.
 - **Libgit2-only workflow Git runtime**: Runtime/test posture where worktree/merge/stage/patch/retry-cleanup Git flows execute through `vizier-core/src/vcs/*` helpers and `git2` APIs instead of `git` subprocesses.
 - **Linked-worktree checkout fallback**: Branch-switch behavior that detaches HEAD before reattaching to a target branch when libgit2 rejects direct checkout because the branch is already the HEAD of a linked worktree.
@@ -84,6 +87,7 @@
 - **Run check conflict set**: `vizier run --check` rejects enqueue/runtime-only flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`) so validation-only execution cannot mutate scheduler state.
 - **Schedule raw typed wait**: `vizier jobs schedule --format json --raw` row contract where `wait` is nullable typed `{kind, detail}` (versus flattened string in non-raw schedule JSON), while `edges` preserve parity with existing schedule JSON.
 - **Workflow audit mode**: `vizier audit <flow>` read-only queue-time analysis path that reuses run/check preprocessing + validation and reports output artifacts plus untethered inputs (with consumer node IDs) without enqueue/runtime side effects.
+- **Workflow audit effective-lock map**: Additive `vizier audit` output field (`effective_locks`) listing per-node effective locks from the same queue-time compile path used by enqueue.
 - **Untethered input**: A workflow `needs` artifact with zero in-template producers; surfaced by `vizier audit` and optionally promoted to exit `10` with `--strict`.
 - **Run `--set` Phase 1 surface**: Queue-time interpolation coverage for `vizier run --set` across `nodes.args`, artifact payloads (`needs`/`produces`), lock keys, custom precondition args, gate script/custom fields, gate bools, retry mode/budget, and artifact-contract IDs/versions.
 - **Run `--set` strict coercion**: Queue-time typed coercion for expanded placeholders: bool tokens (`true|false|1|0|yes|no|on|off`), retry budget as decimal `u32`, and retry mode via canonical enum parsing; failures are field-path errors that prevent enqueue.

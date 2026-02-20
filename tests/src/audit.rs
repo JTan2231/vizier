@@ -121,6 +121,24 @@ succeeded = [{ plan_doc = { slug = \"alpha\", branch = \"draft/alpha\" } }]\n",
             .and_then(Value::as_bool),
         Some(false)
     );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/0/node_id")
+            .and_then(Value::as_str),
+        Some("single")
+    );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/0/locks/0/key")
+            .and_then(Value::as_str),
+        Some("branch:draft/alpha")
+    );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/0/locks/0/mode")
+            .and_then(Value::as_str),
+        Some("exclusive")
+    );
 
     assert_eq!(
         count_run_manifests(&repo)?,
@@ -258,6 +276,84 @@ script = \"true\"\n",
         stdout.contains("Untethered inputs:") && stdout.contains("- none"),
         "missing untethered section: {stdout}"
     );
+    assert!(
+        stdout.contains("Effective locks:") && stdout.contains("single: repo_serial (exclusive)"),
+        "missing effective locks section: {stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_audit_effective_locks_show_inference_and_explicit_override() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    repo.write(
+        ".vizier/workflows/audit-locks.toml",
+        "id = \"template.audit.locks\"\n\
+version = \"v1\"\n\
+[params]\n\
+target_branch = \"main\"\n\
+[[nodes]]\n\
+id = \"inferred\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+branch = \"draft/alpha\"\n\
+script = \"true\"\n\
+[[nodes]]\n\
+id = \"explicit\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+branch = \"draft/alpha\"\n\
+script = \"true\"\n\
+[[nodes.locks]]\n\
+key = \"custom:override\"\n\
+mode = \"exclusive\"\n",
+    )?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "audit",
+            "file:.vizier/workflows/audit-locks.toml",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/0/node_id")
+            .and_then(Value::as_str),
+        Some("explicit")
+    );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/0/locks/0/key")
+            .and_then(Value::as_str),
+        Some("custom:override")
+    );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/1/node_id")
+            .and_then(Value::as_str),
+        Some("inferred")
+    );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/1/locks/0/key")
+            .and_then(Value::as_str),
+        Some("branch:draft/alpha")
+    );
+    assert_eq!(
+        payload
+            .pointer("/effective_locks/1/locks/1/key")
+            .and_then(Value::as_str),
+        Some("branch:main")
+    );
 
     Ok(())
 }
@@ -318,9 +414,19 @@ script = \"true\"\n",
         "alias and file resolution should produce identical audit artifacts"
     );
     assert_eq!(
+        by_alias.get("effective_locks"),
+        by_file.get("effective_locks"),
+        "alias and file resolution should produce identical lock inference"
+    );
+    assert_eq!(
         by_file.get("output_artifacts"),
         by_selector.get("output_artifacts"),
         "file and selector resolution should produce identical audit artifacts"
+    );
+    assert_eq!(
+        by_file.get("effective_locks"),
+        by_selector.get("effective_locks"),
+        "file and selector resolution should produce identical lock inference"
     );
 
     Ok(())

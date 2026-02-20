@@ -286,6 +286,21 @@ fn schedule_after_job_ids(record: &Value) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+fn schedule_lock_keys(record: &Value) -> Vec<String> {
+    let mut keys = record
+        .pointer("/schedule/locks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| entry.get("key").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 fn count_run_manifests(repo: &IntegrationRepo) -> TestResult<usize> {
     let runs_dir = repo.path().join(".vizier/jobs/runs");
     if !runs_dir.is_dir() {
@@ -2562,6 +2577,241 @@ fn test_run_merge_stage_default_slug_derives_source_branch() -> TestResult {
         fs::read_to_string(repo.path().join("merge-default.txt"))?.as_str(),
         "merge default branch change\n"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_merge_stage_same_target_branch_serializes_on_inferred_locks() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    for slug in ["merge-lock-a", "merge-lock-b"] {
+        let branch = format!("draft/{slug}");
+        seed_plan_branch(&repo, slug, &branch)?;
+        repo.git(&["checkout", &branch])?;
+        let file = format!("{slug}.txt");
+        let body = format!("{slug} payload\n");
+        repo.write(&file, &body)?;
+        repo.git(&["add", &file])?;
+        repo.git(&["commit", "-m", &format!("feat: prepare {slug}")])?;
+        repo.git(&["checkout", "master"])?;
+        run_stage_approve_follow(&repo, slug, &branch)?;
+    }
+
+    let first_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=merge-lock-a",
+            "--set",
+            "branch=draft/merge-lock-a",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=sleep 3",
+            "--set",
+            "merge_message=feat: merge lock a",
+            "--format",
+            "json",
+        ],
+    )?;
+    let first_run_id = first_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing first run_id")?;
+    let first_manifest = load_run_manifest(&repo, first_run_id)?;
+    let first_integrate = manifest_node_job_id(&first_manifest, "merge_integrate")?;
+    let first_cicd = manifest_node_job_id(&first_manifest, "merge_gate_cicd")?;
+    wait_for_job_status(&repo, &first_cicd, "running", Duration::from_secs(30))?;
+
+    for (job_id, source_branch) in [
+        (&first_integrate, "draft/merge-lock-a"),
+        (&first_cicd, "draft/merge-lock-a"),
+    ] {
+        let record = read_job_record(&repo, job_id)?;
+        assert_eq!(
+            schedule_lock_keys(&record),
+            vec![
+                format!("branch:{source_branch}"),
+                "branch:master".to_string(),
+            ],
+            "expected inferred merge locks for {job_id}: {record}"
+        );
+    }
+
+    let second_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=merge-lock-b",
+            "--set",
+            "branch=draft/merge-lock-b",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: merge lock b",
+            "--format",
+            "json",
+        ],
+    )?;
+    let second_run_id = second_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing second run_id")?;
+    let second_manifest = load_run_manifest(&repo, second_run_id)?;
+    let second_conflict = manifest_node_job_id(&second_manifest, "merge_conflict_resolution")?;
+    let second_integrate = manifest_node_job_id(&second_manifest, "merge_integrate")?;
+    let second_cicd = manifest_node_job_id(&second_manifest, "merge_gate_cicd")?;
+
+    for (job_id, source_branch) in [
+        (&second_integrate, "draft/merge-lock-b"),
+        (&second_cicd, "draft/merge-lock-b"),
+    ] {
+        let record = read_job_record(&repo, job_id)?;
+        assert_eq!(
+            schedule_lock_keys(&record),
+            vec![
+                format!("branch:{source_branch}"),
+                "branch:master".to_string(),
+            ],
+            "expected inferred merge locks for {job_id}: {record}"
+        );
+    }
+
+    wait_for_job_completion(&repo, &second_conflict, Duration::from_secs(30))?;
+    let waiting_record = read_job_record(&repo, &second_conflict)?;
+    let waited_on = waiting_record
+        .pointer("/schedule/waited_on")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        waited_on.iter().any(|value| value == "locks"),
+        "expected merge_conflict_resolution to record lock waiting for same target branch: {waiting_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_merge_stage_different_targets_do_not_share_inferred_locks() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    repo.git(&["checkout", "-b", "release"])?;
+    repo.git(&["checkout", "master"])?;
+
+    for slug in ["merge-main", "merge-release"] {
+        let branch = format!("draft/{slug}");
+        seed_plan_branch(&repo, slug, &branch)?;
+        repo.git(&["checkout", &branch])?;
+        let file = format!("{slug}.txt");
+        let body = format!("{slug} payload\n");
+        repo.write(&file, &body)?;
+        repo.git(&["add", &file])?;
+        repo.git(&["commit", "-m", &format!("feat: prepare {slug}")])?;
+        repo.git(&["checkout", "master"])?;
+        run_stage_approve_follow(&repo, slug, &branch)?;
+    }
+
+    let first_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=merge-main",
+            "--set",
+            "branch=draft/merge-main",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=sleep 3",
+            "--set",
+            "merge_message=feat: merge main target",
+            "--format",
+            "json",
+        ],
+    )?;
+    let first_run_id = first_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing first run_id")?;
+    let first_manifest = load_run_manifest(&repo, first_run_id)?;
+    let first_cicd = manifest_node_job_id(&first_manifest, "merge_gate_cicd")?;
+    wait_for_job_status(&repo, &first_cicd, "running", Duration::from_secs(30))?;
+
+    let second_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            "slug=merge-release",
+            "--set",
+            "branch=draft/merge-release",
+            "--set",
+            "target_branch=release",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: merge release target",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+    assert_eq!(
+        second_payload.get("terminal_state").and_then(Value::as_str),
+        Some("succeeded"),
+        "expected disjoint target merge run to succeed while another merge is active: {second_payload}"
+    );
+
+    let second_run_id = second_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing second run_id")?;
+    let second_manifest = load_run_manifest(&repo, second_run_id)?;
+    let second_integrate = manifest_node_job_id(&second_manifest, "merge_integrate")?;
+    let second_cicd = manifest_node_job_id(&second_manifest, "merge_gate_cicd")?;
+
+    for (job_id, target_branch) in [(&second_integrate, "release"), (&second_cicd, "release")] {
+        let record = read_job_record(&repo, job_id)?;
+        assert_eq!(
+            schedule_lock_keys(&record),
+            vec![
+                "branch:draft/merge-release".to_string(),
+                format!("branch:{target_branch}"),
+            ],
+            "expected disjoint lock scope for {job_id}: {record}"
+        );
+        let waited_on = record
+            .pointer("/schedule/waited_on")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(
+            !waited_on.iter().any(|value| value == "locks"),
+            "merge run with disjoint target should not wait on locks: {record}"
+        );
+    }
 
     Ok(())
 }

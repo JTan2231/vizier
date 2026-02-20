@@ -1,5 +1,6 @@
 use crate::scheduler::{
-    AfterPolicy, JobAfterDependency, JobArtifact, JobLock, MissingProducerPolicy, format_artifact,
+    AfterPolicy, JobAfterDependency, JobArtifact, JobLock, LockMode, MissingProducerPolicy,
+    format_artifact,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -707,6 +708,113 @@ pub struct CompiledWorkflowNode {
     pub on: WorkflowOutcomeEdges,
 }
 
+const LOCK_SCOPE_ARG_KEYS: &[&str] = &[
+    "branch",
+    "source_branch",
+    "plan_branch",
+    "target",
+    "target_branch",
+];
+
+fn collect_distinct_branch_scope(branches: &mut Vec<String>, candidate: &str) {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return;
+    }
+    if branches.iter().any(|existing| existing == candidate) {
+        return;
+    }
+    branches.push(candidate.to_string());
+}
+
+fn collect_branch_scope_from_artifact(branches: &mut Vec<String>, artifact: &JobArtifact) {
+    match artifact {
+        JobArtifact::PlanBranch { branch, .. }
+        | JobArtifact::PlanDoc { branch, .. }
+        | JobArtifact::PlanCommits { branch, .. } => {
+            collect_distinct_branch_scope(branches, branch)
+        }
+        JobArtifact::TargetBranch { name } => collect_distinct_branch_scope(branches, name),
+        JobArtifact::MergeSentinel { .. }
+        | JobArtifact::CommandPatch { .. }
+        | JobArtifact::Custom { .. } => {}
+    }
+}
+
+fn collect_branch_scope_from_artifacts(branches: &mut Vec<String>, artifacts: &[JobArtifact]) {
+    for artifact in artifacts {
+        collect_branch_scope_from_artifact(branches, artifact);
+    }
+}
+
+fn inferred_workflow_node_branch_scope(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Vec<String> {
+    let mut branches = Vec::new();
+
+    for key in LOCK_SCOPE_ARG_KEYS {
+        if let Some(value) = node.args.get(*key) {
+            collect_distinct_branch_scope(&mut branches, value);
+        }
+    }
+
+    collect_branch_scope_from_artifacts(&mut branches, &node.needs);
+    collect_branch_scope_from_artifacts(&mut branches, &node.produces.succeeded);
+    collect_branch_scope_from_artifacts(&mut branches, &node.produces.failed);
+    collect_branch_scope_from_artifacts(&mut branches, &node.produces.blocked);
+    collect_branch_scope_from_artifacts(&mut branches, &node.produces.cancelled);
+
+    for key in LOCK_SCOPE_ARG_KEYS {
+        if let Some(value) = template.params.get(*key) {
+            collect_distinct_branch_scope(&mut branches, value);
+        }
+    }
+
+    branches
+}
+
+fn should_infer_implicit_lock(identity: &WorkflowNodeIdentity) -> bool {
+    match identity.node_class {
+        WorkflowNodeClass::Executor => true,
+        WorkflowNodeClass::Control => !matches!(
+            identity.control_policy.as_deref(),
+            Some("terminal" | "gate.approval")
+        ),
+    }
+}
+
+fn infer_workflow_node_locks(template: &WorkflowTemplate, node: &WorkflowNode) -> Vec<JobLock> {
+    let branches = inferred_workflow_node_branch_scope(template, node);
+    if branches.is_empty() {
+        return vec![JobLock {
+            key: "repo_serial".to_string(),
+            mode: LockMode::Exclusive,
+        }];
+    }
+    branches
+        .into_iter()
+        .map(|branch| JobLock {
+            key: format!("branch:{branch}"),
+            mode: LockMode::Exclusive,
+        })
+        .collect()
+}
+
+fn effective_workflow_node_locks(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+    identity: &WorkflowNodeIdentity,
+) -> Vec<JobLock> {
+    if !node.locks.is_empty() {
+        return dedup_locks(node.locks.clone());
+    }
+    if !should_infer_implicit_lock(identity) {
+        return Vec::new();
+    }
+    dedup_locks(infer_workflow_node_locks(template, node))
+}
+
 pub fn compile_workflow_node(
     template: &WorkflowTemplate,
     node_id: &str,
@@ -754,6 +862,7 @@ pub fn compile_workflow_node(
     let policy_snapshot_hash = policy_snapshot
         .stable_hash_hex()
         .map_err(|err| format!("serialize policy snapshot for {}: {}", template.id, err))?;
+    let locks = effective_workflow_node_locks(template, node, &resolved.identity);
 
     Ok(CompiledWorkflowNode {
         template_id: template.id.clone(),
@@ -768,7 +877,7 @@ pub fn compile_workflow_node(
         policy_snapshot,
         after,
         dependencies: dedup_artifacts(node.needs.clone()),
-        locks: dedup_locks(node.locks.clone()),
+        locks,
         artifacts: node.produces.all(),
         preconditions: dedup_preconditions(node.preconditions.clone()),
         gates: dedup_gates(node.gates.clone()),
@@ -2636,6 +2745,47 @@ mod tests {
         }
     }
 
+    fn compile_single_node(
+        node: WorkflowNode,
+        params: BTreeMap<String, String>,
+    ) -> CompiledWorkflowNode {
+        let template = WorkflowTemplate {
+            id: "template.locking".to_string(),
+            version: "v1".to_string(),
+            params,
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![
+                WorkflowArtifactContract {
+                    id: "plan_branch".to_string(),
+                    version: "v1".to_string(),
+                    schema: None,
+                },
+                WorkflowArtifactContract {
+                    id: "plan_doc".to_string(),
+                    version: "v1".to_string(),
+                    schema: None,
+                },
+                WorkflowArtifactContract {
+                    id: "plan_commits".to_string(),
+                    version: "v1".to_string(),
+                    schema: None,
+                },
+                WorkflowArtifactContract {
+                    id: "target_branch".to_string(),
+                    version: "v1".to_string(),
+                    schema: None,
+                },
+                WorkflowArtifactContract {
+                    id: "stage_token".to_string(),
+                    version: "v1".to_string(),
+                    schema: None,
+                },
+            ],
+            nodes: vec![node],
+        };
+        compile_workflow_node(&template, "single", &BTreeMap::new()).expect("compile single node")
+    }
+
     #[test]
     fn policy_snapshot_hash_is_stable_for_equivalent_templates() {
         let left = sample_template();
@@ -2719,6 +2869,284 @@ mod tests {
             format_artifact(&compiled.artifacts[0]),
             "plan_commits:alpha (draft/alpha)"
         );
+    }
+
+    #[test]
+    fn compile_node_infers_branch_scoped_locks_from_args_artifacts_and_params() {
+        let node = WorkflowNode {
+            id: "single".to_string(),
+            kind: WorkflowNodeKind::Shell,
+            uses: "cap.env.shell.command.run".to_string(),
+            args: BTreeMap::from([
+                ("branch".to_string(), "draft/alpha".to_string()),
+                ("target_branch".to_string(), "main".to_string()),
+                ("script".to_string(), "true".to_string()),
+            ]),
+            after: Vec::new(),
+            needs: vec![
+                JobArtifact::PlanBranch {
+                    slug: "alpha".to_string(),
+                    branch: "draft/alpha".to_string(),
+                },
+                JobArtifact::TargetBranch {
+                    name: "main".to_string(),
+                },
+                JobArtifact::PlanDoc {
+                    slug: "beta".to_string(),
+                    branch: "draft/beta".to_string(),
+                },
+            ],
+            produces: WorkflowOutcomeArtifacts {
+                succeeded: vec![JobArtifact::PlanCommits {
+                    slug: "gamma".to_string(),
+                    branch: "draft/gamma".to_string(),
+                }],
+                ..Default::default()
+            },
+            locks: Vec::new(),
+            preconditions: Vec::new(),
+            gates: Vec::new(),
+            retry: WorkflowRetryPolicy::default(),
+            on: WorkflowOutcomeEdges::default(),
+        };
+        let params = BTreeMap::from([
+            ("branch".to_string(), "draft/alpha".to_string()),
+            ("target_branch".to_string(), "release".to_string()),
+        ]);
+        let compiled = compile_single_node(node, params);
+
+        assert_eq!(
+            compiled.locks,
+            vec![
+                JobLock {
+                    key: "branch:draft/alpha".to_string(),
+                    mode: LockMode::Exclusive,
+                },
+                JobLock {
+                    key: "branch:main".to_string(),
+                    mode: LockMode::Exclusive,
+                },
+                JobLock {
+                    key: "branch:draft/beta".to_string(),
+                    mode: LockMode::Exclusive,
+                },
+                JobLock {
+                    key: "branch:draft/gamma".to_string(),
+                    mode: LockMode::Exclusive,
+                },
+                JobLock {
+                    key: "branch:release".to_string(),
+                    mode: LockMode::Exclusive,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compile_node_uses_repo_serial_lock_when_branch_scope_is_absent() {
+        let node = WorkflowNode {
+            id: "single".to_string(),
+            kind: WorkflowNodeKind::Shell,
+            uses: "cap.env.shell.command.run".to_string(),
+            args: BTreeMap::from([("script".to_string(), "true".to_string())]),
+            after: Vec::new(),
+            needs: Vec::new(),
+            produces: WorkflowOutcomeArtifacts::default(),
+            locks: Vec::new(),
+            preconditions: Vec::new(),
+            gates: Vec::new(),
+            retry: WorkflowRetryPolicy::default(),
+            on: WorkflowOutcomeEdges::default(),
+        };
+        let compiled = compile_single_node(node, BTreeMap::new());
+
+        assert_eq!(
+            compiled.locks,
+            vec![JobLock {
+                key: "repo_serial".to_string(),
+                mode: LockMode::Exclusive,
+            }]
+        );
+    }
+
+    #[test]
+    fn compile_node_honors_explicit_lock_override() {
+        let node = WorkflowNode {
+            id: "single".to_string(),
+            kind: WorkflowNodeKind::Shell,
+            uses: "cap.env.shell.command.run".to_string(),
+            args: BTreeMap::from([
+                ("branch".to_string(), "draft/alpha".to_string()),
+                ("script".to_string(), "true".to_string()),
+            ]),
+            after: Vec::new(),
+            needs: Vec::new(),
+            produces: WorkflowOutcomeArtifacts::default(),
+            locks: vec![JobLock {
+                key: "explicit:scope".to_string(),
+                mode: LockMode::Exclusive,
+            }],
+            preconditions: Vec::new(),
+            gates: Vec::new(),
+            retry: WorkflowRetryPolicy::default(),
+            on: WorkflowOutcomeEdges::default(),
+        };
+        let compiled = compile_single_node(node, BTreeMap::new());
+
+        assert_eq!(
+            compiled.locks,
+            vec![JobLock {
+                key: "explicit:scope".to_string(),
+                mode: LockMode::Exclusive,
+            }]
+        );
+    }
+
+    #[test]
+    fn compile_node_skips_implicit_locking_for_terminal_and_approval_controls() {
+        let terminal = WorkflowNode {
+            id: "single".to_string(),
+            kind: WorkflowNodeKind::Gate,
+            uses: "control.terminal".to_string(),
+            args: BTreeMap::new(),
+            after: Vec::new(),
+            needs: Vec::new(),
+            produces: WorkflowOutcomeArtifacts::default(),
+            locks: Vec::new(),
+            preconditions: Vec::new(),
+            gates: Vec::new(),
+            retry: WorkflowRetryPolicy::default(),
+            on: WorkflowOutcomeEdges::default(),
+        };
+        let terminal_compiled = compile_single_node(
+            terminal,
+            BTreeMap::from([("branch".to_string(), "draft/alpha".to_string())]),
+        );
+        assert!(
+            terminal_compiled.locks.is_empty(),
+            "terminal control policy must not infer implicit locks"
+        );
+
+        let approval = WorkflowNode {
+            id: "single".to_string(),
+            kind: WorkflowNodeKind::Gate,
+            uses: "control.gate.approval".to_string(),
+            args: BTreeMap::new(),
+            after: Vec::new(),
+            needs: Vec::new(),
+            produces: WorkflowOutcomeArtifacts::default(),
+            locks: Vec::new(),
+            preconditions: Vec::new(),
+            gates: vec![WorkflowGate::Approval {
+                required: true,
+                policy: WorkflowGatePolicy::Block,
+            }],
+            retry: WorkflowRetryPolicy::default(),
+            on: WorkflowOutcomeEdges::default(),
+        };
+        let approval_compiled = compile_single_node(
+            approval,
+            BTreeMap::from([("branch".to_string(), "draft/alpha".to_string())]),
+        );
+        assert!(
+            approval_compiled.locks.is_empty(),
+            "approval control policy must not infer implicit locks"
+        );
+    }
+
+    #[test]
+    fn compile_node_aligns_merge_integrate_and_gate_locks_to_branch_scope() {
+        let template = WorkflowTemplate {
+            id: "template.merge.lock".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::from([
+                ("branch".to_string(), "draft/merge-alpha".to_string()),
+                ("target_branch".to_string(), "main".to_string()),
+            ]),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: "stage_token".to_string(),
+                version: "v1".to_string(),
+                schema: None,
+            }],
+            nodes: vec![
+                WorkflowNode {
+                    id: "merge_integrate".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.git.integrate_plan_branch".to_string(),
+                    args: BTreeMap::from([
+                        ("branch".to_string(), "draft/merge-alpha".to_string()),
+                        ("target_branch".to_string(), "main".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: vec![JobArtifact::Custom {
+                        type_id: "stage_token".to_string(),
+                        key: "approve:merge-alpha".to_string(),
+                    }],
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "merge_conflict_resolution".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "control.gate.conflict_resolution".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "merge_gate_cicd".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "control.gate.cicd".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: vec![WorkflowGate::Cicd {
+                        script: "true".to_string(),
+                        auto_resolve: false,
+                        policy: WorkflowGatePolicy::Retry,
+                    }],
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+        let expected = vec![
+            JobLock {
+                key: "branch:draft/merge-alpha".to_string(),
+                mode: LockMode::Exclusive,
+            },
+            JobLock {
+                key: "branch:main".to_string(),
+                mode: LockMode::Exclusive,
+            },
+        ];
+
+        for node_id in [
+            "merge_integrate",
+            "merge_conflict_resolution",
+            "merge_gate_cicd",
+        ] {
+            let compiled =
+                compile_workflow_node(&template, node_id, &BTreeMap::new()).expect("compile node");
+            assert_eq!(
+                compiled.locks, expected,
+                "node `{node_id}` should infer shared merge-scope branch locks"
+            );
+        }
     }
 
     #[test]

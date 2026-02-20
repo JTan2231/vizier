@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-20, implicit scheduler locking defaults + audit lock map):
+  - `vizier-kernel/src/workflow_template.rs` now resolves effective node locks at compile time: explicit non-empty `node.locks` remains override-only, while lockless canonical nodes infer exclusive `branch:<value>` locks from args/artifacts/template params and fall back to `repo_serial` when no branch context exists (`control.terminal` and `control.gate.approval` are excluded from inference).
+  - `vizier-core/src/jobs/mod.rs` now reuses the same preflight compile path for validation and audit, and audit now projects per-node effective lock sets from compiled nodes.
+  - `vizier-kernel/src/workflow_audit.rs` and `vizier-cli/src/actions/audit.rs` now emit additive `effective_locks` in JSON and text output while keeping existing artifact/untethered reporting and strict-exit behavior unchanged.
+  - Coverage now includes kernel lock inference unit tests, enqueue schedule-lock persistence assertions, audit lock-map integration checks, and merge-stage lock-scope serialization/disjoint-branch integration checks in `tests/src/run.rs`.
 - Update (2026-02-20, composed prompt placeholder compatibility):
   - `vizier-core/src/jobs/mod.rs` prompt variable collection now emits unique composed-node suffix aliases (`<import_prefix>__<node_id>.<arg>` also available as `<node_id>.<arg>` when suffixes are unique), preserving legacy prompt placeholders such as `persist_plan.*` under composed template imports.
   - This restores end-to-end composed `develop` execution when stage prompt files reference canonical stage node IDs while runtime manifests carry import-prefixed node IDs.

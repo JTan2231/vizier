@@ -43,9 +43,14 @@ There is no implicit repo/global flow-name fallback.
 outside the repo are allowed under the configured global workflows directory.
 For validation-only preflight, use \fBvizier run --check <flow>\fR; it performs
 queue-time checks and exits without enqueueing jobs.
+\fBvizier run\fR now infers default workflow locks at queue-time compile for
+lockless nodes (executor/control except \fBcontrol.terminal\fR and
+\fBcontrol.gate.approval\fR), deriving exclusive \fBbranch:<value>\fR locks from
+branch context and falling back to \fBrepo_serial\fR when no branch scope exists.
+Nodes that declare explicit \fBlocks\fR keep explicit-only behavior.
 \fBvizier audit <flow>\fR runs the same queue-time preprocessing path and reports
-produced artifacts plus untethered \fBneeds\fR wiring with no enqueue/runtime side
-effects.
+produced artifacts, untethered \fBneeds\fR wiring, and per-node effective locks
+with no enqueue/runtime side effects.
 \fBvizier run\fR remains the only enqueue/execution front door.
 .SH JOB OPERATIONS
 Use \fBvizier jobs\fR to inspect and control background job records:

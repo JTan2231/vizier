@@ -10,7 +10,7 @@ pub use crate::scheduler::{
     JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, MissingProducerPolicy,
     PinnedHead, format_artifact,
 };
-use crate::workflow_audit::{WorkflowAuditReport, analyze_workflow_template};
+use crate::workflow_audit::{WorkflowAuditReport, analyze_workflow_template_with_effective_locks};
 use crate::workflow_template::{
     CompiledWorkflowNode, OPERATION_OUTPUT_ARTIFACT_TYPE_ID, PROMPT_ARTIFACT_TYPE_ID, WorkflowGate,
     WorkflowNodeKind, WorkflowOutcomeEdges, WorkflowPrecondition, WorkflowRetryMode,
@@ -1442,22 +1442,36 @@ fn compile_workflow_run_nodes_with_resolved_after(
     })
 }
 
-pub fn validate_workflow_run_template(
+fn compile_workflow_run_nodes_for_preflight(
     template: &WorkflowTemplate,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<WorkflowRunCompilation, Box<dyn std::error::Error>> {
     let mut resolved_after = BTreeMap::new();
     for node in &template.nodes {
         resolved_after.insert(node.id.clone(), format!("preflight-{}", node.id));
     }
-    let _ = compile_workflow_run_nodes_with_resolved_after(template, &resolved_after)?;
+    compile_workflow_run_nodes_with_resolved_after(template, &resolved_after)
+}
+
+pub fn validate_workflow_run_template(
+    template: &WorkflowTemplate,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = compile_workflow_run_nodes_for_preflight(template)?;
     Ok(())
 }
 
 pub fn audit_workflow_run_template(
     template: &WorkflowTemplate,
 ) -> Result<WorkflowAuditReport, Box<dyn std::error::Error>> {
-    validate_workflow_run_template(template)?;
-    Ok(analyze_workflow_template(template))
+    let compilation = compile_workflow_run_nodes_for_preflight(template)?;
+    let effective_locks = compilation
+        .compiled_nodes
+        .into_iter()
+        .map(|(node_id, node)| (node_id, node.locks))
+        .collect::<BTreeMap<_, _>>();
+    Ok(analyze_workflow_template_with_effective_locks(
+        template,
+        &effective_locks,
+    ))
 }
 
 fn convert_outcome_edges_to_routes(edges: &WorkflowOutcomeEdges) -> WorkflowRouteTargets {
@@ -10120,6 +10134,19 @@ mod tests {
             resolve_meta.workflow_executor_operation.as_deref(),
             Some("prompt.resolve")
         );
+        let resolve_locks = resolve_record
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.locks.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            resolve_locks,
+            vec![JobLock {
+                key: "repo_serial".to_string(),
+                mode: LockMode::Exclusive,
+            }],
+            "expected lockless workflow node to receive inferred repo_serial lock"
+        );
         let resolve_artifacts = resolve_record
             .schedule
             .as_ref()
@@ -10147,6 +10174,19 @@ mod tests {
                 .iter()
                 .any(|dependency| dependency.job_id == resolve_job),
             "expected invoke node to depend on resolve node via on.succeeded routing"
+        );
+        let invoke_locks = invoke_record
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.locks.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            invoke_locks,
+            vec![JobLock {
+                key: "repo_serial".to_string(),
+                mode: LockMode::Exclusive,
+            }],
+            "expected inferred locks to persist in node schedule metadata"
         );
         let invoke_artifacts = invoke_record
             .schedule

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::scheduler::{JobArtifact, format_artifact};
+use crate::scheduler::{JobArtifact, JobLock, LockMode, format_artifact};
 use crate::workflow_template::{WorkflowTemplate, workflow_operation_output_artifact};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -19,14 +19,28 @@ pub struct WorkflowAuditUntetheredInput {
     pub consumers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowAuditEffectiveLocks {
+    pub node_id: String,
+    pub locks: Vec<JobLock>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct WorkflowAuditReport {
     pub output_artifacts: Vec<String>,
     pub output_artifacts_by_outcome: WorkflowAuditOutputArtifactsByOutcome,
     pub untethered_inputs: Vec<WorkflowAuditUntetheredInput>,
+    pub effective_locks: Vec<WorkflowAuditEffectiveLocks>,
 }
 
 pub fn analyze_workflow_template(template: &WorkflowTemplate) -> WorkflowAuditReport {
+    analyze_workflow_template_with_effective_locks(template, &BTreeMap::new())
+}
+
+pub fn analyze_workflow_template_with_effective_locks(
+    template: &WorkflowTemplate,
+    effective_locks_by_node: &BTreeMap<String, Vec<JobLock>>,
+) -> WorkflowAuditReport {
     let mut produced_by_artifact = BTreeMap::<String, BTreeSet<String>>::new();
     let mut consumed_by_artifact = BTreeMap::<String, BTreeSet<String>>::new();
     let mut produced_succeeded = BTreeSet::<String>::new();
@@ -94,12 +108,44 @@ pub fn analyze_workflow_template(template: &WorkflowTemplate) -> WorkflowAuditRe
             }
         })
         .collect::<Vec<_>>();
+    let mut effective_locks = template
+        .nodes
+        .iter()
+        .map(|node| WorkflowAuditEffectiveLocks {
+            node_id: node.id.clone(),
+            locks: normalize_locks(
+                effective_locks_by_node
+                    .get(&node.id)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        })
+        .collect::<Vec<_>>();
+    effective_locks.sort_by(|left, right| left.node_id.cmp(&right.node_id));
 
     WorkflowAuditReport {
         output_artifacts,
         output_artifacts_by_outcome,
         untethered_inputs,
+        effective_locks,
     }
+}
+
+fn lock_mode_rank(mode: LockMode) -> u8 {
+    match mode {
+        LockMode::Shared => 0,
+        LockMode::Exclusive => 1,
+    }
+}
+
+fn normalize_locks(mut locks: Vec<JobLock>) -> Vec<JobLock> {
+    locks.sort_by(|left, right| {
+        left.key
+            .cmp(&right.key)
+            .then(lock_mode_rank(left.mode).cmp(&lock_mode_rank(right.mode)))
+    });
+    locks.dedup();
+    locks
 }
 
 fn collect_produced_artifacts(
@@ -129,10 +175,10 @@ fn collect_produced_artifacts(
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::scheduler::JobArtifact;
+    use crate::scheduler::{JobArtifact, JobLock, LockMode};
     use crate::workflow_template::{WorkflowNode, WorkflowNodeKind, WorkflowTemplate};
 
-    use super::analyze_workflow_template;
+    use super::{analyze_workflow_template, analyze_workflow_template_with_effective_locks};
 
     fn template_with_nodes(nodes: Vec<WorkflowNode>) -> WorkflowTemplate {
         WorkflowTemplate {
@@ -293,6 +339,54 @@ mod tests {
                 "custom:operation_output:node_one".to_string(),
                 "custom:operation_output:node_two".to_string(),
                 "target_branch:main".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn report_includes_effective_locks_when_provided() {
+        let template = template_with_nodes(vec![shell_node("node_b"), shell_node("node_a")]);
+        let locks = BTreeMap::from([
+            (
+                "node_b".to_string(),
+                vec![
+                    JobLock {
+                        key: "branch:main".to_string(),
+                        mode: LockMode::Exclusive,
+                    },
+                    JobLock {
+                        key: "branch:main".to_string(),
+                        mode: LockMode::Exclusive,
+                    },
+                ],
+            ),
+            (
+                "node_a".to_string(),
+                vec![JobLock {
+                    key: "repo_serial".to_string(),
+                    mode: LockMode::Exclusive,
+                }],
+            ),
+        ]);
+
+        let report = analyze_workflow_template_with_effective_locks(&template, &locks);
+        assert_eq!(
+            report.effective_locks,
+            vec![
+                super::WorkflowAuditEffectiveLocks {
+                    node_id: "node_a".to_string(),
+                    locks: vec![JobLock {
+                        key: "repo_serial".to_string(),
+                        mode: LockMode::Exclusive,
+                    }],
+                },
+                super::WorkflowAuditEffectiveLocks {
+                    node_id: "node_b".to_string(),
+                    locks: vec![JobLock {
+                        key: "branch:main".to_string(),
+                        mode: LockMode::Exclusive,
+                    }],
+                },
             ]
         );
     }

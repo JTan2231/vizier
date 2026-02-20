@@ -170,6 +170,15 @@ Canonical \fBuses\fR IDs only (\fBcap.env.*\fR, \fBcap.agent.invoke\fR, \fBcontr
 .IP "\(bu" 2
 \fBcustom:operation_output:<node_id>\fR is an implicit reserved artifact contract;
 keys must reference an existing template node id.
+.IP "\(bu" 2
+Lock safety is defaulted at compile time: lockless canonical executor/control
+nodes (except \fBcontrol.terminal\fR and \fBcontrol.gate.approval\fR) infer
+exclusive locks from branch scope and fall back to \fBrepo_serial\fR when no
+branch scope is available.
+.IP "\(bu" 2
+Explicit lock override remains available: nodes with declared non-empty
+\fBlocks\fR use explicit locks only. (\fBlocks = []\fR is currently treated the
+same as omitted locks.)
 .SH EXAMPLE: DRAFT STAGE TEMPLATE
 The shipped draft template is at \fI.vizier/workflows/draft.hcl\fR.
 .PP
@@ -236,9 +245,9 @@ parameter expansion/coercion, capability validation, and per-node compile checks
 and exits without creating run manifests, enqueueing jobs, or ticking the scheduler.
 \fB--check\fR conflicts with enqueue/runtime flags (\fB--follow\fR, \fB--after\fR,
 \fB--require-approval\fR, \fB--no-require-approval\fR, \fB--repeat\fR).
-\fBvizier audit\fR runs the same preprocessing path, then reports output artifacts
-and untethered inputs. \fB--strict\fR returns exit code 10 when untethered inputs
-are present.
+\fBvizier audit\fR runs the same preprocessing path, then reports output artifacts,
+untethered inputs, and per-node effective locks. \fB--strict\fR returns exit code
+10 when untethered inputs are present.
 .SH SEE ALSO
 .BR vizier (1),
 .BR vizier-jobs (1),

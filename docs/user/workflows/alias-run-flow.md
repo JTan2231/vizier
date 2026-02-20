@@ -74,6 +74,12 @@ Queue-time `--set` expansion now applies beyond `nodes.args` to artifact payload
 
 Runtime nodes now follow one I/O contract behind `vizier __workflow-node`: lifecycle/progress diagnostics on `stderr`, operational output on `stdout`, and a persisted `vizier.operation_output.v1` payload under `.vizier/jobs/artifacts/data/...`. Each node implicitly publishes `custom:operation_output:<node_id>` for downstream `needs` + `read_payload(...)` consumption patterns.
 
+Workflow node locks are now safe-by-default at queue-time compile:
+
+- If a node declares one or more `locks`, Vizier uses those explicit locks only.
+- If a node omits locks (or sets `locks = []`), Vizier infers exclusive locks from branch context (`branch|source_branch|plan_branch|target|target_branch` in args/artifacts/params) and falls back to `repo_serial` when no branch scope is available.
+- Inference applies to canonical executor/control nodes except `control.terminal` and `control.gate.approval`.
+
 `--after` accepts either direct job ids or grouped run references (`run:<run_id>`). Run references expand to the previous run's success-terminal sink job ids before normal scheduler dependency validation.
 
 Use `vizier run --check` for validate-only preflight (queue-time checks only): flow resolution, template load/composition, parameter expansion/coercion, entry input checks, capability validation, and per-node compile checks all run, but Vizier does not create run manifests, enqueue jobs, or tick the scheduler. `--check` conflicts with enqueue/runtime flags: `--follow`, `--after`, `--require-approval`, `--no-require-approval`, and `--repeat`.
@@ -91,6 +97,7 @@ Use `vizier audit <flow>` for queue-time artifact wiring inspection without enqu
 - `output_artifacts` (stable, deduped union of produced artifacts, including implicit `custom:operation_output:<node_id>`)
 - `output_artifacts_by_outcome` (`succeeded|failed|blocked|cancelled`)
 - `untethered_inputs` (artifacts referenced in `needs` with no in-template producer, plus consumer node ids)
+- `effective_locks` (per-node effective lock set after compile-time inference/override resolution)
 
 Exit behavior:
 

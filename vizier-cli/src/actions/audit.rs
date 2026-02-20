@@ -7,6 +7,13 @@ use crate::actions::workflow_preflight::prepare_workflow_template;
 use crate::cli::args::{AuditCmd, AuditFormatArg};
 use crate::jobs;
 
+fn lock_mode_label(mode: vizier_core::scheduler::LockMode) -> &'static str {
+    match mode {
+        vizier_core::scheduler::LockMode::Shared => "shared",
+        vizier_core::scheduler::LockMode::Exclusive => "exclusive",
+    }
+}
+
 pub(crate) fn run_workflow_audit(
     project_root: &Path,
     cmd: AuditCmd,
@@ -47,6 +54,17 @@ fn emit_audit_summary(
                 json!({
                     "artifact": entry.artifact,
                     "consumers": entry.consumers,
+                })
+            }).collect::<Vec<_>>(),
+            "effective_locks": report.effective_locks.iter().map(|entry| {
+                json!({
+                    "node_id": entry.node_id,
+                    "locks": entry.locks.iter().map(|lock| {
+                        json!({
+                            "key": lock.key,
+                            "mode": lock_mode_label(lock.mode),
+                        })
+                    }).collect::<Vec<_>>(),
                 })
             }).collect::<Vec<_>>(),
             "summary": {
@@ -90,6 +108,25 @@ fn emit_audit_summary(
         for entry in &report.untethered_inputs {
             let consumers = entry.consumers.join(", ");
             println!("- {} (consumed by: {consumers})", entry.artifact);
+        }
+    }
+    println!();
+    println!("Effective locks:");
+    if report.effective_locks.is_empty() {
+        println!("- none");
+    } else {
+        for entry in &report.effective_locks {
+            if entry.locks.is_empty() {
+                println!("- {}: none", entry.node_id);
+                continue;
+            }
+            let locks = entry
+                .locks
+                .iter()
+                .map(|lock| format!("{} ({})", lock.key, lock_mode_label(lock.mode)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("- {}: {}", entry.node_id, locks);
         }
     }
 
