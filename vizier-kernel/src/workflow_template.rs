@@ -875,6 +875,9 @@ pub fn validate_workflow_capability_contracts(template: &WorkflowTemplate) -> Re
             Some("gate.cicd") => {
                 validate_cicd_gate_contract(template, &by_id, node)?;
             }
+            Some("terminal") => {
+                validate_terminal_contract(template, node)?;
+            }
             _ => {}
         }
     }
@@ -1563,6 +1566,35 @@ fn validate_cicd_gate_contract(
             "gate.cicd",
             node,
             "enables auto_resolve but on.failed does not return to the gate",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_terminal_contract(
+    template: &WorkflowTemplate,
+    node: &WorkflowNode,
+) -> Result<(), String> {
+    if !matches!(node.kind, WorkflowNodeKind::Gate) {
+        return Err(contract_error(
+            template,
+            "terminal",
+            node,
+            &format!("uses kind {:?}; expected gate", node.kind),
+        ));
+    }
+
+    let has_routes = !node.on.succeeded.is_empty()
+        || !node.on.failed.is_empty()
+        || !node.on.blocked.is_empty()
+        || !node.on.cancelled.is_empty();
+    if has_routes {
+        return Err(contract_error(
+            template,
+            "terminal",
+            node,
+            "must not declare outgoing routes",
         ));
     }
 
@@ -3791,6 +3823,58 @@ mod tests {
             .expect_err("auto-resolve cicd gate without retry closure should fail");
         assert!(error.contains("gate.cicd"), "unexpected error: {error}");
         assert!(error.contains("on.failed"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_capability_contracts_rejects_terminal_with_outgoing_routes() {
+        let template = WorkflowTemplate {
+            id: "template.terminal".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![],
+            nodes: vec![
+                WorkflowNode {
+                    id: "terminal".to_string(),
+                    kind: WorkflowNodeKind::Gate,
+                    uses: "control.terminal".to_string(),
+                    args: BTreeMap::new(),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges {
+                        succeeded: vec!["next".to_string()],
+                        ..Default::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "next".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([("script".to_string(), "true".to_string())]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: WorkflowRetryPolicy::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let error = validate_workflow_capability_contracts(&template)
+            .expect_err("terminal node with outgoing routes should fail");
+        assert!(error.contains("terminal"), "unexpected error: {error}");
+        assert!(
+            error.contains("outgoing routes"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

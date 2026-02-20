@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use vizier_core::{
     config,
-    scheduler::{JobArtifact, JobLock},
+    scheduler::{AfterPolicy, JobArtifact, JobLock},
     workflow_template::{
         WorkflowAfterDependency, WorkflowArtifactContract, WorkflowGate, WorkflowGatePolicy,
         WorkflowNode, WorkflowNodeKind, WorkflowOutcomeArtifacts, WorkflowOutcomeEdges,
@@ -422,13 +422,20 @@ fn compose_template(
             return Err(format!("stage `{to}` has no entry nodes to link to").into());
         }
 
-        let target_ids = target_stage.entry_nodes.clone();
-        for node in &mut nodes {
-            if source_stage.terminal_nodes.iter().any(|id| id == &node.id) {
-                for target in &target_ids {
-                    if !node.on.succeeded.iter().any(|existing| existing == target) {
-                        node.on.succeeded.push(target.clone());
-                    }
+        for target in &target_stage.entry_nodes {
+            let node = nodes
+                .iter_mut()
+                .find(|candidate| candidate.id == *target)
+                .ok_or_else(|| {
+                    format!("stage `{to}` entry node `{target}` missing from composed node list")
+                })?;
+            for source in &source_stage.terminal_nodes {
+                let dependency = WorkflowAfterDependency {
+                    node_id: source.clone(),
+                    policy: AfterPolicy::Success,
+                };
+                if !node.after.iter().any(|existing| existing == &dependency) {
+                    node.after.push(dependency);
                 }
             }
         }
@@ -1508,7 +1515,22 @@ mod tests {
             .iter()
             .find(|node| node.id == "stage_a__a1")
             .expect("stage_a node");
-        assert_eq!(stage_a.on.succeeded, vec!["stage_b__b1".to_string()]);
+        assert!(
+            stage_a.on.succeeded.is_empty(),
+            "composed source terminal nodes should remain terminal sinks"
+        );
+
+        let stage_b = template
+            .nodes
+            .iter()
+            .find(|node| node.id == "stage_b__b1")
+            .expect("stage_b node");
+        assert!(
+            stage_b.after.iter().any(|dependency| {
+                dependency.node_id == "stage_a__a1" && dependency.policy == AfterPolicy::Success
+            }),
+            "composed target entry nodes should depend on upstream terminal sinks"
+        );
     }
 
     #[test]
