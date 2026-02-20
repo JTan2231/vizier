@@ -75,6 +75,7 @@ With these contracts in place, `vizier run draft`, `vizier run approve`, and `vi
   - merge companion: `.vizier/prompts/MERGE_PROMPTS.md`
 - `prompt.resolve` now renders `{{placeholder}}` tokens found in prompt text and requires every placeholder to resolve.
 - Placeholder resolution sources are generic: current node args (`{{key}}`), any run-manifest node arg (`{{node_id.arg_key}}`), and file includes (`{{file:relative/or/absolute/path}}`).
+- In composed workflows (for example `develop` imports), `prompt.resolve` also resolves same-stage local aliases (`{{persist_plan.spec_text}}`) in addition to fully-qualified namespaced keys (`{{develop_draft__persist_plan.spec_text}}`).
 - Unresolved prompt placeholders fail the `resolve_prompt` node with an explicit error.
 - Entry-node preflight now reports missing root inputs before enqueue, including actionable examples derived from `[cli].positional`/`[cli].named`.
 - Stage `worktree_prepare` defaults to `draft/<slug>` when `branch` is unset; provide `branch` explicitly to override.
