@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_11a1750a19594db7a778fc5aecc97377",
+  "slug": "res",
+  "branch": "draft/res",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_cb138286122643079a82a23b9c38cb96-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Global Workflow Bundle Fallback (`RES`)",
+  "created_at": "2026-02-20T04:12:09.886541+00:00",
+  "updated_at": "2026-02-20T04:12:09.886541+00:00",
+  "job_ids": {
+    "persist": "wf-run_cb138286122643079a82a23b9c38cb96-develop_draft__persist_plan"
+  }
+}

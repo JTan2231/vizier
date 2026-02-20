@@ -86,4 +86,5 @@ With these contracts in place, `vizier run draft`, `vizier run approve`, and `vi
 - `vizier run --repeat <N>` applies to stage aliases as well (`draft`, `approve`, `merge`), enqueuing repeated stage runs in strict sequence by chaining each iteration on the previous iteration's success sinks.
 - `vizier run --after`, `--require-approval`, and `--follow` remain available stage orchestration controls.
 - Job log streaming is command-local: `vizier jobs tail <job> --follow`.
-- Help output is pager-aware on TTY and plain in non-TTY contexts.
+- Help output auto-pages only on TTY (using `$VIZIER_PAGER` when set, otherwise the fallback pager) and prints directly on non-TTY output.
+- Explicit `--pager` is unsupported; hidden `--no-pager` is internal-only.

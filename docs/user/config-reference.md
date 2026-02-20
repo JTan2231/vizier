@@ -23,6 +23,13 @@ Effective settings are resolved in this order:
 
 Legacy workflow-global flags are no longer supported.
 
+## Help Paging
+
+- Help output auto-pages only when stdout is a TTY.
+- `VIZIER_PAGER` can override the pager command; otherwise Vizier falls back to the built-in pager command.
+- Non-TTY help output is always printed directly (pager is skipped).
+- Explicit `--pager` is unsupported; hidden `--no-pager` remains internal-only.
+
 ## Common Tables
 
 - `[display]`: output formatting defaults for list/jobs views.

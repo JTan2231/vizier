@@ -49,7 +49,7 @@
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
 - **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `run`, `audit`, `completions`, `release`.
 - **Removed command family**: Hard-removed top-level commands: `save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`.
-- **Pager flag contract drift**: Documentation mismatch where AGENTS advertises explicit `--pager` while the CLI currently rejects it and only retains hidden `--no-pager`.
+- **Pager flag regression guard**: CLI/docs/tests invariant where help auto-pages only on TTY via `$VIZIER_PAGER` (or fallback), non-TTY help prints directly, explicit `--pager` is rejected, and hidden `--no-pager` remains internal.
 - **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, `--background-job-id`.
 - **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
 - **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.

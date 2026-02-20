@@ -193,6 +193,36 @@ fn test_removed_commands_fail_as_unknown_subcommands() -> TestResult {
 }
 
 #[test]
+fn test_removed_pager_flag_fails_as_unknown_argument_without_custom_guidance() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    for args in [["help", "--pager"], ["list", "--pager"]] {
+        let output = repo.vizier_output(&args)?;
+        assert!(
+            !output.status.success(),
+            "`vizier {}` should fail",
+            args.join(" ")
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("unexpected argument '--pager'"),
+            "expected generic Clap unknown-argument error for {:?}: {stderr}",
+            args
+        );
+        assert!(
+            !stderr.contains("global `--pager` was removed")
+                && !stderr.contains("use supported workflow commands")
+                && !stderr.contains("was removed"),
+            "should not emit custom migration guidance for {:?}: {stderr}",
+            args
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_help_command_matches_subcommand_help() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
