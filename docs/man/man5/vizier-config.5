@@ -35,6 +35,9 @@ Scheduler/job controls such as cancellation cleanup behavior.
 \fB[commits]\fR
 Release and commit metadata presentation defaults.
 .TP
+\fB[release.gate]\fR
+Optional release gate script command run by \fBvizier release\fR after release commit/tag creation; supports per-run override via \fB--release-script\fR and suppression via \fB--no-release-script\fR.
+.TP
 \fB[workflow.global_workflows]\fR
 Controls whether explicit workflow file selectors outside the repo root are allowed under the configured global workflows directory (\fI<base_config_dir>/vizier/workflows\fR by default).
 .SH ENVIRONMENT

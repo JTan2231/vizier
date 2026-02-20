@@ -871,6 +871,22 @@ pub(crate) struct ReleaseCmd {
     /// Create only the release commit and skip annotated tag creation
     #[arg(long = "no-tag", action = ArgAction::SetTrue)]
     pub(crate) no_tag: bool,
+
+    /// Override the configured release gate command for this run
+    #[arg(
+        long = "release-script",
+        value_name = "CMD",
+        conflicts_with = "no_release_script"
+    )]
+    pub(crate) release_script: Option<String>,
+
+    /// Disable the configured release gate command for this run
+    #[arg(
+        long = "no-release-script",
+        action = ArgAction::SetTrue,
+        conflicts_with = "release_script"
+    )]
+    pub(crate) no_release_script: bool,
 }
 
 #[derive(ClapArgs, Debug)]

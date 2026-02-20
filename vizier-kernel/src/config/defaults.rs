@@ -295,6 +295,7 @@ impl Default for Config {
             approve: ApproveConfig::default(),
             review: ReviewConfig::default(),
             merge: MergeConfig::default(),
+            release: ReleaseConfig::default(),
             commits: CommitConfig::default(),
             display: DisplaySettings::default(),
             jobs: JobsConfig::default(),

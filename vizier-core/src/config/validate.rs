@@ -337,6 +337,24 @@ retries = 3
     }
 
     #[test]
+    fn test_release_gate_defaults() {
+        let cfg = Config::default();
+        assert_eq!(cfg.release.gate.script, None);
+    }
+
+    #[test]
+    fn test_release_gate_config_from_toml() {
+        let toml = r#"
+[release.gate]
+script = "./cicd.sh"
+"#;
+        let mut file = NamedTempFile::new().expect("temp toml");
+        file.write_all(toml.as_bytes()).unwrap();
+        let cfg = load_config_from_toml(file.path().to_path_buf()).expect("parse release config");
+        assert_eq!(cfg.release.gate.script, Some("./cicd.sh".to_string()));
+    }
+
+    #[test]
     fn test_approve_stop_condition_defaults() {
         let cfg = Config::default();
         assert_eq!(cfg.approve.stop_condition.script, None);
@@ -658,6 +676,9 @@ retries = 5
 script = "./scripts/global-ci.sh"
 retries = 4
 
+[release.gate]
+script = "./scripts/global-release.sh"
+
 [merge.conflicts]
 auto_resolve = false
 
@@ -696,6 +717,9 @@ retries = 2
 [merge.cicd_gate]
 auto_resolve = true
 
+[release.gate]
+script = "./scripts/repo-release.sh"
+
 [merge.conflicts]
 auto_resolve = true
 
@@ -732,6 +756,11 @@ keep_branch = true
         assert_eq!(
             cfg.merge.cicd_gate.retries, 4,
             "numeric config should fall back to the global layer when repo omits it"
+        );
+        assert_eq!(
+            cfg.release.gate.script.as_deref(),
+            Some("./scripts/repo-release.sh"),
+            "repo release gate script should override the global release gate script"
         );
         assert_eq!(
             cfg.approve.stop_condition.script,

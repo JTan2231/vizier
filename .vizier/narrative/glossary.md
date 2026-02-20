@@ -73,6 +73,8 @@
 - **Runtime execution root resolution**: Workflow-node rule that resolves handler roots by precedence (`metadata.execution_root` -> repo root) with repo-boundary validation; legacy-only `metadata.worktree_path` metadata is rejected with migration guidance.
 - **Sink policy (`terminal`)**: Canonical control-node contract where terminal nodes must have no outgoing routes; configured outgoing edges are treated as runtime failure.
 - **Release dry run**: `vizier release --dry-run` preview mode for version bump and notes without commit/tag creation.
+- **Release gate script**: Optional `vizier release` post-mutation command configured by `[release.gate].script`, overridable with `--release-script <cmd>`, suppressible with `--no-release-script`, and executed from repo root with `VIZIER_RELEASE_VERSION`, `VIZIER_RELEASE_TAG`, `VIZIER_RELEASE_COMMIT`, and `VIZIER_RELEASE_RANGE`.
+- **Release transaction rollback**: Script-failure recovery contract for `vizier release` that deletes the created release tag (if any), resets the original branch to the recorded start commit, and hard-restores index/worktree state.
 - **Session log**: Per-run artifact at `.vizier/sessions/<id>/session.json` when session logging is enabled.
 - **Snapshot**: Canonical project frame in `.vizier/narrative/snapshot.md`.
 - **snapshotDelta**: Internal narrative-diff artifact not printed in user-facing responses.

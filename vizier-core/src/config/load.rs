@@ -586,6 +586,10 @@ fn load_config_layer_from_value(
         }
     }
 
+    if let Some(release_table) = value_at_path(&file_config, &["release"]) {
+        parse_release_table(release_table, &mut layer.release)?;
+    }
+
     if let Some(build_table) = value_at_path(&file_config, &["build"]) {
         parse_build_table(build_table, &mut layer.build)?;
     }
@@ -1177,6 +1181,38 @@ fn parse_merge_cicd_gate(
             .or_else(|| table.get("max-attempts")),
     ) {
         gate.retries = Some(retries);
+    }
+
+    Ok(())
+}
+
+fn parse_release_table(
+    value: &serde_json::Value,
+    layer: &mut ReleaseLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(gate_table) = table.get("gate") {
+        parse_release_gate(gate_table, &mut layer.gate)?;
+    }
+
+    Ok(())
+}
+
+fn parse_release_gate(
+    value: &serde_json::Value,
+    gate: &mut ReleaseGateLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let table = match value.as_object() {
+        Some(obj) => obj,
+        None => return Ok(()),
+    };
+
+    if let Some(script) = parse_nonempty_string(table.get("script")) {
+        gate.script = Some(script);
     }
 
     Ok(())

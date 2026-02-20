@@ -1,9 +1,12 @@
 use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::Utc;
-use git2::{Repository, RepositoryState};
-use vizier_core::vcs::{
-    self, ReleaseBump, ReleaseCommit, ReleaseNotes, ReleaseTag, ReleaseVersion,
+use git2::{ErrorCode, Oid, Repository, RepositoryState, ResetType, build::CheckoutBuilder};
+use vizier_core::{
+    config,
+    vcs::{self, ReleaseBump, ReleaseCommit, ReleaseNotes, ReleaseTag, ReleaseVersion},
 };
 
 use super::shared::format_block;
@@ -22,12 +25,85 @@ struct ReleasePlan {
     notes: ReleaseNotes,
 }
 
+#[derive(Clone, Debug)]
+struct ReleaseScript {
+    command: String,
+    source: ReleaseScriptSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseScriptSource {
+    CliOverride,
+    Config,
+}
+
+impl ReleaseScriptSource {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::CliOverride => "--release-script",
+            Self::Config => "[release.gate].script",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReleaseStartState {
+    repo_root: PathBuf,
+    start_head: Oid,
+    branch_name: String,
+}
+
+#[derive(Clone, Debug)]
+struct ReleaseTransaction {
+    repo_root: PathBuf,
+    start_head: Oid,
+    branch_name: String,
+    created_commit: Oid,
+    created_tag: Option<String>,
+}
+
+#[derive(Default)]
+struct RollbackOutcome {
+    tag_removed: Option<bool>,
+    branch_restored: bool,
+    worktree_restored: bool,
+    errors: Vec<String>,
+}
+
+impl RollbackOutcome {
+    fn succeeded(&self) -> bool {
+        self.errors.is_empty()
+            && self.tag_removed.unwrap_or(true)
+            && self.branch_restored
+            && self.worktree_restored
+    }
+}
+
+#[derive(Debug)]
+enum ReleaseScriptFailure {
+    Spawn(String),
+    Exit(i32),
+    Signal,
+}
+
+impl ReleaseScriptFailure {
+    fn summary(&self) -> String {
+        match self {
+            Self::Spawn(detail) => format!("failed to start ({detail})"),
+            Self::Exit(code) => format!("exit {code}"),
+            Self::Signal => "terminated by signal".to_string(),
+        }
+    }
+}
+
 pub(crate) fn run_release(cmd: ReleaseCmd) -> Result<(), Box<dyn std::error::Error>> {
     if cmd.max_commits == 0 {
         return Err("--max-commits must be at least 1".into());
     }
 
     ensure_release_preconditions()?;
+
+    let release_script = resolve_release_script(&cmd)?;
 
     let last_tag = vcs::latest_reachable_release_tag()?;
     let commits = vcs::commits_since_release_tag(last_tag.as_ref())?;
@@ -75,6 +151,8 @@ pub(crate) fn run_release(cmd: ReleaseCmd) -> Result<(), Box<dyn std::error::Err
 
     confirm_release_if_needed(&cmd, &plan)?;
 
+    let start_state = capture_release_start_state()?;
+
     let commit_message = build_release_commit_message(&plan);
     let commit_oid = vcs::add_and_commit(None, &commit_message, true)?;
 
@@ -93,7 +171,52 @@ pub(crate) fn run_release(cmd: ReleaseCmd) -> Result<(), Box<dyn std::error::Err
         tag_created = true;
     }
 
-    print_release_outcome(&plan, commit_oid, tag_created);
+    let transaction = ReleaseTransaction {
+        repo_root: start_state.repo_root.clone(),
+        start_head: start_state.start_head,
+        branch_name: start_state.branch_name,
+        created_commit: commit_oid,
+        created_tag: if tag_created {
+            Some(plan.target_tag.clone())
+        } else {
+            None
+        },
+    };
+
+    let mut script_status = None;
+
+    if let Some(script) = release_script.as_ref() {
+        print_release_script_invocation(script);
+        match run_release_script(
+            script,
+            &start_state.repo_root,
+            &plan,
+            commit_oid,
+            tag_created,
+        ) {
+            Ok(()) => {
+                script_status = Some("passed (exit 0)".to_string());
+            }
+            Err(failure) => {
+                let rollback = rollback_release_transaction(&transaction);
+                print_release_failure(&plan, script, &failure, &transaction, &rollback);
+                if rollback.succeeded() {
+                    return Err(format!(
+                        "release script failed ({}); release commit/tag rolled back",
+                        failure.summary()
+                    )
+                    .into());
+                }
+                return Err(format!(
+                    "release script failed ({}); rollback incomplete; see output for recovery instructions",
+                    failure.summary()
+                )
+                .into());
+            }
+        }
+    }
+
+    print_release_outcome(&plan, commit_oid, tag_created, script_status.as_deref());
     Ok(())
 }
 
@@ -106,6 +229,298 @@ fn forced_bump_from_flags(cmd: &ReleaseCmd) -> Option<ReleaseBump> {
         Some(ReleaseBump::Patch)
     } else {
         None
+    }
+}
+
+fn resolve_release_script(
+    cmd: &ReleaseCmd,
+) -> Result<Option<ReleaseScript>, Box<dyn std::error::Error>> {
+    if cmd.no_release_script {
+        return Ok(None);
+    }
+
+    if let Some(raw) = cmd.release_script.as_ref() {
+        let command = raw.trim();
+        if command.is_empty() {
+            return Err("--release-script must be a non-empty command".into());
+        }
+        return Ok(Some(ReleaseScript {
+            command: command.to_string(),
+            source: ReleaseScriptSource::CliOverride,
+        }));
+    }
+
+    let cfg = config::get_config();
+    let Some(configured) = cfg.release.gate.script else {
+        return Ok(None);
+    };
+
+    let command = configured.trim();
+    if command.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ReleaseScript {
+        command: command.to_string(),
+        source: ReleaseScriptSource::Config,
+    }))
+}
+
+fn capture_release_start_state() -> Result<ReleaseStartState, Box<dyn std::error::Error>> {
+    let repo = Repository::discover(".")?;
+    let repo_root = repo
+        .workdir()
+        .map(|path| path.to_path_buf())
+        .ok_or("repository has no working directory")?;
+    let head = repo.head()?;
+    let start_head = head
+        .target()
+        .ok_or("HEAD does not point to a commit; cannot start release transaction")?;
+    let branch_name = head
+        .shorthand()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("cannot determine current branch for release transaction")?
+        .to_string();
+
+    Ok(ReleaseStartState {
+        repo_root,
+        start_head,
+        branch_name,
+    })
+}
+
+fn run_release_script(
+    script: &ReleaseScript,
+    repo_root: &Path,
+    plan: &ReleasePlan,
+    commit_oid: Oid,
+    tag_created: bool,
+) -> Result<(), ReleaseScriptFailure> {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&script.command)
+        .current_dir(repo_root)
+        .env("VIZIER_RELEASE_VERSION", plan.next_version.to_string())
+        .env(
+            "VIZIER_RELEASE_TAG",
+            if tag_created {
+                plan.target_tag.as_str()
+            } else {
+                ""
+            },
+        )
+        .env("VIZIER_RELEASE_COMMIT", commit_oid.to_string())
+        .env(
+            "VIZIER_RELEASE_RANGE",
+            commit_range_label(plan.last_tag.as_ref()),
+        );
+
+    let status = command
+        .status()
+        .map_err(|err| ReleaseScriptFailure::Spawn(err.to_string()))?;
+
+    if status.success() {
+        Ok(())
+    } else if let Some(code) = status.code() {
+        Err(ReleaseScriptFailure::Exit(code))
+    } else {
+        Err(ReleaseScriptFailure::Signal)
+    }
+}
+
+fn rollback_release_transaction(txn: &ReleaseTransaction) -> RollbackOutcome {
+    let mut outcome = RollbackOutcome::default();
+
+    let repo = match Repository::open(&txn.repo_root) {
+        Ok(repo) => repo,
+        Err(err) => {
+            outcome
+                .errors
+                .push(format!("failed to open repository for rollback: {err}"));
+            return outcome;
+        }
+    };
+
+    if let Some(tag_name) = txn.created_tag.as_ref() {
+        let reference_name = format!("refs/tags/{tag_name}");
+        match repo.find_reference(&reference_name) {
+            Ok(mut reference) => match reference.delete() {
+                Ok(()) => outcome.tag_removed = Some(true),
+                Err(err) => {
+                    outcome.tag_removed = Some(false);
+                    outcome
+                        .errors
+                        .push(format!("failed to delete tag `{tag_name}`: {err}"));
+                }
+            },
+            Err(err) if err.code() == ErrorCode::NotFound => {
+                outcome.tag_removed = Some(true);
+            }
+            Err(err) => {
+                outcome.tag_removed = Some(false);
+                outcome.errors.push(format!(
+                    "failed to inspect created tag `{tag_name}` during rollback: {err}"
+                ));
+            }
+        }
+    }
+
+    let branch_ref = format!("refs/heads/{}", txn.branch_name);
+    match repo.find_reference(&branch_ref) {
+        Ok(mut branch) => match branch.set_target(txn.start_head, "vizier release rollback") {
+            Ok(_) => outcome.branch_restored = true,
+            Err(err) => {
+                outcome.errors.push(format!(
+                    "failed to reset branch `{}` to {}: {err}",
+                    txn.branch_name, txn.start_head
+                ));
+            }
+        },
+        Err(err) => {
+            outcome.errors.push(format!(
+                "failed to locate branch `{}` for rollback: {err}",
+                txn.branch_name
+            ));
+        }
+    }
+
+    if let Err(err) = repo.set_head(&branch_ref) {
+        outcome.errors.push(format!(
+            "failed to checkout branch `{}` during rollback: {err}",
+            txn.branch_name
+        ));
+    }
+
+    match repo.find_object(txn.start_head, None) {
+        Ok(start_object) => {
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force().remove_untracked(true);
+            match repo.reset(&start_object, ResetType::Hard, Some(&mut checkout)) {
+                Ok(()) => outcome.worktree_restored = true,
+                Err(err) => {
+                    outcome.errors.push(format!(
+                        "failed to restore worktree/index to {}: {err}",
+                        txn.start_head
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            outcome.errors.push(format!(
+                "failed to resolve start commit {} during rollback: {err}",
+                txn.start_head
+            ));
+        }
+    }
+
+    outcome
+}
+
+fn print_release_script_invocation(script: &ReleaseScript) {
+    let rows = vec![
+        ("Release script".to_string(), script.command.clone()),
+        (
+            "Script source".to_string(),
+            script.source.label().to_string(),
+        ),
+        ("Script status".to_string(), "running".to_string()),
+    ];
+    println!("{}", format_block(rows));
+}
+
+fn print_release_failure(
+    plan: &ReleasePlan,
+    script: &ReleaseScript,
+    failure: &ReleaseScriptFailure,
+    txn: &ReleaseTransaction,
+    rollback: &RollbackOutcome,
+) {
+    let rows = vec![
+        ("Outcome".to_string(), "Release failed".to_string()),
+        ("Version".to_string(), format!("v{}", plan.next_version)),
+        ("Release script".to_string(), script.command.clone()),
+        (
+            "Script source".to_string(),
+            script.source.label().to_string(),
+        ),
+        ("Script status".to_string(), failure.summary()),
+        (
+            "Rollback".to_string(),
+            if rollback.succeeded() {
+                "complete".to_string()
+            } else {
+                "incomplete".to_string()
+            },
+        ),
+        (
+            "Tag rollback".to_string(),
+            tag_rollback_label(txn, rollback),
+        ),
+        (
+            "Branch rollback".to_string(),
+            if rollback.branch_restored {
+                format!(
+                    "restored {} to {}",
+                    txn.branch_name,
+                    short_oid(txn.start_head)
+                )
+            } else {
+                format!(
+                    "FAILED to restore {} to {}",
+                    txn.branch_name,
+                    short_oid(txn.start_head)
+                )
+            },
+        ),
+        (
+            "Worktree rollback".to_string(),
+            if rollback.worktree_restored {
+                format!("restored to {}", short_oid(txn.start_head))
+            } else {
+                format!("FAILED to restore to {}", short_oid(txn.start_head))
+            },
+        ),
+    ];
+
+    println!("{}", format_block(rows));
+
+    if rollback.succeeded() {
+        return;
+    }
+
+    println!("\nRollback recovery details:");
+    println!("  start_head: {}", txn.start_head);
+    println!("  created_commit: {}", txn.created_commit);
+    println!("  branch: {}", txn.branch_name);
+    if let Some(tag_name) = txn.created_tag.as_ref() {
+        println!("  created_tag: {tag_name}");
+    } else {
+        println!("  created_tag: <none>");
+    }
+
+    if !rollback.errors.is_empty() {
+        println!("  rollback_errors:");
+        for err in &rollback.errors {
+            println!("    - {err}");
+        }
+    }
+
+    println!("\nManual recovery suggestions:");
+    println!("  git checkout {}", txn.branch_name);
+    println!("  git reset --hard {}", txn.start_head);
+    if let Some(tag_name) = txn.created_tag.as_ref() {
+        println!("  git tag -d {tag_name}");
+    }
+}
+
+fn tag_rollback_label(txn: &ReleaseTransaction, rollback: &RollbackOutcome) -> String {
+    match txn.created_tag.as_ref() {
+        None => "skipped (no tag created)".to_string(),
+        Some(tag_name) => match rollback.tag_removed {
+            Some(true) => format!("removed {tag_name}"),
+            _ => format!("FAILED to remove {tag_name}"),
+        },
     }
 }
 
@@ -146,7 +561,7 @@ fn repository_state_message(state: RepositoryState) -> Option<&'static str> {
     }
 }
 
-fn short_oid(oid: git2::Oid) -> String {
+fn short_oid(oid: Oid) -> String {
     let text = oid.to_string();
     text.chars().take(8).collect()
 }
@@ -331,8 +746,13 @@ fn build_tag_annotation(plan: &ReleasePlan) -> String {
     )
 }
 
-fn print_release_outcome(plan: &ReleasePlan, commit_oid: git2::Oid, tag_created: bool) {
-    let rows = vec![
+fn print_release_outcome(
+    plan: &ReleasePlan,
+    commit_oid: Oid,
+    tag_created: bool,
+    script_status: Option<&str>,
+) {
+    let mut rows = vec![
         ("Outcome".to_string(), "Release complete".to_string()),
         ("Version".to_string(), format!("v{}", plan.next_version)),
         ("Commit".to_string(), short_oid(commit_oid)),
@@ -349,6 +769,10 @@ fn print_release_outcome(plan: &ReleasePlan, commit_oid: git2::Oid, tag_created:
             commit_range_label(plan.last_tag.as_ref()),
         ),
     ];
+
+    if let Some(status) = script_status {
+        rows.push(("Release script".to_string(), status.to_string()));
+    }
 
     println!("{}", format_block(rows));
 }

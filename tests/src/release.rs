@@ -12,6 +12,43 @@ fn tag_names(repo: &IntegrationRepo) -> TestResult<Vec<String>> {
     Ok(names)
 }
 
+fn write_executable_script(
+    repo: &IntegrationRepo,
+    rel: &str,
+    contents: &str,
+) -> TestResult<PathBuf> {
+    repo.write(rel, contents)?;
+    let path = repo.path().join(rel);
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(path)
+}
+
+fn write_release_gate_config(repo: &IntegrationRepo, script: &str) -> TestResult<PathBuf> {
+    let config = format!(
+        r#"[release.gate]
+script = "{script}"
+"#
+    );
+    let rel = ".vizier/tmp/release-config.toml";
+    repo.write(rel, &config)?;
+    Ok(repo.path().join(rel))
+}
+
+fn vizier_output_with_config(
+    repo: &IntegrationRepo,
+    config_path: &Path,
+    args: &[&str],
+) -> io::Result<Output> {
+    let mut cmd = repo.vizier_cmd_with_config(config_path);
+    cmd.args(args);
+    cmd.output()
+}
+
 #[test]
 fn test_release_dry_run_prints_plan_without_mutation() -> TestResult {
     let repo = IntegrationRepo::new()?;
@@ -21,10 +58,24 @@ fn test_release_dry_run_prints_plan_without_mutation() -> TestResult {
     repo.git(&["add", "release.txt"])?;
     repo.git(&["commit", "-m", "feat: add release flow"])?;
 
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/release_dry_run_gate.sh",
+        r#"#!/bin/sh
+set -eu
+printf "ran\n" > .vizier/tmp/dry_run_gate_marker.txt
+"#,
+    )?;
+
     let commit_count_before = count_commits_from_head(&repo.repo())?;
     let tags_before = tag_names(&repo)?;
 
-    let output = repo.vizier_output(&["release", "--dry-run"])?;
+    let output = repo.vizier_output(&[
+        "release",
+        "--dry-run",
+        "--release-script",
+        "./.vizier/tmp/release_dry_run_gate.sh",
+    ])?;
     assert!(
         output.status.success(),
         "vizier release --dry-run failed: {}",
@@ -75,6 +126,133 @@ fn test_release_dry_run_prints_plan_without_mutation() -> TestResult {
         "dry-run must not create commits"
     );
     assert_eq!(tags_before, tags_after, "dry-run must not create tags");
+    assert!(
+        !repo
+            .path()
+            .join(".vizier/tmp/dry_run_gate_marker.txt")
+            .exists(),
+        "dry-run must not run configured release script"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_release_configured_script_runs_with_release_metadata() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write("release.txt", "fix one\n")?;
+    repo.git(&["add", "release.txt"])?;
+    repo.git(&["commit", "-m", "fix: patch release metadata"])?;
+
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/release_gate_success.sh",
+        r#"#!/bin/sh
+set -eu
+printf "%s\n" "${VIZIER_RELEASE_VERSION}" > release_version_env.txt
+printf "%s\n" "${VIZIER_RELEASE_TAG}" > release_tag_env.txt
+printf "%s\n" "${VIZIER_RELEASE_COMMIT}" > release_commit_env.txt
+printf "%s\n" "${VIZIER_RELEASE_RANGE}" > release_range_env.txt
+"#,
+    )?;
+    let config_path = write_release_gate_config(&repo, "./.vizier/tmp/release_gate_success.sh")?;
+
+    let output = vizier_output_with_config(&repo, &config_path, &["release", "--yes"])?;
+    assert!(
+        output.status.success(),
+        "vizier release --yes failed with configured gate: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let head_commit = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        repo.read("release_version_env.txt")?.trim(),
+        "0.0.1",
+        "script should receive computed release version"
+    );
+    assert_eq!(
+        repo.read("release_tag_env.txt")?.trim(),
+        "v0.0.1",
+        "script should receive created release tag"
+    );
+    assert_eq!(
+        repo.read("release_commit_env.txt")?.trim(),
+        head_commit.id().to_string(),
+        "script should receive created release commit"
+    );
+    assert_eq!(
+        repo.read("release_range_env.txt")?.trim(),
+        "<repo-root>..HEAD",
+        "script should receive release range"
+    );
+    assert!(
+        repo_handle.find_reference("refs/tags/v0.0.1").is_ok(),
+        "release tag should exist after successful scripted release"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Release script") && stdout.contains("passed (exit 0)"),
+        "release output should include script status: {stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_release_script_failure_rolls_back_commit_and_tag() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write("release.txt", "fix one\n")?;
+    repo.git(&["add", "release.txt"])?;
+    repo.git(&["commit", "-m", "fix: rollback release metadata"])?;
+
+    let start_head = repo.repo().head()?.peel_to_commit()?.id();
+
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/release_gate_fail.sh",
+        r#"#!/bin/sh
+set -eu
+[ -n "${VIZIER_RELEASE_COMMIT}" ]
+[ "${VIZIER_RELEASE_TAG}" = "v0.0.1" ]
+exit 23
+"#,
+    )?;
+    let config_path = write_release_gate_config(&repo, "./.vizier/tmp/release_gate_fail.sh")?;
+
+    let output = vizier_output_with_config(&repo, &config_path, &["release", "--yes"])?;
+    assert!(
+        !output.status.success(),
+        "release should fail when release gate fails"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("release script failed"),
+        "expected release script failure message in stderr: {stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Rollback") && stdout.contains("complete"),
+        "expected rollback status in output: {stdout}"
+    );
+
+    let repo_handle = repo.repo();
+    let end_head = repo_handle.head()?.peel_to_commit()?.id();
+    assert_eq!(
+        end_head, start_head,
+        "rollback should restore branch HEAD to start commit"
+    );
+    assert!(
+        repo_handle.find_reference("refs/tags/v0.0.1").is_err(),
+        "rollback should delete created release tag"
+    );
 
     Ok(())
 }
@@ -263,6 +441,151 @@ fn test_release_force_bump_overrides_auto_and_no_tag_skips_tag() -> TestResult {
 }
 
 #[test]
+fn test_release_no_tag_script_receives_empty_tag_env() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write("docs.txt", "notes\n")?;
+    repo.git(&["add", "docs.txt"])?;
+    repo.git(&["commit", "-m", "docs: release note-only change"])?;
+
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/release_gate_no_tag.sh",
+        r#"#!/bin/sh
+set -eu
+printf "%s\n" "${VIZIER_RELEASE_TAG}" > no_tag_env.txt
+printf "%s\n" "${VIZIER_RELEASE_COMMIT}" > no_tag_commit_env.txt
+"#,
+    )?;
+
+    let output = repo.vizier_output(&[
+        "release",
+        "--yes",
+        "--minor",
+        "--no-tag",
+        "--release-script",
+        "./.vizier/tmp/release_gate_no_tag.sh",
+    ])?;
+    assert!(
+        output.status.success(),
+        "release with --no-tag and release script failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let repo_handle = repo.repo();
+    let head_commit = repo_handle.head()?.peel_to_commit()?;
+    assert_eq!(
+        repo.read("no_tag_env.txt")?.trim(),
+        "",
+        "no-tag release should pass empty VIZIER_RELEASE_TAG"
+    );
+    assert_eq!(
+        repo.read("no_tag_commit_env.txt")?.trim(),
+        head_commit.id().to_string(),
+        "script should still observe release commit in no-tag mode"
+    );
+    assert!(
+        repo_handle.find_reference("refs/tags/v0.1.0").is_err(),
+        "--no-tag should keep tag absent even when release script runs"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_release_script_override_takes_precedence_over_config() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write("fix.txt", "one\n")?;
+    repo.git(&["add", "fix.txt"])?;
+    repo.git(&["commit", "-m", "fix: script override precedence"])?;
+
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/configured_release_gate.sh",
+        r#"#!/bin/sh
+set -eu
+printf "configured\n" > configured_gate_ran.txt
+"#,
+    )?;
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/override_release_gate.sh",
+        r#"#!/bin/sh
+set -eu
+printf "override\n" > override_gate_ran.txt
+"#,
+    )?;
+    let config_path = write_release_gate_config(&repo, "./.vizier/tmp/configured_release_gate.sh")?;
+
+    let output = vizier_output_with_config(
+        &repo,
+        &config_path,
+        &[
+            "release",
+            "--yes",
+            "--release-script",
+            "./.vizier/tmp/override_release_gate.sh",
+        ],
+    )?;
+    assert!(
+        output.status.success(),
+        "release with script override failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        repo.path().join("override_gate_ran.txt").exists(),
+        "override script should run"
+    );
+    assert!(
+        !repo.path().join("configured_gate_ran.txt").exists(),
+        "configured script should not run when --release-script is provided"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_no_release_script_disables_configured_release_gate() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    repo.write("fix.txt", "one\n")?;
+    repo.git(&["add", "fix.txt"])?;
+    repo.git(&["commit", "-m", "fix: disable configured release gate"])?;
+
+    write_executable_script(
+        &repo,
+        ".vizier/tmp/configured_release_gate.sh",
+        r#"#!/bin/sh
+set -eu
+printf "configured\n" > configured_gate_ran.txt
+"#,
+    )?;
+    let config_path = write_release_gate_config(&repo, "./.vizier/tmp/configured_release_gate.sh")?;
+
+    let output = vizier_output_with_config(
+        &repo,
+        &config_path,
+        &["release", "--yes", "--no-release-script"],
+    )?;
+    assert!(
+        output.status.success(),
+        "release with --no-release-script failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !repo.path().join("configured_gate_ran.txt").exists(),
+        "configured release gate should be skipped when --no-release-script is set"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_release_refuses_dirty_worktree() -> TestResult {
     let repo = IntegrationRepo::new()?;
     clean_workdir(&repo)?;
@@ -407,6 +730,8 @@ fn test_release_help_lists_flags() -> TestResult {
         "--patch",
         "--max-commits",
         "--no-tag",
+        "--release-script",
+        "--no-release-script",
     ] {
         assert!(
             stdout.contains(expected),

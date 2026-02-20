@@ -492,6 +492,7 @@ pub struct Config {
     pub approve: ApproveConfig,
     pub review: ReviewConfig,
     pub merge: MergeConfig,
+    pub release: ReleaseConfig,
     pub commits: CommitConfig,
     pub display: DisplaySettings,
     pub jobs: JobsConfig,
@@ -536,6 +537,16 @@ pub struct MergeConfig {
     pub conflicts: MergeConflictsConfig,
     pub squash_default: bool,
     pub squash_mainline: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseGateConfig {
+    pub script: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseConfig {
+    pub gate: ReleaseGateConfig,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -982,6 +993,16 @@ pub struct MergeLayer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseGateLayer {
+    pub script: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseLayer {
+    pub gate: ReleaseGateLayer,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildProfileLayer {
     pub pipeline: Option<BuildPipeline>,
     pub merge_target: Option<BuildMergeTarget>,
@@ -1154,6 +1175,7 @@ pub struct ConfigLayer {
     pub approve: ApproveLayer,
     pub review: ReviewLayer,
     pub merge: MergeLayer,
+    pub release: ReleaseLayer,
     pub commits: CommitLayer,
     pub display: DisplayLayer,
     pub jobs: JobsLayer,

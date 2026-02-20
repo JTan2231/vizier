@@ -41,6 +41,20 @@ impl MergeConfig {
     }
 }
 
+impl ReleaseGateConfig {
+    fn apply_layer(&mut self, layer: &ReleaseGateLayer) {
+        if let Some(script) = layer.script.as_ref() {
+            self.script = Some(script.clone());
+        }
+    }
+}
+
+impl ReleaseConfig {
+    fn apply_layer(&mut self, layer: &ReleaseLayer) {
+        self.gate.apply_layer(&layer.gate);
+    }
+}
+
 impl BuildProfileConfig {
     fn apply_layer(&mut self, layer: &BuildProfileLayer) {
         if let Some(pipeline) = layer.pipeline {
@@ -389,6 +403,7 @@ impl Config {
         }
 
         self.merge.apply_layer(&layer.merge);
+        self.release.apply_layer(&layer.release);
         self.commits.apply_layer(&layer.commits);
         self.display.apply_layer(&layer.display);
         self.jobs.apply_layer(&layer.jobs);

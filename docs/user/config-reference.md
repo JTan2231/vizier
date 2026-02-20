@@ -35,6 +35,7 @@ Legacy workflow-global flags are no longer supported.
 - `[display]`: output formatting defaults for list/jobs views.
 - `[jobs]`: cancellation and retention behavior for job operations.
 - `[commits]`: release/commit metadata formatting controls.
+- `[release.gate]`: optional post-mutation release script for `vizier release`.
 - `[commands]`: alias-to-template mapping consumed by `vizier run <alias>`.
 - `[workflow.global_workflows]`: allowlist for explicit workflow file selectors outside the repo root.
 - `[agents.default]`, `[agents.commands.<alias>]`, `[agents.templates."<selector>"]`: agent/prompt/runtime overrides.
@@ -82,6 +83,31 @@ Current user-facing commands are:
 - `vizier audit`
 - `vizier completions`
 - `vizier release`
+
+## `vizier release` Gate Script
+
+Configure a default script:
+
+```toml
+[release.gate]
+script = "./cicd.sh"
+```
+
+Resolution order:
+
+1. `--no-release-script` disables script execution for that run.
+2. `--release-script <cmd>` overrides config for that run.
+3. `[release.gate].script` applies when present.
+4. Otherwise no release script runs.
+
+When a release script runs, it executes from the repo root after release commit/tag creation and receives:
+
+- `VIZIER_RELEASE_VERSION`
+- `VIZIER_RELEASE_TAG` (empty with `--no-tag`)
+- `VIZIER_RELEASE_COMMIT`
+- `VIZIER_RELEASE_RANGE`
+
+If the script fails, Vizier fails the release and attempts local rollback of created commit/tag state.
 
 ## `vizier clean` Runtime Cleanup
 
