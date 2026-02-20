@@ -1405,9 +1405,27 @@ pub(crate) fn run_jobs_command(
             job,
             stream,
             follow,
-        } => jobs::tail_job_logs(jobs_root, &job, stream.into(), follow),
+        } => {
+            let binary = std::env::current_exe()?;
+            jobs::tail_job_logs(
+                project_root,
+                jobs_root,
+                &binary,
+                &job,
+                stream.into(),
+                follow,
+            )
+        }
         JobsAction::Attach { job } => {
-            jobs::tail_job_logs(jobs_root, &job, jobs::LogStream::Both, true)
+            let binary = std::env::current_exe()?;
+            jobs::tail_job_logs(
+                project_root,
+                jobs_root,
+                &binary,
+                &job,
+                jobs::LogStream::Both,
+                true,
+            )
         }
         JobsAction::Cancel {
             job,

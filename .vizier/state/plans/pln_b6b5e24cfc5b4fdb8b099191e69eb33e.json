@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_b6b5e24cfc5b4fdb8b099191e69eb33e",
+  "slug": "pid",
+  "branch": "draft/pid",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_41b6708650b44079b567492cdeb04b35-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Running-Job PID Liveness Reconciliation (`PID`)",
+  "created_at": "2026-02-20T09:55:16.735187+00:00",
+  "updated_at": "2026-02-20T09:55:16.735187+00:00",
+  "job_ids": {
+    "persist": "wf-run_41b6708650b44079b567492cdeb04b35-develop_draft__persist_plan"
+  }
+}

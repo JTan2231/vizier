@@ -3388,7 +3388,7 @@ fn test_run_after_and_approval_overrides_affect_root_jobs() -> TestResult {
     write_job_record_simple(
         &repo,
         "dep-running",
-        "running",
+        "waiting_on_deps",
         "2026-02-14T00:00:00Z",
         None,
         &["dep"],
@@ -4075,6 +4075,201 @@ uses = \"control.gate.approval\"\n",
         failed.status.code(),
         Some(10),
         "failure should not map to blocked code"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_follow_reconciles_dead_worker_pid_to_terminal_failure() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/follow-stale-pid.toml", "sleep 30")?;
+
+    let runs_dir = repo.path().join(".vizier/jobs/runs");
+    let mut known_run_ids = HashSet::new();
+    if runs_dir.exists() {
+        for entry in fs::read_dir(&runs_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+                known_run_ids.insert(stem.to_string());
+            }
+        }
+    }
+
+    let mut cmd = repo.vizier_cmd_background();
+    cmd.args([
+        "run",
+        "file:.vizier/workflows/follow-stale-pid.toml",
+        "--follow",
+        "--format",
+        "json",
+    ]);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let child = cmd.spawn()?;
+
+    let start = Instant::now();
+    let run_id = loop {
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err("timed out waiting for run manifest".into());
+        }
+        if let Ok(entries) = fs::read_dir(&runs_dir) {
+            let mut discovered = None::<String>;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if known_run_ids.contains(stem) {
+                    continue;
+                }
+                discovered = Some(stem.to_string());
+                break;
+            }
+            if let Some(run_id) = discovered {
+                break run_id;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let manifest = load_run_manifest(&repo, &run_id)?;
+    let root_job = manifest_node_job_id(&manifest, "single")?;
+    wait_for_job_status(&repo, &root_job, "running", Duration::from_secs(10))?;
+
+    let running = read_job_record(&repo, &root_job)?;
+    let pid = running
+        .get("pid")
+        .and_then(Value::as_u64)
+        .ok_or("missing running pid on follow stale test")? as u32;
+    terminate_pid(pid);
+
+    let output = child.wait_with_output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected follow stale run to exit 1: stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let payload = serde_json::from_slice::<Value>(&output.stdout)?;
+    assert_eq!(
+        payload.get("terminal_state").and_then(Value::as_str),
+        Some("failed"),
+        "expected failed terminal state: {payload}"
+    );
+    assert_eq!(
+        payload.get("exit_code").and_then(Value::as_i64),
+        Some(1),
+        "expected failed exit code mapping: {payload}"
+    );
+
+    let final_record = read_job_record(&repo, &root_job)?;
+    assert_eq!(
+        final_record.get("status").and_then(Value::as_str),
+        Some("failed"),
+        "expected stale worker root job to fail: {final_record}"
+    );
+    let liveness_state = final_record
+        .pointer("/metadata/process_liveness_state")
+        .and_then(Value::as_str);
+    assert!(
+        matches!(
+            liveness_state,
+            Some("stale_not_running") | Some("stale_identity_mismatch")
+        ),
+        "expected stale_not_running or stale_identity_mismatch metadata on failed root: {final_record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_jobs_tail_follow_reconciles_stale_running_missing_pid() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    let job_id = "tail-stale-missing-pid";
+    write_job_record_simple(
+        &repo,
+        job_id,
+        "running",
+        "2026-02-20T02:00:00Z",
+        None,
+        &["vizier", "save", "tail-stale-missing-pid"],
+    )?;
+
+    let output = repo.vizier_output(&["jobs", "tail", "--follow", job_id])?;
+    assert!(
+        output.status.success(),
+        "jobs tail --follow should reconcile stale job: stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("failed"),
+        "expected stale tail job to fail: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/process_liveness_state")
+            .and_then(Value::as_str),
+        Some("stale_missing_pid"),
+        "expected stale missing pid metadata: {record}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_jobs_attach_reconciles_stale_running_dead_pid() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    let job_id = "attach-stale-dead-pid";
+    write_job_record_simple(
+        &repo,
+        job_id,
+        "running",
+        "2026-02-20T02:00:00Z",
+        None,
+        &["vizier", "save", "attach-stale-dead-pid"],
+    )?;
+    update_job_record(&repo, job_id, |record| {
+        record["pid"] = Value::from(999_999);
+    })?;
+
+    let output = repo.vizier_output(&["jobs", "attach", job_id])?;
+    assert!(
+        output.status.success(),
+        "jobs attach should reconcile stale dead-pid job: stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let record = read_job_record(&repo, job_id)?;
+    assert_eq!(
+        record.get("status").and_then(Value::as_str),
+        Some("failed"),
+        "expected stale attach job to fail: {record}"
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/process_liveness_state")
+            .and_then(Value::as_str),
+        Some("stale_not_running"),
+        "expected stale not running metadata: {record}"
     );
 
     Ok(())

@@ -24,6 +24,12 @@ Update (2026-02-20, raw monitoring JSON surface)
 - Non-raw output behavior remains unchanged across block/table/json formats.
 - Scheduler architecture docs now document raw and non-raw contracts side-by-side.
 
+Update (2026-02-20, running-job PID liveness reconciliation)
+- Scheduler ticks now reconcile stale `running` records before fact evaluation: missing/dead PID and identity mismatch states are terminalized as `failed` with additive `process_liveness_*` metadata.
+- Stale workflow-node records preserve failed-route parity: reconciliation sets `workflow_node_outcome=failed` and reuses failed-route retry semantics with lock-safe sequencing.
+- `vizier jobs tail --follow` and `vizier jobs attach` now run reconciliation while waiting, preventing indefinite hangs on stale `running` records.
+- Scheduler docs and runtime/integration coverage were updated to reflect the new operator-visible failure behavior.
+
 Pointers
 - `vizier-core/src/jobs/mod.rs`
 - `vizier-cli/src/cli/args.rs`

@@ -194,6 +194,18 @@ pub struct JobMetadata {
     pub cancel_cleanup_error: Option<String>,
     pub retry_cleanup_status: Option<RetryCleanupStatus>,
     pub retry_cleanup_error: Option<String>,
+    pub process_liveness_state: Option<ProcessLivenessState>,
+    pub process_liveness_checked_at: Option<DateTime<Utc>>,
+    pub process_liveness_failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessLivenessState {
+    Alive,
+    StaleMissingPid,
+    StaleNotRunning,
+    StaleIdentityMismatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1027,6 +1039,15 @@ fn merge_metadata(
             }
             if update.retry_cleanup_error.is_some() {
                 base.retry_cleanup_error = update.retry_cleanup_error;
+            }
+            if update.process_liveness_state.is_some() {
+                base.process_liveness_state = update.process_liveness_state;
+            }
+            if update.process_liveness_checked_at.is_some() {
+                base.process_liveness_checked_at = update.process_liveness_checked_at;
+            }
+            if update.process_liveness_failure_reason.is_some() {
+                base.process_liveness_failure_reason = update.process_liveness_failure_reason;
             }
             Some(base)
         }
@@ -2942,6 +2963,228 @@ fn build_scheduler_facts(
     Ok(facts)
 }
 
+#[derive(Debug, Clone)]
+struct RunningJobLivenessProbe {
+    state: ProcessLivenessState,
+    checked_at: DateTime<Utc>,
+    failure_reason: Option<String>,
+}
+
+impl RunningJobLivenessProbe {
+    fn alive(checked_at: DateTime<Utc>) -> Self {
+        Self {
+            state: ProcessLivenessState::Alive,
+            checked_at,
+            failure_reason: None,
+        }
+    }
+
+    fn stale(
+        state: ProcessLivenessState,
+        checked_at: DateTime<Utc>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            state,
+            checked_at,
+            failure_reason: Some(reason.into()),
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.state != ProcessLivenessState::Alive
+    }
+}
+
+enum ProcessIdentityProbe {
+    Match,
+    Mismatch(String),
+    Unavailable(String),
+}
+
+fn process_identity_expected_token(record: &JobRecord) -> Option<&str> {
+    record
+        .child_args
+        .first()
+        .map(String::as_str)
+        .or_else(|| record.command.first().map(String::as_str))
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+}
+
+#[cfg(unix)]
+fn probe_process_identity(record: &JobRecord, pid: u32) -> ProcessIdentityProbe {
+    let Some(expected) = process_identity_expected_token(record) else {
+        return ProcessIdentityProbe::Unavailable(
+            "no command token available for process identity verification".to_string(),
+        );
+    };
+
+    let output = match Command::new("ps")
+        .arg("-o")
+        .arg("command=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            return ProcessIdentityProbe::Unavailable(format!("ps probe failed: {err}"));
+        }
+    };
+
+    if !output.status.success() {
+        return ProcessIdentityProbe::Unavailable(format!(
+            "ps probe exited with status {}",
+            output.status
+        ));
+    }
+
+    let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if command_line.is_empty() {
+        return ProcessIdentityProbe::Unavailable(
+            "ps probe returned empty command line".to_string(),
+        );
+    }
+
+    if command_line.contains(expected) {
+        ProcessIdentityProbe::Match
+    } else {
+        ProcessIdentityProbe::Mismatch(format!(
+            "observed process identity did not match expected token `{expected}`"
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+fn probe_process_identity(_record: &JobRecord, _pid: u32) -> ProcessIdentityProbe {
+    ProcessIdentityProbe::Unavailable("process identity guard unavailable on this platform".into())
+}
+
+fn probe_running_job_liveness(record: &JobRecord) -> RunningJobLivenessProbe {
+    let checked_at = Utc::now();
+    let Some(pid) = record.pid else {
+        return RunningJobLivenessProbe::stale(
+            ProcessLivenessState::StaleMissingPid,
+            checked_at,
+            "running job record is missing pid",
+        );
+    };
+
+    if !pid_is_running(pid) {
+        return RunningJobLivenessProbe::stale(
+            ProcessLivenessState::StaleNotRunning,
+            checked_at,
+            format!("worker process {pid} is not running"),
+        );
+    }
+
+    match probe_process_identity(record, pid) {
+        ProcessIdentityProbe::Match => RunningJobLivenessProbe::alive(checked_at),
+        ProcessIdentityProbe::Mismatch(detail) => RunningJobLivenessProbe::stale(
+            ProcessLivenessState::StaleIdentityMismatch,
+            checked_at,
+            detail,
+        ),
+        ProcessIdentityProbe::Unavailable(_detail) => RunningJobLivenessProbe::alive(checked_at),
+    }
+}
+
+fn apply_stale_workflow_failed_routes(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    record: &JobRecord,
+) {
+    let Some(metadata) = record.metadata.as_ref() else {
+        return;
+    };
+    let Some(run_id) = metadata.workflow_run_id.as_deref() else {
+        return;
+    };
+    let Some(node_id) = metadata.workflow_node_id.as_deref() else {
+        return;
+    };
+
+    let manifest = match load_workflow_run_manifest(project_root, run_id) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            display::warn(format!(
+                "unable to load workflow manifest {run_id} for stale running job {}: {}",
+                record.id, err
+            ));
+            return;
+        }
+    };
+
+    let Some(node) = manifest.nodes.get(node_id) else {
+        display::warn(format!(
+            "workflow node `{node_id}` missing from run manifest {run_id} during stale-running reconciliation"
+        ));
+        return;
+    };
+
+    apply_workflow_routes(
+        project_root,
+        jobs_root,
+        binary,
+        record,
+        node,
+        &manifest,
+        WorkflowNodeOutcome::Failed,
+        true,
+    );
+}
+
+fn reconcile_running_job_liveness_locked(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    records: &[JobRecord],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut reconciled = Vec::new();
+
+    for record in records {
+        if record.status != JobStatus::Running {
+            continue;
+        }
+
+        let probe = probe_running_job_liveness(record);
+        if !probe.is_stale() {
+            continue;
+        }
+
+        let mut metadata = JobMetadata {
+            process_liveness_state: Some(probe.state),
+            process_liveness_checked_at: Some(probe.checked_at),
+            process_liveness_failure_reason: probe.failure_reason.clone(),
+            ..JobMetadata::default()
+        };
+        if record
+            .metadata
+            .as_ref()
+            .and_then(|entry| entry.workflow_node_id.as_deref())
+            .is_some()
+        {
+            metadata.workflow_node_outcome = Some(WorkflowNodeOutcome::Failed.as_str().to_string());
+        }
+
+        let finalized = finalize_job(
+            project_root,
+            jobs_root,
+            &record.id,
+            JobStatus::Failed,
+            1,
+            None,
+            Some(metadata),
+        )?;
+        apply_stale_workflow_failed_routes(project_root, jobs_root, binary, &finalized);
+        reconciled.push(record.id.clone());
+    }
+
+    Ok(reconciled)
+}
+
 fn scheduler_tick_locked(
     project_root: &Path,
     jobs_root: &Path,
@@ -2949,6 +3192,17 @@ fn scheduler_tick_locked(
 ) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
     let mut records = list_records(jobs_root)?;
     let mut outcome = SchedulerOutcome::default();
+
+    if records.is_empty() {
+        return Ok(outcome);
+    }
+
+    let reconciled =
+        reconcile_running_job_liveness_locked(project_root, jobs_root, binary, &records)?;
+    if !reconciled.is_empty() {
+        outcome.updated.extend(reconciled);
+        records = list_records(jobs_root)?;
+    }
 
     if records.is_empty() {
         return Ok(outcome);
@@ -5521,6 +5775,7 @@ fn execute_workflow_control(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_workflow_routes(
     project_root: &Path,
     jobs_root: &Path,
@@ -5529,6 +5784,7 @@ fn apply_workflow_routes(
     node: &WorkflowRuntimeNodeManifest,
     run_manifest: &WorkflowRunManifest,
     outcome: WorkflowNodeOutcome,
+    scheduler_lock_held: bool,
 ) {
     let source_context = workflow_execution_context_from_metadata(source_record.metadata.as_ref());
     for route in node.routes.for_outcome(outcome) {
@@ -5567,13 +5823,25 @@ fn apply_workflow_routes(
                 {
                     continue;
                 }
-                if let Err(err) = retry_job_internal(
-                    project_root,
-                    jobs_root,
-                    binary,
-                    &target.job_id,
-                    source_context.as_ref(),
-                ) {
+                let retry_result = if scheduler_lock_held {
+                    retry_job_internal_locked(
+                        project_root,
+                        jobs_root,
+                        binary,
+                        &target.job_id,
+                        source_context.as_ref(),
+                        false,
+                    )
+                } else {
+                    retry_job_internal(
+                        project_root,
+                        jobs_root,
+                        binary,
+                        &target.job_id,
+                        source_context.as_ref(),
+                    )
+                };
+                if let Err(err) = retry_result {
                     display::warn(format!(
                         "workflow route {} -> {} retry failed: {}",
                         node.node_id, target.node_id, err
@@ -5850,6 +6118,7 @@ fn execute_workflow_node_job(
             node_manifest,
             &manifest,
             result.outcome,
+            true,
         );
         display::debug(format!(
             "workflow node {} (run {}, job {}) applied succeeded routes",
@@ -5888,6 +6157,7 @@ fn execute_workflow_node_job(
             node_manifest,
             &manifest,
             result.outcome,
+            false,
         );
         let _ = scheduler_tick(project_root, jobs_root, &binary)?;
     }
@@ -6117,6 +6387,24 @@ fn retry_job_internal(
     propagated_context: Option<&WorkflowExecutionContext>,
 ) -> Result<RetryOutcome, Box<dyn std::error::Error>> {
     let _lock = SchedulerLock::acquire(jobs_root)?;
+    retry_job_internal_locked(
+        project_root,
+        jobs_root,
+        binary,
+        requested_job_id,
+        propagated_context,
+        true,
+    )
+}
+
+fn retry_job_internal_locked(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    requested_job_id: &str,
+    propagated_context: Option<&WorkflowExecutionContext>,
+    advance_scheduler: bool,
+) -> Result<RetryOutcome, Box<dyn std::error::Error>> {
     let records = list_records(jobs_root)?;
     let graph = ScheduleGraph::new(records);
 
@@ -6178,20 +6466,25 @@ fn retry_job_internal(
         let _ = apply_workflow_execution_context(jobs_root, requested_job_id, context, true)?;
     }
 
-    let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, binary)?;
     let retry_lookup = retry_set.iter().cloned().collect::<HashSet<_>>();
-    let restarted = scheduler_outcome
-        .started
-        .iter()
-        .filter(|job_id| retry_lookup.contains(*job_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let updated = scheduler_outcome
-        .updated
-        .iter()
-        .filter(|job_id| retry_lookup.contains(*job_id))
-        .cloned()
-        .collect::<Vec<_>>();
+    let (restarted, updated) = if advance_scheduler {
+        let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, binary)?;
+        let restarted = scheduler_outcome
+            .started
+            .iter()
+            .filter(|job_id| retry_lookup.contains(*job_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let updated = scheduler_outcome
+            .updated
+            .iter()
+            .filter(|job_id| retry_lookup.contains(*job_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        (restarted, updated)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(RetryOutcome {
         requested_job: requested_job_id.to_string(),
@@ -6591,8 +6884,31 @@ fn follow_poll_delay(advanced: bool, idle_polls: &mut u32) -> StdDuration {
     StdDuration::from_millis(millis)
 }
 
-pub fn tail_job_logs(
+fn reconcile_running_job_liveness_for_follow(
+    project_root: &Path,
     jobs_root: &Path,
+    binary: &Path,
+    job_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _lock = match SchedulerLock::acquire(jobs_root) {
+        Ok(lock) => lock,
+        Err(err) if err.to_string().contains("scheduler is busy") => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    let record = read_record(jobs_root, job_id)?;
+    if record.status != JobStatus::Running {
+        return Ok(());
+    }
+
+    let _ = reconcile_running_job_liveness_locked(project_root, jobs_root, binary, &[record])?;
+    Ok(())
+}
+
+pub fn tail_job_logs(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
     job_id: &str,
     stream: LogStream,
     follow: bool,
@@ -6627,6 +6943,8 @@ pub fn tail_job_logs(
             break;
         }
 
+        reconcile_running_job_liveness_for_follow(project_root, jobs_root, binary, job_id)?;
+
         let record = read_record(jobs_root, job_id)?;
         let running = job_is_active(record.status);
         if !running && !advanced {
@@ -6653,7 +6971,9 @@ fn read_log_chunk(path: &Path, offset: u64) -> io::Result<(u64, Vec<u8>)> {
 }
 
 pub fn follow_job_logs_raw(
+    project_root: &Path,
     jobs_root: &Path,
+    binary: &Path,
     job_id: &str,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let paths = paths_for(jobs_root, job_id);
@@ -6679,6 +6999,8 @@ pub fn follow_job_logs_raw(
             advanced = true;
         }
         stderr_offset = next_stderr;
+
+        reconcile_running_job_liveness_for_follow(project_root, jobs_root, binary, job_id)?;
 
         let record = read_record(jobs_root, job_id)?;
         let running = job_is_active(record.status);
@@ -7150,6 +7472,8 @@ fn pid_is_running(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -8946,7 +9270,7 @@ mod tests {
         )
         .expect("enqueue dep");
         update_job_record(&jobs_root, "dep-running", |record| {
-            record.status = JobStatus::Running;
+            record.status = JobStatus::WaitingOnDeps;
         })
         .expect("set dep status");
 
@@ -8976,6 +9300,291 @@ mod tests {
             .and_then(|schedule| schedule.wait_reason.as_ref())
             .and_then(|reason| reason.detail.as_deref());
         assert_eq!(wait, Some("waiting on job dep-running"));
+    }
+
+    #[test]
+    fn scheduler_tick_reconciles_running_job_with_missing_pid() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "stale-missing-pid",
+            &["--help".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            None,
+        )
+        .expect("enqueue stale job");
+        update_job_record(&jobs_root, "stale-missing-pid", |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = None;
+        })
+        .expect("mark stale running");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "stale-missing-pid").expect("read stale record");
+        assert_eq!(record.status, JobStatus::Failed);
+        assert_eq!(record.exit_code, Some(1));
+        assert!(record.finished_at.is_some());
+        let metadata = record.metadata.as_ref().expect("metadata");
+        assert_eq!(
+            metadata.process_liveness_state,
+            Some(ProcessLivenessState::StaleMissingPid)
+        );
+        assert!(metadata.process_liveness_checked_at.is_some());
+        let reason = metadata
+            .process_liveness_failure_reason
+            .as_deref()
+            .unwrap_or("");
+        assert!(
+            reason.contains("missing pid"),
+            "expected missing pid reason, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_reconciles_dead_running_producer_before_dependency_facts() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        let artifact = JobArtifact::Custom {
+            type_id: "acme.execution".to_string(),
+            key: "stale-producer".to_string(),
+        };
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "stale-producer",
+            &["--help".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                artifacts: vec![artifact.clone()],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue producer");
+        update_job_record(&jobs_root, "stale-producer", |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(999_999);
+        })
+        .expect("mark producer stale running");
+
+        enqueue_job(
+            project_root,
+            &jobs_root,
+            "artifact-consumer",
+            &["--help".to_string()],
+            &["vizier".to_string(), "save".to_string()],
+            None,
+            None,
+            Some(JobSchedule {
+                dependencies: vec![JobDependency {
+                    artifact: artifact.clone(),
+                }],
+                ..JobSchedule::default()
+            }),
+        )
+        .expect("enqueue consumer");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let producer = read_record(&jobs_root, "stale-producer").expect("producer record");
+        assert_eq!(producer.status, JobStatus::Failed);
+        let producer_meta = producer.metadata.as_ref().expect("producer metadata");
+        assert_eq!(
+            producer_meta.process_liveness_state,
+            Some(ProcessLivenessState::StaleNotRunning)
+        );
+
+        let consumer = read_record(&jobs_root, "artifact-consumer").expect("consumer record");
+        assert_eq!(consumer.status, JobStatus::BlockedByDependency);
+        let wait = consumer
+            .schedule
+            .as_ref()
+            .and_then(|schedule| schedule.wait_reason.as_ref())
+            .and_then(|reason| reason.detail.clone())
+            .unwrap_or_default();
+        assert!(
+            wait.contains("dependency failed for custom:acme.execution:stale-producer"),
+            "unexpected dependency wait detail: {wait}"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_reconciles_stale_workflow_node_and_applies_failed_retry_route() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+
+        let template = WorkflowTemplate {
+            id: "template.reconcile.stale.retry".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: Vec::new(),
+            nodes: vec![
+                WorkflowNode {
+                    id: "root".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([("script".to_string(), "echo root".to_string())]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges {
+                        failed: vec!["retry_target".to_string()],
+                        ..WorkflowOutcomeEdges::default()
+                    },
+                },
+                WorkflowNode {
+                    id: "retry_target".to_string(),
+                    kind: WorkflowNodeKind::Shell,
+                    uses: "cap.env.shell.command.run".to_string(),
+                    args: BTreeMap::from([("script".to_string(), "echo retry".to_string())]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+            ],
+        };
+
+        let enqueue = enqueue_workflow_run(
+            project_root,
+            &jobs_root,
+            "run-stale-retry",
+            "template.reconcile.stale.retry@v1",
+            &template,
+            &["vizier".to_string(), "__workflow-node".to_string()],
+            None,
+        )
+        .expect("enqueue workflow");
+        let root_job = enqueue.job_ids.get("root").expect("root job id").clone();
+        let target_job = enqueue
+            .job_ids
+            .get("retry_target")
+            .expect("target job id")
+            .clone();
+
+        update_job_record(&jobs_root, &root_job, |record| {
+            record.status = JobStatus::Running;
+            record.started_at = Some(Utc::now());
+            record.pid = Some(999_999);
+        })
+        .expect("mark root stale running");
+
+        update_job_record(&jobs_root, &target_job, |record| {
+            record.status = JobStatus::Failed;
+            record.child_args.clear();
+            record.started_at = Some(Utc::now());
+            record.finished_at = Some(Utc::now());
+            record.exit_code = Some(1);
+        })
+        .expect("mark target failed");
+
+        let before_attempt = read_record(&jobs_root, &target_job)
+            .expect("target before")
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.workflow_node_attempt)
+            .unwrap_or(1);
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let root = read_record(&jobs_root, &root_job).expect("root record");
+        assert_eq!(root.status, JobStatus::Failed);
+        let root_meta = root.metadata.as_ref().expect("root metadata");
+        assert_eq!(root_meta.workflow_node_outcome.as_deref(), Some("failed"));
+        assert_eq!(
+            root_meta.process_liveness_state,
+            Some(ProcessLivenessState::StaleNotRunning)
+        );
+
+        let target = read_record(&jobs_root, &target_job).expect("target record");
+        let after_attempt = target
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.workflow_node_attempt)
+            .unwrap_or(before_attempt);
+        assert!(
+            after_attempt > before_attempt,
+            "expected failed-route retry to increment attempt: before={} after={} target={}",
+            before_attempt,
+            after_attempt,
+            target.id
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_reconciles_legacy_running_record_without_liveness_metadata_fields() {
+        let temp = TempDir::new().expect("temp dir");
+        init_repo(&temp).expect("init repo");
+        let project_root = temp.path();
+        let jobs_root = project_root.join(".vizier/jobs");
+        let paths = paths_for(&jobs_root, "legacy-running");
+        fs::create_dir_all(&paths.job_dir).expect("create legacy job dir");
+        fs::write(&paths.stdout_path, "").expect("write stdout");
+        fs::write(&paths.stderr_path, "").expect("write stderr");
+
+        let legacy = serde_json::json!({
+            "id": "legacy-running",
+            "status": "running",
+            "command": ["vizier", "save", "legacy"],
+            "created_at": "2026-02-20T00:00:00Z",
+            "started_at": "2026-02-20T00:00:01Z",
+            "finished_at": null,
+            "pid": null,
+            "exit_code": null,
+            "stdout_path": ".vizier/jobs/legacy-running/stdout.log",
+            "stderr_path": ".vizier/jobs/legacy-running/stderr.log",
+            "session_path": null,
+            "outcome_path": null,
+            "metadata": {
+                "command_alias": "legacy-save"
+            },
+            "config_snapshot": null
+        });
+        fs::write(
+            &paths.record_path,
+            serde_json::to_string_pretty(&legacy).expect("serialize legacy record"),
+        )
+        .expect("write legacy record");
+
+        let binary = std::env::current_exe().expect("current exe");
+        scheduler_tick(project_root, &jobs_root, &binary).expect("tick");
+
+        let record = read_record(&jobs_root, "legacy-running").expect("legacy record");
+        assert_eq!(record.status, JobStatus::Failed);
+        let metadata = record.metadata.as_ref().expect("legacy metadata");
+        assert_eq!(metadata.command_alias.as_deref(), Some("legacy-save"));
+        assert_eq!(
+            metadata.process_liveness_state,
+            Some(ProcessLivenessState::StaleMissingPid)
+        );
     }
 
     #[test]
@@ -9100,7 +9709,7 @@ mod tests {
             project_root,
             &jobs_root,
             "job-a",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![artifact_a.clone()],
                 ..JobSchedule::default()
@@ -9145,7 +9754,7 @@ mod tests {
             project_root,
             &jobs_root,
             "job-fan-root",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![fan_artifact.clone()],
                 ..JobSchedule::default()
@@ -9180,7 +9789,7 @@ mod tests {
             project_root,
             &jobs_root,
             "job-fanin-left",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![fan_in_left.clone()],
                 ..JobSchedule::default()
@@ -9192,7 +9801,7 @@ mod tests {
             project_root,
             &jobs_root,
             "job-fanin-right",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![fan_in_right.clone()],
                 ..JobSchedule::default()
@@ -9233,7 +9842,7 @@ mod tests {
             project_root,
             &jobs_root,
             "job-diamond-root",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![diamond_root.clone()],
                 ..JobSchedule::default()
@@ -9298,7 +9907,7 @@ mod tests {
             project_root,
             &jobs_root,
             "job-disjoint-root",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![disjoint_artifact.clone()],
                 ..JobSchedule::default()
@@ -9389,6 +9998,10 @@ mod tests {
         let project_root = temp.path();
         let jobs_root = project_root.join(".vizier/jobs");
         fs::create_dir_all(&jobs_root).expect("jobs root");
+        let current_process_token = std::env::current_exe()
+            .expect("current exe")
+            .display()
+            .to_string();
 
         let artifact = JobArtifact::CommandPatch {
             job_id: "dep-ready".to_string(),
@@ -9397,7 +10010,7 @@ mod tests {
             project_root,
             &jobs_root,
             "dep-producer",
-            JobStatus::Running,
+            JobStatus::WaitingOnDeps,
             JobSchedule {
                 artifacts: vec![artifact.clone()],
                 ..JobSchedule::default()
@@ -9417,9 +10030,14 @@ mod tests {
                 }],
                 ..JobSchedule::default()
             },
-            &["--help".to_string()],
+            std::slice::from_ref(&current_process_token),
         )
         .expect("lock holder");
+        update_job_record(&jobs_root, "lock-holder", |record| {
+            record.started_at = Some(Utc::now());
+            record.pid = Some(std::process::id());
+        })
+        .expect("seed lock holder pid");
 
         write_job_with_status(
             project_root,

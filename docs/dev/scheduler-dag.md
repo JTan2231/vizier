@@ -57,6 +57,11 @@ exactly one such artifact as input.
   `workflow_executor_class`, `workflow_executor_operation`,
   `workflow_control_policy`,
   `workflow_policy_snapshot_hash`, and `workflow_gates`.
+- **Process liveness metadata** is stored additively when stale `running` jobs
+  are reconciled:
+  `process_liveness_state` (`alive|stale_missing_pid|stale_not_running|stale_identity_mismatch`),
+  `process_liveness_checked_at` (RFC3339), and
+  `process_liveness_failure_reason`.
 - `workflow_payload_refs` now includes the normalized operation-output payload
   for each runtime node (`vizier.operation_output.v1`) plus any operation-specific
   payload refs already emitted by handlers.
@@ -148,6 +153,30 @@ Statuses:
 
 Terminal jobs are never re-run by the scheduler. `blocked_by_dependency` indicates a
 dependency can no longer be satisfied (see below).
+
+## Running PID liveness reconciliation
+Scheduler/runtime reconciliation now treats stale `running` records as explicit
+failure events.
+
+Contract:
+- Before scheduler decisions are evaluated, `scheduler_tick` probes every
+  `running` job in driver code (`vizier-core`) for process liveness.
+- A `running` job is stale when:
+  - `pid` is missing (`stale_missing_pid`)
+  - `pid` is no longer alive (`stale_not_running`)
+  - optional process-identity guard mismatches (`stale_identity_mismatch`)
+- Stale jobs are finalized as terminal `failed` (`exit_code = 1`,
+  `finished_at` populated) and receive liveness metadata in `metadata`.
+- Stale workflow-node jobs also set `workflow_node_outcome = failed` and apply
+  the same failed-route semantics used by runtime failures (including retry
+  routes).
+- Scheduler facts for lock/dependency evaluation are built after reconciliation,
+  so stale producers/lock holders stop blocking in the same tick.
+
+Follow behavior:
+- `vizier run --follow` inherits reconciliation through scheduler ticks.
+- `vizier jobs tail --follow` and `vizier jobs attach` reconcile while waiting
+  so stale `running` records do not hang indefinitely.
 
 ## Retry (`vizier jobs retry <job-id>`)
 Use retry to rewind a failed/blocked segment and re-queue it without editing
