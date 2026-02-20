@@ -130,6 +130,7 @@ draft = "file:.vizier/workflows/draft.hcl"
 approve = "file:.vizier/workflows/approve.hcl"
 merge = "file:.vizier/workflows/merge.hcl"
 develop = "file:.vizier/develop.hcl"
+commit = "file:.vizier/workflows/commit.hcl"
 
 [agents.default]
 selector = "mock"
@@ -171,6 +172,60 @@ fn run_stage_approve_follow(repo: &IntegrationRepo, slug: &str, branch: &str) ->
             "json",
         ],
     )
+}
+
+fn run_alias_follow_json(
+    repo: &IntegrationRepo,
+    alias: &str,
+    alias_args: &[&str],
+) -> TestResult<Value> {
+    let mut args = Vec::with_capacity(alias_args.len() + 6);
+    args.push("run");
+    args.push(alias);
+    args.extend_from_slice(alias_args);
+    args.push("--follow");
+    args.push("--format");
+    args.push("json");
+    run_json(repo, &args)
+}
+
+fn assert_flagship_follow_success(
+    repo: &IntegrationRepo,
+    payload: &Value,
+    alias: &str,
+) -> TestResult<Value> {
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_run_terminal"),
+        "expected terminal run outcome for alias `{alias}`: {payload}"
+    );
+    assert_eq!(
+        payload.get("terminal_state").and_then(Value::as_str),
+        Some("succeeded"),
+        "expected succeeded terminal state for alias `{alias}`: {payload}"
+    );
+    assert_eq!(
+        payload.get("exit_code").and_then(Value::as_i64),
+        Some(0),
+        "expected zero exit code for alias `{alias}`: {payload}"
+    );
+
+    let root_job_id = first_root_job_id(payload)?;
+    let root_record = read_job_record(repo, &root_job_id)?;
+    assert_eq!(
+        root_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "expected succeeded root job for alias `{alias}`: {root_record}"
+    );
+    assert_eq!(
+        root_record
+            .pointer("/metadata/command_alias")
+            .and_then(Value::as_str),
+        Some(alias),
+        "expected command alias metadata `{alias}` on root record: {root_record}"
+    );
+
+    Ok(root_record)
 }
 
 fn load_run_manifest(repo: &IntegrationRepo, run_id: &str) -> TestResult<Value> {
@@ -1587,6 +1642,420 @@ fn test_run_stage_aliases_execute_templates_smoke() -> TestResult {
     assert!(
         subject.contains("feat: merge plan merge-smoke"),
         "expected merge commit subject to include slug, got: {subject}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_flagship_draft_user_outcome() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let slug = "flagship-draft-user-outcome";
+    let branch = format!("draft/{slug}");
+    let slug_set = format!("slug={slug}");
+    let payload = run_alias_follow_json(
+        &repo,
+        "draft",
+        &[
+            "--set",
+            slug_set.as_str(),
+            "--set",
+            "spec_text=Flagship draft coverage should persist plan output.",
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &payload, "draft")?;
+
+    repo.git(&[
+        "show-ref",
+        "--verify",
+        "--quiet",
+        &format!("refs/heads/{branch}"),
+    ])?;
+
+    let plan_doc = branch_blob_text(
+        &repo,
+        &branch,
+        &format!(".vizier/implementation-plans/{slug}.md"),
+    )?;
+    assert!(
+        plan_doc.contains("## Implementation Plan"),
+        "expected implementation-plan section in draft artifact: {plan_doc}"
+    );
+    let implementation_body = plan_doc
+        .split("## Implementation Plan")
+        .nth(1)
+        .map(str::trim)
+        .unwrap_or("");
+    assert!(
+        !implementation_body.is_empty(),
+        "expected non-empty implementation plan body in draft artifact: {plan_doc}"
+    );
+    assert!(
+        plan_doc.contains("mock agent response"),
+        "expected generated agent body text in draft artifact: {plan_doc}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_flagship_approve_user_outcome() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let explicit_slug = "flagship-approve-explicit";
+    let explicit_branch = format!("draft/{explicit_slug}");
+    seed_plan_branch(&repo, explicit_slug, &explicit_branch)?;
+    repo.git(&["checkout", &explicit_branch])?;
+    repo.write(
+        "flagship-approve-explicit.txt",
+        "flagship approve explicit merge payload\n",
+    )?;
+    repo.git(&["add", "flagship-approve-explicit.txt"])?;
+    repo.git(&["commit", "-m", "feat: explicit approve payload"])?;
+    repo.git(&["checkout", "master"])?;
+
+    let explicit_slug_set = format!("slug={explicit_slug}");
+    let explicit_branch_set = format!("branch={explicit_branch}");
+    let approve_explicit = run_alias_follow_json(
+        &repo,
+        "approve",
+        &[
+            "--set",
+            explicit_slug_set.as_str(),
+            "--set",
+            explicit_branch_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &approve_explicit, "approve")?;
+
+    let merge_message = "feat: flagship approve explicit merge";
+    let merge_message_set = format!("merge_message={merge_message}");
+    let merge_explicit = run_alias_follow_json(
+        &repo,
+        "merge",
+        &[
+            "--set",
+            explicit_slug_set.as_str(),
+            "--set",
+            explicit_branch_set.as_str(),
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            merge_message_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &merge_explicit, "merge")?;
+    assert_eq!(
+        fs::read_to_string(repo.path().join("flagship-approve-explicit.txt"))?.as_str(),
+        "flagship approve explicit merge payload\n",
+        "approve-stage token should unblock merge-stage integration on explicit branch input"
+    );
+
+    let implicit_slug = "flagship-approve-implicit";
+    let implicit_branch = format!("draft/{implicit_slug}");
+    seed_plan_branch(&repo, implicit_slug, &implicit_branch)?;
+    repo.git(&["checkout", &implicit_branch])?;
+    repo.write(
+        "flagship-approve-implicit.txt",
+        "flagship approve implicit merge payload\n",
+    )?;
+    repo.git(&["add", "flagship-approve-implicit.txt"])?;
+    repo.git(&["commit", "-m", "feat: implicit approve payload"])?;
+    repo.git(&["checkout", "master"])?;
+
+    let approve_implicit = run_alias_follow_json(&repo, "approve", &[implicit_slug])?;
+    assert_flagship_follow_success(&repo, &approve_implicit, "approve")?;
+    let implicit_merge_message = "feat: flagship approve implicit merge";
+    let implicit_merge_message_set = format!("merge_message={implicit_merge_message}");
+    let merge_implicit = run_alias_follow_json(
+        &repo,
+        "merge",
+        &[
+            implicit_slug,
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            implicit_merge_message_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &merge_implicit, "merge")?;
+    assert_eq!(
+        fs::read_to_string(repo.path().join("flagship-approve-implicit.txt"))?.as_str(),
+        "flagship approve implicit merge payload\n",
+        "approve run with implicit branch should leave merge-ready state for downstream merge"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_flagship_merge_user_outcome() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let success_slug = "flagship-merge-success";
+    let success_branch = format!("draft/{success_slug}");
+    seed_plan_branch(&repo, success_slug, &success_branch)?;
+    repo.git(&["checkout", &success_branch])?;
+    repo.write(
+        "flagship-merge-success.txt",
+        "flagship merge success branch change\n",
+    )?;
+    repo.git(&["add", "flagship-merge-success.txt"])?;
+    repo.git(&["commit", "-m", "feat: flagship merge success payload"])?;
+    repo.git(&["checkout", "master"])?;
+
+    let success_slug_set = format!("slug={success_slug}");
+    let success_branch_set = format!("branch={success_branch}");
+    let approve_success = run_alias_follow_json(
+        &repo,
+        "approve",
+        &[
+            "--set",
+            success_slug_set.as_str(),
+            "--set",
+            success_branch_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &approve_success, "approve")?;
+
+    let merge_message = "feat: flagship merge user outcome";
+    let merge_message_set = format!("merge_message={merge_message}");
+    let merge_success = run_alias_follow_json(
+        &repo,
+        "merge",
+        &[
+            "--set",
+            success_slug_set.as_str(),
+            "--set",
+            success_branch_set.as_str(),
+            "--set",
+            "target_branch=master",
+            "--set",
+            "delete_branch=false",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            merge_message_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &merge_success, "merge")?;
+    assert_eq!(
+        fs::read_to_string(repo.path().join("flagship-merge-success.txt"))?.as_str(),
+        "flagship merge success branch change\n",
+        "merge should land branch content on target branch"
+    );
+    let subject = head_subject(&repo)?;
+    assert!(
+        subject.contains(merge_message),
+        "expected merge subject to include merge intent, got: {subject}"
+    );
+    let message = head_message(&repo)?;
+    assert!(
+        message.contains(merge_message) && message.contains("## Implementation Plan"),
+        "expected merge message to include merge intent and embedded plan content, got: {message}"
+    );
+    let repo_handle = repo.repo();
+    let draft_tip = repo_handle
+        .find_branch(&success_branch, BranchType::Local)?
+        .get()
+        .peel_to_commit()?;
+    assert!(
+        draft_tip
+            .tree()?
+            .get_path(Path::new(&format!(
+                ".vizier/implementation-plans/{success_slug}.md"
+            )))
+            .is_err(),
+        "merge should remove source plan doc on the draft branch tip"
+    );
+
+    let conflict_slug = "flagship-merge-conflict";
+    let conflict_branch = format!("draft/{conflict_slug}");
+    seed_plan_branch(&repo, conflict_slug, &conflict_branch)?;
+    repo.git(&["checkout", &conflict_branch])?;
+    repo.write(
+        "flagship-merge-conflict.txt",
+        "flagship conflict payload from source branch\n",
+    )?;
+    repo.git(&["add", "flagship-merge-conflict.txt"])?;
+    repo.git(&["commit", "-m", "feat: conflict payload on source branch"])?;
+    repo.git(&["checkout", "master"])?;
+    repo.write(
+        "flagship-merge-conflict.txt",
+        "flagship conflict payload from target branch\n",
+    )?;
+    repo.git(&["add", "flagship-merge-conflict.txt"])?;
+    repo.git(&["commit", "-m", "feat: conflict payload on target branch"])?;
+
+    let conflict_slug_set = format!("slug={conflict_slug}");
+    let conflict_branch_set = format!("branch={conflict_branch}");
+    let approve_conflict = run_alias_follow_json(
+        &repo,
+        "approve",
+        &[
+            "--set",
+            conflict_slug_set.as_str(),
+            "--set",
+            conflict_branch_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &approve_conflict, "approve")?;
+
+    let merge_conflict = run_json(
+        &repo,
+        &[
+            "run",
+            "merge",
+            "--set",
+            conflict_slug_set.as_str(),
+            "--set",
+            conflict_branch_set.as_str(),
+            "--set",
+            "target_branch=master",
+            "--set",
+            "cicd_script=true",
+            "--format",
+            "json",
+        ],
+    )?;
+    let conflict_run_id = merge_conflict
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing conflict merge run_id")?;
+    let conflict_manifest = load_run_manifest(&repo, conflict_run_id)?;
+    let conflict_integrate_job = manifest_node_job_id(&conflict_manifest, "merge_integrate")?;
+    wait_for_job_completion(&repo, &conflict_integrate_job, Duration::from_secs(20))?;
+    let conflict_integrate = read_job_record(&repo, &conflict_integrate_job)?;
+    assert_eq!(
+        conflict_integrate.get("status").and_then(Value::as_str),
+        Some("blocked_by_dependency"),
+        "conflicted merge should remain blocked for operator recovery: {conflict_integrate}"
+    );
+    let conflict_sentinel = repo
+        .path()
+        .join(format!(".vizier/tmp/merge-conflicts/{conflict_slug}.json"));
+    assert!(
+        conflict_sentinel.exists(),
+        "merge conflict sentinel should persist when conflict flow blocks: {}",
+        conflict_sentinel.display()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_flagship_develop_user_outcome() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let before_head = oid_for_spec(&repo.repo(), "HEAD")?;
+    let slug = "flagship-develop-user-outcome";
+    let source_branch = format!("draft/{slug}");
+    let merge_message = "feat: flagship develop user outcome";
+    let merge_message_set = format!("merge_message={merge_message}");
+    let payload = run_alias_follow_json(
+        &repo,
+        "develop",
+        &[
+            "--name",
+            slug,
+            "--source",
+            source_branch.as_str(),
+            "--target",
+            "master",
+            "--set",
+            "spec_text=Flagship develop spec line for merged user-visible outcome.",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            merge_message_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &payload, "develop")?;
+
+    let after_head = oid_for_spec(&repo.repo(), "HEAD")?;
+    assert_ne!(
+        before_head, after_head,
+        "develop alias should produce a merged head commit on target branch"
+    );
+    let message = head_message(&repo)?;
+    assert!(
+        message.contains(merge_message) && message.contains("## Implementation Plan"),
+        "develop alias should produce integrated merge output with plan content, got: {message}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_flagship_commit_user_outcome() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+
+    let before_head = oid_for_spec(&repo.repo(), "HEAD")?;
+    let mut tracked = repo.read("a")?;
+    if !tracked.ends_with('\n') {
+        tracked.push('\n');
+    }
+    tracked.push_str("flagship commit tracked file change\n");
+    repo.write("a", &tracked)?;
+
+    let payload = run_alias_follow_json(&repo, "commit", &[])?;
+    assert_flagship_follow_success(&repo, &payload, "commit")?;
+
+    let after_head = oid_for_spec(&repo.repo(), "HEAD")?;
+    assert_ne!(
+        before_head, after_head,
+        "commit alias should create a new head commit"
+    );
+
+    let subject = head_subject(&repo)?;
+    assert!(
+        !subject.trim().is_empty() && subject.contains("mock agent response"),
+        "expected deterministic non-empty commit subject from agent output, got: {subject}"
+    );
+    let message = head_message(&repo)?;
+    assert!(
+        message.contains("mock agent response"),
+        "expected commit message sourced from commit workflow agent output, got: {message}"
+    );
+
+    let changed = files_changed_in_commit(&repo.repo(), "HEAD")?;
+    assert!(
+        changed.contains("a"),
+        "head commit should include tracked file changes, got files: {changed:?}"
+    );
+    let committed_text = branch_blob_text(&repo, "master", "a")?;
+    assert!(
+        committed_text.contains("flagship commit tracked file change"),
+        "expected tracked file update in committed tree, got: {committed_text}"
+    );
+
+    let repo_handle = repo.repo();
+    let mut status_opts = StatusOptions::new();
+    status_opts
+        .show(StatusShow::IndexAndWorkdir)
+        .include_untracked(false)
+        .include_ignored(false)
+        .include_unmodified(false);
+    let statuses = repo_handle.statuses(Some(&mut status_opts))?;
+    assert_eq!(
+        statuses.len(),
+        0,
+        "expected clean tracked index/worktree after commit alias run"
     );
 
     Ok(())

@@ -3577,7 +3577,22 @@ fn collect_prompt_template_variables(
         let manifest = load_workflow_run_manifest(project_root, run_id).map_err(|err| {
             format!("prompt.resolve could not load workflow run manifest `{run_id}`: {err}")
         })?;
+        let mut composed_suffix_counts = BTreeMap::<&str, usize>::new();
         for runtime_node in manifest.nodes.values() {
+            if let Some((_, suffix)) = runtime_node.node_id.rsplit_once("__")
+                && !suffix.is_empty()
+            {
+                *composed_suffix_counts.entry(suffix).or_insert(0) += 1;
+            }
+        }
+
+        for runtime_node in manifest.nodes.values() {
+            let unique_suffix = runtime_node
+                .node_id
+                .rsplit_once("__")
+                .map(|(_, suffix)| suffix)
+                .filter(|suffix| !suffix.is_empty())
+                .filter(|suffix| composed_suffix_counts.get(*suffix).copied() == Some(1));
             for (arg_key, arg_value) in &runtime_node.args {
                 variables
                     .entry(format!("{}.{}", runtime_node.node_id, arg_key))
@@ -3588,6 +3603,12 @@ fn collect_prompt_template_variables(
                 {
                     variables
                         .entry(format!("{}.{}", local_node_id, arg_key))
+                        .or_insert_with(|| arg_value.clone());
+                }
+                if let Some(suffix) = unique_suffix {
+                    // Keep composed-template prompt placeholders stable for unique node-id suffixes.
+                    variables
+                        .entry(format!("{suffix}.{arg_key}"))
                         .or_insert_with(|| arg_value.clone());
                 }
             }
@@ -10370,31 +10391,30 @@ mod tests {
     }
 
     #[test]
-    fn workflow_runtime_prompt_resolve_supports_local_aliases_in_composed_namespace() {
+    fn workflow_runtime_prompt_resolve_supports_composed_namespace_aliases() {
         let temp = TempDir::new().expect("temp dir");
         init_repo(&temp).expect("init repo");
         let project_root = temp.path();
         let jobs_root = project_root.join(".vizier/jobs");
 
-        let template =
-            WorkflowTemplate {
-                id: "template.runtime.prompt_namespace_aliases".to_string(),
+        let template = WorkflowTemplate {
+            id: "template.runtime.prompt_namespace_aliases".to_string(),
+            version: "v1".to_string(),
+            params: BTreeMap::new(),
+            policy: WorkflowTemplatePolicy::default(),
+            artifact_contracts: vec![WorkflowArtifactContract {
+                id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
                 version: "v1".to_string(),
-                params: BTreeMap::new(),
-                policy: WorkflowTemplatePolicy::default(),
-                artifact_contracts: vec![WorkflowArtifactContract {
-                    id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
-                    version: "v1".to_string(),
-                    schema: None,
-                }],
-                nodes: vec![
+                schema: None,
+            }],
+            nodes: vec![
                 WorkflowNode {
                     id: "develop_draft__resolve_prompt".to_string(),
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::from([(
                         "prompt_text".to_string(),
-                        "slug={{persist_plan.name_override}}\nspec={{persist_plan.spec_text}}\n"
+                        "local={{persist_plan.name_override}}\nunique={{persist_meta.name_override}}\nspec={{persist_plan.spec_text}}\n"
                             .to_string(),
                     )]),
                     after: Vec::new(),
@@ -10430,8 +10450,47 @@ mod tests {
                     retry: Default::default(),
                     on: WorkflowOutcomeEdges::default(),
                 },
+                WorkflowNode {
+                    id: "develop_merge__persist_plan".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.plan.persist".to_string(),
+                    args: BTreeMap::from([
+                        ("spec_source".to_string(), "inline".to_string()),
+                        ("spec_text".to_string(), "Spec body from other namespace".to_string()),
+                        ("name_override".to_string(), "other".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
+                WorkflowNode {
+                    id: "develop_shared__persist_meta".to_string(),
+                    kind: WorkflowNodeKind::Builtin,
+                    uses: "cap.env.builtin.plan.persist".to_string(),
+                    args: BTreeMap::from([
+                        ("spec_source".to_string(), "inline".to_string()),
+                        (
+                            "spec_text".to_string(),
+                            "Spec body for unique suffix alias".to_string(),
+                        ),
+                        ("name_override".to_string(), "shared".to_string()),
+                    ]),
+                    after: Vec::new(),
+                    needs: Vec::new(),
+                    produces: WorkflowOutcomeArtifacts::default(),
+                    locks: Vec::new(),
+                    preconditions: Vec::new(),
+                    gates: Vec::new(),
+                    retry: Default::default(),
+                    on: WorkflowOutcomeEdges::default(),
+                },
             ],
-            };
+        };
 
         let result = enqueue_workflow_run(
             project_root,
@@ -10472,7 +10531,7 @@ mod tests {
             serde_json::from_str(&payload_raw).expect("parse payload json");
         assert_eq!(
             payload.get("text").and_then(|value| value.as_str()),
-            Some("slug=run\nspec=Spec body from namespace\n")
+            Some("local=run\nunique=shared\nspec=Spec body from namespace\n")
         );
     }
 

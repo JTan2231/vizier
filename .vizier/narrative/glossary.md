@@ -54,6 +54,7 @@
 - **Repo boundary**: Agent work stays inside the repository unless explicit authorization says otherwise.
 - **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.
 - **Prompt artifact contract**: Canonical prompt payload wiring for executor templates: one custom artifact shaped `custom:prompt_text:<key>` produced by prompt-resolve nodes and consumed by canonical invoke nodes.
+- **Composed prompt placeholder suffix alias**: `prompt.resolve` runtime fallback that exposes unique composed-node suffix args under legacy node-id placeholder keys (for example `develop_draft__persist_plan.name_override` also resolves as `persist_plan.name_override`).
 - **Prompt payload data store**: Optional typed JSON payload files for custom artifacts under `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; scheduler gating still keys off marker files.
 - **Operation-output artifact (`custom:operation_output:<node_id>`)**: Implicit reserved custom artifact contract published by every workflow runtime node, backed by standard custom marker/data paths for downstream `needs` and payload reads.
 - **Operation-output payload (`vizier.operation_output.v1`)**: Normalized per-node runtime payload containing run/job/node identity, executor/control identity, outcome/exit code, stdout text, stderr lifecycle+diagnostic lines, timing fields, and structured operation result details.
