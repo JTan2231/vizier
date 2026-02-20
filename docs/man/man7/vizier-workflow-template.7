@@ -222,6 +222,8 @@ Queue and inspect authored flows with:
 .IP "\(bu" 2
 \fBvizier run <flow> --check [--set key=value] [--format text|json]\fR
 .IP "\(bu" 2
+\fBvizier audit <flow> [--set key=value] [--format text|json] [--strict]\fR
+.IP "\(bu" 2
 \fBvizier run <flow> [--set key=value] [--after <job-id|run:<run-id>>] [--follow]\fR
 .IP "\(bu" 2
 \fBvizier jobs list|schedule|show|tail|attach|approve|retry|cancel\fR
@@ -234,6 +236,9 @@ parameter expansion/coercion, capability validation, and per-node compile checks
 and exits without creating run manifests, enqueueing jobs, or ticking the scheduler.
 \fB--check\fR conflicts with enqueue/runtime flags (\fB--follow\fR, \fB--after\fR,
 \fB--require-approval\fR, \fB--no-require-approval\fR, \fB--repeat\fR).
+\fBvizier audit\fR runs the same preprocessing path, then reports output artifacts
+and untethered inputs. \fB--strict\fR returns exit code 10 when untethered inputs
+are present.
 .SH SEE ALSO
 .BR vizier (1),
 .BR vizier-jobs (1),

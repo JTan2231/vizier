@@ -64,6 +64,7 @@ fn test_help_landing_page_is_curated() -> TestResult {
         "vizier list",
         "vizier jobs",
         "vizier run",
+        "vizier audit",
         "vizier release",
     ] {
         assert!(
@@ -111,6 +112,7 @@ fn test_help_all_prints_reduced_reference() -> TestResult {
         "\n  clean ",
         "\n  jobs ",
         "\n  run ",
+        "\n  audit ",
         "\n  completions ",
         "\n  release ",
     ] {
@@ -231,6 +233,25 @@ fn test_help_command_matches_subcommand_help() -> TestResult {
     assert_eq!(
         help_run.stdout, run_help.stdout,
         "`vizier help run` should match `vizier run --help` output"
+    );
+
+    let help_audit = repo.vizier_output(&["help", "audit", "--no-ansi"])?;
+    assert!(
+        help_audit.status.success(),
+        "`vizier help audit` failed: {}",
+        String::from_utf8_lossy(&help_audit.stderr)
+    );
+
+    let audit_help = repo.vizier_output(&["audit", "--help", "--no-ansi"])?;
+    assert!(
+        audit_help.status.success(),
+        "`vizier audit --help` failed: {}",
+        String::from_utf8_lossy(&audit_help.stderr)
+    );
+
+    assert_eq!(
+        help_audit.stdout, audit_help.stdout,
+        "`vizier help audit` should match `vizier audit --help` output"
     );
     Ok(())
 }

@@ -1,6 +1,6 @@
 # Command Entry Points
 
-This page summarizes command entry points, including the restored orchestration front-door `vizier run`.
+This page summarizes command entry points, including the enqueue front-door `vizier run` and the read-only inspection command `vizier audit`.
 
 ## Repository Setup
 
@@ -77,6 +77,28 @@ Runtime nodes now follow one I/O contract behind `vizier __workflow-node`: lifec
 `--after` accepts either direct job ids or grouped run references (`run:<run_id>`). Run references expand to the previous run's success-terminal sink job ids before normal scheduler dependency validation.
 
 Use `vizier run --check` for validate-only preflight (queue-time checks only): flow resolution, template load/composition, parameter expansion/coercion, entry input checks, capability validation, and per-node compile checks all run, but Vizier does not create run manifests, enqueue jobs, or tick the scheduler. `--check` conflicts with enqueue/runtime flags: `--follow`, `--after`, `--require-approval`, `--no-require-approval`, and `--repeat`.
+
+## Workflow Audit
+
+Use `vizier audit <flow>` for queue-time artifact wiring inspection without enqueue/runtime side effects:
+
+- `vizier audit develop`
+- `vizier audit file:.vizier/workflows/custom.hcl --set key=value --format json`
+- `vizier audit develop --strict`
+
+`vizier audit` runs the same queue-time preprocessing path as `vizier run --check` (flow resolution, input mapping, `--set` expansion/coercion, plan `spec_file` inlining, capability validation), then reports:
+
+- `output_artifacts` (stable, deduped union of produced artifacts, including implicit `custom:operation_output:<node_id>`)
+- `output_artifacts_by_outcome` (`succeeded|failed|blocked|cancelled`)
+- `untethered_inputs` (artifacts referenced in `needs` with no in-template producer, plus consumer node ids)
+
+Exit behavior:
+
+- `0`: audit succeeded
+- `1`: resolution/parse/validation failure
+- `10`: audit succeeded with untethered inputs and `--strict`
+
+`vizier run` remains the only enqueue/execution front door.
 
 ## Release Flow
 

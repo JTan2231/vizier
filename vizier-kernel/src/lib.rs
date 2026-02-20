@@ -4,6 +4,7 @@ pub mod ports;
 pub mod prompt;
 pub mod prompts;
 pub mod scheduler;
+pub mod workflow_audit;
 pub mod workflow_template;
 
 pub use prompts::{

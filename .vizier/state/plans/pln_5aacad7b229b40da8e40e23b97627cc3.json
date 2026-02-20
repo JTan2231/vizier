@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_5aacad7b229b40da8e40e23b97627cc3",
+  "slug": "audit",
+  "branch": "draft/audit",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_b536836a4f3c491e9011ee1fbbb55eb3-persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: `vizier audit`",
+  "created_at": "2026-02-20T00:19:07.100598+00:00",
+  "updated_at": "2026-02-20T00:19:07.100598+00:00",
+  "job_ids": {
+    "persist": "wf-run_b536836a4f3c491e9011ee1fbbb55eb3-persist_plan"
+  }
+}

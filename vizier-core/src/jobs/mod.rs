@@ -10,10 +10,12 @@ pub use crate::scheduler::{
     JobPrecondition, JobStatus, JobWaitKind, JobWaitReason, LockMode, MissingProducerPolicy,
     PinnedHead, format_artifact,
 };
+use crate::workflow_audit::{WorkflowAuditReport, analyze_workflow_template};
 use crate::workflow_template::{
     CompiledWorkflowNode, OPERATION_OUTPUT_ARTIFACT_TYPE_ID, PROMPT_ARTIFACT_TYPE_ID, WorkflowGate,
     WorkflowNodeKind, WorkflowOutcomeEdges, WorkflowPrecondition, WorkflowRetryMode,
     WorkflowTemplate, compile_workflow_node, validate_workflow_capability_contracts,
+    workflow_operation_output_artifact,
 };
 use crate::{
     agent::{AgentError, AgentRequest, DEFAULT_AGENT_TIMEOUT},
@@ -1223,13 +1225,6 @@ fn workflow_job_id(run_id: &str, node_id: &str) -> String {
     )
 }
 
-fn workflow_operation_output_artifact(node_id: &str) -> JobArtifact {
-    JobArtifact::Custom {
-        type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
-        key: node_id.trim().to_string(),
-    }
-}
-
 fn dedup_artifacts_preserve_order(artifacts: Vec<JobArtifact>) -> Vec<JobArtifact> {
     let mut seen = HashSet::new();
     let mut deduped = Vec::new();
@@ -1456,6 +1451,13 @@ pub fn validate_workflow_run_template(
     }
     let _ = compile_workflow_run_nodes_with_resolved_after(template, &resolved_after)?;
     Ok(())
+}
+
+pub fn audit_workflow_run_template(
+    template: &WorkflowTemplate,
+) -> Result<WorkflowAuditReport, Box<dyn std::error::Error>> {
+    validate_workflow_run_template(template)?;
+    Ok(analyze_workflow_template(template))
 }
 
 fn convert_outcome_edges_to_routes(edges: &WorkflowOutcomeEdges) -> WorkflowRouteTargets {

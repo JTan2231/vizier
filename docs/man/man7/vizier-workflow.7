@@ -21,6 +21,8 @@ Primary user-facing commands are:
 .IP "\(bu" 2
 \fBvizier run <flow>\fR
 .IP "\(bu" 2
+\fBvizier audit <flow>\fR
+.IP "\(bu" 2
 \fBvizier release\fR
 .IP "\(bu" 2
 \fBvizier completions\fR
@@ -41,6 +43,10 @@ There is no implicit repo/global flow-name fallback.
 outside the repo are allowed under the configured global workflows directory.
 For validation-only preflight, use \fBvizier run --check <flow>\fR; it performs
 queue-time checks and exits without enqueueing jobs.
+\fBvizier audit <flow>\fR runs the same queue-time preprocessing path and reports
+produced artifacts plus untethered \fBneeds\fR wiring with no enqueue/runtime side
+effects.
+\fBvizier run\fR remains the only enqueue/execution front door.
 .SH JOB OPERATIONS
 Use \fBvizier jobs\fR to inspect and control background job records:
 .IP "\(bu" 2

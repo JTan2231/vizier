@@ -1,6 +1,6 @@
 # Workflow-template reduction surface
 
-Status (2026-02-15): ACTIVE. `vizier run` is now the public workflow-template orchestrator while wrapper families remain removed.
+Status (2026-02-20): ACTIVE. `vizier run` remains the public enqueue/execution orchestrator and `vizier audit` adds read-only queue-time wiring analysis while wrapper families remain removed.
 
 Thread: Workflow-template reduction surface (cross: Agent workflow orchestration, Configuration posture + defaults, Session logging)
 
@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-20, read-only workflow audit command):
+  - `vizier-cli/src/cli/args.rs`, `vizier-cli/src/cli/dispatch.rs`, and `vizier-cli/src/actions/audit.rs` now add top-level `vizier audit <flow> [INPUT...] [--set ...] [--format text|json] [--strict]` with no enqueue/runtime flags.
+  - Queue-time preprocessing was factored into `vizier-cli/src/actions/workflow_preflight.rs` and is now shared by `run --check` and `audit` (flow resolution, input mapping, `--set` expansion/coercion, entry-input preflight, and stage `spec_file` inlining).
+  - `vizier-kernel/src/workflow_audit.rs` now provides deterministic pure analysis (`output_artifacts`, `output_artifacts_by_outcome`, `untethered_inputs`) including implicit `custom:operation_output:<node_id>` producers with canonical artifact string formatting.
+  - `vizier-core/src/jobs/mod.rs` now exposes side-effect-free `audit_workflow_run_template` glue that reuses existing validation and never touches enqueue/scheduler paths.
+  - Operator/docs/test surfaces now include `audit` (`docs/user/workflows/alias-run-flow.md`, `docs/user/config-reference.md`, `docs/man/man7/*`, generated `docs/man/man1/vizier.1`, `tests/src/audit.rs`, `tests/src/help.rs`).
 - Update (2026-02-19, HCL template cutover):
   - `vizier-cli/src/workflow_templates.rs` now parses `.hcl` workflow sources via vendored `rshcl` (`third_party/rshcl`), converts evaluated values to JSON/serde for `WorkflowTemplateFile`, reports path-anchored HCL diagnostics, and keeps legacy `.toml`/`.json` loading during migration.
   - Resolver identity scanning now includes `.hcl` candidates and applies deterministic same-stem precedence (`.hcl` wins over `.toml`), while explicit/global-flow resolution posture remains unchanged (no implicit alias fallback discovery).

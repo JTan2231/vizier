@@ -12,6 +12,7 @@ pub mod tools;
 pub mod tree;
 pub mod vcs;
 pub mod walker;
+pub mod workflow_audit;
 pub mod workflow_template;
 
 pub use vizier_kernel::prompts::{

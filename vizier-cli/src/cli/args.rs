@@ -103,6 +103,12 @@ pub(crate) enum RunFormatArg {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum AuditFormatArg {
+    Text,
+    Json,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum JobsListField {
     Job,
@@ -492,6 +498,9 @@ pub(crate) enum Commands {
     /// Compile a workflow run from an alias, selector, or template file (validate-only or enqueue)
     Run(RunCmd),
 
+    /// Analyze a workflow template at queue-time without enqueue side effects
+    Audit(AuditCmd),
+
     /// Generate shell completion scripts
     Completions(CompletionsCmd),
 
@@ -629,6 +638,29 @@ pub(crate) struct RunCmd {
     /// Output format (text, json)
     #[arg(long = "format", value_enum, default_value_t = RunFormatArg::Text)]
     pub(crate) format: RunFormatArg,
+}
+
+#[derive(ClapArgs, Debug)]
+pub(crate) struct AuditCmd {
+    /// Workflow source: alias, selector, file:<path>, or direct .hcl/.toml/.json path
+    #[arg(value_name = "FLOW")]
+    pub(crate) flow: String,
+
+    /// Ordered workflow inputs; mapped by template [cli].positional before analysis
+    #[arg(value_name = "INPUT")]
+    pub(crate) inputs: Vec<String>,
+
+    /// Template parameter override (KEY=VALUE); repeatable
+    #[arg(long = "set", value_name = "KEY=VALUE", action = ArgAction::Append)]
+    pub(crate) set: Vec<String>,
+
+    /// Output format (text, json)
+    #[arg(long = "format", value_enum, default_value_t = AuditFormatArg::Text)]
+    pub(crate) format: AuditFormatArg,
+
+    /// Return exit code 10 when untethered inputs are detected
+    #[arg(long = "strict", action = ArgAction::SetTrue)]
+    pub(crate) strict: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -919,6 +951,39 @@ mod tests {
                 "expected clap error to mention --check: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn audit_parse_contract_accepts_format_and_strict() {
+        let cli = Cli::try_parse_from([
+            "vizier",
+            "audit",
+            "draft",
+            "--set",
+            "slug=my-change",
+            "--format",
+            "json",
+            "--strict",
+        ])
+        .expect("parse audit args");
+        let Commands::Audit(cmd) = cli.command else {
+            panic!("expected audit command");
+        };
+        assert_eq!(cmd.flow, "draft");
+        assert_eq!(cmd.set, vec!["slug=my-change".to_string()]);
+        assert!(matches!(cmd.format, super::AuditFormatArg::Json));
+        assert!(cmd.strict, "expected --strict to set AuditCmd::strict");
+    }
+
+    #[test]
+    fn audit_rejects_run_runtime_flags() {
+        let err = Cli::try_parse_from(["vizier", "audit", "draft", "--follow"])
+            .expect_err("run-only runtime flags should be rejected");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--follow"),
+            "expected clap error to mention rejected flag: {rendered}"
+        );
     }
 
     #[test]

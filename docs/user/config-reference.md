@@ -72,6 +72,7 @@ Current user-facing commands are:
 - `vizier clean`
 - `vizier jobs`
 - `vizier run`
+- `vizier audit`
 - `vizier completions`
 - `vizier release`
 
@@ -106,6 +107,16 @@ Run-local orchestration controls include:
 - Phase 2 topology/identity expansion (`nodes.after`, `nodes.on.*`, template `id/version`, `imports`, `links`) is intentionally deferred.
 
 `vizier run --repeat <N>` enqueues the same resolved flow `N` times in strict sequence. Iteration `i>1` depends on iteration `i-1` success sinks (equivalent to appending `--after run:<previous_run_id>` internally), so repeats do not run in parallel.
+
+## `vizier audit` Read-only Analysis
+
+`vizier audit <flow>` uses the same flow resolution and queue-time preprocessing path as `vizier run --check`:
+
+- explicit file/path, configured `[commands]` alias, or canonical selector (`template.name@vN`)
+- positional input mapping + `--set key=value` expansion/coercion
+- stage `plan.persist` `spec_file` inlining and capability validation
+
+Audit output reports produced artifacts (including implicit `custom:operation_output:<node_id>`) and untethered `needs` artifacts with consumer node IDs. It does not write run manifests, enqueue jobs, or tick the scheduler.
 
 ## Workflow Dependency Policy
 

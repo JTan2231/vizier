@@ -2,6 +2,7 @@
 
 mod fixtures;
 
+mod audit;
 mod cicd;
 mod help;
 mod init;

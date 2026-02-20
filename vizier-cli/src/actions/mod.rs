@@ -1,10 +1,13 @@
+mod audit;
 mod init;
 mod list;
 mod release;
 mod run;
 pub(crate) mod shared;
 mod types;
+mod workflow_preflight;
 
+pub(crate) use audit::run_workflow_audit;
 pub(crate) use init::run_init;
 pub(crate) use list::{run_cd, run_clean, run_list};
 pub(crate) use release::run_release;

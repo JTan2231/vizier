@@ -465,6 +465,13 @@ pub struct WorkflowPolicySnapshotLock {
 pub const PROMPT_ARTIFACT_TYPE_ID: &str = "prompt_text";
 pub const OPERATION_OUTPUT_ARTIFACT_TYPE_ID: &str = "operation_output";
 
+pub fn workflow_operation_output_artifact(node_id: &str) -> JobArtifact {
+    JobArtifact::Custom {
+        type_id: OPERATION_OUTPUT_ARTIFACT_TYPE_ID.to_string(),
+        key: node_id.trim().to_string(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct WorkflowNodeResolution {
     identity: WorkflowNodeIdentity,

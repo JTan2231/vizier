@@ -47,7 +47,7 @@
 - **Legacy workflow capability field**: Historical job metadata key `workflow_capability_id`; retained for deserializing old records but no longer treated as active identity for new scheduler output.
 - **Narrative state**: Snapshot slice covering active themes, tensions, and open/retired threads.
 - **No-update signal**: Explicit turn-level instruction (`no-op:`, `discuss-only:`, or equivalent) that suppresses narrative edits.
-- **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `run`, `completions`, `release`.
+- **Reduced CLI surface**: Supported top-level commands: `help`, `init`, `list`, `cd`, `clean`, `jobs`, `run`, `audit`, `completions`, `release`.
 - **Removed command family**: Hard-removed top-level commands: `save`, `draft`, `approve`, `review`, `merge`, `test-display`, `plan`, `build`, `patch`.
 - **Pager flag contract drift**: Documentation mismatch where AGENTS advertises explicit `--pager` while the CLI currently rejects it and only retains hidden `--no-pager`.
 - **Removed global flags**: Hard-removed globals: `--agent`, `--push`, `--no-commit`, `--follow`, `--pager`, `--background-job-id`.
@@ -79,6 +79,8 @@
 - **Run entry-input CLI preflight error**: Missing required root-input guidance emitted as `error`/`usage`/`example`/`hint`, with alias-aware usage/examples and without internal node/capability identifiers.
 - **Run check mode**: `vizier run --check <flow>` validate-only path that executes queue-time checks (resolve/load/expand/coerce/preflight/capability/compile) and exits without generating run IDs, writing run manifests, enqueueing jobs, or ticking the scheduler.
 - **Run check conflict set**: `vizier run --check` rejects enqueue/runtime-only flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`) so validation-only execution cannot mutate scheduler state.
+- **Workflow audit mode**: `vizier audit <flow>` read-only queue-time analysis path that reuses run/check preprocessing + validation and reports output artifacts plus untethered inputs (with consumer node IDs) without enqueue/runtime side effects.
+- **Untethered input**: A workflow `needs` artifact with zero in-template producers; surfaced by `vizier audit` and optionally promoted to exit `10` with `--strict`.
 - **Run `--set` Phase 1 surface**: Queue-time interpolation coverage for `vizier run --set` across `nodes.args`, artifact payloads (`needs`/`produces`), lock keys, custom precondition args, gate script/custom fields, gate bools, retry mode/budget, and artifact-contract IDs/versions.
 - **Run `--set` strict coercion**: Queue-time typed coercion for expanded placeholders: bool tokens (`true|false|1|0|yes|no|on|off`), retry budget as decimal `u32`, and retry mode via canonical enum parsing; failures are field-path errors that prevent enqueue.
 - **Run `--set` topology deferral**: Explicitly deferred interpolation scope for topology/identity fields (`after`, `on`, template `id/version`, imports, links) pending deterministic-graph policy decisions.

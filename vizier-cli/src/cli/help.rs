@@ -59,6 +59,7 @@ pub(crate) fn curated_help_text() -> &'static str {
         "  vizier list\n",
         "  vizier jobs list\n",
         "  vizier run develop\n",
+        "  vizier audit develop\n",
         "  vizier release --dry-run\n",
         "\n",
         "Examples:\n",
