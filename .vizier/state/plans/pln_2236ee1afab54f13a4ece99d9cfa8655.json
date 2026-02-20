@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_2236ee1afab54f13a4ece99d9cfa8655",
+  "slug": "runmock3",
+  "branch": "draft/runmock3",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_ad0200f9fae04d7d9cb84515a544bd0b-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Flagship `vizier run` Alias Outcomes (`RUN`)",
+  "created_at": "2026-02-20T05:23:45.149738+00:00",
+  "updated_at": "2026-02-20T05:23:45.149738+00:00",
+  "job_ids": {
+    "persist": "wf-run_ad0200f9fae04d7d9cb84515a544bd0b-develop_draft__persist_plan"
+  }
+}
