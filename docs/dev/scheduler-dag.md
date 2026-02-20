@@ -320,14 +320,34 @@ Job list/show output exposes scheduler fields so operators can inspect state:
 These fields are also available in block/table formats via the list/show field
 configuration (`display.lists.jobs` and `display.lists.jobs_show`).
 
+Raw monitoring JSON mode (additive):
+- `vizier jobs list --format json --raw`
+- `vizier jobs show <job-id> --format json --raw`
+- `--raw` is accepted only with explicit `--format json`.
+- Raw mode bypasses display-field flattening and returns typed envelopes:
+  - list:
+    - `version` (`1`)
+    - `generated_at` (RFC3339)
+    - `jobs` (`JobMonitorRecord[]`)
+  - show:
+    - `version` (`1`)
+    - `generated_at` (RFC3339)
+    - `job` (`JobMonitorRecord`)
+- `JobMonitorRecord` keeps typed scheduler/job metadata:
+  - `wait`: nullable typed object `{ kind, detail }`
+  - `waited_on`: typed `JobWaitKind[]`
+  - `schedule`: nullable typed subset (`after`, `dependencies`, `artifacts`, `locks`, `approval`, `pinned_head`)
+  - `workflow`: nullable workflow metadata projection (`run_id`, `node_id`, executor/control/template fields)
+  - `context`: nullable command context (`command_alias`, `plan`, `target`, `branch`, `execution_root`)
+
 ## Scheduler schedule view (`vizier jobs schedule`)
 `vizier jobs schedule` renders scheduler state in three formats:
 - `summary` (default): one row per visible job for fast scanning.
 - `dag`: verbose recursive dependency output for deep debugging.
-- `json`: stable parseable contract for tooling.
+- `json`: stable parseable contract for tooling (`--raw` enables typed monitoring mode).
 
 Usage:
-`vizier jobs schedule [--all] [--job <id>] [--format summary|dag|json] [--watch] [--top N] [--interval-ms MS] [--max-depth N]`
+`vizier jobs schedule [--all] [--job <id>] [--format summary|dag|json] [--raw] [--watch] [--top N] [--interval-ms MS] [--max-depth N]`
 
 Summary behavior (default):
 - Header: `Schedule (Summary)`.
@@ -344,7 +364,7 @@ DAG behavior (`--format dag`):
   - explicit `after:success -> <job-id> <status>` edges.
 - `--max-depth` limits recursive expansion (default 3).
 
-JSON behavior (`--format json`):
+JSON behavior (`--format json`, non-raw):
 - Top-level contract:
   - `version` (currently `1`)
   - `ordering` (`"created_at_then_job_id"`)
@@ -362,6 +382,22 @@ JSON behavior (`--format json`):
   - `from`
   - `to`
   - either `after` (`{ policy }`) or `artifact` (with optional `state`)
+
+JSON raw behavior (`--format json --raw`):
+- Top-level contract:
+  - `version` (`1`)
+  - `generated_at` (RFC3339)
+  - `ordering` (`"created_at_then_job_id"`)
+  - `jobs` (ordered rows matching summary order)
+  - `edges` (identical shape/parity with non-raw JSON schedule edges)
+- Each `jobs[]` entry includes:
+  - `order`
+  - `job_id`
+  - `slug` (nullable)
+  - `name`
+  - `status`
+  - `wait` (nullable typed object `{ kind, detail }`, not a flattened string)
+  - `created_at` (RFC3339)
 
 Watch behavior (`--watch`):
 - Interactive summary dashboard with in-place ANSI redraw (top-style) that includes:
@@ -404,10 +440,20 @@ Example:
 
 Empty state:
 - `summary` and `dag`: stdout prints `Outcome: No scheduled jobs`.
-- `json`:
+- `json` (non-raw):
   ```
   {
     "version": 1,
+    "ordering": "created_at_then_job_id",
+    "jobs": [],
+    "edges": []
+  }
+  ```
+- `json --raw`:
+  ```
+  {
+    "version": 1,
+    "generated_at": "2026-02-20T18:30:00Z",
     "ordering": "created_at_then_job_id",
     "jobs": [],
     "edges": []

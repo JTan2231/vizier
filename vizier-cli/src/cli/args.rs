@@ -665,7 +665,7 @@ pub(crate) struct AuditCmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum JobsAction {
-    /// List tracked background jobs (succeeded hidden by default; failures optional)
+    /// List tracked background jobs (succeeded hidden by default; failures optional; `--format json --raw` for typed monitoring JSON)
     List {
         /// Include succeeded jobs (default hides them)
         #[arg(long = "all", short = 'a')]
@@ -678,9 +678,13 @@ pub(crate) enum JobsAction {
         /// Output format (block, table, json); overrides display.lists.jobs.format
         #[arg(long = "format", value_enum)]
         format: Option<ListFormatArg>,
+
+        /// Emit typed monitoring JSON envelope (requires explicit `--format json`)
+        #[arg(long = "raw", action = ArgAction::SetTrue, requires = "format")]
+        raw: bool,
     },
 
-    /// Show scheduled jobs and dependency relationships
+    /// Show scheduled jobs and dependency relationships (`--format json --raw` emits typed wait objects)
     Schedule {
         /// Include succeeded/failed/cancelled jobs (default shows active/blocked plus failed blockers)
         #[arg(long = "all", short = 'a')]
@@ -693,6 +697,10 @@ pub(crate) enum JobsAction {
         /// Output format (summary, dag, json)
         #[arg(long = "format", value_enum)]
         format: Option<JobsScheduleFormatArg>,
+
+        /// Emit typed monitoring JSON envelope (requires explicit `--format json`)
+        #[arg(long = "raw", action = ArgAction::SetTrue, requires = "format")]
+        raw: bool,
 
         /// Render an interactive, refreshing schedule dashboard (TTY + ANSI only)
         #[arg(long = "watch", action = ArgAction::SetTrue)]
@@ -711,7 +719,7 @@ pub(crate) enum JobsAction {
         max_depth: usize,
     },
 
-    /// Show details for a background job id
+    /// Show details for a background job id (`--format json --raw` emits typed monitoring JSON)
     Show {
         #[arg(value_name = "JOB")]
         job: String,
@@ -719,6 +727,10 @@ pub(crate) enum JobsAction {
         /// Output format (block, table, json); overrides display.lists.jobs_show.format
         #[arg(long = "format", value_enum)]
         format: Option<ListFormatArg>,
+
+        /// Emit typed monitoring JSON envelope (requires explicit `--format json`)
+        #[arg(long = "raw", action = ArgAction::SetTrue, requires = "format")]
+        raw: bool,
     },
 
     /// Show a terse status line for a background job id
@@ -1025,5 +1037,36 @@ mod tests {
             rendered.contains("--repeat"),
             "expected clap error to mention --repeat: {rendered}"
         );
+    }
+
+    #[test]
+    fn jobs_raw_requires_explicit_format_flag() {
+        for args in [
+            vec!["vizier", "jobs", "list", "--raw"],
+            vec!["vizier", "jobs", "show", "job-1", "--raw"],
+            vec!["vizier", "jobs", "schedule", "--raw"],
+        ] {
+            let err =
+                Cli::try_parse_from(args).expect_err("`--raw` should require explicit --format");
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains("--format"),
+                "expected clap error to mention --format: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn jobs_raw_parses_with_json_format() {
+        let cli = Cli::try_parse_from(["vizier", "jobs", "list", "--format", "json", "--raw"])
+            .expect("parse jobs list raw json");
+        let Commands::Jobs(cmd) = cli.command else {
+            panic!("expected jobs command");
+        };
+        let super::JobsAction::List { format, raw, .. } = cmd.action else {
+            panic!("expected jobs list action");
+        };
+        assert!(matches!(format, Some(super::ListFormatArg::Json)));
+        assert!(raw, "expected --raw on jobs list");
     }
 }

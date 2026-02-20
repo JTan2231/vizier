@@ -8,9 +8,9 @@ Inspect detached Vizier background jobs
 Usage: vizier jobs [OPTIONS] <COMMAND>
 
 Commands:
-  list      List tracked background jobs (succeeded hidden by default; failures optional)
-  schedule  Show scheduled jobs and dependency relationships
-  show      Show details for a background job id
+  list      List tracked background jobs (succeeded hidden by default; failures optional; `--format json --raw` for typed monitoring JSON)
+  schedule  Show scheduled jobs and dependency relationships (`--format json --raw` emits typed wait objects)
+  show      Show details for a background job id (`--format json --raw` emits typed monitoring JSON)
   status    Show a terse status line for a background job id
   retry     Rewind a failed/blocked job chain to its predecessor state and re-queue it
   approve   Approve a queued job that is waiting on explicit human approval

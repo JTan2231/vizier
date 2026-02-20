@@ -31,6 +31,8 @@
 - **HCL placeholder escaping**: Workflow templates authored in `.hcl` must write literal Vizier queue-time placeholders as `$${key}` so HCL decoding yields `${key}` for existing expansion logic.
 - **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
+- **Jobs raw monitoring mode**: Additive `vizier jobs list|show|schedule --format json --raw` path that emits typed monitoring envelopes (`version`, `generated_at`) instead of display-field-flattened JSON.
+- **Jobs raw JSON gate**: Contract that `--raw` is accepted only with explicit `--format json`; non-JSON or missing-format usage fails fast with CLI errors.
 - **Jobs ownership split**: Scheduler/job/workflow runtime side effects now live in `vizier-core/src/jobs/mod.rs`; `vizier-cli/src/jobs.rs` is a compatibility re-export shim used by existing CLI call sites.
 - **Global workflow directory**: Default implicit alias source for `vizier run <flow>` at `<base_config_dir>/vizier/workflows` (or `[workflow.global_workflows].dir` override) when `[workflow.global_workflows].enabled = true`.
 - **Stage alias map**: Repo-local `[commands]` config mapping (for example `draft`, `approve`, `merge`) that resolves `vizier run <alias>` to workflow file selectors.
@@ -80,6 +82,7 @@
 - **Run entry-input CLI preflight error**: Missing required root-input guidance emitted as `error`/`usage`/`example`/`hint`, with alias-aware usage/examples and without internal node/capability identifiers.
 - **Run check mode**: `vizier run --check <flow>` validate-only path that executes queue-time checks (resolve/load/expand/coerce/preflight/capability/compile) and exits without generating run IDs, writing run manifests, enqueueing jobs, or ticking the scheduler.
 - **Run check conflict set**: `vizier run --check` rejects enqueue/runtime-only flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`) so validation-only execution cannot mutate scheduler state.
+- **Schedule raw typed wait**: `vizier jobs schedule --format json --raw` row contract where `wait` is nullable typed `{kind, detail}` (versus flattened string in non-raw schedule JSON), while `edges` preserve parity with existing schedule JSON.
 - **Workflow audit mode**: `vizier audit <flow>` read-only queue-time analysis path that reuses run/check preprocessing + validation and reports output artifacts plus untethered inputs (with consumer node IDs) without enqueue/runtime side effects.
 - **Untethered input**: A workflow `needs` artifact with zero in-template producers; surfaced by `vizier audit` and optionally promoted to exit `10` with `--strict`.
 - **Run `--set` Phase 1 surface**: Queue-time interpolation coverage for `vizier run --set` across `nodes.args`, artifact payloads (`needs`/`produces`), lock keys, custom precondition args, gate script/custom fields, gate bools, retry mode/budget, and artifact-contract IDs/versions.

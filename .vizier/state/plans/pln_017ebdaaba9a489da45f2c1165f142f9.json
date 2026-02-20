@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_017ebdaaba9a489da45f2c1165f142f9",
+  "slug": "json",
+  "branch": "draft/json",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_c829c875084a431f9f5cccdc2dd3c9fd-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Minimally Typed Job Monitoring JSON Surface",
+  "created_at": "2026-02-20T07:52:26.399947+00:00",
+  "updated_at": "2026-02-20T07:52:26.399947+00:00",
+  "job_ids": {
+    "persist": "wf-run_c829c875084a431f9f5cccdc2dd3c9fd-develop_draft__persist_plan"
+  }
+}

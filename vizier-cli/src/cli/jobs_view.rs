@@ -922,7 +922,11 @@ pub(crate) fn run_jobs_command(
             all,
             dismiss_failures,
             format,
+            raw,
         } => {
+            if raw && !matches!(format, Some(crate::cli::args::ListFormatArg::Json)) {
+                return Err("`--raw` requires `--format json`.".into());
+            }
             let mut list_config = config::get_config().display.lists.jobs.clone();
             if let Some(fmt) = format {
                 list_config.format = fmt.into();
@@ -934,7 +938,10 @@ pub(crate) fn run_jobs_command(
             };
             let records = jobs::list_records(jobs_root)?;
             if records.is_empty() {
-                if matches!(list_config.format, config::ListFormat::Json) {
+                if raw {
+                    let payload = jobs::build_job_monitor_list_envelope(&records);
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else if matches!(list_config.format, config::ListFormat::Json) {
                     let payload = json!({
                         "header": { "outcome": "No background jobs found" },
                         "jobs": [],
@@ -992,6 +999,12 @@ pub(crate) fn run_jobs_command(
                     if visible.len() == 1 { "" } else { "s" }
                 )
             };
+
+            if raw {
+                let payload = jobs::build_job_monitor_list_envelope(&visible);
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
+            }
 
             let fields = parse_fields(
                 "display.lists.jobs.fields",
@@ -1088,11 +1101,15 @@ pub(crate) fn run_jobs_command(
             all,
             job,
             format,
+            raw,
             watch,
             top,
             interval_ms,
             max_depth,
         } => {
+            if raw && !matches!(format, Some(JobsScheduleFormatArg::Json)) {
+                return Err("`--raw` requires `--format json`.".into());
+            }
             let schedule_format = match format {
                 Some(JobsScheduleFormatArg::Summary) => ScheduleFormat::Summary,
                 Some(JobsScheduleFormatArg::Dag) => ScheduleFormat::Dag,
@@ -1130,7 +1147,10 @@ pub(crate) fn run_jobs_command(
             let graph = jobs::ScheduleGraph::new(records);
             let roots = schedule_roots(&graph, all, job.as_deref(), max_depth);
             if roots.is_empty() {
-                if matches!(schedule_format, ScheduleFormat::Json) {
+                if raw {
+                    let payload = jobs::build_job_monitor_schedule_envelope(Vec::new(), Vec::new());
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else if matches!(schedule_format, ScheduleFormat::Json) {
                     let snapshot = jobs::ScheduleSnapshot::empty();
                     println!("{}", serde_json::to_string_pretty(&snapshot)?);
                 } else {
@@ -1146,15 +1166,41 @@ pub(crate) fn run_jobs_command(
                 ScheduleFormat::Dag => render_schedule_dag(&graph, &repo, &roots, max_depth),
                 ScheduleFormat::Json => {
                     let edges = graph.snapshot_edges(&repo, &roots, max_depth);
-                    let snapshot =
-                        jobs::ScheduleSnapshot::new(schedule_snapshot_jobs(&rows), edges);
-                    println!("{}", serde_json::to_string_pretty(&snapshot)?);
+                    if raw {
+                        let raw_rows = rows
+                            .iter()
+                            .filter_map(|row| {
+                                graph.record(&row.job_id).map(|record| {
+                                    jobs::project_job_monitor_schedule_row(
+                                        row.order,
+                                        row.slug.clone(),
+                                        row.name.clone(),
+                                        record,
+                                    )
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let payload = jobs::build_job_monitor_schedule_envelope(raw_rows, edges);
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        let snapshot =
+                            jobs::ScheduleSnapshot::new(schedule_snapshot_jobs(&rows), edges);
+                        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+                    }
                 }
             }
             Ok(())
         }
-        JobsAction::Show { job, format } => {
+        JobsAction::Show { job, format, raw } => {
+            if raw && !matches!(format, Some(crate::cli::args::ListFormatArg::Json)) {
+                return Err("`--raw` requires `--format json`.".into());
+            }
             let record = jobs::read_record(jobs_root, &job)?;
+            if raw {
+                let payload = jobs::build_job_monitor_show_envelope(&record);
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
+            }
             let mut show_config = config::get_config().display.lists.jobs_show.clone();
             if let Some(fmt) = format {
                 show_config.format = fmt.into();
