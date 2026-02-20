@@ -22,6 +22,7 @@ const GLOSSARY_STARTER: &str = "\
 ";
 
 const CONFIG_STARTER: &str = include_str!("../../templates/init/config.toml");
+const WORKFLOW_DEVELOP_STARTER: &str = include_str!("../../templates/init/develop.hcl");
 const WORKFLOW_DRAFT_STARTER: &str = include_str!("../../templates/init/workflows/draft.hcl");
 const WORKFLOW_APPROVE_STARTER: &str = include_str!("../../templates/init/workflows/approve.hcl");
 const WORKFLOW_MERGE_STARTER: &str = include_str!("../../templates/init/workflows/merge.hcl");
@@ -197,6 +198,11 @@ fn required_files() -> Vec<RequiredFile> {
         RequiredFile {
             relative_path: format!("{}config.toml", tools::VIZIER_DIR),
             starter_template: CONFIG_STARTER,
+            executable: false,
+        },
+        RequiredFile {
+            relative_path: format!("{}develop.hcl", tools::VIZIER_DIR),
+            starter_template: WORKFLOW_DEVELOP_STARTER,
             executable: false,
         },
         RequiredFile {

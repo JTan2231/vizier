@@ -59,6 +59,25 @@ fn run_install_sh(
     cmd.output()
 }
 
+fn seed_install_fixture_root(root: &Path) -> io::Result<()> {
+    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
+    copy_dir_recursive(
+        &repo_root().join("examples/agents"),
+        &root.join("examples/agents"),
+    )?;
+    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
+    copy_dir_recursive(
+        &repo_root().join(".vizier/workflows"),
+        &root.join(".vizier/workflows"),
+    )?;
+    fs::create_dir_all(root.join(".vizier"))?;
+    fs::copy(
+        repo_root().join(".vizier/develop.hcl"),
+        root.join(".vizier/develop.hcl"),
+    )?;
+    Ok(())
+}
+
 fn write_id_stub(dir: &Path, uid: u32) -> io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
     let path = dir.join("id");
@@ -105,17 +124,7 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
-
-    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
-    copy_dir_recursive(
-        &repo_root().join("examples/agents"),
-        &root.join("examples/agents"),
-    )?;
-    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
-    copy_dir_recursive(
-        &repo_root().join(".vizier/workflows"),
-        &root.join(".vizier/workflows"),
-    )?;
+    seed_install_fixture_root(&root)?;
 
     let bin_dir = tmp.path().join("bin");
     write_cargo_stub(&bin_dir)?;
@@ -177,6 +186,8 @@ fn test_install_sh_stages_and_uninstalls() -> TestResult {
         "usr/local/share/vizier/workflows/draft.hcl",
         "usr/local/share/vizier/workflows/approve.hcl",
         "usr/local/share/vizier/workflows/merge.hcl",
+        "usr/local/share/vizier/workflows/commit.hcl",
+        "usr/local/share/vizier/develop.hcl",
     ];
 
     assert!(expected_exe.is_file(), "missing {}", expected_exe.display());
@@ -305,17 +316,7 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
-
-    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
-    copy_dir_recursive(
-        &repo_root().join("examples/agents"),
-        &root.join("examples/agents"),
-    )?;
-    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
-    copy_dir_recursive(
-        &repo_root().join(".vizier/workflows"),
-        &root.join(".vizier/workflows"),
-    )?;
+    seed_install_fixture_root(&root)?;
 
     let stage = tmp.path().join("stage");
     let cargo_target = tmp.path().join("cargo-target");
@@ -351,6 +352,8 @@ fn test_install_sh_dry_run_writes_nothing() -> TestResult {
         "/usr/local/share/vizier/workflows/draft.hcl",
         "/usr/local/share/vizier/workflows/approve.hcl",
         "/usr/local/share/vizier/workflows/merge.hcl",
+        "/usr/local/share/vizier/workflows/commit.hcl",
+        "/usr/local/share/vizier/develop.hcl",
     ] {
         assert!(
             stdout.contains(rel),
@@ -379,17 +382,7 @@ fn test_install_sh_requires_writable_prefix() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
-
-    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
-    copy_dir_recursive(
-        &repo_root().join("examples/agents"),
-        &root.join("examples/agents"),
-    )?;
-    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
-    copy_dir_recursive(
-        &repo_root().join(".vizier/workflows"),
-        &root.join(".vizier/workflows"),
-    )?;
+    seed_install_fixture_root(&root)?;
 
     let prefix = tmp.path().join("prefix");
     fs::create_dir_all(&prefix)?;
@@ -432,17 +425,7 @@ fn test_install_sh_root_defaults_to_temp_cargo_target_dir() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
-
-    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
-    copy_dir_recursive(
-        &repo_root().join("examples/agents"),
-        &root.join("examples/agents"),
-    )?;
-    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
-    copy_dir_recursive(
-        &repo_root().join(".vizier/workflows"),
-        &root.join(".vizier/workflows"),
-    )?;
+    seed_install_fixture_root(&root)?;
 
     let bin_dir = tmp.path().join("bin");
     write_cargo_stub(&bin_dir)?;
@@ -519,17 +502,7 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     let tmp = TempDir::new()?;
     let root = tmp.path().join("src");
     fs::create_dir_all(&root)?;
-
-    fs::copy(repo_root().join("install.sh"), root.join("install.sh"))?;
-    copy_dir_recursive(
-        &repo_root().join("examples/agents"),
-        &root.join("examples/agents"),
-    )?;
-    copy_dir_recursive(&repo_root().join("docs/man"), &root.join("docs/man"))?;
-    copy_dir_recursive(
-        &repo_root().join(".vizier/workflows"),
-        &root.join(".vizier/workflows"),
-    )?;
+    seed_install_fixture_root(&root)?;
 
     let bin_dir = tmp.path().join("bin");
     write_cargo_stub(&bin_dir)?;
@@ -576,6 +549,8 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     );
     assert!(workflows_dir.join("approve.hcl").is_file());
     assert!(workflows_dir.join("merge.hcl").is_file());
+    assert!(workflows_dir.join("commit.hcl").is_file());
+    assert!(stage.join("usr/local/share/vizier/develop.hcl").is_file());
 
     let manifest = fs::read_to_string(stage.join("usr/local/share/vizier/install-manifest.txt"))?;
     let manifest_lines: HashSet<&str> = manifest.lines().collect();
@@ -590,6 +565,14 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     assert!(
         manifest_lines.contains("/usr/local/share/vizier/workflows/merge.hcl"),
         "installed merge workflow should be tracked: {manifest}"
+    );
+    assert!(
+        manifest_lines.contains("/usr/local/share/vizier/workflows/commit.hcl"),
+        "installed commit workflow should be tracked: {manifest}"
+    );
+    assert!(
+        manifest_lines.contains("/usr/local/share/vizier/develop.hcl"),
+        "installed develop workflow should be tracked: {manifest}"
     );
 
     let uninstall = run_install_sh(
@@ -625,6 +608,14 @@ fn test_install_sh_preserves_existing_workflow_templates() -> TestResult {
     assert!(
         !workflows_dir.join("merge.hcl").exists(),
         "installed merge workflow should be removed by uninstall"
+    );
+    assert!(
+        !workflows_dir.join("commit.hcl").exists(),
+        "installed commit workflow should be removed by uninstall"
+    );
+    assert!(
+        !stage.join("usr/local/share/vizier/develop.hcl").exists(),
+        "installed develop workflow should be removed by uninstall"
     );
 
     Ok(())

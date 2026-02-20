@@ -54,6 +54,10 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
     if config_path.exists() {
         fs::remove_file(&config_path)?;
     }
+    let develop_path = repo.path().join(".vizier/develop.hcl");
+    if develop_path.exists() {
+        fs::remove_file(&develop_path)?;
+    }
     let workflows_dir = repo.path().join(".vizier/workflows");
     if workflows_dir.exists() {
         fs::remove_dir_all(&workflows_dir)?;
@@ -101,6 +105,11 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
         config.contains("commit = \"file:.vizier/workflows/commit.hcl\""),
         "init config should include the commit alias:\n{config}"
     );
+    assert!(
+        config.contains("develop = \"file:.vizier/develop.hcl\""),
+        "init config should include the develop alias:\n{config}"
+    );
+    assert_matches_repo_template(&repo, ".vizier/develop.hcl", ".vizier/develop.hcl")?;
     assert_matches_repo_template(
         &repo,
         ".vizier/workflows/draft.hcl",
@@ -251,6 +260,7 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
     let snapshot_before = repo.read(".vizier/narrative/snapshot.md")?;
     let glossary_before = repo.read(".vizier/narrative/glossary.md")?;
     let config_before = repo.read(".vizier/config.toml")?;
+    let develop_before = repo.read(".vizier/develop.hcl")?;
     let draft_before = repo.read(".vizier/workflows/draft.hcl")?;
     let commit_before = repo.read(".vizier/workflows/commit.hcl")?;
     let prompts_before = REQUIRED_PROMPT_FILES
@@ -286,6 +296,11 @@ fn test_init_is_noop_when_already_satisfied() -> TestResult {
         config_before,
         repo.read(".vizier/config.toml")?,
         "config should remain unchanged when init is already satisfied"
+    );
+    assert_eq!(
+        develop_before,
+        repo.read(".vizier/develop.hcl")?,
+        "develop workflow should remain unchanged when init is already satisfied"
     );
     assert_eq!(
         draft_before,

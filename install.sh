@@ -20,7 +20,8 @@ Environment variables:
 Install layout:
   $BINDIR/vizier
   $DATADIR/vizier/agents/<label>/{agent.sh,filter.sh,...}
-  $WORKFLOWSDIR/{draft.hcl,approve.hcl,merge.hcl}
+  $WORKFLOWSDIR/{draft.hcl,approve.hcl,merge.hcl,commit.hcl}
+  <workflow-root>/develop.hcl  (where <workflow-root> = dirname($WORKFLOWSDIR))
   $MANDIR/man1/*.1
   $MANDIR/man5/*.5
   $MANDIR/man7/*.7
@@ -109,11 +110,14 @@ WORKFLOWSDIR=${WORKFLOWSDIR:-"$default_workflows_dir"}
 if [ -z "$WORKFLOWSDIR" ]; then
   die "unable to resolve WORKFLOWSDIR default (set WORKFLOWSDIR or one of VIZIER_CONFIG_DIR/XDG_CONFIG_HOME/APPDATA/HOME/USERPROFILE)"
 fi
+workflow_root_dir=$(dirname "$WORKFLOWSDIR")
 
 agents_src="examples/agents"
 man_src_root="docs/man"
 workflow_src_root=".vizier/workflows"
-workflow_seed_files="draft.hcl approve.hcl merge.hcl"
+workflow_seed_files="draft.hcl approve.hcl merge.hcl commit.hcl"
+develop_seed_src=".vizier/develop.hcl"
+develop_seed_dst_rel="$workflow_root_dir/develop.hcl"
 
 manifest_rel="$DATADIR/vizier/install-manifest.txt"
 manifest_path="$DESTDIR$manifest_rel"
@@ -144,7 +148,13 @@ check_install_permissions() {
   fi
 
   unwritable=""
-  for path in "$DESTDIR$BINDIR" "$DESTDIR$DATADIR" "$DESTDIR$MANDIR" "$DESTDIR$WORKFLOWSDIR"; do
+  for path in \
+    "$DESTDIR$BINDIR" \
+    "$DESTDIR$DATADIR" \
+    "$DESTDIR$MANDIR" \
+    "$DESTDIR$WORKFLOWSDIR" \
+    "$DESTDIR$workflow_root_dir"
+  do
     if ! is_writable_parent "$path"; then
       unwritable="${unwritable}  $path\n"
     fi
@@ -258,6 +268,9 @@ for workflow_file in $workflow_seed_files; do
     die "missing workflow seed template: $workflow_src_root/$workflow_file"
   fi
 done
+if [ ! -f "$develop_seed_src" ]; then
+  die "missing workflow seed template: $develop_seed_src"
+fi
 
 man_files=$(find "$man_src_root" -type f -path "$man_src_root/man*/*" | sort)
 if [ -z "$man_files" ]; then
@@ -294,6 +307,26 @@ record_manifest_path() {
   installed_paths="${installed_paths}${1}\n"
 }
 
+process_workflow_seed() {
+  src="$1"
+  dst_rel="$2"
+  dst="$DESTDIR$dst_rel"
+
+  if [ -e "$dst" ]; then
+    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+      record_manifest_path "$dst_rel"
+      retained_workflow_targets="${retained_workflow_targets}  $dst_rel\n"
+    else
+      skipped_workflow_targets="${skipped_workflow_targets}  $dst_rel\n"
+    fi
+    return 0
+  fi
+
+  install_file 0644 "$src" "$dst"
+  record_manifest_path "$dst_rel"
+  installed_workflow_targets="${installed_workflow_targets}  $dst_rel\n"
+}
+
 install_file 0755 "$bin_src" "$DESTDIR$BINDIR/vizier"
 record_manifest_path "$BINDIR/vizier"
 
@@ -315,22 +348,9 @@ done
 for workflow_file in $workflow_seed_files; do
   src="$workflow_src_root/$workflow_file"
   dst_rel="$WORKFLOWSDIR/$workflow_file"
-  dst="$DESTDIR$dst_rel"
-
-  if [ -e "$dst" ]; then
-    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
-      record_manifest_path "$dst_rel"
-      retained_workflow_targets="${retained_workflow_targets}  $dst_rel\n"
-    else
-      skipped_workflow_targets="${skipped_workflow_targets}  $dst_rel\n"
-    fi
-    continue
-  fi
-
-  install_file 0644 "$src" "$dst"
-  record_manifest_path "$dst_rel"
-  installed_workflow_targets="${installed_workflow_targets}  $dst_rel\n"
+  process_workflow_seed "$src" "$dst_rel"
 done
+process_workflow_seed "$develop_seed_src" "$develop_seed_dst_rel"
 
 install_dir "$(dirname "$manifest_path")"
 if [ "$dry_run" -eq 1 ]; then
