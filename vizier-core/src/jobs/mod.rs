@@ -8393,6 +8393,7 @@ mod tests {
             id: "template.runtime.prompt_invoke".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -8449,6 +8450,7 @@ mod tests {
             id: "template.runtime.worktree_command".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: Vec::new(),
             nodes: vec![
@@ -8495,6 +8497,7 @@ mod tests {
             id: "template.runtime.worktree_prompt_invoke".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -9435,6 +9438,7 @@ mod tests {
             id: "template.reconcile.stale.retry".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: Vec::new(),
             nodes: vec![
@@ -11836,6 +11840,7 @@ mod tests {
             id: "template.runtime.operation_output_read_payload".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: Vec::new(),
             nodes: vec![
@@ -12028,6 +12033,7 @@ mod tests {
             id: "template.runtime.prompt_placeholders".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -12138,6 +12144,7 @@ mod tests {
             id: "template.runtime.prompt_namespace_aliases".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -12283,6 +12290,7 @@ mod tests {
             id: "template.runtime.prompt_unresolved".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -12381,6 +12389,7 @@ mod tests {
             id: "template.runtime.prompt_missing_file".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),

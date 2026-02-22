@@ -27,6 +27,11 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-02-22, composed lock-scope ownership):
+  - `vizier-cli/src/workflow_templates.rs` now preserves per-node lock-scope provenance during compose/import flattening by tracking node-owned scope contexts (root-authored nodes => root params; imported nodes => imported-stage params), and queue-time `--set` now applies deterministically to that owned context without reintroducing cross-stage key leakage.
+  - `vizier-kernel/src/workflow_template.rs` now infers implicit locks from node args/artifacts plus node-owned lock context (with fallback to root params for non-composed templates), keeping explicit `node.locks` override semantics and `repo_serial` fallback unchanged.
+  - `docs/dev/scheduler-dag.md` now documents node-owned lock context rules for composed vs non-composed templates and explicit-lock precedence.
+  - Coverage now includes kernel unit lock-context ownership checks, CLI composition/context expansion unit coverage, composed `develop` audit lock-map assertions, and runtime integration assertions that concurrent same-target `develop` runs no longer stall `draft`/`approve` while merge-stage locks still serialize merge work.
 - Update (2026-02-20, implicit scheduler locking defaults + audit lock map):
   - `vizier-kernel/src/workflow_template.rs` now resolves effective node locks at compile time: explicit non-empty `node.locks` remains override-only, while lockless canonical nodes infer exclusive `branch:<value>` locks from args/artifacts/template params and fall back to `repo_serial` when no branch context exists (`control.terminal` and `control.gate.approval` are excluded from inference).
   - `vizier-core/src/jobs/mod.rs` now reuses the same preflight compile path for validation and audit, and audit now projects per-node effective lock sets from compiled nodes.

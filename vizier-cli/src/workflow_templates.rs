@@ -180,6 +180,7 @@ struct ComposedWorkflowTemplate {
     id: String,
     version: String,
     params: BTreeMap<String, String>,
+    node_lock_scope_contexts: BTreeMap<String, BTreeMap<String, String>>,
     policy: WorkflowTemplatePolicy,
     artifact_contracts: Vec<WorkflowArtifactContract>,
     nodes: Vec<WorkflowNodeFile>,
@@ -189,6 +190,7 @@ struct ComposedWorkflowTemplate {
 #[derive(Debug, Clone)]
 struct ImportedStage {
     params: BTreeMap<String, String>,
+    node_lock_scope_contexts: BTreeMap<String, BTreeMap<String, String>>,
     artifact_contracts: Vec<WorkflowArtifactContract>,
     nodes: Vec<WorkflowNodeFile>,
     terminal_nodes: Vec<String>,
@@ -304,10 +306,13 @@ fn load_template_recursive(
     stack.push(canonical.clone());
     let parsed = parse_template_file(&canonical)?;
     let result = if parsed.imports.is_empty() {
+        let node_lock_scope_contexts =
+            build_scope_contexts_for_nodes(&parsed.nodes, &parsed.params);
         Ok(ComposedWorkflowTemplate {
             id: parsed.id,
             version: parsed.version,
             params: parsed.params,
+            node_lock_scope_contexts,
             policy: parsed.policy,
             artifact_contracts: parsed.artifact_contracts,
             nodes: parsed.nodes,
@@ -393,6 +398,8 @@ fn compose_template(
     }
 
     let mut params = parsed.params.clone();
+    let mut node_lock_scope_contexts =
+        build_scope_contexts_for_nodes(&parsed.nodes, &parsed.params);
     let mut artifact_contracts = parsed.artifact_contracts.clone();
     let mut nodes = parsed.nodes.clone();
 
@@ -401,6 +408,11 @@ fn compose_template(
             .get(name)
             .ok_or_else(|| format!("missing stage state for import `{name}`"))?;
         merge_params(&mut params, &stage.params, name)?;
+        merge_node_lock_scope_contexts(
+            &mut node_lock_scope_contexts,
+            &stage.node_lock_scope_contexts,
+            name,
+        )?;
         merge_artifact_contracts(&mut artifact_contracts, &stage.artifact_contracts, name)?;
         nodes.extend(stage.nodes.clone());
     }
@@ -445,6 +457,7 @@ fn compose_template(
         id: parsed.id,
         version: parsed.version,
         params,
+        node_lock_scope_contexts,
         policy: parsed.policy,
         artifact_contracts,
         nodes,
@@ -549,6 +562,7 @@ fn prefix_stage(
 
     Ok(ImportedStage {
         params: template.params.clone(),
+        node_lock_scope_contexts: build_scope_contexts_for_nodes(&remapped, &template.params),
         artifact_contracts: template.artifact_contracts.clone(),
         nodes: remapped,
         terminal_nodes,
@@ -571,6 +585,36 @@ fn merge_params(
             .into());
         }
         destination.insert(key.clone(), value.clone());
+    }
+    Ok(())
+}
+
+fn build_scope_contexts_for_nodes(
+    nodes: &[WorkflowNodeFile],
+    scope_params: &BTreeMap<String, String>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for node in nodes {
+        out.insert(node.id.clone(), scope_params.clone());
+    }
+    out
+}
+
+fn merge_node_lock_scope_contexts(
+    destination: &mut BTreeMap<String, BTreeMap<String, String>>,
+    stage_contexts: &BTreeMap<String, BTreeMap<String, String>>,
+    stage_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (node_id, context) in stage_contexts {
+        if let Some(existing) = destination.get(node_id)
+            && existing != context
+        {
+            return Err(format!(
+                "conflicting lock-scope context for node `{node_id}` while composing stage `{stage_name}`"
+            )
+            .into());
+        }
+        destination.insert(node_id.clone(), context.clone());
     }
     Ok(())
 }
@@ -824,6 +868,21 @@ fn apply_parameter_expansion(
         contract.version = expand_string_value(&contract.version, &version_path, &params)?;
     }
 
+    let mut node_lock_scope_contexts = BTreeMap::new();
+    for (node_id, raw_scope_context) in template.node_lock_scope_contexts {
+        let mut expanded_scope_context = raw_scope_context;
+        for (key, value) in set_overrides {
+            if expanded_scope_context.contains_key(key) {
+                expanded_scope_context.insert(key.clone(), value.clone());
+            }
+        }
+        for (key, value) in &mut expanded_scope_context {
+            let path = format!("nodes[{node_id}].lock_scope_context.{key}");
+            *value = expand_string_value(value, &path, &params)?;
+        }
+        node_lock_scope_contexts.insert(node_id, expanded_scope_context);
+    }
+
     let mut expanded_nodes = Vec::with_capacity(template.nodes.len());
     for node in template.nodes {
         expanded_nodes.push(expand_node(node, &params)?);
@@ -833,6 +892,7 @@ fn apply_parameter_expansion(
         id: template.id,
         version: template.version,
         params,
+        node_lock_scope_contexts,
         policy: template.policy,
         artifact_contracts: template.artifact_contracts,
         nodes: expanded_nodes,
@@ -1530,6 +1590,75 @@ mod tests {
                 dependency.node_id == "stage_a__a1" && dependency.policy == AfterPolicy::Success
             }),
             "composed target entry nodes should depend on upstream terminal sinks"
+        );
+    }
+
+    #[test]
+    fn composed_template_scopes_lock_context_per_stage_and_respects_set_overrides() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write(
+            &root.path().join(".vizier/workflows/a.toml"),
+            "id = \"template.a\"\nversion = \"v1\"\n[params]\nbranch = \"draft/shared\"\n[[nodes]]\nid = \"a1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+        write(
+            &root.path().join(".vizier/workflows/b.toml"),
+            "id = \"template.b\"\nversion = \"v1\"\n[params]\nbranch = \"draft/shared\"\ntarget_branch = \"main\"\n[[nodes]]\nid = \"b1\"\nkind = \"shell\"\nuses = \"cap.env.shell.command.run\"\n[nodes.args]\nscript = \"true\"\n",
+        );
+        write(
+            &root.path().join(".vizier/develop.toml"),
+            "id = \"template.develop\"\nversion = \"v1\"\n[[imports]]\nname = \"stage_a\"\npath = \"workflows/a.toml\"\n[[imports]]\nname = \"stage_b\"\npath = \"workflows/b.toml\"\n",
+        );
+
+        let source = ResolvedWorkflowSource {
+            selector: "file:.vizier/develop.toml".to_string(),
+            path: root.path().join(".vizier/develop.toml"),
+            command_alias: Some(config::CommandAlias::parse("develop").expect("alias")),
+        };
+
+        let template =
+            load_template_with_params(&source, &BTreeMap::new()).expect("load composed template");
+        assert_eq!(
+            template
+                .node_lock_scope_contexts
+                .get("stage_a__a1")
+                .expect("stage_a scope"),
+            &BTreeMap::from([("branch".to_string(), "draft/shared".to_string())])
+        );
+        assert_eq!(
+            template
+                .node_lock_scope_contexts
+                .get("stage_b__b1")
+                .expect("stage_b scope"),
+            &BTreeMap::from([
+                ("branch".to_string(), "draft/shared".to_string()),
+                ("target_branch".to_string(), "main".to_string()),
+            ])
+        );
+
+        let with_set = load_template_with_params(
+            &source,
+            &BTreeMap::from([
+                ("branch".to_string(), "draft/override".to_string()),
+                ("target_branch".to_string(), "release".to_string()),
+            ]),
+        )
+        .expect("load composed template with --set");
+        assert_eq!(
+            with_set
+                .node_lock_scope_contexts
+                .get("stage_a__a1")
+                .expect("stage_a scope with set"),
+            &BTreeMap::from([("branch".to_string(), "draft/override".to_string())])
+        );
+        assert_eq!(
+            with_set
+                .node_lock_scope_contexts
+                .get("stage_b__b1")
+                .expect("stage_b scope with set"),
+            &BTreeMap::from([
+                ("branch".to_string(), "draft/override".to_string()),
+                ("target_branch".to_string(), "release".to_string()),
+            ])
         );
     }
 

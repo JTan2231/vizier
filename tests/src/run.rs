@@ -2817,6 +2817,163 @@ fn test_run_merge_stage_different_targets_do_not_share_inferred_locks() -> TestR
 }
 
 #[test]
+fn test_run_develop_stage_scope_inferred_locks_do_not_leak_merge_target_branch() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config(&repo)?;
+    let lock_release_rel = ".vizier/tmp/develop-lock-release.marker";
+    let hold_cicd_script = format!("while [ ! -f {lock_release_rel} ]; do sleep 0.1; done");
+
+    for slug in ["develop-lock-a", "develop-lock-b"] {
+        let branch = format!("draft/{slug}");
+        repo.git(&["checkout", "-b", &branch])?;
+        let file = format!("{slug}.txt");
+        let body = format!("{slug} payload\n");
+        repo.write(&file, &body)?;
+        repo.git(&["add", &file])?;
+        repo.git(&["commit", "-m", &format!("feat: seed {slug}")])?;
+        repo.git(&["checkout", "master"])?;
+    }
+
+    let first_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "develop",
+            "--set",
+            "slug=develop-lock-a",
+            "--set",
+            "branch=draft/develop-lock-a",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "spec_text=develop-lock-scope-a",
+            "--set",
+            "stop_condition_script=true",
+            "--set",
+            &format!("cicd_script={hold_cicd_script}"),
+            "--set",
+            "merge_message=feat: develop lock scope a",
+            "--format",
+            "json",
+        ],
+    )?;
+    let first_run_id = first_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing first run_id")?;
+    let first_manifest = load_run_manifest(&repo, first_run_id)?;
+    let first_merge_cicd = manifest_node_job_id(&first_manifest, "develop_merge__merge_gate_cicd")?;
+    wait_for_job_status(&repo, &first_merge_cicd, "running", Duration::from_secs(40))?;
+
+    let second_payload = run_json(
+        &repo,
+        &[
+            "run",
+            "develop",
+            "--set",
+            "slug=develop-lock-b",
+            "--set",
+            "branch=draft/develop-lock-b",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "spec_text=develop-lock-scope-b",
+            "--set",
+            "stop_condition_script=true",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            "merge_message=feat: develop lock scope b",
+            "--format",
+            "json",
+        ],
+    )?;
+    let second_run_id = second_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing second run_id")?;
+    let second_manifest = load_run_manifest(&repo, second_run_id)?;
+
+    let second_draft_stop = manifest_node_job_id(&second_manifest, "develop_draft__stop_gate")?;
+    let second_draft_terminal = manifest_node_job_id(&second_manifest, "develop_draft__terminal")?;
+    let second_approve_stop = manifest_node_job_id(&second_manifest, "develop_approve__stop_gate")?;
+    let second_approve_terminal =
+        manifest_node_job_id(&second_manifest, "develop_approve__terminal")?;
+    let second_merge_conflict =
+        manifest_node_job_id(&second_manifest, "develop_merge__merge_conflict_resolution")?;
+    let second_merge_integrate =
+        manifest_node_job_id(&second_manifest, "develop_merge__merge_integrate")?;
+    let second_merge_cicd =
+        manifest_node_job_id(&second_manifest, "develop_merge__merge_gate_cicd")?;
+
+    wait_for_job_status(
+        &repo,
+        &second_draft_terminal,
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+    wait_for_job_status(
+        &repo,
+        &second_approve_terminal,
+        "succeeded",
+        Duration::from_secs(40),
+    )?;
+    wait_for_job_status(
+        &repo,
+        &second_merge_conflict,
+        "waiting_on_locks",
+        Duration::from_secs(40),
+    )?;
+
+    let expected_stage_locks = vec!["branch:draft/develop-lock-b".to_string()];
+    for job_id in [&second_draft_stop, &second_approve_stop] {
+        let record = read_job_record(&repo, job_id)?;
+        assert_eq!(
+            schedule_lock_keys(&record),
+            expected_stage_locks,
+            "expected stage-scoped branch locks for {job_id}: {record}"
+        );
+    }
+
+    for job_id in [
+        &second_merge_conflict,
+        &second_merge_integrate,
+        &second_merge_cicd,
+    ] {
+        let record = read_job_record(&repo, job_id)?;
+        assert_eq!(
+            schedule_lock_keys(&record),
+            vec![
+                "branch:draft/develop-lock-b".to_string(),
+                "branch:master".to_string(),
+            ],
+            "expected merge-scoped source+target branch locks for {job_id}: {record}"
+        );
+    }
+
+    let waiting_record = read_job_record(&repo, &second_merge_conflict)?;
+    let waited_on = waiting_record
+        .pointer("/schedule/waited_on")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        waited_on.iter().any(|value| value == "locks"),
+        "expected merge stage to wait on locks after draft/approve completion: {waiting_record}"
+    );
+
+    repo.write(lock_release_rel, "release\n")?;
+    wait_for_job_completion(&repo, &first_merge_cicd, Duration::from_secs(40))?;
+
+    Ok(())
+}
+
+#[test]
 fn test_run_merge_stage_embeds_plan_content_and_removes_source_plan_doc() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;

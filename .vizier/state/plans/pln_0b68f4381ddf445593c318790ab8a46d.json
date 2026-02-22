@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_0b68f4381ddf445593c318790ab8a46d",
+  "slug": "queue",
+  "branch": "draft/queue",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_c89f61dc610e479b8e06c8d28dd0645c-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Feature Spec: Node-Scoped Lock Ownership In Composed Workflows",
+  "created_at": "2026-02-22T11:13:15.869311+00:00",
+  "updated_at": "2026-02-22T11:13:15.869311+00:00",
+  "job_ids": {
+    "persist": "wf-run_c89f61dc610e479b8e06c8d28dd0645c-develop_draft__persist_plan"
+  }
+}

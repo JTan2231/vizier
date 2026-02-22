@@ -22,7 +22,8 @@
 - **Execution-root edge propagation**: Runtime behavior that copies execution context (`execution_root` + worktree ownership fields) along explicit workflow routes before downstream queue/retry handling.
 - **Succeeded-edge atomic completion lock**: Workflow-node completion ordering where succeeded nodes perform source finalization, success-route context propagation, and one scheduler advancement inside a single `SchedulerLock` critical section so concurrent ticks cannot start successors before context persistence.
 - **Execution-root reset contract**: Cleanup/retry rule where successful worktree cleanup resets `execution_root` to `.` and clears `worktree_*` ownership fields; degraded cleanup preserves context for recovery.
-- **Implicit workflow lock inference**: Queue-time compile behavior where lockless canonical workflow nodes infer exclusive branch locks from args/artifacts/template params and use `repo_serial` when no branch scope is discoverable.
+- **Implicit workflow lock inference**: Queue-time compile behavior where lockless canonical workflow nodes infer exclusive branch locks from args/artifacts/node-owned lock-scope context and use `repo_serial` when no branch scope is discoverable.
+- **Node-owned lock-scope context**: Queue-time lock-inference ownership map where root-authored nodes use root template params and imported composed nodes use imported-stage params only, preventing cross-stage branch-scope leakage.
 - **Effective workflow locks**: The resolved per-node lock set used by scheduler enqueue (`JobSchedule.locks`) after explicit override or implicit inference resolution.
 - **`repo_serial` fallback lock**: Default exclusive lock key emitted by compile for lockless nodes with no branch context.
 - **Git CLI invocation guard**: Codebase invariant that `rg -n 'Command::new\\(\"git\"\\)' vizier-core/src vizier-cli/src vizier-kernel/src tests/src` stays empty so runtime/test Git behavior cannot regress to shelling out.

@@ -312,7 +312,11 @@ Workflow nodes enqueued through `vizier run` now receive effective locks by defa
 - Branch scope discovery order for inferred locks:
   - node args (`branch`, `source_branch`, `plan_branch`, `target`, `target_branch`)
   - node artifacts in `needs`/`produces` (`plan_branch.branch`, `plan_doc.branch`, `plan_commits.branch`, `target_branch.name`)
-  - template params (`branch`, `source_branch`, `plan_branch`, `target`, `target_branch`)
+  - node-owned lock-scope context (`branch`, `source_branch`, `plan_branch`, `target`, `target_branch`)
+- Node-owned lock-scope context is compile-time provenance:
+  - root-authored nodes use root template params
+  - imported composed nodes use imported-stage params only (no cross-stage leakage)
+  - non-composed templates remain equivalent to root template params
 - One lock per distinct branch value is emitted as `branch:<value>`.
 - If no branch scope is discoverable, compile emits one fallback lock: `repo_serial` (`exclusive`).
 

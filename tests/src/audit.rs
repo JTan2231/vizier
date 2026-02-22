@@ -39,6 +39,28 @@ fn count_job_records(repo: &IntegrationRepo) -> TestResult<usize> {
     Ok(count)
 }
 
+fn effective_lock_keys(payload: &Value, node_id: &str) -> TestResult<Vec<String>> {
+    let Some(entries) = payload.get("effective_locks").and_then(Value::as_array) else {
+        return Err("missing effective_locks array".into());
+    };
+    let node = entries
+        .iter()
+        .find(|entry| entry.get("node_id").and_then(Value::as_str) == Some(node_id))
+        .ok_or_else(|| format!("missing effective_locks entry for node `{node_id}`"))?;
+    let mut keys = node
+        .get("locks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|lock| lock.get("key").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
 #[test]
 fn test_audit_json_contract_and_no_side_effects() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
@@ -354,6 +376,55 @@ mode = \"exclusive\"\n",
             .and_then(Value::as_str),
         Some("branch:main")
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_audit_develop_composed_effective_locks_are_stage_scoped() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "audit",
+            "file:.vizier/develop.hcl",
+            "--set",
+            "slug=develop-audit-lock-scope",
+            "--set",
+            "branch=draft/develop-audit-lock-scope",
+            "--set",
+            "target_branch=master",
+            "--set",
+            "spec_text=develop-audit-lock-scope",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    for node_id in ["develop_draft__stop_gate", "develop_approve__stop_gate"] {
+        assert_eq!(
+            effective_lock_keys(&payload, node_id)?,
+            vec!["branch:draft/develop-audit-lock-scope".to_string()],
+            "expected stage-scoped source branch lock for `{node_id}`"
+        );
+    }
+
+    for node_id in [
+        "develop_merge__merge_conflict_resolution",
+        "develop_merge__merge_integrate",
+        "develop_merge__merge_gate_cicd",
+    ] {
+        assert_eq!(
+            effective_lock_keys(&payload, node_id)?,
+            vec![
+                "branch:draft/develop-audit-lock-scope".to_string(),
+                "branch:master".to_string(),
+            ],
+            "expected merge-scoped source+target branch locks for `{node_id}`"
+        );
+    }
 
     Ok(())
 }

@@ -581,6 +581,7 @@ mod tests {
             id: "template.test".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: Default::default(),
             artifact_contracts: Vec::new(),
             nodes: vec![WorkflowNode {
@@ -618,6 +619,7 @@ mod tests {
             id: "template.test".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: Default::default(),
             artifact_contracts: Vec::new(),
             nodes: vec![WorkflowNode {

@@ -13,6 +13,8 @@ pub struct WorkflowTemplate {
     pub version: String,
     #[serde(default)]
     pub params: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_lock_scope_contexts: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
     pub policy: WorkflowTemplatePolicy,
     #[serde(default)]
@@ -748,8 +750,8 @@ fn collect_branch_scope_from_artifacts(branches: &mut Vec<String>, artifacts: &[
 }
 
 fn inferred_workflow_node_branch_scope(
-    template: &WorkflowTemplate,
     node: &WorkflowNode,
+    lock_scope_context: &BTreeMap<String, String>,
 ) -> Vec<String> {
     let mut branches = Vec::new();
 
@@ -766,7 +768,7 @@ fn inferred_workflow_node_branch_scope(
     collect_branch_scope_from_artifacts(&mut branches, &node.produces.cancelled);
 
     for key in LOCK_SCOPE_ARG_KEYS {
-        if let Some(value) = template.params.get(*key) {
+        if let Some(value) = lock_scope_context.get(*key) {
             collect_distinct_branch_scope(&mut branches, value);
         }
     }
@@ -784,8 +786,11 @@ fn should_infer_implicit_lock(identity: &WorkflowNodeIdentity) -> bool {
     }
 }
 
-fn infer_workflow_node_locks(template: &WorkflowTemplate, node: &WorkflowNode) -> Vec<JobLock> {
-    let branches = inferred_workflow_node_branch_scope(template, node);
+fn infer_workflow_node_locks(
+    node: &WorkflowNode,
+    lock_scope_context: &BTreeMap<String, String>,
+) -> Vec<JobLock> {
+    let branches = inferred_workflow_node_branch_scope(node, lock_scope_context);
     if branches.is_empty() {
         return vec![JobLock {
             key: "repo_serial".to_string(),
@@ -812,7 +817,11 @@ fn effective_workflow_node_locks(
     if !should_infer_implicit_lock(identity) {
         return Vec::new();
     }
-    dedup_locks(infer_workflow_node_locks(template, node))
+    let lock_scope_context = template
+        .node_lock_scope_contexts
+        .get(&node.id)
+        .unwrap_or(&template.params);
+    dedup_locks(infer_workflow_node_locks(node, lock_scope_context))
 }
 
 pub fn compile_workflow_node(
@@ -2601,6 +2610,7 @@ mod tests {
             id: "template.review".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::from([("slug".to_string(), "alpha".to_string())]),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy {
                 failure_mode: WorkflowFailureMode::BlockDownstream,
                 resume: WorkflowResumePolicy {
@@ -2710,6 +2720,7 @@ mod tests {
             id: "template.custom".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: "acme.diff".to_string(),
@@ -2749,10 +2760,19 @@ mod tests {
         node: WorkflowNode,
         params: BTreeMap<String, String>,
     ) -> CompiledWorkflowNode {
+        compile_single_node_with_scope_contexts(node, params, BTreeMap::new())
+    }
+
+    fn compile_single_node_with_scope_contexts(
+        node: WorkflowNode,
+        params: BTreeMap<String, String>,
+        node_lock_scope_contexts: BTreeMap<String, BTreeMap<String, String>>,
+    ) -> CompiledWorkflowNode {
         let template = WorkflowTemplate {
             id: "template.locking".to_string(),
             version: "v1".to_string(),
             params,
+            node_lock_scope_contexts,
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![
                 WorkflowArtifactContract {
@@ -2943,6 +2963,47 @@ mod tests {
     }
 
     #[test]
+    fn compile_node_uses_node_scoped_lock_context_instead_of_template_params() {
+        let node = WorkflowNode {
+            id: "single".to_string(),
+            kind: WorkflowNodeKind::Gate,
+            uses: "control.gate.conflict_resolution".to_string(),
+            args: BTreeMap::new(),
+            after: Vec::new(),
+            needs: Vec::new(),
+            produces: WorkflowOutcomeArtifacts::default(),
+            locks: Vec::new(),
+            preconditions: Vec::new(),
+            gates: Vec::new(),
+            retry: WorkflowRetryPolicy::default(),
+            on: WorkflowOutcomeEdges::default(),
+        };
+
+        let template_params = BTreeMap::from([
+            ("branch".to_string(), "draft/root".to_string()),
+            ("target_branch".to_string(), "main".to_string()),
+        ]);
+        let node_lock_scope_contexts = BTreeMap::from([(
+            "single".to_string(),
+            BTreeMap::from([("branch".to_string(), "draft/stage".to_string())]),
+        )]);
+
+        let compiled = compile_single_node_with_scope_contexts(
+            node,
+            template_params,
+            node_lock_scope_contexts,
+        );
+
+        assert_eq!(
+            compiled.locks,
+            vec![JobLock {
+                key: "branch:draft/stage".to_string(),
+                mode: LockMode::Exclusive,
+            }]
+        );
+    }
+
+    #[test]
     fn compile_node_uses_repo_serial_lock_when_branch_scope_is_absent() {
         let node = WorkflowNode {
             id: "single".to_string(),
@@ -3063,6 +3124,7 @@ mod tests {
                 ("branch".to_string(), "draft/merge-alpha".to_string()),
                 ("target_branch".to_string(), "main".to_string()),
             ]),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: "stage_token".to_string(),
@@ -3261,6 +3323,7 @@ mod tests {
             id: "template.operation_output_dependency".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: Vec::new(),
             nodes: vec![
@@ -3425,6 +3488,7 @@ mod tests {
             id: "template.legacy".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3461,6 +3525,7 @@ mod tests {
             id: "template.legacy".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3498,6 +3563,7 @@ mod tests {
             id: "template.unknown".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3530,6 +3596,7 @@ mod tests {
             id: "template.executor_first".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -3654,6 +3721,7 @@ mod tests {
             id: "template.invoke".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -3690,6 +3758,7 @@ mod tests {
             id: "template.invoke".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -3726,6 +3795,7 @@ mod tests {
             id: "template.prompt".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -3765,6 +3835,7 @@ mod tests {
             id: "template.worktree".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3807,6 +3878,7 @@ mod tests {
             id: "template.worktree".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3836,6 +3908,7 @@ mod tests {
             id: "template.merge".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3872,6 +3945,7 @@ mod tests {
             id: "template.cicd".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3911,6 +3985,7 @@ mod tests {
             id: "template.cicd".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3942,6 +4017,7 @@ mod tests {
             id: "template.patch".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -3974,6 +4050,7 @@ mod tests {
             id: "template.stage".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
@@ -4003,6 +4080,7 @@ mod tests {
             id: "template.commit".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: "commit_message".to_string(),
@@ -4041,6 +4119,7 @@ mod tests {
             id: "template.commit".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: "commit_message".to_string(),
@@ -4087,6 +4166,7 @@ mod tests {
             id: "template.invoke".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -4138,6 +4218,7 @@ mod tests {
             id: "template.approve".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: "plan_doc".to_string(),
@@ -4203,6 +4284,7 @@ mod tests {
             id: "template.merge".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![
@@ -4259,6 +4341,7 @@ mod tests {
             id: "template.terminal".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![
@@ -4311,6 +4394,7 @@ mod tests {
             id: "template.merge".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![
@@ -4365,6 +4449,7 @@ mod tests {
             id: "template.review".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![WorkflowArtifactContract {
                 id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
@@ -4415,6 +4500,7 @@ mod tests {
             id: "template.patch".to_string(),
             version: "v1".to_string(),
             params: BTreeMap::new(),
+            node_lock_scope_contexts: BTreeMap::new(),
             policy: WorkflowTemplatePolicy::default(),
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
