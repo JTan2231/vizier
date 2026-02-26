@@ -335,7 +335,8 @@ fn build_entrypoint_input_error(
         .map(|alias| alias.as_str().to_string())
         .unwrap_or_else(|| source.selector.clone());
 
-    let mut usage_params = ordered_cli_params(input_spec);
+    let missing_labels = missing_required_labels(input_spec, required_inputs);
+    let mut usage_params = ordered_usage_params(input_spec);
     if usage_params.is_empty() {
         usage_params = required_inputs.to_vec();
         usage_params.sort_by_key(|param| {
@@ -348,7 +349,19 @@ fn build_entrypoint_input_error(
         usage_params.dedup();
     }
 
-    let usage = if usage_params.is_empty() {
+    let usage = if !input_spec.positional.is_empty() {
+        let placeholders = input_spec
+            .positional
+            .iter()
+            .map(|param| {
+                format!(
+                    "<{}>",
+                    kebab_case_key(&cli_label_for_param(input_spec, param))
+                )
+            })
+            .collect::<Vec<_>>();
+        format!("vizier run {flow_label} {}", placeholders.join(" "))
+    } else if usage_params.is_empty() {
         format!("vizier run {flow_label} [--set <KEY=VALUE>]...")
     } else {
         let flags = usage_params
@@ -367,9 +380,19 @@ fn build_entrypoint_input_error(
 
     let named_example = named_example(&flow_label, input_spec, &usage_params);
     let positional_example = positional_example(&flow_label, input_spec);
+    let noun = if missing_labels.len() == 1 {
+        "input"
+    } else {
+        "inputs"
+    };
+    let missing_suffix = if missing_labels.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", missing_labels.join(", "))
+    };
 
     let mut lines = vec![
-        format!("error: missing required input for workflow `{flow_label}`"),
+        format!("error: missing required {noun} for workflow `{flow_label}`{missing_suffix}"),
         format!("usage: {usage}"),
         format!("example: {named_example}"),
     ];
@@ -383,7 +406,7 @@ fn build_entrypoint_input_error(
     lines.join("\n")
 }
 
-fn ordered_cli_params(input_spec: &WorkflowTemplateInputSpec) -> Vec<String> {
+fn ordered_usage_params(input_spec: &WorkflowTemplateInputSpec) -> Vec<String> {
     let mut ordered = Vec::<String>::new();
     for param in &input_spec.positional {
         if !ordered.contains(param) {
@@ -393,11 +416,6 @@ fn ordered_cli_params(input_spec: &WorkflowTemplateInputSpec) -> Vec<String> {
     for target in input_spec.named.values() {
         if !ordered.contains(target) {
             ordered.push(target.clone());
-        }
-    }
-    for param in &input_spec.params {
-        if !ordered.contains(param) {
-            ordered.push(param.clone());
         }
     }
     ordered
@@ -434,7 +452,6 @@ fn positional_example(flow_label: &str, input_spec: &WorkflowTemplateInputSpec) 
     let values = input_spec
         .positional
         .iter()
-        .take(2)
         .map(|param| example_value(input_spec, param))
         .collect::<Vec<_>>();
     if values.is_empty() {
@@ -442,6 +459,20 @@ fn positional_example(flow_label: &str, input_spec: &WorkflowTemplateInputSpec) 
     } else {
         Some(format!("vizier run {flow_label} {}", values.join(" ")))
     }
+}
+
+fn missing_required_labels(
+    input_spec: &WorkflowTemplateInputSpec,
+    required_inputs: &[String],
+) -> Vec<String> {
+    let mut labels = Vec::<String>::new();
+    for param in required_inputs {
+        let label = kebab_case_key(&cli_label_for_param(input_spec, param));
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
 }
 
 fn preferred_cli_alias_for_param<'a>(
@@ -473,6 +504,8 @@ fn example_value(input_spec: &WorkflowTemplateInputSpec, param: &str) -> String 
         "LIBRARY.md".to_string()
     } else if label.contains("name") || label.contains("slug") {
         "my-change".to_string()
+    } else if label.contains("source") {
+        "draft/my-change".to_string()
     } else if label.contains("target") {
         "main".to_string()
     } else if label.contains("branch") {

@@ -1262,12 +1262,12 @@ fn test_run_entrypoint_preflight_reports_missing_root_inputs() -> TestResult {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("error: missing required input for workflow `draft`")
-            && stderr.contains(
-                "usage: vizier run draft [--file <file>] [--name <name>] [--branch <branch>]"
-            )
+        stderr.contains("error: missing required inputs for workflow `draft`")
+            && stderr.contains("usage: vizier run draft <file> <name> <branch>")
             && stderr.contains("example: vizier run draft --file LIBRARY.md --name my-change")
-            && stderr.contains("example (positional): vizier run draft LIBRARY.md my-change")
+            && stderr.contains(
+                "example (positional): vizier run draft LIBRARY.md my-change draft/my-change"
+            )
             && stderr.contains("hint: vizier run draft --help"),
         "expected concise CLI-style input guidance, got: {stderr}"
     );

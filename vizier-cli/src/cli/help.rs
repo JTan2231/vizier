@@ -428,6 +428,8 @@ fn example_value(
         "LIBRARY.md".to_string()
     } else if label.contains("name") || label.contains("slug") {
         "my-change".to_string()
+    } else if label.contains("source") {
+        "draft/my-change".to_string()
     } else if label.contains("target") {
         "main".to_string()
     } else if label.contains("branch") {
