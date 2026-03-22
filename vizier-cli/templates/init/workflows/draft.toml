@@ -37,6 +37,7 @@ version = "v1"
 
 [[nodes]]
 id = "worktree_prepare"
+name = "Draft / Prepare Worktree"
 kind = "builtin"
 uses = "cap.env.builtin.worktree.prepare"
 
@@ -50,6 +51,7 @@ succeeded = ["resolve_prompt"]
 
 [[nodes]]
 id = "resolve_prompt"
+name = "Draft / Resolve Prompt"
 kind = "builtin"
 uses = "cap.env.builtin.prompt.resolve"
 
@@ -67,6 +69,7 @@ node_id = "worktree_prepare"
 
 [[nodes]]
 id = "invoke_agent"
+name = "Draft / Invoke Agent"
 kind = "agent"
 uses = "cap.agent.invoke"
 
@@ -84,6 +87,7 @@ node_id = "resolve_prompt"
 
 [[nodes]]
 id = "persist_plan"
+name = "Draft / Persist Plan"
 kind = "builtin"
 uses = "cap.env.builtin.plan.persist"
 
@@ -111,6 +115,7 @@ node_id = "invoke_agent"
 
 [[nodes]]
 id = "stage_files"
+name = "Draft / Stage Files"
 kind = "builtin"
 uses = "cap.env.builtin.git.stage"
 
@@ -131,6 +136,7 @@ succeeded = ["stage_commit"]
 
 [[nodes]]
 id = "stage_commit"
+name = "Draft / Stage Commit"
 kind = "builtin"
 uses = "cap.env.builtin.git.commit"
 
@@ -151,6 +157,7 @@ succeeded = ["stop_gate"]
 
 [[nodes]]
 id = "stop_gate"
+name = "Draft / Stop Gate"
 kind = "gate"
 uses = "control.gate.stop_condition"
 
@@ -162,6 +169,7 @@ node_id = "stage_commit"
 
 [[nodes]]
 id = "worktree_cleanup"
+name = "Draft / Cleanup Worktree"
 kind = "builtin"
 uses = "cap.env.builtin.worktree.cleanup"
 
@@ -173,6 +181,7 @@ node_id = "stop_gate"
 
 [[nodes]]
 id = "terminal"
+name = "Draft / Terminal"
 kind = "gate"
 uses = "control.terminal"
 

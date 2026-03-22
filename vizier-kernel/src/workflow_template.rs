@@ -128,6 +128,8 @@ pub struct WorkflowArtifactContract {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowNode {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default)]
     pub kind: WorkflowNodeKind,
     pub uses: String,
@@ -693,6 +695,7 @@ pub struct CompiledWorkflowNode {
     pub template_id: String,
     pub template_version: String,
     pub node_id: String,
+    pub name: Option<String>,
     pub node_class: WorkflowNodeClass,
     pub executor_class: Option<WorkflowExecutorClass>,
     pub executor_operation: Option<String>,
@@ -877,6 +880,7 @@ pub fn compile_workflow_node(
         template_id: template.id.clone(),
         template_version: template.version.clone(),
         node_id: node.id.clone(),
+        name: node.name.clone(),
         node_class: resolved.identity.node_class,
         executor_class: resolved.identity.executor_class,
         executor_operation: resolved.identity.executor_operation,
@@ -2644,6 +2648,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "review_apply".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -2676,6 +2681,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "review_critique".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -2729,6 +2735,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "custom_node".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Custom,
                 uses: "cap.env.shell.command.run".to_string(),
                 args: BTreeMap::from([(
@@ -2895,6 +2902,7 @@ mod tests {
     fn compile_node_infers_branch_scoped_locks_from_args_artifacts_and_params() {
         let node = WorkflowNode {
             id: "single".to_string(),
+            name: None,
             kind: WorkflowNodeKind::Shell,
             uses: "cap.env.shell.command.run".to_string(),
             args: BTreeMap::from([
@@ -2966,6 +2974,7 @@ mod tests {
     fn compile_node_uses_node_scoped_lock_context_instead_of_template_params() {
         let node = WorkflowNode {
             id: "single".to_string(),
+            name: None,
             kind: WorkflowNodeKind::Gate,
             uses: "control.gate.conflict_resolution".to_string(),
             args: BTreeMap::new(),
@@ -3007,6 +3016,7 @@ mod tests {
     fn compile_node_uses_repo_serial_lock_when_branch_scope_is_absent() {
         let node = WorkflowNode {
             id: "single".to_string(),
+            name: None,
             kind: WorkflowNodeKind::Shell,
             uses: "cap.env.shell.command.run".to_string(),
             args: BTreeMap::from([("script".to_string(), "true".to_string())]),
@@ -3034,6 +3044,7 @@ mod tests {
     fn compile_node_honors_explicit_lock_override() {
         let node = WorkflowNode {
             id: "single".to_string(),
+            name: None,
             kind: WorkflowNodeKind::Shell,
             uses: "cap.env.shell.command.run".to_string(),
             args: BTreeMap::from([
@@ -3067,6 +3078,7 @@ mod tests {
     fn compile_node_skips_implicit_locking_for_terminal_and_approval_controls() {
         let terminal = WorkflowNode {
             id: "single".to_string(),
+            name: None,
             kind: WorkflowNodeKind::Gate,
             uses: "control.terminal".to_string(),
             args: BTreeMap::new(),
@@ -3090,6 +3102,7 @@ mod tests {
 
         let approval = WorkflowNode {
             id: "single".to_string(),
+            name: None,
             kind: WorkflowNodeKind::Gate,
             uses: "control.gate.approval".to_string(),
             args: BTreeMap::new(),
@@ -3134,6 +3147,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "merge_integrate".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.git.integrate_plan_branch".to_string(),
                     args: BTreeMap::from([
@@ -3154,6 +3168,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "merge_conflict_resolution".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.gate.conflict_resolution".to_string(),
                     args: BTreeMap::new(),
@@ -3168,6 +3183,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "merge_gate_cicd".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.gate.cicd".to_string(),
                     args: BTreeMap::new(),
@@ -3329,6 +3345,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "producer".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([("command".to_string(), "printf producer".to_string())]),
@@ -3343,6 +3360,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "consumer".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([("command".to_string(), "printf consumer".to_string())]),
@@ -3493,6 +3511,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "legacy_merge".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "vizier.merge.integrate".to_string(),
                 args: BTreeMap::new(),
@@ -3530,6 +3549,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "legacy_merge".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Gate,
                 uses: "cap.gate.cicd".to_string(),
                 args: BTreeMap::new(),
@@ -3568,6 +3588,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "unknown".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Custom,
                 uses: "acme.custom.step".to_string(),
                 args: BTreeMap::from([("command".to_string(), "echo nope".to_string())]),
@@ -3606,6 +3627,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::new(),
@@ -3626,6 +3648,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "apply_plan".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -3643,6 +3666,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "stage_commit".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.git.stage_commit".to_string(),
                     args: BTreeMap::new(),
@@ -3660,6 +3684,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "stop_gate".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.gate.stop_condition".to_string(),
                     args: BTreeMap::new(),
@@ -3730,6 +3755,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "invoke".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Agent,
                 uses: "cap.agent.invoke".to_string(),
                 args: BTreeMap::new(),
@@ -3767,6 +3793,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "invoke".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Agent,
                 uses: "cap.agent.invoke".to_string(),
                 args: BTreeMap::new(),
@@ -3804,6 +3831,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "resolve_prompt".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Shell,
                 uses: "cap.env.shell.prompt.resolve".to_string(),
                 args: BTreeMap::new(),
@@ -3840,6 +3868,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "worktree_prepare".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.worktree.prepare".to_string(),
                 args: BTreeMap::new(),
@@ -3883,6 +3912,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "worktree_prepare".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.worktree.prepare".to_string(),
                 args: BTreeMap::from([("slug".to_string(), "example-change".to_string())]),
@@ -3913,6 +3943,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "merge_integrate".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.git.integrate_plan_branch".to_string(),
                 args: BTreeMap::new(),
@@ -3950,6 +3981,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "cicd_run".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Shell,
                 uses: "cap.env.shell.cicd.run".to_string(),
                 args: BTreeMap::new(),
@@ -3990,6 +4022,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "cicd_run".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Shell,
                 uses: "cap.env.shell.cicd.run".to_string(),
                 args: BTreeMap::new(),
@@ -4022,6 +4055,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "patch_prepare".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.patch.pipeline_prepare".to_string(),
                 args: BTreeMap::new(),
@@ -4055,6 +4089,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "stage_files".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.git.stage".to_string(),
                 args: BTreeMap::new(),
@@ -4089,6 +4124,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "commit".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.git.commit".to_string(),
                 args: BTreeMap::from([(
@@ -4128,6 +4164,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "commit".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.git.commit".to_string(),
                 args: BTreeMap::from([(
@@ -4176,6 +4213,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::new(),
@@ -4193,6 +4231,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "invoke".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::from([("intent".to_string(), "optional".to_string())]),
@@ -4228,6 +4267,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "approve_apply".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.git.stage_commit".to_string(),
                     args: BTreeMap::new(),
@@ -4248,6 +4288,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "approve_stop".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.gate.stop_condition".to_string(),
                     args: BTreeMap::new(),
@@ -4290,6 +4331,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "merge_gate".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.gate.cicd".to_string(),
                     args: BTreeMap::new(),
@@ -4314,6 +4356,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "fix".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -4347,6 +4390,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "terminal".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.terminal".to_string(),
                     args: BTreeMap::new(),
@@ -4364,6 +4408,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "next".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([("script".to_string(), "true".to_string())]),
@@ -4400,6 +4445,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "merge_integrate".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.git.integrate_plan_branch".to_string(),
                     args: BTreeMap::from([("slug".to_string(), "merge-plan".to_string())]),
@@ -4421,6 +4467,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "merge_gate_cicd".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Gate,
                     uses: "control.gate.cicd".to_string(),
                     args: BTreeMap::new(),
@@ -4459,6 +4506,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::new(),
@@ -4476,6 +4524,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "review_main".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -4505,6 +4554,7 @@ mod tests {
             artifact_contracts: vec![],
             nodes: vec![WorkflowNode {
                 id: "patch".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.patch.execute_pipeline".to_string(),
                 args: BTreeMap::new(),

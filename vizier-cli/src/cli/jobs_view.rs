@@ -169,6 +169,7 @@ struct ScheduleSummaryRow {
     order: usize,
     slug: Option<String>,
     name: String,
+    command: Vec<String>,
     status: JobStatus,
     wait: Option<String>,
     job_id: String,
@@ -186,6 +187,69 @@ fn command_preview(command: &[String]) -> String {
         preview.push_str(" ...");
     }
     preview
+}
+
+fn command_line(command: &[String]) -> Option<String> {
+    let rendered = command.join(" ");
+    let trimmed = rendered.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn humanize_workflow_node_name(node_id: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for segment in node_id.trim().split("__") {
+        let words = segment
+            .split(['_', '-'])
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if !words.is_empty() {
+            parts.push(words.join(" "));
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" / "))
+    }
+}
+
+fn distinct_schedule_invocations(rows: &[ScheduleSummaryRow]) -> Vec<String> {
+    let mut invocations = Vec::new();
+    for row in rows {
+        let Some(command) = command_line(&row.command) else {
+            continue;
+        };
+        if !invocations.iter().any(|existing| existing == &command) {
+            invocations.push(command);
+        }
+    }
+    invocations
+}
+
+fn render_schedule_invocations_block(rows: &[ScheduleSummaryRow]) -> Option<String> {
+    let invocations = distinct_schedule_invocations(rows);
+    if invocations.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    out.push_str(if invocations.len() == 1 {
+        "Invocation\n"
+    } else {
+        "Invocations\n"
+    });
+    for invocation in invocations {
+        out.push_str("- ");
+        out.push_str(&invocation);
+        out.push('\n');
+    }
+    Some(out)
 }
 
 fn resolve_schedule_slug(graph: &jobs::ScheduleGraph, job_id: &str) -> Option<String> {
@@ -217,6 +281,19 @@ fn resolve_schedule_slug(graph: &jobs::ScheduleGraph, job_id: &str) -> Option<St
 
 fn resolve_schedule_name(record: &jobs::JobRecord) -> String {
     let metadata = record.metadata.as_ref();
+    if let Some(name) = metadata
+        .and_then(|meta| meta.workflow_node_name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return name.to_string();
+    }
+    if let Some(name) = metadata
+        .and_then(|meta| meta.workflow_node_id.as_deref())
+        .and_then(humanize_workflow_node_name)
+    {
+        return name;
+    }
     let scope = metadata
         .and_then(|meta| meta.command_alias.as_deref())
         .map(str::trim)
@@ -270,6 +347,7 @@ fn schedule_summary_rows(graph: &jobs::ScheduleGraph, roots: &[String]) -> Vec<S
             order: index + 1,
             slug: resolve_schedule_slug(graph, job_id),
             name: resolve_schedule_name(record),
+            command: record.command.clone(),
             status: record.status,
             wait: resolve_schedule_wait(record),
             job_id: record.id.clone(),
@@ -309,6 +387,10 @@ fn render_schedule_summary(rows: &[ScheduleSummaryRow]) {
     if !table.is_empty() {
         println!("{table}");
     }
+    if let Some(block) = render_schedule_invocations_block(rows) {
+        println!();
+        print!("{block}");
+    }
 }
 
 fn schedule_snapshot_jobs(rows: &[ScheduleSummaryRow]) -> Vec<jobs::ScheduleSnapshotJob> {
@@ -318,6 +400,7 @@ fn schedule_snapshot_jobs(rows: &[ScheduleSummaryRow]) -> Vec<jobs::ScheduleSnap
             job_id: row.job_id.clone(),
             slug: row.slug.clone(),
             name: row.name.clone(),
+            command: row.command.clone(),
             status: row.status,
             wait: row.wait.clone(),
             created_at: row.created_at.clone(),
@@ -332,20 +415,9 @@ fn format_schedule_job_line(record: &jobs::JobRecord) -> String {
         jobs::status_label(record.status)
     )];
 
-    let mut metadata_parts = Vec::new();
-    if let Some(metadata) = record.metadata.as_ref() {
-        if let Some(scope) = metadata.command_alias.as_ref() {
-            metadata_parts.push(scope.clone());
-        }
-        if let Some(plan) = metadata.plan.as_ref() {
-            metadata_parts.push(plan.clone());
-        }
-        if let Some(target) = metadata.target.as_ref() {
-            metadata_parts.push(target.clone());
-        }
-    }
-    if !metadata_parts.is_empty() {
-        parts.push(format!("[{}]", metadata_parts.join("/")));
+    let name = resolve_schedule_name(record);
+    if name != command_preview(&record.command) {
+        parts.push(format!("[{name}]"));
     }
 
     if let Some(wait_reason) = record
@@ -568,6 +640,11 @@ fn render_schedule_watch(
     }
 
     out.push('\n');
+    if let Some(block) = render_schedule_invocations_block(&visible_rows) {
+        out.push_str(&block);
+        out.push('\n');
+    }
+
     out.push_str("Running Job Output\n");
     if let Some(job_id) = selected_running_job {
         out.push_str(&format!("Running job: {job_id}\n"));
@@ -1515,6 +1592,11 @@ mod tests {
             order,
             slug: None,
             name: format!("job-{order}"),
+            command: vec![
+                "vizier".to_string(),
+                "run".to_string(),
+                "develop".to_string(),
+            ],
             status,
             wait: None,
             job_id: job_id.to_string(),
@@ -1699,6 +1781,117 @@ mod tests {
         assert_eq!(
             jobs_show_field_value(JobsShowField::WorkflowExecutorOperation, &record).as_deref(),
             Some("agent.invoke")
+        );
+    }
+
+    #[test]
+    fn resolve_schedule_name_prefers_workflow_node_name() {
+        let record = jobs::JobRecord {
+            id: "job-node-name".to_string(),
+            status: JobStatus::Queued,
+            command: vec![
+                "vizier".to_string(),
+                "run".to_string(),
+                "develop".to_string(),
+            ],
+            child_args: Vec::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: ".vizier/jobs/job-node-name/stdout.log".to_string(),
+            stderr_path: ".vizier/jobs/job-node-name/stderr.log".to_string(),
+            session_path: None,
+            outcome_path: None,
+            metadata: Some(jobs::JobMetadata {
+                workflow_node_name: Some("Approve / Invoke Agent".to_string()),
+                workflow_node_id: Some("develop_approve__invoke_agent".to_string()),
+                command_alias: Some("develop".to_string()),
+                ..jobs::JobMetadata::default()
+            }),
+            config_snapshot: None,
+            schedule: None,
+        };
+
+        assert_eq!(resolve_schedule_name(&record), "Approve / Invoke Agent");
+    }
+
+    #[test]
+    fn resolve_schedule_name_humanizes_workflow_node_id_when_name_missing() {
+        let record = jobs::JobRecord {
+            id: "job-node-id".to_string(),
+            status: JobStatus::Queued,
+            command: vec![
+                "vizier".to_string(),
+                "run".to_string(),
+                "develop".to_string(),
+            ],
+            child_args: Vec::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            finished_at: None,
+            pid: None,
+            exit_code: None,
+            stdout_path: ".vizier/jobs/job-node-id/stdout.log".to_string(),
+            stderr_path: ".vizier/jobs/job-node-id/stderr.log".to_string(),
+            session_path: None,
+            outcome_path: None,
+            metadata: Some(jobs::JobMetadata {
+                workflow_node_id: Some("develop_approve__invoke_agent".to_string()),
+                command_alias: Some("develop".to_string()),
+                ..jobs::JobMetadata::default()
+            }),
+            config_snapshot: None,
+            schedule: None,
+        };
+
+        assert_eq!(
+            resolve_schedule_name(&record),
+            "develop approve / invoke agent"
+        );
+    }
+
+    #[test]
+    fn render_schedule_watch_includes_distinct_invocations() {
+        let rows = vec![
+            ScheduleSummaryRow {
+                order: 1,
+                slug: None,
+                name: "Approve / Invoke Agent".to_string(),
+                command: vec![
+                    "vizier".to_string(),
+                    "run".to_string(),
+                    "develop".to_string(),
+                    "alpha".to_string(),
+                ],
+                status: JobStatus::Running,
+                wait: None,
+                job_id: "job-1".to_string(),
+                created_at: "2026-02-13T00:00:00Z".to_string(),
+            },
+            ScheduleSummaryRow {
+                order: 2,
+                slug: None,
+                name: "Approve / Stage Files".to_string(),
+                command: vec![
+                    "vizier".to_string(),
+                    "run".to_string(),
+                    "develop".to_string(),
+                    "alpha".to_string(),
+                ],
+                status: JobStatus::Queued,
+                wait: None,
+                job_id: "job-2".to_string(),
+                created_at: "2026-02-13T00:00:00Z".to_string(),
+            },
+        ];
+
+        let rendered = render_schedule_watch(&rows, 10, 500, Some("job-1"), None);
+
+        assert!(
+            rendered.contains("Invocation\n- vizier run develop alpha\n"),
+            "expected watch output to surface the original invocation: {rendered}"
         );
     }
 }

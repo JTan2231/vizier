@@ -195,6 +195,7 @@ mod tests {
     fn shell_node(id: &str) -> WorkflowNode {
         WorkflowNode {
             id: id.to_string(),
+            name: None,
             kind: WorkflowNodeKind::Shell,
             uses: "cap.env.shell.command.run".to_string(),
             args: BTreeMap::from([("script".to_string(), "true".to_string())]),

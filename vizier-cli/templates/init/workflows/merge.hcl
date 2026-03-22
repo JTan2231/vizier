@@ -34,6 +34,7 @@ artifact_contracts = [{ id = "stage_token", version = "v1" }]
 nodes = [
   {
     id = "merge_integrate"
+    name = "Merge / Integrate Plan Branch"
     kind = "builtin"
     uses = "cap.env.builtin.git.integrate_plan_branch"
     args = {
@@ -52,6 +53,7 @@ nodes = [
   },
   {
     id = "merge_conflict_resolution"
+    name = "Merge / Conflict Resolution"
     kind = "gate"
     uses = "control.gate.conflict_resolution"
     args = {
@@ -65,6 +67,7 @@ nodes = [
   },
   {
     id = "merge_gate_cicd"
+    name = "Merge / CICD Gate"
     kind = "gate"
     uses = "control.gate.cicd"
     args = {
@@ -85,6 +88,7 @@ nodes = [
   },
   {
     id = "terminal"
+    name = "Merge / Terminal"
     kind = "gate"
     uses = "control.terminal"
   }

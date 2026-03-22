@@ -32,6 +32,7 @@ artifact_contracts = [
 nodes = [
   {
     id = "worktree_prepare"
+    name = "Approve / Prepare Worktree"
     kind = "builtin"
     uses = "cap.env.builtin.worktree.prepare"
     args = {
@@ -49,6 +50,7 @@ nodes = [
   },
   {
     id = "resolve_prompt"
+    name = "Approve / Resolve Prompt"
     kind = "builtin"
     uses = "cap.env.builtin.prompt.resolve"
     args = {
@@ -64,6 +66,7 @@ nodes = [
   },
   {
     id = "invoke_agent"
+    name = "Approve / Invoke Agent"
     kind = "agent"
     uses = "cap.agent.invoke"
     needs = [{ custom = { type_id = "prompt_text", key = "approve_main" } }]
@@ -74,6 +77,7 @@ nodes = [
   },
   {
     id = "stage_files"
+    name = "Approve / Stage Files"
     kind = "builtin"
     uses = "cap.env.builtin.git.stage"
     args = {
@@ -86,6 +90,7 @@ nodes = [
   },
   {
     id = "stage_commit"
+    name = "Approve / Stage Commit"
     kind = "builtin"
     uses = "cap.env.builtin.git.commit"
     args = {
@@ -98,6 +103,7 @@ nodes = [
   },
   {
     id = "stop_gate"
+    name = "Approve / Stop Gate"
     kind = "gate"
     uses = "control.gate.stop_condition"
     gates = [
@@ -119,6 +125,7 @@ nodes = [
   },
   {
     id = "worktree_cleanup"
+    name = "Approve / Cleanup Worktree"
     kind = "builtin"
     uses = "cap.env.builtin.worktree.cleanup"
     on = {
@@ -128,6 +135,7 @@ nodes = [
   },
   {
     id = "terminal"
+    name = "Approve / Terminal"
     kind = "gate"
     uses = "control.terminal"
     produces = {

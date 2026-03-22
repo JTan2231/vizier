@@ -34,6 +34,7 @@ artifact_contracts = [
 nodes = [
   {
     id = "worktree_prepare"
+    name = "Draft / Prepare Worktree"
     kind = "builtin"
     uses = "cap.env.builtin.worktree.prepare"
     args = {
@@ -47,6 +48,7 @@ nodes = [
   },
   {
     id = "resolve_prompt"
+    name = "Draft / Resolve Prompt"
     kind = "builtin"
     uses = "cap.env.builtin.prompt.resolve"
     args = {
@@ -62,6 +64,7 @@ nodes = [
   },
   {
     id = "invoke_agent"
+    name = "Draft / Invoke Agent"
     kind = "agent"
     uses = "cap.agent.invoke"
     needs = [{ custom = { type_id = "prompt_text", key = "draft_main" } }]
@@ -75,6 +78,7 @@ nodes = [
   },
   {
     id = "persist_plan"
+    name = "Draft / Persist Plan"
     kind = "builtin"
     uses = "cap.env.builtin.plan.persist"
     args = {
@@ -98,6 +102,7 @@ nodes = [
   },
   {
     id = "stage_files"
+    name = "Draft / Stage Files"
     kind = "builtin"
     uses = "cap.env.builtin.git.stage"
     args = {
@@ -116,6 +121,7 @@ nodes = [
   },
   {
     id = "stage_commit"
+    name = "Draft / Stage Commit"
     kind = "builtin"
     uses = "cap.env.builtin.git.commit"
     args = {
@@ -134,6 +140,7 @@ nodes = [
   },
   {
     id = "stop_gate"
+    name = "Draft / Stop Gate"
     kind = "gate"
     uses = "control.gate.stop_condition"
     on = {
@@ -143,6 +150,7 @@ nodes = [
   },
   {
     id = "worktree_cleanup"
+    name = "Draft / Cleanup Worktree"
     kind = "builtin"
     uses = "cap.env.builtin.worktree.cleanup"
     on = {
@@ -152,6 +160,7 @@ nodes = [
   },
   {
     id = "terminal"
+    name = "Draft / Terminal"
     kind = "gate"
     uses = "control.terminal"
     after = [{ node_id = "worktree_cleanup" }]

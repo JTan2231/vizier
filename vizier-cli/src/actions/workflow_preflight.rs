@@ -619,6 +619,7 @@ mod tests {
             artifact_contracts: Vec::new(),
             nodes: vec![WorkflowNode {
                 id: "persist_plan".to_string(),
+                name: None,
                 kind: Default::default(),
                 uses: "cap.env.builtin.plan.persist".to_string(),
                 args: BTreeMap::from([
@@ -657,6 +658,7 @@ mod tests {
             artifact_contracts: Vec::new(),
             nodes: vec![WorkflowNode {
                 id: "persist_plan".to_string(),
+                name: None,
                 kind: Default::default(),
                 uses: "cap.env.builtin.plan.persist".to_string(),
                 args: BTreeMap::from([

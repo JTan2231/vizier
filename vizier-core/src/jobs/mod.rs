@@ -152,6 +152,7 @@ pub struct JobMetadata {
     pub plan: Option<String>,
     pub branch: Option<String>,
     pub workflow_run_id: Option<String>,
+    pub workflow_node_name: Option<String>,
     pub workflow_node_attempt: Option<u32>,
     pub workflow_node_outcome: Option<String>,
     pub workflow_payload_refs: Option<Vec<String>>,
@@ -481,6 +482,8 @@ impl WorkflowRouteTargets {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct WorkflowRuntimeNodeManifest {
     node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     job_id: String,
     uses: String,
     kind: WorkflowNodeKind,
@@ -913,6 +916,9 @@ fn merge_metadata(
             }
             if base.workflow_run_id.is_none() {
                 base.workflow_run_id = update.workflow_run_id;
+            }
+            if base.workflow_node_name.is_none() {
+                base.workflow_node_name = update.workflow_node_name;
             }
             if base.workflow_node_attempt.is_none() {
                 base.workflow_node_attempt = update.workflow_node_attempt;
@@ -1598,6 +1604,7 @@ pub fn enqueue_workflow_run(
 
         let metadata = JobMetadata {
             workflow_run_id: Some(run_id.to_string()),
+            workflow_node_name: compiled.name.clone(),
             workflow_node_attempt: Some(1),
             workflow_template_selector: Some(template_selector.to_string()),
             workflow_template_id: Some(compiled.template_id.clone()),
@@ -1653,6 +1660,7 @@ pub fn enqueue_workflow_run(
             node.id.clone(),
             WorkflowRuntimeNodeManifest {
                 node_id: node.id.clone(),
+                name: compiled.name.clone(),
                 job_id: job_id.clone(),
                 uses: node.uses.clone(),
                 kind: node.kind,
@@ -2087,6 +2095,7 @@ pub struct JobMonitorSchedule {
 pub struct JobMonitorWorkflow {
     pub run_id: Option<String>,
     pub node_id: Option<String>,
+    pub node_name: Option<String>,
     pub executor_class: Option<String>,
     pub executor_operation: Option<String>,
     pub control_policy: Option<String>,
@@ -2131,6 +2140,7 @@ pub struct JobMonitorScheduleRow {
     pub job_id: String,
     pub slug: Option<String>,
     pub name: String,
+    pub command: Vec<String>,
     pub status: JobStatus,
     pub wait: Option<JobMonitorWait>,
     pub created_at: String,
@@ -2182,6 +2192,7 @@ pub struct ScheduleSnapshotJob {
     pub job_id: String,
     pub slug: Option<String>,
     pub name: String,
+    pub command: Vec<String>,
     pub status: JobStatus,
     pub wait: Option<String>,
     pub created_at: String,
@@ -2282,6 +2293,7 @@ pub fn project_job_monitor_record(record: &JobRecord) -> JobMonitorRecord {
         workflow: JobMonitorWorkflow {
             run_id: metadata.and_then(|meta| meta.workflow_run_id.clone()),
             node_id: metadata.and_then(|meta| meta.workflow_node_id.clone()),
+            node_name: metadata.and_then(|meta| meta.workflow_node_name.clone()),
             executor_class: metadata.and_then(|meta| meta.workflow_executor_class.clone()),
             executor_operation: metadata.and_then(|meta| meta.workflow_executor_operation.clone()),
             control_policy: metadata.and_then(|meta| meta.workflow_control_policy.clone()),
@@ -2316,6 +2328,7 @@ pub fn project_job_monitor_schedule_row(
         job_id: record.id.clone(),
         slug,
         name,
+        command: record.command.clone(),
         status: record.status,
         wait,
         created_at: record.created_at.to_rfc3339(),
@@ -8403,6 +8416,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::from([("prompt_text".to_string(), "hello world".to_string())]),
@@ -8426,6 +8440,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "invoke_agent".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -8456,6 +8471,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "prepare_worktree".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.worktree.prepare".to_string(),
                     args: BTreeMap::from([(
@@ -8476,6 +8492,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "run_target".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([("script".to_string(), script.to_string())]),
@@ -8507,6 +8524,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "prepare_worktree".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.worktree.prepare".to_string(),
                     args: BTreeMap::from([(
@@ -8527,6 +8545,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::from([(
@@ -8553,6 +8572,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "invoke_agent".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Agent,
                     uses: "cap.agent.invoke".to_string(),
                     args: BTreeMap::new(),
@@ -8581,6 +8601,7 @@ mod tests {
     ) -> WorkflowRuntimeNodeManifest {
         WorkflowRuntimeNodeManifest {
             node_id: node_id.to_string(),
+            name: None,
             job_id: job_id.to_string(),
             uses: uses.to_string(),
             kind: WorkflowNodeKind::Builtin,
@@ -8603,6 +8624,7 @@ mod tests {
     ) -> WorkflowRuntimeNodeManifest {
         WorkflowRuntimeNodeManifest {
             node_id: node_id.to_string(),
+            name: None,
             job_id: job_id.to_string(),
             uses: uses.to_string(),
             kind: WorkflowNodeKind::Gate,
@@ -9444,6 +9466,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "root".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([("script".to_string(), "echo root".to_string())]),
@@ -9461,6 +9484,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "retry_target".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([("script".to_string(), "echo retry".to_string())]),
@@ -11846,6 +11870,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "emit_message".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Shell,
                     uses: "cap.env.shell.command.run".to_string(),
                     args: BTreeMap::from([(
@@ -11866,6 +11891,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "stage_commit".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.git.commit".to_string(),
                     args: BTreeMap::from([(
@@ -12043,6 +12069,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::from([
@@ -12069,6 +12096,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "persist_plan".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.plan.persist".to_string(),
                     args: BTreeMap::from([
@@ -12154,6 +12182,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "develop_draft__resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::from([(
@@ -12178,6 +12207,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "develop_draft__persist_plan".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.plan.persist".to_string(),
                     args: BTreeMap::from([
@@ -12196,6 +12226,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "develop_merge__persist_plan".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.plan.persist".to_string(),
                     args: BTreeMap::from([
@@ -12214,6 +12245,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "develop_shared__persist_meta".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.plan.persist".to_string(),
                     args: BTreeMap::from([
@@ -12300,6 +12332,7 @@ mod tests {
             nodes: vec![
                 WorkflowNode {
                     id: "resolve_prompt".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.prompt.resolve".to_string(),
                     args: BTreeMap::from([(
@@ -12323,6 +12356,7 @@ mod tests {
                 },
                 WorkflowNode {
                     id: "persist_plan".to_string(),
+                    name: None,
                     kind: WorkflowNodeKind::Builtin,
                     uses: "cap.env.builtin.plan.persist".to_string(),
                     args: BTreeMap::from([
@@ -12398,6 +12432,7 @@ mod tests {
             }],
             nodes: vec![WorkflowNode {
                 id: "resolve_prompt".to_string(),
+                name: None,
                 kind: WorkflowNodeKind::Builtin,
                 uses: "cap.env.builtin.prompt.resolve".to_string(),
                 args: BTreeMap::from([(
@@ -13816,6 +13851,7 @@ mod tests {
 
         let node = WorkflowRuntimeNodeManifest {
             node_id: "gate".to_string(),
+            name: None,
             job_id: "job-stop-gate".to_string(),
             uses: "control.gate.stop_condition".to_string(),
             kind: WorkflowNodeKind::Gate,

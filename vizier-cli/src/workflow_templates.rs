@@ -70,6 +70,8 @@ struct WorkflowTemplateLink {
 struct WorkflowNodeFile {
     id: String,
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     kind: WorkflowNodeKind,
     uses: String,
     #[serde(default)]
@@ -905,6 +907,11 @@ fn expand_node(
 ) -> Result<WorkflowNode, Box<dyn std::error::Error>> {
     let node_id = node.id.clone();
 
+    if let Some(name) = node.name.as_mut() {
+        let path = format!("nodes[{node_id}].name");
+        *name = expand_string_value(name, &path, params)?;
+    }
+
     for (arg_key, arg_value) in &mut node.args {
         let path = format!("nodes[{node_id}].args.{arg_key}");
         *arg_value = expand_string_value(arg_value, &path, params)?;
@@ -959,6 +966,7 @@ fn expand_node(
 
     Ok(WorkflowNode {
         id: node.id,
+        name: node.name,
         kind: node.kind,
         uses: node.uses,
         args: node.args,

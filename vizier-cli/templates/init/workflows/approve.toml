@@ -35,6 +35,7 @@ version = "v1"
 
 [[nodes]]
 id = "worktree_prepare"
+name = "Approve / Prepare Worktree"
 kind = "builtin"
 uses = "cap.env.builtin.worktree.prepare"
 
@@ -54,6 +55,7 @@ succeeded = ["resolve_prompt"]
 
 [[nodes]]
 id = "resolve_prompt"
+name = "Approve / Resolve Prompt"
 kind = "builtin"
 uses = "cap.env.builtin.prompt.resolve"
 
@@ -71,6 +73,7 @@ node_id = "worktree_prepare"
 
 [[nodes]]
 id = "invoke_agent"
+name = "Approve / Invoke Agent"
 kind = "agent"
 uses = "cap.agent.invoke"
 
@@ -85,6 +88,7 @@ node_id = "resolve_prompt"
 
 [[nodes]]
 id = "stage_files"
+name = "Approve / Stage Files"
 kind = "builtin"
 uses = "cap.env.builtin.git.stage"
 
@@ -99,6 +103,7 @@ succeeded = ["stage_commit"]
 
 [[nodes]]
 id = "stage_commit"
+name = "Approve / Stage Commit"
 kind = "builtin"
 uses = "cap.env.builtin.git.commit"
 
@@ -113,6 +118,7 @@ succeeded = ["stop_gate"]
 
 [[nodes]]
 id = "stop_gate"
+name = "Approve / Stop Gate"
 kind = "gate"
 uses = "control.gate.stop_condition"
 
@@ -134,6 +140,7 @@ failed = ["stage_commit"]
 
 [[nodes]]
 id = "worktree_cleanup"
+name = "Approve / Cleanup Worktree"
 kind = "builtin"
 uses = "cap.env.builtin.worktree.cleanup"
 
@@ -145,6 +152,7 @@ node_id = "stop_gate"
 
 [[nodes]]
 id = "terminal"
+name = "Approve / Terminal"
 kind = "gate"
 uses = "control.terminal"
 
