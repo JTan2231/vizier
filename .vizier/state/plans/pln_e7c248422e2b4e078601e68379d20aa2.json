@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_e7c248422e2b4e078601e68379d20aa2",
+  "slug": "refactor",
+  "branch": "draft/refactor",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_16f4555c73714fd5a68cab25ad20006d-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Jobs Module Refactor Spec",
+  "created_at": "2026-03-23T05:05:57.893432+00:00",
+  "updated_at": "2026-03-23T05:05:57.893432+00:00",
+  "job_ids": {
+    "persist": "wf-run_16f4555c73714fd5a68cab25ad20006d-develop_draft__persist_plan"
+  }
+}
