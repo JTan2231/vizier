@@ -258,6 +258,7 @@ pub fn build_merge_conflict_prompt(
     target_branch: &str,
     source_branch: &str,
     conflicts: &[String],
+    source_plan_document: Option<&str>,
     documentation: &config::DocumentationSettings,
 ) -> Result<String, AgentError> {
     let context = load_context_if_needed(
@@ -270,6 +271,7 @@ pub fn build_merge_conflict_prompt(
         target_branch,
         source_branch,
         conflicts,
+        source_plan_document,
         documentation,
         &bounds,
         context.as_ref(),
@@ -496,12 +498,15 @@ mod tests {
             "main",
             "draft/slug",
             &conflicts,
+            Some("## Operator Spec\nFEATURE_TWO\n"),
             &DocumentationSettings::default(),
         )
         .unwrap();
 
         assert!(prompt.starts_with("custom merge"));
         assert!(prompt.contains("<mergeContext>"));
+        assert!(prompt.contains("<sourcePlanDocument>"));
+        assert!(prompt.contains("FEATURE_TWO"));
 
         config::set_config(original);
     }

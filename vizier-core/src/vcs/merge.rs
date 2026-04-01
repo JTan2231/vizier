@@ -426,7 +426,16 @@ pub fn commit_in_progress_merge(
     head_oid: Oid,
     source_oid: Oid,
 ) -> Result<Oid, Error> {
-    let repo = Repository::discover(".")?;
+    commit_in_progress_merge_in(".", message, head_oid, source_oid)
+}
+
+pub fn commit_in_progress_merge_in<P: AsRef<Path>>(
+    repo_path: P,
+    message: &str,
+    head_oid: Oid,
+    source_oid: Oid,
+) -> Result<Oid, Error> {
+    let repo = Repository::open(repo_path)?;
     if repo.state() != RepositoryState::Merge {
         return Err(Error::from_str("no merge in progress to finalize"));
     }
@@ -463,7 +472,15 @@ pub fn commit_in_progress_merge(
 }
 
 pub fn commit_in_progress_squash(message: &str, head_oid: Oid) -> Result<Oid, Error> {
-    let repo = Repository::discover(".")?;
+    commit_in_progress_squash_in(".", message, head_oid)
+}
+
+pub fn commit_in_progress_squash_in<P: AsRef<Path>>(
+    repo_path: P,
+    message: &str,
+    head_oid: Oid,
+) -> Result<Oid, Error> {
+    let repo = Repository::open(repo_path)?;
     if repo.state() != RepositoryState::Merge {
         return Err(Error::from_str("no merge in progress to finalize"));
     }

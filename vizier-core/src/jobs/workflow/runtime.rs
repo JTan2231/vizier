@@ -391,11 +391,22 @@ pub(crate) fn run_merge_conflict_auto_resolve_agent(
 
     let (source_branch, target_branch) =
         resolve_merge_conflict_branches(execution_root, record, node, sentinel, slug);
+    let merge_slug = merge_plan_slug_from_context(&source_branch, record, node)
+        .unwrap_or_else(|| slug.to_string());
+    let source_plan_document =
+        match load_plan_document_for_merge_message(execution_root, &source_branch, &merge_slug) {
+            Ok(document) => document,
+            Err(err) => {
+                eprintln!("merge-conflict source plan context unavailable: {err}");
+                None
+            }
+        };
     let prompt = match crate::agent_prompt::build_merge_conflict_prompt(
         &prompt_selection,
         &target_branch,
         &source_branch,
         conflicts,
+        source_plan_document.as_deref(),
         &prompt_settings.documentation,
     ) {
         Ok(prompt) => prompt,

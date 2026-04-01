@@ -698,6 +698,92 @@ pub(crate) fn execute_workflow_executor(
             let merge_message =
                 merge_commit_message_with_plan(&merge_subject, plan_document.as_deref());
 
+            let finalize_in_progress = match Repository::open(&execution_root) {
+                Ok(repo) if repo.state() == git2::RepositoryState::Merge => match repo.index() {
+                    Ok(index) if !index.has_conflicts() => {
+                        let head_oid = match repo.head().and_then(|head| head.peel_to_commit()) {
+                            Ok(head_commit) => head_commit.id(),
+                            Err(err) => {
+                                return Ok(WorkflowNodeResult::failed(
+                                    format!(
+                                        "git.integrate_plan_branch could not inspect merge head: {err}"
+                                    ),
+                                    Some(1),
+                                ));
+                            }
+                        };
+                        let source_oid = match repo
+                            .find_branch(&source_branch, git2::BranchType::Local)
+                            .and_then(|branch| branch.get().peel_to_commit())
+                        {
+                            Ok(source_commit) => source_commit.id(),
+                            Err(err) => {
+                                return Ok(WorkflowNodeResult::failed(
+                                    format!(
+                                        "git.integrate_plan_branch could not inspect source branch `{source_branch}`: {err}"
+                                    ),
+                                    Some(1),
+                                ));
+                            }
+                        };
+                        Some((head_oid, source_oid))
+                    }
+                    Ok(_) => None,
+                    Err(err) => {
+                        return Ok(WorkflowNodeResult::failed(
+                            format!(
+                                "git.integrate_plan_branch could not inspect merge index: {err}"
+                            ),
+                            Some(1),
+                        ));
+                    }
+                },
+                Ok(_) => None,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("git.integrate_plan_branch could not open repository: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
+
+            if let Some((head_oid, source_oid)) = finalize_in_progress {
+                let commit_result = if squash {
+                    crate::vcs::commit_in_progress_squash_in(
+                        &execution_root,
+                        &merge_message,
+                        head_oid,
+                    )
+                } else {
+                    crate::vcs::commit_in_progress_merge_in(
+                        &execution_root,
+                        &merge_message,
+                        head_oid,
+                        source_oid,
+                    )
+                };
+                if let Err(err) = commit_result {
+                    let summary = if squash {
+                        format!("git.integrate_plan_branch finalize squash merge failed: {err}")
+                    } else {
+                        format!("git.integrate_plan_branch finalize merge failed: {err}")
+                    };
+                    return Ok(WorkflowNodeResult::failed(summary, Some(1)));
+                }
+
+                let _ = remove_file_if_exists(&sentinel);
+                if delete_branch
+                    && current_branch_name(&execution_root).as_deref()
+                        != Some(source_branch.as_str())
+                {
+                    let _ = crate::vcs::delete_branch_in(&execution_root, &source_branch);
+                }
+
+                return Ok(WorkflowNodeResult::succeeded(
+                    "git.integrate_plan_branch finalized resolved merge",
+                ));
+            }
+
             let merge_ready = match crate::vcs::prepare_merge_in(&execution_root, &source_branch) {
                 Ok(crate::vcs::MergePreparation::Ready(ready)) => ready,
                 Ok(crate::vcs::MergePreparation::Conflicted(_conflict)) => {

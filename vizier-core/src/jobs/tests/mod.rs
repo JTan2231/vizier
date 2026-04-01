@@ -4934,6 +4934,96 @@ fn workflow_runtime_integrate_plan_branch_blocks_on_conflict_and_writes_sentinel
 }
 
 #[test]
+fn workflow_runtime_integrate_plan_branch_finalizes_resolved_merge_on_retry() {
+    let temp = TempDir::new().expect("temp dir");
+    let repo = init_repo(&temp).expect("init repo");
+    seed_repo(&repo).expect("seed repo");
+    let project_root = temp.path();
+    let jobs_root = project_root.join(".vizier/jobs");
+    let target = current_branch_name(project_root).expect("target branch");
+    let source_branch = "draft/runtime-conflict-retry";
+
+    fs::write(project_root.join("a"), "base\n").expect("write base");
+    git_commit_all(project_root, "base conflict retry");
+
+    let checkout = git_status(project_root, &["checkout", "-b", source_branch]);
+    assert!(checkout.is_ok(), "create draft branch: {checkout:?}");
+    fs::write(project_root.join("a"), "feature2\n").expect("write source change");
+    git_commit_all(project_root, "draft conflict retry");
+
+    let checkout_target = git_status(project_root, &["checkout", &target]);
+    assert!(
+        checkout_target.is_ok(),
+        "checkout target: {checkout_target:?}"
+    );
+    fs::write(project_root.join("a"), "feature1\n").expect("write target change");
+    git_commit_all(project_root, "target conflict retry");
+
+    enqueue_job(
+        project_root,
+        &jobs_root,
+        "job-integrate-conflict-retry",
+        &["--help".to_string()],
+        &["vizier".to_string(), "__workflow-node".to_string()],
+        Some(JobMetadata {
+            plan: Some("runtime-conflict-retry".to_string()),
+            branch: Some(source_branch.to_string()),
+            target: Some(target.clone()),
+            ..JobMetadata::default()
+        }),
+        None,
+        Some(JobSchedule::default()),
+    )
+    .expect("enqueue");
+    let record = read_record(&jobs_root, "job-integrate-conflict-retry").expect("record");
+    let node = runtime_executor_node(
+        "integrate",
+        "job-integrate-conflict-retry",
+        "cap.env.builtin.git.integrate_plan_branch",
+        "git.integrate_plan_branch",
+        BTreeMap::from([
+            ("branch".to_string(), source_branch.to_string()),
+            ("slug".to_string(), "runtime-conflict-retry".to_string()),
+            ("target_branch".to_string(), target.clone()),
+            ("squash".to_string(), "true".to_string()),
+            ("delete_branch".to_string(), "false".to_string()),
+        ]),
+    );
+
+    let blocked =
+        execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("integrate");
+    assert_eq!(blocked.outcome, WorkflowNodeOutcome::Blocked);
+    assert!(
+        project_root
+            .join(".vizier/tmp/merge-conflicts/runtime-conflict-retry.json")
+            .exists(),
+        "expected merge sentinel for retry coverage"
+    );
+
+    fs::write(project_root.join("a"), "feature1\nfeature2\n").expect("resolve conflict");
+    crate::vcs::stage_in(project_root, Some(vec!["a"])).expect("stage resolved file");
+
+    let retried = execute_workflow_executor(project_root, &jobs_root, &record, &node)
+        .expect("retry integrate");
+    assert_eq!(
+        retried.outcome,
+        WorkflowNodeOutcome::Succeeded,
+        "retry integrate result: {:?}",
+        retried
+    );
+    assert_eq!(
+        fs::read_to_string(project_root.join("a")).ok().as_deref(),
+        Some("feature1\nfeature2\n"),
+        "expected resolved merge content to be finalized on retry"
+    );
+    assert_eq!(
+        Repository::open(project_root).expect("open repo").state(),
+        git2::RepositoryState::Clean,
+        "expected retry to leave repository merge state clean"
+    );
+}
+
+#[test]
 fn workflow_runtime_integrate_plan_branch_derives_branch_from_slug_when_branch_missing() {
     let temp = TempDir::new().expect("temp dir");
     let repo = init_repo(&temp).expect("init repo");

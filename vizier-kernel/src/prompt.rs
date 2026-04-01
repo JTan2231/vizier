@@ -423,11 +423,13 @@ pub fn build_review_prompt(
     Ok(prompt)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_merge_conflict_prompt(
     prompt_selection: &PromptSelection,
     target_branch: &str,
     source_branch: &str,
     conflicts: &[String],
+    source_plan_document: Option<&str>,
     documentation: &DocumentationSettings,
     bounds: &str,
     context: Option<&PromptContext>,
@@ -450,6 +452,18 @@ pub fn build_merge_conflict_prompt(
         }
     }
     prompt.push_str("</mergeContext>\n\n");
+
+    if let Some(plan_document) = source_plan_document
+        .map(str::trim)
+        .filter(|doc| !doc.is_empty())
+    {
+        prompt.push_str("<sourcePlanDocument>\n");
+        prompt.push_str(plan_document);
+        if !plan_document.ends_with('\n') {
+            prompt.push('\n');
+        }
+        prompt.push_str("</sourcePlanDocument>\n\n");
+    }
 
     if documentation.include_snapshot {
         append_snapshot_section(&mut prompt, context);
@@ -638,6 +652,37 @@ mod tests {
         assert!(prompt.contains("branch: draft/kernel"));
         assert!(prompt.contains("plan_file: .vizier/implementation-plans/kernel.md"));
         assert!(prompt.contains("<operatorSpec>"));
+    }
+
+    #[test]
+    fn merge_conflict_prompt_includes_source_plan_document_when_available() {
+        let selection = PromptSelection {
+            text: "MERGE TEMPLATE".to_string(),
+            kind: PromptKind::MergeConflict,
+            requested_scope: ProfileScope::Command(CommandScope::Merge),
+            origin: PromptOrigin::Default,
+            source_path: None,
+        };
+
+        let prompt = build_merge_conflict_prompt(
+            &selection,
+            "master",
+            "draft/two",
+            &["a".to_string()],
+            Some("## Operator Spec\nFEATURE_TWO\n"),
+            &DocumentationSettings {
+                use_documentation_prompt: true,
+                include_snapshot: false,
+                include_narrative_docs: false,
+            },
+            "bounds text",
+            None,
+        )
+        .expect("merge conflict prompt");
+
+        assert!(prompt.contains("<mergeContext>"));
+        assert!(prompt.contains("<sourcePlanDocument>"));
+        assert!(prompt.contains("FEATURE_TWO"));
     }
 
     #[test]

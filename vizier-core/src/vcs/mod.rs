@@ -23,8 +23,9 @@ pub use merge::{
     CherryPickApply, CherryPickApplyConflict, CherryPickOutcome, MergeCommitSummary, MergeConflict,
     MergePreparation, MergeReady, SquashPlan, apply_cherry_pick_sequence, build_squash_plan,
     build_squash_plan_in, commit_in_progress_cherry_pick, commit_in_progress_cherry_pick_in,
-    commit_in_progress_merge, commit_in_progress_squash, commit_ready_merge, commit_ready_merge_in,
-    commit_soft_squash, commit_squashed_merge, commit_squashed_merge_in, list_conflicted_paths,
+    commit_in_progress_merge, commit_in_progress_merge_in, commit_in_progress_squash,
+    commit_in_progress_squash_in, commit_ready_merge, commit_ready_merge_in, commit_soft_squash,
+    commit_squashed_merge, commit_squashed_merge_in, list_conflicted_paths,
     list_conflicted_paths_in, prepare_merge, prepare_merge_in,
 };
 pub use release::{
