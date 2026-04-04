@@ -15,7 +15,8 @@ pub(crate) use executor::*;
 pub(crate) use runtime::*;
 
 pub use compile::{
-    audit_workflow_run_template, enqueue_workflow_run, validate_workflow_run_template,
+    WorkflowRunEnqueueOptions, audit_workflow_run_template, enqueue_workflow_run,
+    enqueue_workflow_run_with_options, validate_workflow_run_template,
 };
 pub use runtime::run_workflow_node_command;
 
@@ -207,6 +208,16 @@ pub(crate) struct WorkflowRunManifest {
     pub(crate) template_id: String,
     pub(crate) template_version: String,
     pub(crate) policy_snapshot_hash: String,
+    #[serde(default)]
+    pub(crate) ephemeral: bool,
+    #[serde(default)]
+    pub(crate) ephemeral_cleanup_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ephemeral_cleanup_state: Option<EphemeralCleanupState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ephemeral_cleanup_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ephemeral_baseline: Option<EphemeralRunBaseline>,
     pub(crate) nodes: BTreeMap<String, WorkflowRuntimeNodeManifest>,
 }
 
@@ -217,5 +228,7 @@ pub struct EnqueueWorkflowRunResult {
     pub template_id: String,
     pub template_version: String,
     pub policy_snapshot_hash: String,
+    #[serde(default)]
+    pub ephemeral: bool,
     pub job_ids: BTreeMap<String, String>,
 }

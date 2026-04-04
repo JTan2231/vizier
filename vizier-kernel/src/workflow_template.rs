@@ -73,17 +73,12 @@ pub struct WorkflowDependenciesPolicy {
     pub missing_producer: MissingProducerPolicy,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowFailureMode {
+    #[default]
     BlockDownstream,
     ContinueIndependent,
-}
-
-impl Default for WorkflowFailureMode {
-    fn default() -> Self {
-        Self::BlockDownstream
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,17 +98,12 @@ impl Default for WorkflowResumePolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowResumeReuseMode {
+    #[default]
     Strict,
     Compatible,
-}
-
-impl Default for WorkflowResumeReuseMode {
-    fn default() -> Self {
-        Self::Strict
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,20 +143,15 @@ pub struct WorkflowNode {
     pub on: WorkflowOutcomeEdges,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowNodeKind {
+    #[default]
     Builtin,
     Agent,
     Shell,
     Gate,
     Custom,
-}
-
-impl Default for WorkflowNodeKind {
-    fn default() -> Self {
-        Self::Builtin
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -305,18 +290,13 @@ pub enum WorkflowGate {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowGatePolicy {
+    #[default]
     Block,
     Warn,
     Retry,
-}
-
-impl Default for WorkflowGatePolicy {
-    fn default() -> Self {
-        Self::Block
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -336,18 +316,13 @@ impl Default for WorkflowRetryPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowRetryMode {
+    #[default]
     Never,
     OnFailure,
     UntilGate,
-}
-
-impl Default for WorkflowRetryMode {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

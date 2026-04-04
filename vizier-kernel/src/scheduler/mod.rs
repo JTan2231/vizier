@@ -51,29 +51,19 @@ pub enum JobArtifact {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AfterPolicy {
+    #[default]
     Success,
 }
 
-impl Default for AfterPolicy {
-    fn default() -> Self {
-        Self::Success
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MissingProducerPolicy {
+    #[default]
     Block,
     Wait,
-}
-
-impl Default for MissingProducerPolicy {
-    fn default() -> Self {
-        Self::Block
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -137,7 +137,7 @@ fn cleanup_stale_fixture_temp_dirs_across_roots(
 }
 
 fn fixture_temp_roots() -> Vec<PathBuf> {
-    let mut roots = vec![canonicalize_or_original(env::temp_dir())];
+    let roots = vec![canonicalize_or_original(env::temp_dir())];
     #[cfg(target_os = "macos")]
     {
         let private_tmp = canonicalize_or_original(PathBuf::from("/private/tmp"));

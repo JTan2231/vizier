@@ -315,6 +315,10 @@ fn test_run_workflow_help_uses_resolved_alias_context() -> TestResult {
         "missing workflow help sections: {stdout}"
     );
     assert!(
+        stdout.contains("--ephemeral"),
+        "expected workflow help to document --ephemeral: {stdout}"
+    );
+    assert!(
         stdout.contains("--file <file> -> spec_file") && stdout.contains("--name <name> -> slug"),
         "expected alias mappings in flow help: {stdout}"
     );

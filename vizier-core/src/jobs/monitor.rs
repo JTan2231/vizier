@@ -47,6 +47,12 @@ pub struct JobMonitorWorkflow {
     pub template_selector: Option<String>,
     pub template_id: Option<String>,
     pub template_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_state: Option<EphemeralCleanupState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,6 +251,9 @@ pub fn project_job_monitor_record(record: &JobRecord) -> JobMonitorRecord {
             template_selector: metadata.and_then(|meta| meta.workflow_template_selector.clone()),
             template_id: metadata.and_then(|meta| meta.workflow_template_id.clone()),
             template_version: metadata.and_then(|meta| meta.workflow_template_version.clone()),
+            ephemeral_run: metadata.and_then(|meta| meta.ephemeral_run),
+            cleanup_state: metadata.and_then(|meta| meta.ephemeral_cleanup_state),
+            cleanup_detail: metadata.and_then(|meta| meta.ephemeral_cleanup_detail.clone()),
         },
         context: JobMonitorContext {
             command_alias: metadata.and_then(|meta| meta.command_alias.clone()),

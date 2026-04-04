@@ -205,6 +205,60 @@ pub(crate) fn load_workflow_run_manifest(
     Ok(serde_json::from_slice::<WorkflowRunManifest>(&bytes)?)
 }
 
+fn collect_ephemeral_baseline_paths(
+    project_root: &Path,
+    root: &Path,
+    paths: &mut Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    paths.push(relative_path(project_root, root));
+    if !root.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        collect_ephemeral_baseline_paths(project_root, &entry.path(), paths)?;
+    }
+
+    Ok(())
+}
+
+fn collect_ephemeral_run_baseline(
+    project_root: &Path,
+    vizier_root_existed_before_runtime: Option<bool>,
+) -> Result<EphemeralRunBaseline, Box<dyn std::error::Error>> {
+    let vizier_root = project_root.join(".vizier");
+    let mut preexisting_paths = Vec::new();
+    for rel in [
+        ".vizier/narrative",
+        ".vizier/implementation-plans",
+        ".vizier/tmp",
+    ] {
+        collect_ephemeral_baseline_paths(
+            project_root,
+            &project_root.join(rel),
+            &mut preexisting_paths,
+        )?;
+    }
+    preexisting_paths.sort();
+    preexisting_paths.dedup();
+    Ok(EphemeralRunBaseline {
+        vizier_root_existed: vizier_root_existed_before_runtime
+            .unwrap_or_else(|| vizier_root.exists()),
+        preexisting_paths,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowRunEnqueueOptions {
+    pub ephemeral: bool,
+    pub vizier_root_existed_before_runtime: Option<bool>,
+}
+
 #[derive(Debug)]
 pub(crate) struct WorkflowRunCompilation {
     incoming_success: BTreeMap<String, Vec<String>>,
@@ -314,6 +368,29 @@ pub fn enqueue_workflow_run(
     recorded_args: &[String],
     config_snapshot: Option<serde_json::Value>,
 ) -> Result<EnqueueWorkflowRunResult, Box<dyn std::error::Error>> {
+    enqueue_workflow_run_with_options(
+        project_root,
+        jobs_root,
+        run_id,
+        template_selector,
+        template,
+        recorded_args,
+        config_snapshot,
+        WorkflowRunEnqueueOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn enqueue_workflow_run_with_options(
+    project_root: &Path,
+    jobs_root: &Path,
+    run_id: &str,
+    template_selector: &str,
+    template: &WorkflowTemplate,
+    recorded_args: &[String],
+    config_snapshot: Option<serde_json::Value>,
+    options: WorkflowRunEnqueueOptions,
+) -> Result<EnqueueWorkflowRunResult, Box<dyn std::error::Error>> {
     let mut node_to_job_id = BTreeMap::new();
     for node in &template.nodes {
         let job_id = workflow_job_id(run_id, &node.id);
@@ -321,6 +398,15 @@ pub fn enqueue_workflow_run(
             return Err(format!("duplicate workflow node id `{}`", node.id).into());
         }
     }
+
+    let ephemeral_baseline = if options.ephemeral {
+        Some(collect_ephemeral_run_baseline(
+            project_root,
+            options.vizier_root_existed_before_runtime,
+        )?)
+    } else {
+        None
+    };
 
     let mut resolved_after = BTreeMap::new();
     for (node_id, job_id) in &node_to_job_id {
@@ -388,6 +474,9 @@ pub fn enqueue_workflow_run(
         };
 
         let metadata = JobMetadata {
+            ephemeral_run: options.ephemeral.then_some(true),
+            ephemeral_cleanup_requested: options.ephemeral.then_some(true),
+            ephemeral_cleanup_state: options.ephemeral.then_some(EphemeralCleanupState::Pending),
             workflow_run_id: Some(run_id.to_string()),
             workflow_node_name: compiled.name.clone(),
             workflow_node_attempt: Some(1),
@@ -468,6 +557,11 @@ pub fn enqueue_workflow_run(
             template_id: template.id.clone(),
             template_version: template.version.clone(),
             policy_snapshot_hash: policy_snapshot_hash.clone(),
+            ephemeral: options.ephemeral,
+            ephemeral_cleanup_requested: options.ephemeral,
+            ephemeral_cleanup_state: options.ephemeral.then_some(EphemeralCleanupState::Pending),
+            ephemeral_cleanup_detail: None,
+            ephemeral_baseline,
             nodes: manifest_nodes,
         },
     )?;
@@ -478,6 +572,7 @@ pub fn enqueue_workflow_run(
         template_id: template.id.clone(),
         template_version: template.version.clone(),
         policy_snapshot_hash,
+        ephemeral: options.ephemeral,
         job_ids: node_to_job_id,
     })
 }

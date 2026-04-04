@@ -201,6 +201,7 @@ pub(crate) fn render_run_workflow_help_text(
             "  --set <KEY=VALUE>             Template parameter override (repeatable)",
             "  --check                       Validate queue-time checks without enqueueing",
             "  --after <REF>                 Root dependency: JOB_ID or run:RUN_ID",
+            "  --ephemeral                   Auto-clean Vizier-owned runtime material after terminal completion",
             "  --require-approval            Require approval before root jobs start",
             "  --no-require-approval         Disable root approval gating",
             "  --follow                      Wait for terminal run state and stream progress",

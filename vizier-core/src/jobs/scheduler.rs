@@ -4,6 +4,21 @@ use super::*;
 pub struct SchedulerOutcome {
     pub started: Vec<String>,
     pub updated: Vec<String>,
+    pub ephemeral_run_cleanups: Vec<EphemeralRunCleanupEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct EphemeralRunCleanupEvent {
+    pub run_id: String,
+    pub state: EphemeralCleanupState,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prune_vizier_root: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<CleanRemovedCounts>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degraded_notes: Vec<String>,
 }
 
 pub(crate) fn job_is_terminal(status: JobStatus) -> bool {
@@ -630,10 +645,295 @@ pub(crate) fn reconcile_running_job_liveness_locked(
     Ok(reconciled)
 }
 
+fn write_ephemeral_cleanup_state_to_manifest(
+    project_root: &Path,
+    run_id: &str,
+    requested: bool,
+    state: EphemeralCleanupState,
+    detail: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = load_workflow_run_manifest(project_root, run_id)?;
+    manifest.ephemeral_cleanup_requested = requested;
+    manifest.ephemeral_cleanup_state = Some(state);
+    manifest.ephemeral_cleanup_detail = detail
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    write_workflow_run_manifest(project_root, &manifest)
+}
+
+fn write_ephemeral_cleanup_state_to_jobs(
+    jobs_root: &Path,
+    job_ids: &[String],
+    requested: bool,
+    state: EphemeralCleanupState,
+    detail: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let detail = detail
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    for job_id in job_ids {
+        let paths = paths_for(jobs_root, job_id);
+        if !paths.record_path.exists() {
+            continue;
+        }
+
+        let mut record = load_record(&paths)?;
+        let metadata = record.metadata.get_or_insert_with(Default::default);
+        metadata.ephemeral_run = Some(true);
+        metadata.ephemeral_cleanup_requested = Some(requested);
+        metadata.ephemeral_cleanup_state = Some(state);
+        metadata.ephemeral_cleanup_detail = detail.clone();
+        persist_record(&paths, &record)?;
+    }
+
+    Ok(())
+}
+
+fn persist_ephemeral_cleanup_state(
+    project_root: &Path,
+    jobs_root: &Path,
+    run_id: &str,
+    job_ids: &[String],
+    requested: bool,
+    state: EphemeralCleanupState,
+    detail: Option<&str>,
+) {
+    if let Err(err) =
+        write_ephemeral_cleanup_state_to_manifest(project_root, run_id, requested, state, detail)
+    {
+        display::warn(format!(
+            "unable to persist ephemeral cleanup manifest state for run {}: {}",
+            run_id, err
+        ));
+    }
+    if let Err(err) =
+        write_ephemeral_cleanup_state_to_jobs(jobs_root, job_ids, requested, state, detail)
+    {
+        display::warn(format!(
+            "unable to persist ephemeral cleanup job state for run {}: {}",
+            run_id, err
+        ));
+    }
+}
+
+fn join_cleanup_reasons(reasons: &[String]) -> Option<String> {
+    let detail = reasons
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if detail.is_empty() {
+        None
+    } else {
+        Some(detail)
+    }
+}
+
+fn reconcile_ephemeral_run_cleanup_locked(
+    project_root: &Path,
+    jobs_root: &Path,
+    records: &[JobRecord],
+) -> Result<Vec<EphemeralRunCleanupEvent>, Box<dyn std::error::Error>> {
+    let mut runs = BTreeMap::<String, Vec<JobRecord>>::new();
+    for record in records {
+        let Some(metadata) = record.metadata.as_ref() else {
+            continue;
+        };
+        if metadata.ephemeral_run != Some(true) {
+            continue;
+        }
+        let Some(run_id) = metadata
+            .workflow_run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        runs.entry(run_id.to_string())
+            .or_default()
+            .push(record.clone());
+    }
+
+    let mut events = Vec::new();
+    for (run_id, run_records) in runs {
+        if !run_records
+            .iter()
+            .all(|record| job_is_terminal(record.status))
+        {
+            continue;
+        }
+
+        let job_ids = run_records
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let manifest = load_workflow_run_manifest(project_root, &run_id).ok();
+        let requested = manifest
+            .as_ref()
+            .map(|entry| entry.ephemeral_cleanup_requested)
+            .unwrap_or_else(|| {
+                run_records.iter().any(|record| {
+                    record
+                        .metadata
+                        .as_ref()
+                        .and_then(|meta| meta.ephemeral_cleanup_requested)
+                        == Some(true)
+                })
+            });
+
+        if !requested {
+            persist_ephemeral_cleanup_state(
+                project_root,
+                jobs_root,
+                &run_id,
+                &job_ids,
+                true,
+                EphemeralCleanupState::Pending,
+                None,
+            );
+            continue;
+        }
+
+        let Some(manifest) = manifest else {
+            let detail = format!(
+                "ephemeral run {} is terminal but its workflow manifest is missing",
+                run_id
+            );
+            persist_ephemeral_cleanup_state(
+                project_root,
+                jobs_root,
+                &run_id,
+                &job_ids,
+                true,
+                EphemeralCleanupState::Degraded,
+                Some(&detail),
+            );
+            events.push(EphemeralRunCleanupEvent {
+                run_id,
+                state: EphemeralCleanupState::Degraded,
+                prune_vizier_root: false,
+                detail: Some(detail),
+                removed: None,
+                degraded_notes: Vec::new(),
+            });
+            continue;
+        };
+        let prune_vizier_root = manifest
+            .ephemeral_baseline
+            .as_ref()
+            .map(|baseline| !baseline.vizier_root_existed)
+            .unwrap_or(false);
+
+        match clean_ephemeral_run_scope(
+            project_root,
+            jobs_root,
+            &run_id,
+            records,
+            manifest.ephemeral_baseline.unwrap_or_default(),
+        ) {
+            Ok(outcome) if outcome.degraded => {
+                let detail = join_cleanup_reasons(&outcome.degraded_notes);
+                persist_ephemeral_cleanup_state(
+                    project_root,
+                    jobs_root,
+                    &run_id,
+                    &job_ids,
+                    true,
+                    EphemeralCleanupState::Degraded,
+                    detail.as_deref(),
+                );
+                events.push(EphemeralRunCleanupEvent {
+                    run_id,
+                    state: EphemeralCleanupState::Degraded,
+                    prune_vizier_root: false,
+                    detail,
+                    removed: Some(outcome.removed),
+                    degraded_notes: outcome.degraded_notes,
+                });
+            }
+            Ok(outcome) => {
+                events.push(EphemeralRunCleanupEvent {
+                    run_id,
+                    state: EphemeralCleanupState::Completed,
+                    prune_vizier_root,
+                    detail: None,
+                    removed: Some(outcome.removed),
+                    degraded_notes: Vec::new(),
+                });
+            }
+            Err(err) if err.kind() == CleanJobErrorKind::Guard => {
+                let detail = join_cleanup_reasons(err.reasons());
+                persist_ephemeral_cleanup_state(
+                    project_root,
+                    jobs_root,
+                    &run_id,
+                    &job_ids,
+                    true,
+                    EphemeralCleanupState::Deferred,
+                    detail.as_deref(),
+                );
+                events.push(EphemeralRunCleanupEvent {
+                    run_id,
+                    state: EphemeralCleanupState::Deferred,
+                    prune_vizier_root: false,
+                    detail,
+                    removed: None,
+                    degraded_notes: Vec::new(),
+                });
+            }
+            Err(err) => {
+                let detail = err.to_string();
+                persist_ephemeral_cleanup_state(
+                    project_root,
+                    jobs_root,
+                    &run_id,
+                    &job_ids,
+                    true,
+                    EphemeralCleanupState::Degraded,
+                    Some(&detail),
+                );
+                events.push(EphemeralRunCleanupEvent {
+                    run_id,
+                    state: EphemeralCleanupState::Degraded,
+                    prune_vizier_root: false,
+                    detail: Some(detail),
+                    removed: None,
+                    degraded_notes: Vec::new(),
+                });
+            }
+        }
+    }
+
+    Ok(events)
+}
+
 pub(crate) fn scheduler_tick_locked(
     project_root: &Path,
     jobs_root: &Path,
     binary: &Path,
+) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
+    scheduler_tick_locked_inner(project_root, jobs_root, binary, true)
+}
+
+pub(crate) fn scheduler_tick_locked_without_ephemeral_cleanup(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
+    scheduler_tick_locked_inner(project_root, jobs_root, binary, false)
+}
+
+fn scheduler_tick_locked_inner(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    allow_ephemeral_cleanup: bool,
 ) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
     let mut records = list_records(jobs_root)?;
     let mut outcome = SchedulerOutcome::default();
@@ -713,6 +1013,14 @@ pub(crate) fn scheduler_tick_locked(
         }
     }
 
+    if allow_ephemeral_cleanup {
+        let records = list_records(jobs_root)?;
+        if !records.is_empty() {
+            outcome.ephemeral_run_cleanups =
+                reconcile_ephemeral_run_cleanup_locked(project_root, jobs_root, &records)?;
+        }
+    }
+
     Ok(outcome)
 }
 
@@ -721,6 +1029,29 @@ pub fn scheduler_tick(
     jobs_root: &Path,
     binary: &Path,
 ) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
+    let outcome = {
+        let _lock = SchedulerLock::acquire(jobs_root)?;
+        scheduler_tick_locked(project_root, jobs_root, binary)?
+    };
+    if outcome
+        .ephemeral_run_cleanups
+        .iter()
+        .any(|event| event.prune_vizier_root)
+    {
+        let vizier_root = project_root.join(".vizier");
+        if vizier_root.exists() && prune_empty_dirs_non_root(&vizier_root)? && vizier_root.exists()
+        {
+            let _ = fs::remove_dir(&vizier_root);
+        }
+    }
+    Ok(outcome)
+}
+
+pub fn scheduler_tick_without_ephemeral_cleanup(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+) -> Result<SchedulerOutcome, Box<dyn std::error::Error>> {
     let _lock = SchedulerLock::acquire(jobs_root)?;
-    scheduler_tick_locked(project_root, jobs_root, binary)
+    scheduler_tick_locked_without_ephemeral_cleanup(project_root, jobs_root, binary)
 }

@@ -15,6 +15,9 @@
 - **Worktree evidence label**: Parenthetical in the current-worktree-evidence snapshot bullet (`draft/<slug>`, `revalidated <date>`) that identifies which live branch inventory the evidence was sampled from.
 - **Default-Action Posture (DAP)**: Narrative upkeep default where turns update snapshot/glossary unless explicitly opted out.
 - **Durable init markers**: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
+- **Ephemeral run**: `vizier run --ephemeral` execution mode that marks workflow-run residue as run-owned for automatic terminal cleanup while preserving repo-owned `.vizier` content via an enqueue-time ownership baseline.
+- **Ephemeral ownership baseline**: Enqueue-time record of whether `.vizier` existed before runtime bootstrap plus which `.vizier/{narrative,implementation-plans,tmp}` paths already existed, used to decide whether terminal ephemeral cleanup may prune the root or only remove run-created additions.
+- **Ephemeral cleanup state**: Workflow cleanup lifecycle state for ephemeral runs: `pending` before terminal reconciliation, `deferred` when safety guards block cleanup, `completed` on successful cleanup, and `degraded` when best-effort cleanup hits non-guard failures.
 - **Empty plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has no on-disk `.md` plan docs in a worktree (including when the directory itself is absent); used with branch inventory to quantify legacy drift.
 - **Mixed plan-doc inventory signal**: Evidence state where `.vizier/implementation-plans/` has at least one on-disk plan doc while also carrying tracked deletions (`D .vizier/implementation-plans/<slug>.md`), signaling overlapping historical drift shapes in one worktree.
 - **Executor class metadata**: Scheduler/job metadata fields `workflow_executor_class` + `workflow_executor_operation` (with optional `workflow_control_policy`) that define canonical workflow identity for scheduler/job records.
@@ -64,6 +67,7 @@
 - **Retired workflow threads**: Narrative docs preserved for historical context after hard-removal of workflow/agent command families.
 - **Prompt artifact contract**: Canonical prompt payload wiring for executor templates: one custom artifact shaped `custom:prompt_text:<key>` produced by prompt-resolve nodes and consumed by canonical invoke nodes.
 - **Composed prompt placeholder suffix alias**: `prompt.resolve` runtime fallback that exposes unique composed-node suffix args under legacy node-id placeholder keys (for example `develop_draft__persist_plan.name_override` also resolves as `persist_plan.name_override`).
+- **Ephemeral narrative placeholder fallback**: `prompt.resolve` runtime behavior that substitutes `N/A` for missing `.vizier/narrative/*` file placeholders only during ephemeral runs and emits an informational stderr line instead of failing the node.
 - **Prompt payload data store**: Optional typed JSON payload files for custom artifacts under `.vizier/jobs/artifacts/data/<type_hex>/<key_hex>/<job_id>.json`; scheduler gating still keys off marker files.
 - **Running-job PID liveness reconciliation**: Driver-side scheduler/follow behavior that probes `status=running` records before waiting/decision evaluation and terminalizes stale jobs as explicit `failed` outcomes.
 - **Process liveness metadata**: Additive `JobMetadata` fields `process_liveness_state`, `process_liveness_checked_at`, and `process_liveness_failure_reason` written when stale-running reconciliation finalizes a job.
@@ -94,6 +98,7 @@
 - **Run entry-input CLI preflight error**: Missing required root-input guidance emitted as `error`/`usage`/`example`/`hint`, with alias-aware usage/examples and without internal node/capability identifiers.
 - **Run check mode**: `vizier run --check <flow>` validate-only path that executes queue-time checks (resolve/load/expand/coerce/preflight/capability/compile) and exits without generating run IDs, writing run manifests, enqueueing jobs, or ticking the scheduler.
 - **Run check conflict set**: `vizier run --check` rejects enqueue/runtime-only flags (`--follow`, `--after`, `--require-approval`, `--no-require-approval`, `--repeat`) so validation-only execution cannot mutate scheduler state.
+- **Run ephemeral follow summary**: Terminal `vizier run --follow --ephemeral` payload/summary section that reports scheduler-driven cleanup state plus removed/degraded details after the run reaches all-terminal job state.
 - **Schedule raw typed wait**: `vizier jobs schedule --format json --raw` row contract where `wait` is nullable typed `{kind, detail}` (versus flattened string in non-raw schedule JSON), while `edges` preserve parity with existing schedule JSON.
 - **Workflow audit mode**: `vizier audit <flow>` read-only queue-time analysis path that reuses run/check preprocessing + validation and reports output artifacts plus untethered inputs (with consumer node IDs) without enqueue/runtime side effects.
 - **Workflow audit effective-lock map**: Additive `vizier audit` output field (`effective_locks`) listing per-node effective locks from the same queue-time compile path used by enqueue.

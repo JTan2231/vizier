@@ -710,7 +710,41 @@ impl AgentRunner for ScriptRunner {
 mod tests {
     use super::*;
     use crate::config::CommandScope;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
     use tokio::sync::mpsc;
+
+    static STDBUF_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.original {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn stdbuf_env_lock() -> &'static Mutex<()> {
+        STDBUF_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn default_agent_timeout_is_12_hours() {
@@ -722,7 +756,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn renders_progress_events_for_stderr() {
+        let _lock = stdbuf_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = EnvVarGuard::set("VIZIER_DISABLE_STDBUF", "1");
         let runner = ScriptRunner;
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("echo.sh");
@@ -744,6 +783,7 @@ mod tests {
             prompt: "ignored".to_string(),
             repo_root: tmp.path().to_path_buf(),
             command: vec![
+                "sh".to_string(),
                 script.display().to_string(),
                 tmp.path().join("out.txt").display().to_string(),
             ],
@@ -788,6 +828,7 @@ mod tests {
             prompt: prompt.to_string(),
             repo_root: tmp.path().to_path_buf(),
             command: vec![
+                "sh".to_string(),
                 script.display().to_string(),
                 prompt_path.display().to_string(),
             ],
@@ -858,8 +899,8 @@ printf '%s\n' "$last"
         let request = AgentRequest {
             prompt: "prompt".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            command: vec![agent.display().to_string()],
-            progress_filter: Some(vec![filter.display().to_string()]),
+            command: vec!["sh".to_string(), agent.display().to_string()],
+            progress_filter: Some(vec!["sh".to_string(), filter.display().to_string()]),
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: true,
             scope: Some(CommandScope::Save),
@@ -901,7 +942,12 @@ printf '%s\n' "$last"
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn preserves_blank_lines_from_filtered_output() {
+        let _lock = stdbuf_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = EnvVarGuard::set("VIZIER_DISABLE_STDBUF", "1");
         let runner = ScriptRunner;
         let tmp = tempfile::tempdir().unwrap();
         let agent = tmp.path().join("agent.sh");
@@ -942,8 +988,8 @@ printf '%s\n' "$content"
         let request = AgentRequest {
             prompt: "prompt".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            command: vec![agent.display().to_string()],
-            progress_filter: Some(vec![filter.display().to_string()]),
+            command: vec!["sh".to_string(), agent.display().to_string()],
+            progress_filter: Some(vec!["sh".to_string(), filter.display().to_string()]),
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: true,
             scope: Some(CommandScope::Save),
@@ -1047,8 +1093,8 @@ printf '%s\n' "$last"
         let request = AgentRequest {
             prompt: "prompt".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            command: vec![agent.display().to_string()],
-            progress_filter: Some(vec![filter.display().to_string()]),
+            command: vec!["python3".to_string(), agent.display().to_string()],
+            progress_filter: Some(vec!["sh".to_string(), filter.display().to_string()]),
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: true,
             scope: Some(CommandScope::Save),
@@ -1171,7 +1217,7 @@ printf '%s\n' "$last"
         let request = AgentRequest {
             prompt: "run".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            command: vec![script.display().to_string()],
+            command: vec!["sh".to_string(), script.display().to_string()],
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,
@@ -1210,7 +1256,7 @@ printf '%s\n' "$last"
         let request = AgentRequest {
             prompt: "timeout".to_string(),
             repo_root: tmp.path().to_path_buf(),
-            command: vec![script.display().to_string()],
+            command: vec!["sh".to_string(), script.display().to_string()],
             progress_filter: None,
             output: config::AgentOutputHandling::Wrapped,
             allow_script_wrapper: false,

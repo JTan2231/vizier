@@ -43,6 +43,12 @@ fn read_commands(log: &Path) -> io::Result<Vec<String>> {
     fs::read_to_string(log).map(|text| text.lines().map(|line| line.to_string()).collect())
 }
 
+fn run_cicd_script(root: &Path) -> Command {
+    let mut cmd = Command::new("bash");
+    cmd.arg("./cicd.sh").current_dir(root);
+    cmd
+}
+
 #[test]
 fn test_cicd_defaults_cargo_target_dir_when_unset() -> TestResult {
     let tmp = TempDir::new()?;
@@ -55,8 +61,7 @@ fn test_cicd_defaults_cargo_target_dir_when_unset() -> TestResult {
     let path = prepare_path(&bin_dir)?;
     let log = tmp.path().join("cargo.log");
 
-    let output = Command::new("./cicd.sh")
-        .current_dir(&root)
+    let output = run_cicd_script(&root)
         .env("PATH", path)
         .env("CARGO_LOG", &log)
         .env_remove("CARGO_TARGET_DIR")
@@ -124,8 +129,7 @@ fn test_cicd_respects_explicit_cargo_target_dir() -> TestResult {
     let log = tmp.path().join("cargo.log");
     let custom_target = tmp.path().join("custom-target");
 
-    let output = Command::new("./cicd.sh")
-        .current_dir(&root)
+    let output = run_cicd_script(&root)
         .env("PATH", path)
         .env("CARGO_LOG", &log)
         .env("CARGO_TARGET_DIR", &custom_target)

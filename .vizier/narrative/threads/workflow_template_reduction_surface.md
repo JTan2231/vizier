@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-04-04, run-local ephemeral execution)
+  - `vizier-cli/src/cli/args.rs` now adds run-local `--ephemeral` (conflicts with `--check`), and `vizier-cli/src/actions/run.rs` carries the repo's pre-runtime `.vizier` existence into enqueue so ephemeral ownership is measured before `ensure_jobs_root()` creates runtime directories.
+  - Queue-time workflow manifests and job metadata now persist additive ephemeral fields: run marker, cleanup requested/state/detail, enqueue-time ownership baseline, and ephemeral-owned branch tracking.
+  - `vizier run --follow --ephemeral` now advances jobs without premature terminal cleanup during workflow-node completion, then performs terminal scheduler cleanup once the run reaches all-terminal state and reports cleanup summaries in text/JSON.
+  - Ephemeral prompt resolution now treats missing `.vizier/narrative/*` placeholders as soft misses: `prompt.resolve` substitutes `N/A` and emits an informational stderr line instead of failing the run when the placeholder miss is limited to narrative files.
+  - Coverage now includes enqueue/follow/uninitialized-repo ephemeral run assertions, prompt-resolve unit coverage, raw jobs envelope assertions, and help-surface coverage.
 - Update (2026-02-22, composed lock-scope ownership):
   - `vizier-cli/src/workflow_templates.rs` now preserves per-node lock-scope provenance during compose/import flattening by tracking node-owned scope contexts (root-authored nodes => root params; imported nodes => imported-stage params), and queue-time `--set` now applies deterministically to that owned context without reintroducing cross-stage key leakage.
   - `vizier-kernel/src/workflow_template.rs` now infers implicit locks from node args/artifacts plus node-owned lock context (with fallback to root params for non-composed templates), keeping explicit `node.locks` override semantics and `repo_serial` fallback unchanged.

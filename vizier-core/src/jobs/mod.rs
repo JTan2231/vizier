@@ -144,6 +144,34 @@ pub struct JobPaths {
     pub stderr_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EphemeralCleanupState {
+    Pending,
+    Deferred,
+    Completed,
+    Degraded,
+}
+
+impl EphemeralCleanupState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Deferred => "deferred",
+            Self::Completed => "completed",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct EphemeralRunBaseline {
+    #[serde(default)]
+    pub vizier_root_existed: bool,
+    #[serde(default)]
+    pub preexisting_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JobMetadata {
     pub command_alias: Option<String>,
@@ -151,6 +179,16 @@ pub struct JobMetadata {
     pub target: Option<String>,
     pub plan: Option<String>,
     pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_cleanup_requested: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_cleanup_state: Option<EphemeralCleanupState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_cleanup_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_owned_branches: Option<Vec<String>>,
     pub workflow_run_id: Option<String>,
     pub workflow_node_name: Option<String>,
     pub workflow_node_attempt: Option<u32>,
@@ -373,10 +411,14 @@ pub use cleanup::{
 pub use graph::ScheduleGraph;
 pub use logs::{follow_job_logs_raw, latest_job_log_line, tail_job_logs};
 pub use monitor::*;
-pub use scheduler::{SchedulerOutcome, scheduler_tick};
+pub use scheduler::{
+    EphemeralRunCleanupEvent, SchedulerOutcome, scheduler_tick,
+    scheduler_tick_without_ephemeral_cleanup,
+};
 pub use workflow::{
-    EnqueueWorkflowRunResult, audit_workflow_run_template, enqueue_workflow_run,
-    run_workflow_node_command, validate_workflow_run_template,
+    EnqueueWorkflowRunResult, WorkflowRunEnqueueOptions, audit_workflow_run_template,
+    enqueue_workflow_run, enqueue_workflow_run_with_options, run_workflow_node_command,
+    validate_workflow_run_template,
 };
 
 static CURRENT_JOB_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -749,6 +791,21 @@ fn merge_metadata(
             }
             if base.branch.is_none() {
                 base.branch = update.branch;
+            }
+            if base.ephemeral_run.is_none() {
+                base.ephemeral_run = update.ephemeral_run;
+            }
+            if update.ephemeral_cleanup_requested.is_some() {
+                base.ephemeral_cleanup_requested = update.ephemeral_cleanup_requested;
+            }
+            if update.ephemeral_cleanup_state.is_some() {
+                base.ephemeral_cleanup_state = update.ephemeral_cleanup_state;
+                base.ephemeral_cleanup_detail = update.ephemeral_cleanup_detail;
+            } else if update.ephemeral_cleanup_detail.is_some() {
+                base.ephemeral_cleanup_detail = update.ephemeral_cleanup_detail;
+            }
+            if is_empty_vec(&base.ephemeral_owned_branches) {
+                base.ephemeral_owned_branches = update.ephemeral_owned_branches;
             }
             if base.workflow_run_id.is_none() {
                 base.workflow_run_id = update.workflow_run_id;

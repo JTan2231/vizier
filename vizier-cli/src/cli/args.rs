@@ -625,6 +625,7 @@ pub(crate) struct RunCmd {
         action = ArgAction::SetTrue,
         conflicts_with_all = [
             "after",
+            "ephemeral",
             "require_approval",
             "no_require_approval",
             "follow",
@@ -636,6 +637,10 @@ pub(crate) struct RunCmd {
     /// External predecessor dependency; root jobs wait on JOB_ID or run:RUN_ID
     #[arg(long = "after", value_name = "REF", action = ArgAction::Append)]
     pub(crate) after: Vec<String>,
+
+    /// Auto-clean Vizier-owned runtime material after the run is terminal and cleanup is safe
+    #[arg(long = "ephemeral", action = ArgAction::SetTrue)]
+    pub(crate) ephemeral: bool,
 
     /// Require explicit approval before root jobs can start
     #[arg(long = "require-approval", action = ArgAction::SetTrue, conflicts_with = "no_require_approval")]
@@ -986,6 +991,7 @@ mod tests {
         for args in [
             vec!["vizier", "run", "draft", "--check", "--follow"],
             vec!["vizier", "run", "draft", "--check", "--after", "job-1"],
+            vec!["vizier", "run", "draft", "--check", "--ephemeral"],
             vec!["vizier", "run", "draft", "--check", "--require-approval"],
             vec!["vizier", "run", "draft", "--check", "--no-require-approval"],
             vec!["vizier", "run", "draft", "--check", "--repeat", "2"],

@@ -30,6 +30,11 @@ Update (2026-02-20, running-job PID liveness reconciliation)
 - `vizier jobs tail --follow` and `vizier jobs attach` now run reconciliation while waiting, preventing indefinite hangs on stale `running` records.
 - Scheduler docs and runtime/integration coverage were updated to reflect the new operator-visible failure behavior.
 
+Update (2026-04-04, ephemeral workflow observability)
+- Raw `vizier jobs list/show --format json --raw` workflow projections now include additive ephemeral fields: `ephemeral_run`, `cleanup_state`, and `cleanup_detail`.
+- These fields surface scheduler-managed cleanup state for `vizier run --ephemeral` without changing non-raw display contracts or non-workflow job rows.
+- Follow-mode terminal output for ephemeral runs now reports the same cleanup state/details after scheduler reconciliation completes.
+
 Pointers
 - `vizier-core/src/jobs/mod.rs`
 - `vizier-cli/src/cli/args.rs`

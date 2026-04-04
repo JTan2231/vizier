@@ -172,6 +172,7 @@ pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
 
         if is_flag_option(token, "--require-approval")
             || is_flag_option(token, "--no-require-approval")
+            || is_flag_option(token, "--ephemeral")
             || is_flag_option(token, "--follow")
             || is_flag_option(token, "--check")
             || is_flag_option(token, "--verbose")
@@ -225,6 +226,7 @@ fn run_option_with_value(token: &str) -> bool {
 fn run_flag_option(token: &str) -> bool {
     is_flag_option(token, "--require-approval")
         || is_flag_option(token, "--no-require-approval")
+        || is_flag_option(token, "--ephemeral")
         || is_flag_option(token, "--follow")
         || is_flag_option(token, "--check")
         || is_flag_option(token, "--verbose")
@@ -420,6 +422,7 @@ mod tests {
             "3".to_string(),
             "--format".to_string(),
             "json".to_string(),
+            "--ephemeral".to_string(),
             "--follow".to_string(),
         ];
 

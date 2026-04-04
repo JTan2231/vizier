@@ -6,9 +6,66 @@ use crate::workflow_template::{
 use chrono::TimeZone;
 use git2::{BranchType, Signature};
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::path::Path;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use tempfile::TempDir;
+
+static AGENT_SHIM_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set_path(key: &'static str, value: &Path) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+fn agent_shim_env_lock() -> &'static Mutex<()> {
+    AGENT_SHIM_ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn create_mock_agent_shims(root: &Path) -> io::Result<PathBuf> {
+    let bin_dir = root.join(".vizier/tmp/bin");
+    let shim_dir = bin_dir.join("codex");
+    fs::create_dir_all(&shim_dir)?;
+    let script = b"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{\"type\":\"item.started\",\"item\":{\"type\":\"reasoning\",\"text\":\"prep\"}}'
+printf '%s\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"mock agent response\"}}'
+printf 'mock agent running\n' 1>&2
+";
+    let path = shim_dir.join("agent.sh");
+    fs::write(&path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms)?;
+    }
+    Ok(bin_dir)
+}
 
 fn init_repo(temp: &TempDir) -> Result<Repository, git2::Error> {
     let repo = Repository::init(temp.path())?;
@@ -3669,10 +3726,13 @@ fn workflow_runtime_can_consume_operation_output_via_read_payload_dependency() {
 
 #[test]
 fn workflow_runtime_prompt_payload_roundtrip() {
+    let _guard = agent_shim_env_lock().lock().expect("lock agent shim env");
     let temp = TempDir::new().expect("temp dir");
     init_repo(&temp).expect("init repo");
     let project_root = temp.path();
     let jobs_root = project_root.join(".vizier/jobs");
+    let shims = create_mock_agent_shims(project_root).expect("create mock agent shims");
+    let _shim_env = EnvVarGuard::set_path("VIZIER_AGENT_SHIMS_DIR", &shims);
 
     let template = prompt_invoke_template();
     let result = enqueue_workflow_run(
@@ -4008,6 +4068,104 @@ fn workflow_runtime_prompt_resolve_supports_composed_namespace_aliases() {
     assert_eq!(
         payload.get("text").and_then(|value| value.as_str()),
         Some("local=run\nunique=shared\nspec=Spec body from namespace\n")
+    );
+}
+
+#[test]
+fn workflow_runtime_prompt_resolve_uses_na_for_missing_narrative_placeholder_in_ephemeral_run() {
+    let temp = TempDir::new().expect("temp dir");
+    init_repo(&temp).expect("init repo");
+    let project_root = temp.path();
+    let jobs_root = project_root.join(".vizier/jobs");
+
+    let template = WorkflowTemplate {
+        id: "template.runtime.prompt_missing_narrative".to_string(),
+        version: "v1".to_string(),
+        params: BTreeMap::new(),
+        node_lock_scope_contexts: BTreeMap::new(),
+        policy: WorkflowTemplatePolicy::default(),
+        artifact_contracts: vec![WorkflowArtifactContract {
+            id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+            version: "v1".to_string(),
+            schema: None,
+        }],
+        nodes: vec![WorkflowNode {
+            id: "resolve_prompt".to_string(),
+            name: None,
+            kind: WorkflowNodeKind::Builtin,
+            uses: "cap.env.builtin.prompt.resolve".to_string(),
+            args: BTreeMap::from([(
+                "prompt_text".to_string(),
+                "snapshot={{file:.vizier/narrative/snapshot.md}}\n".to_string(),
+            )]),
+            after: Vec::new(),
+            needs: Vec::new(),
+            produces: WorkflowOutcomeArtifacts {
+                succeeded: vec![JobArtifact::Custom {
+                    type_id: PROMPT_ARTIFACT_TYPE_ID.to_string(),
+                    key: "draft_main".to_string(),
+                }],
+                ..WorkflowOutcomeArtifacts::default()
+            },
+            locks: Vec::new(),
+            preconditions: Vec::new(),
+            gates: Vec::new(),
+            retry: Default::default(),
+            on: WorkflowOutcomeEdges::default(),
+        }],
+    };
+
+    let result = enqueue_workflow_run_with_options(
+        project_root,
+        &jobs_root,
+        "run-prompt-missing-narrative",
+        "template.runtime.prompt_missing_narrative@v1",
+        &template,
+        &[
+            "vizier".to_string(),
+            "jobs".to_string(),
+            "schedule".to_string(),
+        ],
+        None,
+        WorkflowRunEnqueueOptions {
+            ephemeral: true,
+            vizier_root_existed_before_runtime: Some(false),
+        },
+    )
+    .expect("enqueue workflow run");
+    let manifest = load_workflow_run_manifest(project_root, "run-prompt-missing-narrative")
+        .expect("workflow manifest");
+
+    let resolve_job = result
+        .job_ids
+        .get("resolve_prompt")
+        .expect("resolve job id")
+        .clone();
+    let resolve_record = read_record(&jobs_root, &resolve_job).expect("resolve record");
+    let resolve_node = manifest
+        .nodes
+        .get("resolve_prompt")
+        .expect("resolve node manifest");
+    let resolve_result =
+        execute_workflow_executor(project_root, &jobs_root, &resolve_record, resolve_node)
+            .expect("execute prompt.resolve");
+    assert_eq!(resolve_result.outcome, WorkflowNodeOutcome::Succeeded);
+    assert!(
+        resolve_result
+            .stderr_lines
+            .iter()
+            .any(|line| line.contains("substituting N/A for ephemeral run")),
+        "expected prompt.resolve fallback notice: {:?}",
+        resolve_result.stderr_lines
+    );
+
+    let payload_ref = project_root.join(resolve_result.payload_refs[0].as_str());
+    let payload_raw = fs::read_to_string(payload_ref).expect("read payload");
+    let payload: serde_json::Value =
+        serde_json::from_str(&payload_raw).expect("parse payload json");
+    assert_eq!(
+        payload.get("text").and_then(|value| value.as_str()),
+        Some("snapshot=N/A\n")
     );
 }
 

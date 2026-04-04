@@ -239,12 +239,28 @@ pub(crate) fn ensure_local_branch(
     execution_root: &Path,
     branch: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = ensure_local_branch_with_ownership(execution_root, branch)?;
+    Ok(())
+}
+
+pub(crate) fn ensure_local_branch_with_ownership(
+    execution_root: &Path,
+    branch: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
     if crate::vcs::branch_exists_in(execution_root, branch)? {
-        return Ok(());
+        return Ok(false);
     }
 
-    crate::vcs::create_branch_from_head_in(execution_root, branch)
-        .map_err(|err| format!("unable to create local branch `{branch}`: {err}").into())
+    crate::vcs::create_branch_from_head_in(execution_root, branch).map_err(
+        |err| -> Box<dyn std::error::Error> {
+            format!("unable to create local branch `{branch}`: {err}").into()
+        },
+    )?;
+    Ok(true)
+}
+
+pub(crate) fn workflow_run_is_ephemeral(record: &JobRecord) -> bool {
+    record.metadata.as_ref().and_then(|meta| meta.ephemeral_run) == Some(true)
 }
 
 pub(crate) fn current_branch_name(execution_root: &Path) -> Option<String> {
@@ -722,7 +738,7 @@ pub(crate) fn workflow_prompt_text_from_record(
     execution_root: &Path,
     record: &JobRecord,
     node: &WorkflowRuntimeNodeManifest,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
     let raw_prompt_text = if let Some(text) = node.args.get("prompt_text")
         && !text.trim().is_empty()
     {
@@ -781,7 +797,12 @@ pub(crate) fn workflow_prompt_text_from_record(
     };
 
     let variables = collect_prompt_template_variables(project_root, execution_root, record, node)?;
-    render_prompt_template(&raw_prompt_text, &variables, execution_root)
+    render_prompt_template(
+        &raw_prompt_text,
+        &variables,
+        execution_root,
+        workflow_run_is_ephemeral(record),
+    )
 }
 
 pub(crate) fn collect_prompt_template_variables(
@@ -856,8 +877,10 @@ pub(crate) fn render_prompt_template(
     template: &str,
     variables: &BTreeMap<String, String>,
     execution_root: &Path,
-) -> Result<String, Box<dyn std::error::Error>> {
+    ephemeral: bool,
+) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
     let mut rendered = String::with_capacity(template.len());
+    let mut stderr_lines = Vec::new();
     let mut cursor = 0usize;
 
     while let Some(open_rel) = template[cursor..].find("{{") {
@@ -873,19 +896,27 @@ pub(crate) fn render_prompt_template(
             return Err("prompt.resolve found empty placeholder `{{}}`".into());
         }
 
-        let replacement = resolve_prompt_template_placeholder(key, variables, execution_root)?;
+        let replacement = resolve_prompt_template_placeholder(
+            key,
+            variables,
+            execution_root,
+            ephemeral,
+            &mut stderr_lines,
+        )?;
         rendered.push_str(&replacement);
         cursor = close + 2;
     }
 
     rendered.push_str(&template[cursor..]);
-    Ok(rendered)
+    Ok((rendered, stderr_lines))
 }
 
 pub(crate) fn resolve_prompt_template_placeholder(
     key: &str,
     variables: &BTreeMap<String, String>,
     execution_root: &Path,
+    ephemeral: bool,
+    stderr_lines: &mut Vec<String>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(path) = key.strip_prefix("file:") {
         let trimmed = path.trim();
@@ -893,14 +924,30 @@ pub(crate) fn resolve_prompt_template_placeholder(
             return Err("prompt.resolve placeholder `file:` requires a non-empty path".into());
         }
         let abs = resolve_path_in_execution_root(execution_root, trimmed);
-        return fs::read_to_string(&abs).map_err(|err| {
-            format!(
+        return match fs::read_to_string(&abs) {
+            Ok(contents) => Ok(contents),
+            Err(err)
+                if ephemeral
+                    && err.kind() == io::ErrorKind::NotFound
+                    && trimmed
+                        .trim_start_matches("./")
+                        .starts_with(".vizier/narrative/") =>
+            {
+                let line = format!(
+                    "[workflow-node] info prompt.resolve missing narrative placeholder `{}`; substituting N/A for ephemeral run",
+                    trimmed
+                );
+                eprintln!("{line}");
+                stderr_lines.push(line);
+                Ok("N/A".to_string())
+            }
+            Err(err) => Err(format!(
                 "prompt.resolve could not read placeholder file `{}`: {}",
                 abs.display(),
                 err
             )
-            .into()
-        });
+            .into()),
+        };
     }
 
     if let Some(value) = variables.get(key) {
@@ -1445,7 +1492,8 @@ pub(crate) fn execute_workflow_node_job(
             node_id, run_id, job_id
         ));
 
-        let scheduler_outcome = scheduler_tick_locked(project_root, jobs_root, &binary)?;
+        let scheduler_outcome =
+            scheduler_tick_locked_without_ephemeral_cleanup(project_root, jobs_root, &binary)?;
         display::debug(format!(
             "workflow node {} (run {}, job {}) advanced scheduler tick under lock (started={}, updated={})",
             node_id,
@@ -1479,7 +1527,7 @@ pub(crate) fn execute_workflow_node_job(
             result.outcome,
             false,
         );
-        let _ = scheduler_tick(project_root, jobs_root, &binary)?;
+        let _ = scheduler_tick_without_ephemeral_cleanup(project_root, jobs_root, &binary)?;
     }
     Ok(exit_code)
 }

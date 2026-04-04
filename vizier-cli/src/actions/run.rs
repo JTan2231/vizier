@@ -64,6 +64,7 @@ pub(crate) fn run_workflow(
     project_root: &Path,
     jobs_root: &Path,
     cmd: RunCmd,
+    vizier_root_existed_before_runtime: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = vizier_core::config::get_config();
     let prepared = prepare_workflow_template(project_root, &cmd.flow, &cmd.inputs, &cmd.set, &cfg)?;
@@ -89,7 +90,7 @@ pub(crate) fn run_workflow(
 
     if repeat == 1 {
         let run_id = format!("run_{}", Uuid::new_v4().simple());
-        let enqueue = jobs::enqueue_workflow_run(
+        let enqueue = jobs::enqueue_workflow_run_with_options(
             project_root,
             jobs_root,
             &run_id,
@@ -97,6 +98,12 @@ pub(crate) fn run_workflow(
             &template,
             &invocation_args,
             None,
+            jobs::WorkflowRunEnqueueOptions {
+                ephemeral: cmd.ephemeral,
+                vizier_root_existed_before_runtime: cmd
+                    .ephemeral
+                    .then_some(vizier_root_existed_before_runtime),
+            },
         )?;
 
         let mut job_ids = enqueue.job_ids.values().cloned().collect::<Vec<_>>();
@@ -130,7 +137,7 @@ pub(crate) fn run_workflow(
 
         root_jobs.sort();
         if !cmd.follow {
-            emit_enqueue_summary(cmd.format, &source, &enqueue, &root_jobs)?;
+            emit_enqueue_summary(cmd.format, &source, &enqueue, &root_jobs, cmd.ephemeral)?;
             return Ok(());
         }
 
@@ -140,9 +147,17 @@ pub(crate) fn run_workflow(
             &binary,
             &run_id,
             &job_ids,
+            cmd.ephemeral,
             cmd.format,
         )?;
-        emit_follow_summary(cmd.format, &source, &enqueue, &root_jobs, &terminal)?;
+        emit_follow_summary(
+            cmd.format,
+            &source,
+            &enqueue,
+            &root_jobs,
+            cmd.ephemeral,
+            &terminal,
+        )?;
 
         if terminal.exit_code == 0 {
             return Ok(());
@@ -154,7 +169,7 @@ pub(crate) fn run_workflow(
     let mut previous_run_id = None::<String>;
     for index in 1..=repeat {
         let run_id = format!("run_{}", Uuid::new_v4().simple());
-        let enqueue = jobs::enqueue_workflow_run(
+        let enqueue = jobs::enqueue_workflow_run_with_options(
             project_root,
             jobs_root,
             &run_id,
@@ -162,6 +177,12 @@ pub(crate) fn run_workflow(
             &template,
             &invocation_args,
             None,
+            jobs::WorkflowRunEnqueueOptions {
+                ephemeral: cmd.ephemeral,
+                vizier_root_existed_before_runtime: cmd
+                    .ephemeral
+                    .then_some(vizier_root_existed_before_runtime),
+            },
         )?;
 
         let mut job_ids = enqueue.job_ids.values().cloned().collect::<Vec<_>>();
@@ -209,7 +230,7 @@ pub(crate) fn run_workflow(
     }
 
     if !cmd.follow {
-        emit_repeat_enqueue_summary(cmd.format, &source, repeat, &summaries)?;
+        emit_repeat_enqueue_summary(cmd.format, &source, repeat, &summaries, cmd.ephemeral)?;
         return Ok(());
     }
 
@@ -221,6 +242,7 @@ pub(crate) fn run_workflow(
             &binary,
             &summary.run_id,
             &summary.job_ids,
+            cmd.ephemeral,
             cmd.format,
         )?;
         let should_stop = terminal.exit_code != 0;
@@ -250,6 +272,7 @@ pub(crate) fn run_workflow(
         repeat,
         &summaries,
         &followed_runs,
+        cmd.ephemeral,
         aggregate.0.as_str(),
         aggregate.1,
     )?;
@@ -450,11 +473,13 @@ fn emit_enqueue_summary(
     source: &ResolvedWorkflowSource,
     enqueue: &jobs::EnqueueWorkflowRunResult,
     root_jobs: &[String],
+    ephemeral: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(format, RunFormatArg::Json) {
         let payload = json!({
             "outcome": "workflow_run_enqueued",
             "run_id": enqueue.run_id,
+            "ephemeral": ephemeral,
             "workflow_template_selector": source.selector,
             "workflow_template_id": enqueue.template_id,
             "workflow_template_version": enqueue.template_version,
@@ -494,6 +519,10 @@ fn emit_enqueue_summary(
                 } else {
                     root_jobs.join(", ")
                 },
+            ),
+            (
+                "Ephemeral".to_string(),
+                if ephemeral { "yes" } else { "no" }.to_string(),
             ),
             ("Next".to_string(), next_hint),
         ])
@@ -543,6 +572,7 @@ fn emit_repeat_enqueue_summary(
     source: &ResolvedWorkflowSource,
     repeat: u32,
     summaries: &[EnqueuedRunSummary],
+    ephemeral: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(format, RunFormatArg::Json) {
         let runs = summaries
@@ -560,6 +590,7 @@ fn emit_repeat_enqueue_summary(
         let payload = json!({
             "outcome": "workflow_runs_enqueued",
             "repeat": repeat,
+            "ephemeral": ephemeral,
             "workflow_template_selector": source.selector,
             "runs": runs,
             "next": {
@@ -615,6 +646,10 @@ fn emit_repeat_enqueue_summary(
             ("Runs".to_string(), run_ids.join(", ")),
             ("Template".to_string(), template),
             ("Selector".to_string(), source.selector.clone()),
+            (
+                "Ephemeral".to_string(),
+                if ephemeral { "yes" } else { "no" }.to_string(),
+            ),
             ("Root jobs".to_string(), root_map),
             ("Next".to_string(), next_hint),
         ])
@@ -631,6 +666,7 @@ struct FollowResult {
     failed: Vec<String>,
     blocked: Vec<String>,
     cancelled: Vec<String>,
+    cleanup: Option<jobs::EphemeralRunCleanupEvent>,
 }
 
 fn follow_run(
@@ -639,6 +675,7 @@ fn follow_run(
     binary: &Path,
     run_id: &str,
     job_ids: &[String],
+    ephemeral: bool,
     format: RunFormatArg,
 ) -> Result<FollowResult, Box<dyn std::error::Error>> {
     let stream_logs = matches!(format, RunFormatArg::Text);
@@ -646,7 +683,7 @@ fn follow_run(
     let mut last_log_line = HashMap::<String, String>::new();
 
     loop {
-        let _ = jobs::scheduler_tick(project_root, jobs_root, binary)?;
+        let _ = jobs::scheduler_tick_without_ephemeral_cleanup(project_root, jobs_root, binary)?;
 
         let mut succeeded = Vec::new();
         let mut failed = Vec::new();
@@ -700,6 +737,21 @@ fn follow_run(
             } else {
                 ("succeeded".to_string(), 0)
             };
+            let cleanup = if ephemeral {
+                let mut cleanup = jobs::scheduler_tick(project_root, jobs_root, binary)?
+                    .ephemeral_run_cleanups
+                    .into_iter()
+                    .find(|entry| entry.run_id == run_id);
+                if cleanup.is_none() {
+                    cleanup = jobs::scheduler_tick(project_root, jobs_root, binary)?
+                        .ephemeral_run_cleanups
+                        .into_iter()
+                        .find(|entry| entry.run_id == run_id);
+                }
+                cleanup
+            } else {
+                None
+            };
 
             return Ok(FollowResult {
                 exit_code,
@@ -708,6 +760,7 @@ fn follow_run(
                 failed,
                 blocked,
                 cancelled,
+                cleanup,
             });
         }
 
@@ -720,6 +773,7 @@ fn emit_follow_summary(
     source: &ResolvedWorkflowSource,
     enqueue: &jobs::EnqueueWorkflowRunResult,
     root_jobs: &[String],
+    ephemeral: bool,
     result: &FollowResult,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(format, RunFormatArg::Json) {
@@ -728,6 +782,7 @@ fn emit_follow_summary(
             "terminal_state": result.terminal_state,
             "exit_code": result.exit_code,
             "run_id": enqueue.run_id,
+            "ephemeral": ephemeral,
             "workflow_template_selector": source.selector,
             "workflow_template_id": enqueue.template_id,
             "workflow_template_version": enqueue.template_version,
@@ -736,6 +791,7 @@ fn emit_follow_summary(
             "failed": result.failed,
             "blocked": result.blocked,
             "cancelled": result.cancelled,
+            "ephemeral_cleanup": result.cleanup,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
@@ -763,6 +819,10 @@ fn emit_follow_summary(
                 root_jobs.join(", ")
             },
         ),
+        (
+            "Ephemeral".to_string(),
+            if ephemeral { "yes" } else { "no" }.to_string(),
+        ),
         ("Exit".to_string(), result.exit_code.to_string()),
     ];
 
@@ -778,6 +838,21 @@ fn emit_follow_summary(
     if !result.cancelled.is_empty() {
         rows.push(("Cancelled".to_string(), result.cancelled.join(", ")));
     }
+    if let Some(cleanup) = result.cleanup.as_ref() {
+        rows.push((
+            "Ephemeral cleanup".to_string(),
+            cleanup.state.label().to_string(),
+        ));
+        if let Some(detail) = cleanup.detail.as_ref() {
+            rows.push(("Cleanup detail".to_string(), detail.clone()));
+        }
+        if !cleanup.degraded_notes.is_empty() {
+            rows.push((
+                "Cleanup notes".to_string(),
+                cleanup.degraded_notes.join("\n"),
+            ));
+        }
+    }
 
     println!("{}", format_block(rows));
     if result.exit_code == 10 {
@@ -787,12 +862,14 @@ fn emit_follow_summary(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_repeat_follow_summary(
     format: RunFormatArg,
     source: &ResolvedWorkflowSource,
     repeat: u32,
     summaries: &[EnqueuedRunSummary],
     followed_runs: &[FollowedRunSummary],
+    ephemeral: bool,
     terminal_state: &str,
     exit_code: i32,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -809,12 +886,14 @@ fn emit_repeat_follow_summary(
                     "failed": &entry.terminal.failed,
                     "blocked": &entry.terminal.blocked,
                     "cancelled": &entry.terminal.cancelled,
+                    "ephemeral_cleanup": &entry.terminal.cleanup,
                 })
             })
             .collect::<Vec<_>>();
         let payload = json!({
             "outcome": "workflow_runs_terminal",
             "repeat": repeat,
+            "ephemeral": ephemeral,
             "terminal_state": terminal_state,
             "exit_code": exit_code,
             "workflow_template_selector": source.selector,
@@ -871,6 +950,10 @@ fn emit_repeat_follow_summary(
         ),
         ("Template".to_string(), template),
         ("Selector".to_string(), source.selector.clone()),
+        (
+            "Ephemeral".to_string(),
+            if ephemeral { "yes" } else { "no" }.to_string(),
+        ),
         ("Exit".to_string(), exit_code.to_string()),
     ];
     if !run_states.is_empty() {

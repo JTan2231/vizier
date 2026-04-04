@@ -992,6 +992,19 @@ pub(crate) struct CleanScopeInventory {
     plan_state_scan_errors: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct EphemeralRunCleanupInventory {
+    run_id: String,
+    job_ids: Vec<String>,
+    worktrees: Vec<CleanScopedWorktree>,
+    owned_branches: Vec<String>,
+    session_paths: Vec<PathBuf>,
+    merge_sentinel_slugs: HashSet<String>,
+    plan_state_refs: Vec<PathBuf>,
+    plan_state_scan_errors: Vec<String>,
+    baseline: EphemeralRunBaseline,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct CleanSafetyEvaluation {
     active_scoped: Vec<String>,
@@ -1168,6 +1181,175 @@ pub(crate) fn resolve_clean_scope_inventory(
         plan_state_refs,
         plan_state_scan_errors,
     })
+}
+
+pub(crate) fn resolve_ephemeral_run_cleanup_inventory(
+    project_root: &Path,
+    records: &[JobRecord],
+    run_id: &str,
+    baseline: EphemeralRunBaseline,
+) -> Result<EphemeralRunCleanupInventory, CleanJobError> {
+    let run_id = run_id.trim();
+    if run_id.is_empty() {
+        return Err(CleanJobError::other(
+            "ephemeral cleanup requires a non-empty run_id",
+        ));
+    }
+
+    let scoped_records = records
+        .iter()
+        .filter(|record| {
+            record
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.workflow_run_id.as_deref())
+                .map(str::trim)
+                == Some(run_id)
+        })
+        .collect::<Vec<_>>();
+    if scoped_records.is_empty() {
+        return Err(CleanJobError::not_found(run_id));
+    }
+
+    let job_ids = scoped_records
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    let scoped_job_ids = job_ids.iter().cloned().collect::<HashSet<_>>();
+
+    let mut worktrees = Vec::new();
+    let mut owned_branches = Vec::new();
+    let mut session_paths = Vec::new();
+    let mut merge_sentinel_slugs = HashSet::new();
+
+    for record in scoped_records {
+        if let Some(metadata) = record.metadata.as_ref() {
+            if metadata.worktree_owned == Some(true) {
+                let worktree_path = metadata
+                    .worktree_path
+                    .as_deref()
+                    .map(|recorded| resolve_recorded_path(project_root, recorded));
+                worktrees.push(CleanScopedWorktree {
+                    job_id: record.id.clone(),
+                    worktree_name: metadata.worktree_name.clone(),
+                    worktree_path,
+                });
+            }
+
+            if let Some(branches) = metadata.ephemeral_owned_branches.as_ref() {
+                owned_branches.extend(
+                    branches
+                        .iter()
+                        .map(String::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string),
+                );
+            }
+        }
+
+        if let Some(session_path) = record
+            .session_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            session_paths.push(resolve_recorded_path(project_root, session_path));
+        }
+
+        merge_sentinel_slugs.extend(collect_merge_retry_slugs(record));
+    }
+
+    owned_branches.sort();
+    owned_branches.dedup();
+    session_paths.sort();
+    session_paths.dedup();
+    let (plan_state_refs, plan_state_scan_errors) =
+        collect_plan_state_refs(project_root, &scoped_job_ids);
+
+    Ok(EphemeralRunCleanupInventory {
+        run_id: run_id.to_string(),
+        job_ids,
+        worktrees,
+        owned_branches,
+        session_paths,
+        merge_sentinel_slugs,
+        plan_state_refs,
+        plan_state_scan_errors,
+        baseline,
+    })
+}
+
+pub(crate) fn clean_ephemeral_run_scope(
+    project_root: &Path,
+    jobs_root: &Path,
+    run_id: &str,
+    records: &[JobRecord],
+    baseline: EphemeralRunBaseline,
+) -> Result<CleanJobOutcome, CleanJobError> {
+    let inventory =
+        resolve_ephemeral_run_cleanup_inventory(project_root, records, run_id, baseline)?;
+    let scoped_job_ids = inventory.job_ids.iter().cloned().collect::<HashSet<_>>();
+    let safety = evaluate_cleanup_safety(records, &scoped_job_ids);
+
+    if !safety.active_scoped.is_empty() {
+        return Err(CleanJobError::guard(safety.active_scoped));
+    }
+
+    let mut deferred = Vec::new();
+    deferred.extend(safety.active_after_dependents);
+    deferred.extend(safety.active_artifact_dependents);
+    if !deferred.is_empty() {
+        return Err(CleanJobError::guard(deferred));
+    }
+
+    let mut outcome = CleanJobOutcome {
+        scope: CleanScope::Run,
+        requested_job_id: inventory.run_id.clone(),
+        run_id: Some(inventory.run_id.clone()),
+        removed: CleanRemovedCounts::default(),
+        skipped: CleanSkippedItems::default(),
+        degraded: false,
+        degraded_notes: Vec::new(),
+    };
+
+    for note in inventory.plan_state_scan_errors {
+        mark_clean_degraded(&mut outcome, note);
+    }
+
+    clean_scoped_worktrees(project_root, &inventory.worktrees, &mut outcome);
+    remove_scoped_job_dirs(jobs_root, &inventory.job_ids, &mut outcome);
+    remove_scoped_artifact_files(project_root, &scoped_job_ids, &mut outcome);
+    delete_run_manifest_if_needed(project_root, Some(&inventory.run_id), &mut outcome);
+    rewrite_scoped_plan_state_refs(&inventory.plan_state_refs, &scoped_job_ids, &mut outcome);
+    remove_scoped_session_files(project_root, &inventory.session_paths, &mut outcome);
+    remove_scoped_merge_sentinel_files(project_root, &inventory.merge_sentinel_slugs, &mut outcome);
+    delete_scoped_branches(project_root, &inventory.owned_branches, &mut outcome);
+    remove_nonbaseline_ephemeral_paths(project_root, &inventory.baseline, &mut outcome);
+
+    if let Err(err) = prune_empty_artifact_dirs(project_root) {
+        mark_clean_degraded(
+            &mut outcome,
+            format!("unable to prune empty artifact directories: {err}"),
+        );
+    }
+
+    if let Err(err) = prune_ephemeral_vizier_root_if_owned(project_root, &inventory.baseline) {
+        mark_clean_degraded(
+            &mut outcome,
+            format!("unable to prune ephemeral vizier root: {err}"),
+        );
+    }
+
+    outcome.skipped.branches.sort();
+    outcome.skipped.branches.dedup();
+    outcome.skipped.worktrees.sort();
+    outcome.skipped.worktrees.dedup();
+    outcome.degraded_notes.sort();
+    outcome.degraded_notes.dedup();
+    outcome.degraded = !outcome.degraded_notes.is_empty();
+
+    Ok(outcome)
 }
 
 pub(crate) fn collect_candidate_branches_for_schedule(schedule: &JobSchedule) -> Vec<String> {
@@ -1444,6 +1626,183 @@ pub(crate) fn remove_scoped_artifact_files(
             ),
         ),
     }
+}
+
+pub(crate) fn remove_scoped_session_files(
+    project_root: &Path,
+    session_paths: &[PathBuf],
+    outcome: &mut CleanJobOutcome,
+) {
+    let sessions_root = project_root.join(".vizier/sessions");
+    for session_path in session_paths {
+        if !session_path.starts_with(&sessions_root) {
+            mark_clean_degraded(
+                outcome,
+                format!(
+                    "refusing to remove session path outside .vizier/sessions: {}",
+                    session_path.display()
+                ),
+            );
+            continue;
+        }
+        if let Err(err) = remove_file_if_exists(session_path) {
+            mark_clean_degraded(
+                outcome,
+                format!(
+                    "unable to remove session file {}: {}",
+                    session_path.display(),
+                    err
+                ),
+            );
+        }
+    }
+}
+
+pub(crate) fn remove_scoped_merge_sentinel_files(
+    project_root: &Path,
+    slugs: &HashSet<String>,
+    outcome: &mut CleanJobOutcome,
+) {
+    if let Err(err) = remove_merge_sentinel_files(project_root, slugs) {
+        mark_clean_degraded(
+            outcome,
+            format!("unable to remove merge sentinel files: {err}"),
+        );
+    }
+}
+
+pub(crate) fn collect_cleanup_walk_paths(root: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    if root.is_dir() {
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            collect_cleanup_walk_paths(&entry.path(), paths)?;
+        }
+    }
+    paths.push(root.to_path_buf());
+    Ok(())
+}
+
+pub(crate) fn remove_nonbaseline_ephemeral_paths(
+    project_root: &Path,
+    baseline: &EphemeralRunBaseline,
+    outcome: &mut CleanJobOutcome,
+) {
+    let preexisting = baseline
+        .preexisting_paths
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    for rel_root in [
+        ".vizier/narrative",
+        ".vizier/implementation-plans",
+        ".vizier/tmp",
+    ] {
+        let root = project_root.join(rel_root);
+        if !root.exists() {
+            continue;
+        }
+
+        let mut paths = Vec::new();
+        if let Err(err) = collect_cleanup_walk_paths(&root, &mut paths) {
+            mark_clean_degraded(
+                outcome,
+                format!(
+                    "unable to inspect ephemeral-owned paths in {}: {}",
+                    root.display(),
+                    err
+                ),
+            );
+            continue;
+        }
+
+        for path in paths {
+            let rel = relative_path(project_root, &path);
+            if preexisting.contains(&rel) {
+                continue;
+            }
+
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    mark_clean_degraded(
+                        outcome,
+                        format!(
+                            "unable to inspect ephemeral path {}: {}",
+                            path.display(),
+                            err
+                        ),
+                    );
+                    continue;
+                }
+            };
+
+            if metadata.is_dir() {
+                match fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let mut entries = entries;
+                        if entries.next().is_none()
+                            && let Err(err) = fs::remove_dir(&path)
+                        {
+                            mark_clean_degraded(
+                                outcome,
+                                format!(
+                                    "unable to remove ephemeral directory {}: {}",
+                                    path.display(),
+                                    err
+                                ),
+                            );
+                        }
+                    }
+                    Err(err) => mark_clean_degraded(
+                        outcome,
+                        format!(
+                            "unable to inspect ephemeral directory {}: {}",
+                            path.display(),
+                            err
+                        ),
+                    ),
+                }
+                continue;
+            }
+
+            if let Err(err) = remove_file_if_exists(&path) {
+                mark_clean_degraded(
+                    outcome,
+                    format!(
+                        "unable to remove ephemeral file {}: {}",
+                        path.display(),
+                        err
+                    ),
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn prune_ephemeral_vizier_root_if_owned(
+    project_root: &Path,
+    baseline: &EphemeralRunBaseline,
+) -> io::Result<()> {
+    if baseline.vizier_root_existed {
+        return Ok(());
+    }
+
+    let vizier_root = project_root.join(".vizier");
+    if !vizier_root.exists() {
+        return Ok(());
+    }
+
+    if prune_empty_dirs_non_root(&vizier_root)? && vizier_root.exists() {
+        let _ = fs::remove_dir(&vizier_root);
+    }
+
+    Ok(())
 }
 
 pub(crate) fn remove_scoped_artifact_files_in_root(

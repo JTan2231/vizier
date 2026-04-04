@@ -12,6 +12,24 @@ fn run_json(repo: &IntegrationRepo, args: &[&str]) -> TestResult<Value> {
     Ok(serde_json::from_slice::<Value>(&output.stdout)?)
 }
 
+fn run_json_in_repo(repo_root: &std::path::Path, args: &[&str]) -> TestResult<Value> {
+    let config_root = tempfile::TempDir::new()?;
+    let output = std::process::Command::new(vizier_binary())
+        .current_dir(repo_root)
+        .env("VIZIER_CONFIG_DIR", config_root.path())
+        .args(args)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "command {:?} in {} failed: stderr={}\nstdout={}",
+        args,
+        repo_root.display(),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    Ok(serde_json::from_slice::<Value>(&output.stdout)?)
+}
+
 fn branch_blob_text(repo: &IntegrationRepo, branch: &str, rel_path: &str) -> TestResult<String> {
     let repo_handle = repo.repo();
     let revision = format!("{branch}:{rel_path}");
@@ -899,6 +917,12 @@ fn test_run_check_rejects_runtime_only_flags() -> TestResult {
             "run",
             "file:.vizier/workflows/single.toml",
             "--check",
+            "--ephemeral",
+        ],
+        vec![
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--check",
             "--require-approval",
         ],
         vec![
@@ -937,6 +961,186 @@ fn test_run_check_rejects_runtime_only_flags() -> TestResult {
         count_job_records(&repo)?,
         before_jobs,
         "invalid check invocations must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_ephemeral_enqueue_persists_manifest_and_job_metadata() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--ephemeral",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    assert_eq!(
+        payload.get("ephemeral").and_then(Value::as_bool),
+        Some(true)
+    );
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id in enqueue payload")?;
+    let manifest = load_run_manifest(&repo, run_id)?;
+    assert_eq!(
+        manifest.get("ephemeral").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        manifest
+            .get("ephemeral_cleanup_requested")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        manifest
+            .get("ephemeral_cleanup_state")
+            .and_then(Value::as_str),
+        Some("pending")
+    );
+    assert_eq!(
+        manifest
+            .pointer("/ephemeral_baseline/vizier_root_existed")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let root_job = first_root_job_id(&payload)?;
+    let record = read_job_record(&repo, &root_job)?;
+    assert_eq!(
+        record
+            .pointer("/metadata/ephemeral_run")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/ephemeral_cleanup_requested")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        record
+            .pointer("/metadata/ephemeral_cleanup_state")
+            .and_then(Value::as_str),
+        Some("pending")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_ephemeral_follow_reports_cleanup_and_removes_history() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_single_run_template(&repo, ".vizier/workflows/single.toml", "true")?;
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/single.toml",
+            "--ephemeral",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    assert_eq!(
+        payload.get("ephemeral").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        payload
+            .pointer("/ephemeral_cleanup/state")
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+
+    let run_id = payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing run_id in follow payload")?;
+    let root_job = first_root_job_id(&payload)?;
+    assert!(
+        !repo
+            .path()
+            .join(format!(".vizier/jobs/{root_job}/job.json"))
+            .exists(),
+        "ephemeral follow should remove cleaned job history"
+    );
+    assert!(
+        !repo
+            .path()
+            .join(format!(".vizier/jobs/runs/{run_id}.json"))
+            .exists(),
+        "ephemeral follow should remove cleaned run manifest"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_ephemeral_uninitialized_repo_falls_back_to_narrative_na_and_leaves_no_vizier()
+-> TestResult {
+    let temp = tempfile::TempDir::new()?;
+    let repo_root = temp.path().join("repo");
+    std::fs::create_dir_all(&repo_root)?;
+    init_repo_at(&repo_root)?;
+
+    std::fs::write(
+        repo_root.join("ephemeral.toml"),
+        "id = \"template.ephemeral.prompt\"\n\
+version = \"v1\"\n\
+[[artifact_contracts]]\n\
+id = \"prompt_text\"\n\
+version = \"v1\"\n\
+[[nodes]]\n\
+id = \"resolve\"\n\
+kind = \"builtin\"\n\
+uses = \"cap.env.builtin.prompt.resolve\"\n\
+[nodes.args]\n\
+prompt_text = \"snapshot={{file:.vizier/narrative/snapshot.md}}\\n\"\n\
+[nodes.produces]\n\
+succeeded = [{ custom = { type_id = \"prompt_text\", key = \"main\" } }]\n",
+    )?;
+
+    let payload = run_json_in_repo(
+        &repo_root,
+        &[
+            "run",
+            "file:ephemeral.toml",
+            "--ephemeral",
+            "--follow",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    assert_eq!(
+        payload.get("ephemeral").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        payload
+            .pointer("/ephemeral_cleanup/state")
+            .and_then(Value::as_str),
+        Some("completed")
+    );
+    assert!(
+        !repo_root.join(".vizier").exists(),
+        "ephemeral run in uninitialized repo should leave no .vizier behind"
     );
 
     Ok(())

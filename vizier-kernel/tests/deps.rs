@@ -13,15 +13,37 @@ const DISALLOWED: &[&str] = &[
     "parking_lot",
 ];
 
+fn host_target_triple() -> String {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("run rustc -vV");
+    assert!(
+        output.status.success(),
+        "rustc -vV failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .expect("rustc -vV host triple")
+}
+
 #[test]
 fn kernel_has_no_disallowed_dependencies() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
         .parent()
         .expect("kernel crate should live under the workspace root");
+    let host = host_target_triple();
 
     let output = Command::new("cargo")
-        .args(["metadata", "--format-version", "1"])
+        .args(["metadata", "--format-version", "1", "--offline"])
+        .arg("--filter-platform")
+        .arg(&host)
         .current_dir(workspace_root)
         .output()
         .expect("run cargo metadata");

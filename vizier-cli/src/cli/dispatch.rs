@@ -181,8 +181,14 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
             run_jobs_command(&project_root, &jobs_root, cmd, cli.global.no_ansi)
         }
         Commands::Run(cmd) => {
+            let vizier_root_existed_before_runtime = project_root.join(".vizier").exists();
             let jobs_root = jobs::ensure_jobs_root(&project_root)?;
-            run_workflow(&project_root, &jobs_root, cmd)
+            run_workflow(
+                &project_root,
+                &jobs_root,
+                cmd,
+                vizier_root_existed_before_runtime,
+            )
         }
         Commands::Audit(cmd) => run_workflow_audit(&project_root, cmd),
         Commands::WorkflowNode(cmd) => {

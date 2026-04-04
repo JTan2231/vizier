@@ -1813,6 +1813,9 @@ fn test_jobs_list_format_json_raw_typed_envelope() -> TestResult {
                 "plan": "json",
                 "target": "main",
                 "branch": "draft/json",
+                "ephemeral_run": true,
+                "ephemeral_cleanup_state": "deferred",
+                "ephemeral_cleanup_detail": "active job job-next still depends on this run",
                 "workflow_run_id": "run_json",
                 "workflow_node_id": "node_list",
                 "workflow_executor_class": "agent",
@@ -1893,6 +1896,24 @@ fn test_jobs_list_format_json_raw_typed_envelope() -> TestResult {
         "raw list command array mismatch: {job}"
     );
     assert_eq!(
+        job.pointer("/workflow/ephemeral_run")
+            .and_then(Value::as_bool),
+        Some(true),
+        "raw list ephemeral_run mismatch: {job}"
+    );
+    assert_eq!(
+        job.pointer("/workflow/cleanup_state")
+            .and_then(Value::as_str),
+        Some("deferred"),
+        "raw list cleanup_state mismatch: {job}"
+    );
+    assert_eq!(
+        job.pointer("/workflow/cleanup_detail")
+            .and_then(Value::as_str),
+        Some("active job job-next still depends on this run"),
+        "raw list cleanup_detail mismatch: {job}"
+    );
+    assert_eq!(
         job.pointer("/wait/kind").and_then(Value::as_str),
         Some("locks"),
         "raw list wait kind mismatch: {job}"
@@ -1913,7 +1934,8 @@ fn test_jobs_list_format_json_raw_typed_envelope() -> TestResult {
         "raw list waited_on[1] mismatch: {job}"
     );
     assert_eq!(
-        job.pointer("/schedule/after/0/job_id").and_then(Value::as_str),
+        job.pointer("/schedule/after/0/job_id")
+            .and_then(Value::as_str),
         Some("job-upstream"),
         "raw list schedule.after mismatch: {job}"
     );
@@ -1941,12 +1963,14 @@ fn test_jobs_list_format_json_raw_typed_envelope() -> TestResult {
         "raw list workflow executor operation mismatch: {job}"
     );
     assert_eq!(
-        job.pointer("/context/command_alias").and_then(Value::as_str),
+        job.pointer("/context/command_alias")
+            .and_then(Value::as_str),
         Some("develop"),
         "raw list context command_alias mismatch: {job}"
     );
     assert_eq!(
-        job.pointer("/context/execution_root").and_then(Value::as_str),
+        job.pointer("/context/execution_root")
+            .and_then(Value::as_str),
         Some("."),
         "raw list context execution_root mismatch: {job}"
     );
@@ -2281,6 +2305,8 @@ fn test_jobs_show_format_json_raw_typed_envelope() -> TestResult {
                 "plan": "json",
                 "target": "main",
                 "branch": "draft/json",
+                "ephemeral_run": true,
+                "ephemeral_cleanup_state": "pending",
                 "workflow_run_id": "run_show",
                 "workflow_node_id": "node_show",
                 "workflow_executor_class": "environment.builtin",
@@ -2331,7 +2357,9 @@ fn test_jobs_show_format_json_raw_typed_envelope() -> TestResult {
         "jobs show raw generated_at",
     );
 
-    let job = payload.get("job").ok_or("missing job in raw jobs show output")?;
+    let job = payload
+        .get("job")
+        .ok_or("missing job in raw jobs show output")?;
     assert_eq!(
         job.get("job_id").and_then(Value::as_str),
         Some(job_id),
@@ -2348,7 +2376,8 @@ fn test_jobs_show_format_json_raw_typed_envelope() -> TestResult {
         "raw show wait kind mismatch: {job}"
     );
     assert_eq!(
-        job.pointer("/schedule/after/0/policy").and_then(Value::as_str),
+        job.pointer("/schedule/after/0/policy")
+            .and_then(Value::as_str),
         Some("success"),
         "raw show after dependency mismatch: {job}"
     );
@@ -2359,9 +2388,22 @@ fn test_jobs_show_format_json_raw_typed_envelope() -> TestResult {
         "raw show schedule dependency mismatch: {job}"
     );
     assert_eq!(
-        job.pointer("/workflow/template_selector").and_then(Value::as_str),
+        job.pointer("/workflow/template_selector")
+            .and_then(Value::as_str),
         Some("file:.vizier/workflows/approve.hcl"),
         "raw show workflow template selector mismatch: {job}"
+    );
+    assert_eq!(
+        job.pointer("/workflow/ephemeral_run")
+            .and_then(Value::as_bool),
+        Some(true),
+        "raw show ephemeral_run mismatch: {job}"
+    );
+    assert_eq!(
+        job.pointer("/workflow/cleanup_state")
+            .and_then(Value::as_str),
+        Some("pending"),
+        "raw show cleanup_state mismatch: {job}"
     );
     assert_eq!(
         job.pointer("/context/plan").and_then(Value::as_str),

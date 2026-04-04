@@ -33,12 +33,15 @@ pub(crate) fn execute_workflow_executor(
                     Some(1),
                 ));
             };
-            if let Err(err) = ensure_local_branch(project_root, &branch) {
-                return Ok(WorkflowNodeResult::failed(
-                    format!("worktree.prepare could not ensure branch `{branch}`: {err}"),
-                    Some(1),
-                ));
-            }
+            let created_branch = match ensure_local_branch_with_ownership(project_root, &branch) {
+                Ok(created) => created,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("worktree.prepare could not ensure branch `{branch}`: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
 
             let purpose = first_non_empty_arg(&node.args, &["purpose"])
                 .unwrap_or_else(|| sanitize_workflow_component(&node.node_id));
@@ -80,7 +83,8 @@ pub(crate) fn execute_workflow_executor(
             let worktree_name =
                 find_worktree_name_by_path(&Repository::open(project_root)?, &worktree_path);
             result.metadata = Some(JobMetadata {
-                branch: Some(branch),
+                branch: Some(branch.clone()),
+                ephemeral_owned_branches: created_branch.then_some(vec![branch.clone()]),
                 execution_root: Some(relative_path(project_root, &worktree_path)),
                 worktree_owned: Some(true),
                 worktree_path: Some(relative_path(project_root, &worktree_path)),
@@ -159,7 +163,7 @@ pub(crate) fn execute_workflow_executor(
                 }
             };
 
-            let prompt_text =
+            let (prompt_text, stderr_lines) =
                 workflow_prompt_text_from_record(project_root, &execution_root, record, node)?;
             let payload = serde_json::json!({
                 "type_id": type_id,
@@ -177,7 +181,7 @@ pub(crate) fn execute_workflow_executor(
                 summary: Some("prompt resolved".to_string()),
                 exit_code: Some(0),
                 stdout_text: None,
-                stderr_lines: Vec::new(),
+                stderr_lines,
             })
         }
         Some("agent.invoke") => {
@@ -387,12 +391,16 @@ pub(crate) fn execute_workflow_executor(
                         .and_then(|meta| meta.branch.clone())
                 })
                 .unwrap_or_else(|| crate::plan::default_branch_for_slug(&slug));
-            if let Err(err) = ensure_local_branch(&execution_root, &branch) {
-                return Ok(WorkflowNodeResult::failed(
-                    format!("plan.persist could not ensure branch `{branch}`: {err}"),
-                    Some(1),
-                ));
-            }
+            let created_branch = match ensure_local_branch_with_ownership(&execution_root, &branch)
+            {
+                Ok(created) => created,
+                Err(err) => {
+                    return Ok(WorkflowNodeResult::failed(
+                        format!("plan.persist could not ensure branch `{branch}`: {err}"),
+                        Some(1),
+                    ));
+                }
+            };
 
             let plan_id = first_non_empty_arg(&node.args, &["plan_id"])
                 .unwrap_or_else(crate::plan::new_plan_id);
@@ -500,7 +508,8 @@ pub(crate) fn execute_workflow_executor(
             }
             result.metadata = Some(JobMetadata {
                 plan: Some(slug),
-                branch: Some(branch),
+                branch: Some(branch.clone()),
+                ephemeral_owned_branches: created_branch.then_some(vec![branch.clone()]),
                 ..JobMetadata::default()
             });
             Ok(result)
@@ -1050,8 +1059,11 @@ pub(crate) fn execute_workflow_executor(
             fs::write(&step_path, serde_json::to_vec_pretty(&payload)?)?;
 
             let mut artifacts = Vec::new();
+            let mut owned_branches = Vec::new();
             if let (Some(slug), Some(branch)) = (slug.as_ref(), branch.as_ref()) {
-                let _ = ensure_local_branch(&execution_root, branch);
+                if ensure_local_branch_with_ownership(&execution_root, branch).unwrap_or(false) {
+                    owned_branches.push(branch.clone());
+                }
                 artifacts.push(JobArtifact::PlanBranch {
                     slug: slug.clone(),
                     branch: branch.clone(),
@@ -1075,11 +1087,17 @@ pub(crate) fn execute_workflow_executor(
                 }
             }
             if let Some(target_branch) = target.as_ref() {
-                let _ = ensure_local_branch(&execution_root, target_branch);
+                if ensure_local_branch_with_ownership(&execution_root, target_branch)
+                    .unwrap_or(false)
+                {
+                    owned_branches.push(target_branch.clone());
+                }
                 artifacts.push(JobArtifact::TargetBranch {
                     name: target_branch.clone(),
                 });
             }
+            owned_branches.sort();
+            owned_branches.dedup();
 
             let mut result = WorkflowNodeResult::succeeded("build step materialized");
             result.artifacts_written = artifacts;
@@ -1089,6 +1107,7 @@ pub(crate) fn execute_workflow_executor(
                 build_target: target,
                 plan: slug,
                 branch,
+                ephemeral_owned_branches: (!owned_branches.is_empty()).then_some(owned_branches),
                 ..JobMetadata::default()
             });
             Ok(result)
