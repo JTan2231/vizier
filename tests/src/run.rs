@@ -2143,6 +2143,8 @@ fn test_run_flagship_merge_user_outcome() -> TestResult {
             "--set",
             "target_branch=master",
             "--set",
+            "conflict_auto_resolve=false",
+            "--set",
             "cicd_script=true",
             "--format",
             "json",
@@ -2214,6 +2216,122 @@ fn test_run_flagship_develop_user_outcome() -> TestResult {
         message.contains(merge_message) && message.contains("## Implementation Plan"),
         "develop alias should produce integrated merge output with plan content, got: {message}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_develop_auto_resolves_merge_conflicts_without_resolver_side_git_add() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+    write_stage_alias_test_config_with_agent_command(
+        &repo,
+        "cat >/dev/null; \
+         if [ -f develop-conflict.txt ] && grep -q '<<<<<<<' develop-conflict.txt; then \
+           printf 'target conflict content\\ndraft conflict content\\n' > develop-conflict.txt; \
+         fi; \
+         printf '%s\\n' 'mock agent response'",
+    )?;
+
+    let conflict_slug = "develop-conflict";
+    let conflict_branch = format!("draft/{conflict_slug}");
+    repo.git(&["checkout", "-b", conflict_branch.as_str()])?;
+    repo.write("develop-conflict.txt", "draft conflict content\n")?;
+    repo.git(&["add", "develop-conflict.txt"])?;
+    repo.git(&["commit", "-m", "feat: seed develop conflict source change"])?;
+    repo.git(&["checkout", "master"])?;
+    repo.write("develop-conflict.txt", "target conflict content\n")?;
+    repo.git(&["add", "develop-conflict.txt"])?;
+    repo.git(&["commit", "-m", "feat: seed develop conflict target change"])?;
+
+    let first_merge_message = "feat: resolve develop merge conflict";
+    let first_merge_message_set = format!("merge_message={first_merge_message}");
+    let first_payload = run_alias_follow_json(
+        &repo,
+        "develop",
+        &[
+            "--name",
+            conflict_slug,
+            "--source",
+            conflict_branch.as_str(),
+            "--target",
+            "master",
+            "--set",
+            "spec_text=Develop conflict operator story.",
+            "--set",
+            "stop_condition_script=true",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            first_merge_message_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &first_payload, "develop")?;
+
+    let first_run_id = first_payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("missing first develop run_id")?;
+    let first_manifest = load_run_manifest(&repo, first_run_id)?;
+    let conflict_job =
+        manifest_node_job_id(&first_manifest, "develop_merge__merge_conflict_resolution")?;
+    let integrate_job = manifest_node_job_id(&first_manifest, "develop_merge__merge_integrate")?;
+    let conflict_record = read_job_record(&repo, &conflict_job)?;
+    let integrate_record = read_job_record(&repo, &integrate_job)?;
+    assert_eq!(
+        conflict_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "expected conflict gate success after runtime restage: {conflict_record}"
+    );
+    assert_eq!(
+        integrate_record.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "expected merge integrate success after conflict recovery: {integrate_record}"
+    );
+    assert!(
+        !repo
+            .path()
+            .join(".vizier/tmp/merge-conflicts/develop-conflict.json")
+            .exists(),
+        "expected conflict sentinel cleanup after successful restage"
+    );
+    let merged_conflict_text = repo.read("develop-conflict.txt")?;
+    assert!(
+        merged_conflict_text.contains("target conflict content")
+            && merged_conflict_text.contains("draft conflict content"),
+        "expected finalized tree to include both sides of the resolved conflict story: {merged_conflict_text}"
+    );
+    assert_eq!(
+        repo.repo().state(),
+        git2::RepositoryState::Clean,
+        "expected repository state clean after resolved develop merge"
+    );
+
+    let second_slug = "develop-after-conflict";
+    let second_branch = format!("draft/{second_slug}");
+    let second_merge_message = "feat: follow-up develop run after conflict recovery";
+    let second_merge_message_set = format!("merge_message={second_merge_message}");
+    let second_payload = run_alias_follow_json(
+        &repo,
+        "develop",
+        &[
+            "--name",
+            second_slug,
+            "--source",
+            second_branch.as_str(),
+            "--target",
+            "master",
+            "--set",
+            "spec_text=Follow-up develop run after auto-resolved merge conflict.",
+            "--set",
+            "stop_condition_script=true",
+            "--set",
+            "cicd_script=true",
+            "--set",
+            second_merge_message_set.as_str(),
+        ],
+    )?;
+    assert_flagship_follow_success(&repo, &second_payload, "develop")?;
 
     Ok(())
 }
@@ -3593,6 +3711,8 @@ fn test_run_merge_stage_conflict_gate_blocks_and_preserves_sentinel() -> TestRes
             "branch=draft/conflict-smoke",
             "--set",
             "target_branch=master",
+            "--set",
+            "conflict_auto_resolve=false",
             "--set",
             "cicd_script=true",
             "--format",

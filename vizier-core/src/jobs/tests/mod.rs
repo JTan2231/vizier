@@ -512,6 +512,81 @@ fn git_commit_all(project_root: &Path, message: &str) {
     assert!(commit.is_ok(), "git commit failed: {commit:?}");
 }
 
+struct ConflictGateFixture {
+    _temp: TempDir,
+    project_root: PathBuf,
+    record: JobRecord,
+    sentinel: PathBuf,
+}
+
+fn prepare_conflict_gate_fixture(
+    slug: &str,
+    source_branch: &str,
+    conflict_path: &str,
+) -> ConflictGateFixture {
+    let temp = TempDir::new().expect("temp dir");
+    let repo = init_repo(&temp).expect("init repo");
+    seed_repo(&repo).expect("seed repo");
+    let project_root = temp.path().to_path_buf();
+    let jobs_root = project_root.join(".vizier/jobs");
+    let target = current_branch_name(&project_root).expect("target branch");
+
+    fs::write(project_root.join(conflict_path), "base\n").expect("write base");
+    git_commit_all(&project_root, "base conflict");
+
+    let checkout = git_status(&project_root, &["checkout", "-b", source_branch]);
+    assert!(checkout.is_ok(), "create draft branch: {checkout:?}");
+    fs::write(project_root.join(conflict_path), "draft\n").expect("write draft");
+    git_commit_all(&project_root, "draft conflict");
+
+    let checkout_target = git_status(&project_root, &["checkout", &target]);
+    assert!(
+        checkout_target.is_ok(),
+        "checkout target: {checkout_target:?}"
+    );
+    fs::write(project_root.join(conflict_path), "target\n").expect("write target");
+    git_commit_all(&project_root, "target conflict");
+
+    let merge = git_status(&project_root, &["merge", "--no-ff", source_branch]);
+    assert!(
+        merge.is_err(),
+        "expected deliberate merge conflict for gate coverage"
+    );
+
+    let sentinel = project_root
+        .join(".vizier/tmp/merge-conflicts")
+        .join(format!("{slug}.json"));
+    if let Some(parent) = sentinel.parent() {
+        fs::create_dir_all(parent).expect("create sentinel dir");
+    }
+    fs::write(&sentinel, "{}").expect("write sentinel");
+
+    enqueue_job(
+        &project_root,
+        &jobs_root,
+        "job-conflict-gate",
+        &["--help".to_string()],
+        &["vizier".to_string(), "__workflow-node".to_string()],
+        Some(JobMetadata {
+            plan: Some(slug.to_string()),
+            branch: Some(source_branch.to_string()),
+            target: Some(target),
+            ..JobMetadata::default()
+        }),
+        None,
+        Some(JobSchedule::default()),
+    )
+    .expect("enqueue");
+    let record = read_record(&jobs_root, "job-conflict-gate").expect("record");
+
+    ConflictGateFixture {
+        _temp: temp,
+        project_root,
+        record,
+        sentinel,
+    }
+}
+
 #[test]
 fn follow_poll_delay_uses_short_backoff_and_resets_on_activity() {
     let mut idle_polls = 0u32;
@@ -5691,6 +5766,20 @@ fn workflow_runtime_conflict_cicd_approval_and_terminal_gates() {
     let conflict_result =
         execute_workflow_control(project_root, &record, &conflict_gate).expect("conflict gate");
     assert_eq!(conflict_result.outcome, WorkflowNodeOutcome::Blocked);
+    assert_eq!(
+        conflict_result.summary.as_deref(),
+        Some(
+            "merge conflict resolution incomplete for slug `gate-conflict`: unmerged index entries remain"
+        )
+    );
+    assert!(
+        conflict_result
+            .stderr_lines
+            .iter()
+            .any(|line| line == "remaining unmerged paths: gate-conflict.txt"),
+        "expected remaining path diagnostics: {:?}",
+        conflict_result.stderr_lines
+    );
 
     let mut cicd_gate = runtime_control_node(
         "cicd",
@@ -5763,6 +5852,170 @@ fn workflow_runtime_conflict_cicd_approval_and_terminal_gates() {
     let valid_terminal =
         execute_workflow_control(project_root, &record, &terminal).expect("terminal valid");
     assert_eq!(valid_terminal.outcome, WorkflowNodeOutcome::Succeeded);
+}
+
+#[test]
+fn workflow_runtime_conflict_gate_restages_resolved_paths_without_staging_unrelated_dirty_files() {
+    let fixture = prepare_conflict_gate_fixture(
+        "gate-auto-resolve",
+        "draft/gate-auto-resolve",
+        "gate-conflict.txt",
+    );
+
+    fs::write(fixture.project_root.join("README.md"), "dirty readme\n").expect("dirty readme");
+    fs::write(fixture.project_root.join("untracked.txt"), "untracked\n").expect("untracked");
+
+    let node = runtime_control_node(
+        "conflict",
+        "job-conflict-gate",
+        "control.gate.conflict_resolution",
+        "gate.conflict_resolution",
+        BTreeMap::from([
+            ("auto_resolve".to_string(), "true".to_string()),
+            (
+                "script".to_string(),
+                "printf 'target\\ndraft\\n' > gate-conflict.txt".to_string(),
+            ),
+        ]),
+    );
+    let result = execute_workflow_control(&fixture.project_root, &fixture.record, &node)
+        .expect("conflict gate");
+    assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+    assert_eq!(
+        result.summary.as_deref(),
+        Some("merge conflicts resolved, index finalized, and sentinel cleared")
+    );
+    assert!(
+        !fixture.sentinel.exists(),
+        "expected sentinel to be cleared after restaging"
+    );
+    assert!(
+        list_unmerged_paths(&fixture.project_root).is_empty(),
+        "expected conflict index entries to be cleared"
+    );
+
+    let staged = crate::vcs::snapshot_staged(
+        fixture
+            .project_root
+            .to_str()
+            .expect("project root should be valid utf-8"),
+    )
+    .expect("snapshot staged");
+    assert!(
+        staged.iter().any(|item| item.path == "gate-conflict.txt"),
+        "expected resolved conflict to be staged: {staged:?}"
+    );
+    assert!(
+        staged
+            .iter()
+            .all(|item| item.path != "README.md" && item.path != "untracked.txt"),
+        "expected unrelated dirty files to remain unstaged: {staged:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.project_root.join("gate-conflict.txt"))
+            .expect("read resolved conflict"),
+        "target\ndraft\n"
+    );
+}
+
+#[test]
+fn workflow_runtime_conflict_gate_stages_deleted_conflicted_paths() {
+    let fixture = prepare_conflict_gate_fixture(
+        "gate-auto-delete",
+        "draft/gate-auto-delete",
+        "gate-delete.txt",
+    );
+    let node = runtime_control_node(
+        "conflict",
+        "job-conflict-gate",
+        "control.gate.conflict_resolution",
+        "gate.conflict_resolution",
+        BTreeMap::from([
+            ("auto_resolve".to_string(), "true".to_string()),
+            ("script".to_string(), "rm gate-delete.txt".to_string()),
+        ]),
+    );
+
+    let result = execute_workflow_control(&fixture.project_root, &fixture.record, &node)
+        .expect("conflict gate");
+    assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+    assert!(
+        !fixture.sentinel.exists(),
+        "expected sentinel to be cleared after delete resolution"
+    );
+    assert!(
+        list_unmerged_paths(&fixture.project_root).is_empty(),
+        "expected delete resolution to clear conflict index entries"
+    );
+
+    let staged = crate::vcs::snapshot_staged(
+        fixture
+            .project_root
+            .to_str()
+            .expect("project root should be valid utf-8"),
+    )
+    .expect("snapshot staged");
+    assert!(
+        staged
+            .iter()
+            .any(|item| matches!(item.kind, crate::vcs::StagedKind::Deleted)
+                && item.path == "gate-delete.txt"),
+        "expected deleted conflict to be staged: {staged:?}"
+    );
+}
+
+#[test]
+fn workflow_runtime_conflict_gate_blocks_when_unmerged_index_entries_remain_after_restage() {
+    let fixture = prepare_conflict_gate_fixture(
+        "gate-unmerged-remains",
+        "draft/gate-unmerged-remains",
+        "gate-still-conflicted.txt",
+    );
+    let node = runtime_control_node(
+        "conflict",
+        "job-conflict-gate",
+        "control.gate.conflict_resolution",
+        "gate.conflict_resolution",
+        BTreeMap::from([
+            ("auto_resolve".to_string(), "true".to_string()),
+            (
+                "script".to_string(),
+                "printf 'target\\ndraft\\n' > gate-still-conflicted.txt; \
+                 oid1=$(printf 'one\\n' | git hash-object -w --stdin); \
+                 oid2=$(printf 'two\\n' | git hash-object -w --stdin); \
+                 oid3=$(printf 'three\\n' | git hash-object -w --stdin); \
+                 printf '100644 %s 1\\textra.txt\\n100644 %s 2\\textra.txt\\n100644 %s 3\\textra.txt\\n' \
+                 \"$oid1\" \"$oid2\" \"$oid3\" | git update-index --index-info"
+                    .to_string(),
+            ),
+        ]),
+    );
+
+    let result = execute_workflow_control(&fixture.project_root, &fixture.record, &node)
+        .expect("conflict gate");
+    assert_eq!(result.outcome, WorkflowNodeOutcome::Blocked);
+    assert_eq!(
+        result.summary.as_deref(),
+        Some(
+            "merge conflict resolution incomplete for slug `gate-unmerged-remains`: unmerged index entries remain"
+        )
+    );
+    assert!(
+        result
+            .stderr_lines
+            .iter()
+            .any(|line| line == "remaining unmerged paths: extra.txt"),
+        "expected remaining unmerged path diagnostics: {:?}",
+        result.stderr_lines
+    );
+    assert!(
+        fixture.sentinel.exists(),
+        "expected sentinel to remain when unmerged entries still exist"
+    );
+    assert_eq!(
+        list_unmerged_paths(&fixture.project_root),
+        vec!["extra.txt"]
+    );
 }
 
 #[test]

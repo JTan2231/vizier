@@ -100,8 +100,10 @@ pub(crate) fn execute_workflow_control(
                 .unwrap_or(false);
             let mut stdout_text = String::new();
             let mut stderr_lines = Vec::new();
-            let mut auto_resolve_warning: Option<String> = None;
+            let mut index_finalized = false;
             if conflicts_present && auto_resolve {
+                let conflicted_paths_before_resolve = conflict_paths.clone();
+                let mut auto_resolve_completed = false;
                 if let Some(script) = resolve_node_shell_script(node, None) {
                     let (status, stdout, stderr) =
                         run_shell_text_command(&execution_root, &script)?;
@@ -122,6 +124,7 @@ pub(crate) fn execute_workflow_control(
                         result.stderr_lines = stderr_lines;
                         return Ok(result);
                     }
+                    auto_resolve_completed = true;
                 } else if let Some(detail) = run_merge_conflict_auto_resolve_agent(
                     &execution_root,
                     record,
@@ -131,21 +134,39 @@ pub(crate) fn execute_workflow_control(
                     &conflict_paths,
                 ) {
                     display::warn(detail.clone());
-                    auto_resolve_warning = Some(detail);
-                    if let Some(detail) = auto_resolve_warning.as_ref() {
-                        stderr_lines.push(detail.clone());
-                    }
+                    stderr_lines.push(detail);
+                } else {
+                    auto_resolve_completed = true;
                 }
+
+                if auto_resolve_completed {
+                    let conflicted_path_refs = conflicted_paths_before_resolve
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    crate::vcs::stage_paths_allow_missing_in(
+                        &execution_root,
+                        &conflicted_path_refs,
+                    )
+                    .map_err(|err| -> Box<dyn std::error::Error> {
+                        format!("unable to finalize merge conflict index for slug `{slug}`: {err}")
+                            .into()
+                    })?;
+                    index_finalized = true;
+                }
+
                 conflict_paths = list_unmerged_paths(&execution_root);
                 conflicts_present = !conflict_paths.is_empty();
             }
 
             if conflicts_present {
-                let summary = if let Some(detail) = auto_resolve_warning {
-                    format!("merge conflicts remain for slug `{slug}` ({detail})")
-                } else {
-                    format!("merge conflicts remain for slug `{slug}`")
-                };
+                stderr_lines.push(format!(
+                    "remaining unmerged paths: {}",
+                    conflict_paths.join(", ")
+                ));
+                let summary = format!(
+                    "merge conflict resolution incomplete for slug `{slug}`: unmerged index entries remain"
+                );
                 let mut blocked = WorkflowNodeResult::blocked(summary, Some(10));
                 blocked.artifacts_written = vec![JobArtifact::MergeSentinel { slug }];
                 blocked.payload_refs = vec![relative_path(project_root, &sentinel)];
@@ -157,8 +178,11 @@ pub(crate) fn execute_workflow_control(
             }
 
             remove_file_if_exists(&sentinel)?;
-            let mut result =
-                WorkflowNodeResult::succeeded("merge conflicts resolved and sentinel cleared");
+            let mut result = WorkflowNodeResult::succeeded(if index_finalized {
+                "merge conflicts resolved, index finalized, and sentinel cleared"
+            } else {
+                "merge conflicts resolved and sentinel cleared"
+            });
             if !stdout_text.is_empty() {
                 result.stdout_text = Some(stdout_text);
             }
