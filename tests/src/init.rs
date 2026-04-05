@@ -1,5 +1,7 @@
 use crate::fixtures::*;
 
+const VIZIER_GITIGNORE_HEADING: &str = "# Vizier";
+
 const REQUIRED_IGNORE_RULES: [&str; 6] = [
     ".vizier/tmp-worktrees/",
     ".vizier/tmp/",
@@ -40,6 +42,10 @@ Cargo.lock
 .vizier/implementation-plans
 ";
 
+fn is_canonical_vizier_heading(line: &str) -> bool {
+    line.trim() == VIZIER_GITIGNORE_HEADING
+}
+
 fn assert_matches_repo_template(
     repo: &IntegrationRepo,
     actual_rel: &str,
@@ -69,7 +75,10 @@ fn assert_vizier_gitignore_block(gitignore: &str) {
         "expected canonical Vizier gitignore block:\n{gitignore}"
     );
     assert_eq!(
-        gitignore.matches("# Vizier").count(),
+        gitignore
+            .lines()
+            .filter(|line| is_canonical_vizier_heading(line))
+            .count(),
         1,
         "expected a single Vizier gitignore heading:\n{gitignore}"
     );
@@ -444,6 +453,92 @@ Cargo.lock
         gitignore,
         repo.read(".gitignore")?,
         "managed exception rewrite should remain stable on rerun"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_init_preserves_unrelated_vizier_prefixed_comments_during_rewrite() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+
+    repo.write(
+        ".gitignore",
+        "\
+/target
+Cargo.lock
+
+# Vizier jobs are reviewed manually
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/implementation-plans
+",
+    )?;
+
+    let check_before = repo.vizier_output_no_follow(&["init", "--check"])?;
+    assert!(
+        !check_before.status.success(),
+        "vizier init --check should fail before repairing the managed block"
+    );
+    let check_before_stdout = String::from_utf8_lossy(&check_before.stdout);
+    assert!(
+        check_before_stdout.contains("missing: .gitignore: .vizier/state/"),
+        "check output should report the missing managed rule: {check_before_stdout}"
+    );
+
+    let output = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        output.status.success(),
+        "vizier init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let gitignore = repo.read(".gitignore")?;
+    assert_vizier_gitignore_block(&gitignore);
+    assert!(
+        gitignore
+            .lines()
+            .any(|line| line == "# Vizier jobs are reviewed manually"),
+        "unrelated prefixed comments should remain after rewrite:\n{gitignore}"
+    );
+    assert!(
+        find_line_index(&gitignore, "# Vizier jobs are reviewed manually")
+            < find_line_index(&gitignore, "# Vizier"),
+        "unrelated prefixed comments should stay outside the managed block:\n{gitignore}"
+    );
+
+    let check_after = repo.vizier_output_no_follow(&["init", "--check"])?;
+    assert!(
+        check_after.status.success(),
+        "vizier init --check should succeed after repair: {}",
+        String::from_utf8_lossy(&check_after.stderr)
+    );
+
+    let rerun = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        rerun.status.success(),
+        "second vizier init failed after prefixed-comment repair: {}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+    let rerun_stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert!(
+        rerun_stdout.contains("already satisfied"),
+        "expected already satisfied after prefixed-comment repair, got: {rerun_stdout}"
+    );
+    assert_eq!(
+        gitignore,
+        repo.read(".gitignore")?,
+        "prefixed-comment rewrite should remain stable on rerun"
     );
     Ok(())
 }

@@ -12,6 +12,7 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
 - Initialization is contract-driven and machine-checkable:
   - Durable markers: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
   - Required `.gitignore` runtime coverage lives under one canonical `# Vizier` block: `.vizier/tmp/`, `.vizier/tmp-worktrees/`, `.vizier/jobs/`, `.vizier/sessions/`, `.vizier/state/`, `.vizier/implementation-plans`.
+  - Managed heading ownership is exact: only the line `# Vizier` is treated as Vizier-owned; comments that merely start with `# Vizier` remain user-authored content.
 - Mutating init is idempotent and safe to rerun:
   - Creates missing durable markers with starter content.
   - Rewrites missing or legacy managed ignore entries into the canonical headed block without reordering unrelated `.gitignore` content or duplicating equivalent patterns.
@@ -35,6 +36,7 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
   - Shared init-state evaluator used by mutate and check paths.
   - Idempotent durable scaffolding and equivalence-aware `.gitignore` reconciliation.
   - Init satisfaction now requires the canonical single headed `# Vizier` block; rule-complete legacy blocks fail `--check` and are canonicalized by `vizier init`.
+  - Exact heading ownership now preserves unrelated `.gitignore` comments that share the `# Vizier` prefix while still canonicalizing the real managed block.
   - Managed-path `.gitignore` `!` exceptions now survive init rewrites because they are classified with the managed rewrite surface and emitted after the canonical block; `--check` treats that repaired shape as satisfied and flags pre-block managed exceptions for canonicalization.
   - Dispatch now bypasses pre-command `.vizier` directory creation for `vizier init` so `vizier init --check` remains read-only.
   - Integration coverage added for fresh/partial/full/check/outside-git/permission-failure paths.

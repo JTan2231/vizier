@@ -10,7 +10,7 @@
 - **Clap unknown-subcommand path**: Standard parser failure surface used for removed commands; no custom migration text.
 - **Code state**: Snapshot slice for user-visible behavior, interfaces, and constraints.
 - **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
-- **Canonical Vizier gitignore block**: The single `# Vizier` block in `.gitignore` that carries each managed Vizier ignore rule exactly once; `vizier init` satisfaction now requires this headed layout, not just raw rule coverage, while preserved managed-path `!` exceptions may follow the block.
+- **Canonical Vizier gitignore block**: The single `# Vizier` block in `.gitignore` that carries each managed Vizier ignore rule exactly once; `vizier init` satisfaction now requires this headed layout, not just raw rule coverage, only the exact `# Vizier` heading is Vizier-owned, prefix-sharing user comments remain user-authored, and preserved managed-path `!` exceptions may follow the block.
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
 - **Current worktree evidence**: Snapshot code-state line that records the latest local `draft/*` branch inventory plus on-disk and tracked-deletion `.vizier/implementation-plans/*.md` evidence for the active worktree slug (including explicit no-deletion states).
 - **Worktree evidence label**: Parenthetical in the current-worktree-evidence snapshot bullet (`draft/<slug>`, `revalidated <date>`) that identifies which live branch inventory the evidence was sampled from.

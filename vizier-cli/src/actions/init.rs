@@ -427,7 +427,7 @@ fn rewrite_vizier_gitignore_block(existing_contents: &str, required_rules: &[Str
 }
 
 fn is_vizier_gitignore_heading(raw_line: &str) -> bool {
-    raw_line.trim_start().starts_with(VIZIER_GITIGNORE_HEADING)
+    raw_line.trim() == VIZIER_GITIGNORE_HEADING
 }
 
 fn count_vizier_gitignore_headings(contents: &str) -> usize {
@@ -595,6 +595,16 @@ mod tests {
     }
 
     #[test]
+    fn is_vizier_gitignore_heading_requires_exact_canonical_match() {
+        assert!(is_vizier_gitignore_heading("# Vizier"));
+        assert!(is_vizier_gitignore_heading("  # Vizier  "));
+        assert!(!is_vizier_gitignore_heading("# Vizier test state"));
+        assert!(!is_vizier_gitignore_heading(
+            "# Vizier jobs are reviewed manually"
+        ));
+    }
+
+    #[test]
     fn is_managed_unignore_rule_matches_roots_and_descendants_only() {
         let managed_targets = managed_ignore_targets(&required_ignore_rules());
         assert!(is_managed_unignore_rule("!.vizier/jobs/", &managed_targets,));
@@ -631,12 +641,12 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_vizier_gitignore_block_preserves_crlf() {
-        let existing = "target/\r\n# Vizier test state\r\n.vizier/tmp/\r\n";
+    fn rewrite_vizier_gitignore_block_preserves_crlf_and_unrelated_prefixed_comments() {
+        let existing = "target/\r\n# Vizier jobs are reviewed manually\r\n.vizier/tmp/\r\n";
         let updated = rewrite_vizier_gitignore_block(existing, &required_ignore_rules());
         assert_eq!(
             updated,
-            "target/\r\n\r\n# Vizier\r\n.vizier/tmp-worktrees/\r\n.vizier/tmp/\r\n.vizier/sessions/\r\n.vizier/jobs/\r\n.vizier/state/\r\n.vizier/implementation-plans\r\n"
+            "target/\r\n# Vizier jobs are reviewed manually\r\n\r\n# Vizier\r\n.vizier/tmp-worktrees/\r\n.vizier/tmp/\r\n.vizier/sessions/\r\n.vizier/jobs/\r\n.vizier/state/\r\n.vizier/implementation-plans\r\n"
                 .to_string()
         );
     }
@@ -671,11 +681,10 @@ target/
     }
 
     #[test]
-    fn rewrite_vizier_gitignore_block_groups_rules_under_heading() {
+    fn rewrite_vizier_gitignore_block_groups_rules_under_canonical_heading() {
         let existing = "\
 target/
 
-# Vizier test state
 ./.vizier/tmp-worktrees/**
 /.vizier/tmp/
 **/.vizier/sessions/
@@ -736,6 +745,32 @@ target/
         assert!(
             !evaluation.needs_canonicalization,
             "canonical headed block should satisfy gitignore shape"
+        );
+    }
+
+    #[test]
+    fn evaluate_gitignore_contents_accepts_unrelated_prefixed_comment_alongside_canonical_block() {
+        let existing = "\
+target/
+# Vizier jobs are reviewed manually
+
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+";
+        let evaluation = evaluate_gitignore_contents(existing, &required_ignore_rules());
+        assert!(
+            evaluation.missing_ignore_rules.is_empty(),
+            "canonical block should still cover all required rules: {:?}",
+            evaluation.missing_ignore_rules
+        );
+        assert!(
+            !evaluation.needs_canonicalization,
+            "unrelated prefixed comments should not count as managed headings"
         );
     }
 

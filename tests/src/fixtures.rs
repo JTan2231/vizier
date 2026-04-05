@@ -1588,7 +1588,7 @@ pub(crate) fn ensure_gitignore(path: &Path) -> io::Result<()> {
         .create(true)
         .append(true)
         .open(ignore_path)?;
-    writeln!(file, "\n# Vizier test state")?;
+    writeln!(file, "\n# Vizier")?;
     writeln!(file, ".vizier/tmp/")?;
     writeln!(file, ".vizier/tmp-worktrees/")?;
     writeln!(file, ".vizier/jobs/")?;
