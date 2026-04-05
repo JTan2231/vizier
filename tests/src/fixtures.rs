@@ -1593,6 +1593,7 @@ pub(crate) fn ensure_gitignore(path: &Path) -> io::Result<()> {
     writeln!(file, ".vizier/tmp-worktrees/")?;
     writeln!(file, ".vizier/jobs/")?;
     writeln!(file, ".vizier/sessions/")?;
+    writeln!(file, ".vizier/state/")?;
     Ok(())
 }
 

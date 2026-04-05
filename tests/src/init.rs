@@ -1,10 +1,11 @@
 use crate::fixtures::*;
 
-const REQUIRED_IGNORE_RULES: [&str; 5] = [
+const REQUIRED_IGNORE_RULES: [&str; 6] = [
     ".vizier/tmp-worktrees/",
     ".vizier/tmp/",
     ".vizier/sessions/",
     ".vizier/jobs/",
+    ".vizier/state/",
     ".vizier/implementation-plans",
 ];
 
@@ -39,6 +40,38 @@ fn assert_matches_repo_template(
         "{actual_rel} should match template {template_rel}"
     );
     Ok(())
+}
+
+fn assert_vizier_gitignore_block(gitignore: &str) {
+    let expected_block = "\
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+";
+    assert!(
+        gitignore.contains(expected_block),
+        "expected canonical Vizier gitignore block:\n{gitignore}"
+    );
+    assert_eq!(
+        gitignore.matches("# Vizier").count(),
+        1,
+        "expected a single Vizier gitignore heading:\n{gitignore}"
+    );
+    for rule in REQUIRED_IGNORE_RULES {
+        assert!(
+            gitignore.contains(rule),
+            "expected required ignore rule {rule} in .gitignore:\n{gitignore}"
+        );
+        assert_eq!(
+            gitignore.matches(rule).count(),
+            1,
+            "required ignore rule {rule} should appear once:\n{gitignore}"
+        );
+    }
 }
 
 #[test]
@@ -150,17 +183,7 @@ fn test_init_creates_required_scaffold_and_ignore_rules() -> TestResult {
         gitignore.starts_with("/target\nCargo.lock\n"),
         "existing .gitignore content should remain at top: {gitignore}"
     );
-    for rule in REQUIRED_IGNORE_RULES {
-        assert!(
-            gitignore.contains(rule),
-            "expected required ignore rule {rule} in .gitignore:\n{gitignore}"
-        );
-        assert_eq!(
-            gitignore.matches(rule).count(),
-            1,
-            "required ignore rule {rule} should appear once:\n{gitignore}"
-        );
-    }
+    assert_vizier_gitignore_block(&gitignore);
     Ok(())
 }
 
@@ -233,15 +256,49 @@ fn test_init_partial_repo_only_adds_missing_pieces() -> TestResult {
     );
 
     let gitignore_after = repo.read(".gitignore")?;
+    assert_vizier_gitignore_block(&gitignore_after);
+    Ok(())
+}
+
+#[test]
+fn test_init_upgrades_existing_vizier_gitignore_block_to_headed_format() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
     assert!(
-        gitignore_after.contains(".vizier/sessions/"),
-        "init should append missing sessions ignore rule:\n{gitignore_after}"
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
     );
-    assert_eq!(
-        gitignore_after.matches(".vizier/sessions/").count(),
-        1,
-        "sessions ignore rule should not be duplicated:\n{gitignore_after}"
+
+    repo.write(
+        ".gitignore",
+        "\
+/target
+Cargo.lock
+
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/implementation-plans
+",
+    )?;
+
+    let output = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        output.status.success(),
+        "vizier init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+
+    let gitignore = repo.read(".gitignore")?;
+    assert!(
+        gitignore.starts_with("/target\nCargo.lock\n"),
+        "existing .gitignore content should remain at top: {gitignore}"
+    );
+    assert_vizier_gitignore_block(&gitignore);
     Ok(())
 }
 

@@ -1,8 +1,10 @@
 /target
 Cargo.lock
 
+# Vizier
 .vizier/tmp-worktrees/
 .vizier/tmp/
 .vizier/sessions/
 .vizier/jobs/
+.vizier/state/
 .vizier/implementation-plans

@@ -33,6 +33,7 @@ const PROMPT_APPROVE_STARTER: &str =
 const PROMPT_MERGE_STARTER: &str = include_str!("../../templates/init/prompts/MERGE_PROMPTS.md");
 const PROMPT_COMMIT_STARTER: &str = include_str!("../../templates/init/prompts/COMMIT_PROMPTS.md");
 const CI_SCRIPT_STARTER: &str = include_str!("../../templates/init/ci.sh");
+const VIZIER_GITIGNORE_HEADING: &str = "# Vizier";
 
 #[derive(Debug, Clone)]
 struct RequiredFile {
@@ -159,7 +160,7 @@ fn ensure_gitignore_rules(repo_root: &Path) -> Result<(), Box<dyn std::error::Er
         return Ok(());
     }
 
-    let updated = append_missing_rules(&existing, &missing);
+    let updated = rewrite_vizier_gitignore_block(&existing, &required_rules);
     std::fs::write(&gitignore_path, updated)
         .map_err(|err| io_error("write file", &gitignore_path, err))?;
     Ok(())
@@ -259,6 +260,7 @@ fn required_ignore_rules() -> Vec<String> {
         format!("{}tmp/", tools::VIZIER_DIR),
         format!("{}sessions/", tools::VIZIER_DIR),
         format!("{}jobs/", tools::VIZIER_DIR),
+        format!("{}state/", tools::VIZIER_DIR),
         format!("{}implementation-plans", tools::VIZIER_DIR),
     ]
 }
@@ -333,21 +335,46 @@ fn detect_line_ending(contents: &str) -> &'static str {
     }
 }
 
-fn append_missing_rules(existing_contents: &str, missing_rules: &[String]) -> String {
-    if missing_rules.is_empty() {
-        return existing_contents.to_string();
+fn rewrite_vizier_gitignore_block(existing_contents: &str, required_rules: &[String]) -> String {
+    let line_ending = detect_line_ending(existing_contents);
+    let managed_targets = required_rules
+        .iter()
+        .filter_map(|rule| normalize_ignore_pattern(rule))
+        .collect::<HashSet<_>>();
+    let mut preserved_lines = existing_contents
+        .lines()
+        .filter(|line| !is_vizier_gitignore_heading(line))
+        .filter(|line| !is_managed_ignore_rule(line, &managed_targets))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    while matches!(preserved_lines.last(), Some(line) if line.trim().is_empty()) {
+        preserved_lines.pop();
     }
 
-    let line_ending = detect_line_ending(existing_contents);
-    let mut updated = existing_contents.to_string();
-    if !updated.is_empty() && !updated.ends_with('\n') && !updated.ends_with('\r') {
+    let mut updated = preserved_lines.join(line_ending);
+    if !updated.is_empty() {
+        updated.push_str(line_ending);
         updated.push_str(line_ending);
     }
-    for rule in missing_rules {
+    updated.push_str(VIZIER_GITIGNORE_HEADING);
+    updated.push_str(line_ending);
+    for rule in required_rules {
         updated.push_str(rule);
         updated.push_str(line_ending);
     }
     updated
+}
+
+fn is_vizier_gitignore_heading(raw_line: &str) -> bool {
+    raw_line.trim_start().starts_with(VIZIER_GITIGNORE_HEADING)
+}
+
+fn is_managed_ignore_rule(raw_line: &str, managed_targets: &HashSet<String>) -> bool {
+    match normalize_ignore_pattern(raw_line) {
+        Some(pattern) => managed_targets.contains(&pattern),
+        None => false,
+    }
 }
 
 fn set_executable_if_requested(
@@ -409,6 +436,7 @@ mod tests {
 ./.vizier/tmp-worktrees/**
 .vizier/jobs/*
 **/.vizier/sessions/
+.vizier/state/**
 .vizier/implementation-plans/**
 ";
         let missing = missing_ignore_rules(existing, &required_ignore_rules());
@@ -419,22 +447,34 @@ mod tests {
     }
 
     #[test]
-    fn append_missing_rules_preserves_crlf() {
-        let existing = "target/\r\n";
-        let missing = vec![".vizier/tmp/".to_string(), ".vizier/jobs/".to_string()];
-        let updated = append_missing_rules(existing, &missing);
+    fn rewrite_vizier_gitignore_block_preserves_crlf() {
+        let existing = "target/\r\n# Vizier test state\r\n.vizier/tmp/\r\n";
+        let updated = rewrite_vizier_gitignore_block(existing, &required_ignore_rules());
         assert_eq!(
             updated,
-            "target/\r\n.vizier/tmp/\r\n.vizier/jobs/\r\n".to_string()
+            "target/\r\n\r\n# Vizier\r\n.vizier/tmp-worktrees/\r\n.vizier/tmp/\r\n.vizier/sessions/\r\n.vizier/jobs/\r\n.vizier/state/\r\n.vizier/implementation-plans\r\n"
+                .to_string()
         );
     }
 
     #[test]
-    fn append_missing_rules_adds_separator_when_needed() {
-        let existing = "target/";
-        let missing = vec![".vizier/tmp/".to_string()];
-        let updated = append_missing_rules(existing, &missing);
-        assert_eq!(updated, "target/\n.vizier/tmp/\n".to_string());
+    fn rewrite_vizier_gitignore_block_groups_rules_under_heading() {
+        let existing = "\
+target/
+
+# Vizier test state
+./.vizier/tmp-worktrees/**
+/.vizier/tmp/
+**/.vizier/sessions/
+.vizier/jobs/*
+.vizier/implementation-plans/**
+";
+        let updated = rewrite_vizier_gitignore_block(existing, &required_ignore_rules());
+        assert_eq!(
+            updated,
+            "target/\n\n# Vizier\n.vizier/tmp-worktrees/\n.vizier/tmp/\n.vizier/sessions/\n.vizier/jobs/\n.vizier/state/\n.vizier/implementation-plans\n"
+                .to_string()
+        );
     }
 
     #[test]

@@ -47,12 +47,13 @@ vizier init
 - `./ci.sh`
 
 It also ensures `.gitignore` includes Vizier runtime paths that should stay out of
-history:
+history under a `# Vizier` block:
 
 - `.vizier/tmp/`
 - `.vizier/tmp-worktrees/`
 - `.vizier/jobs/`
 - `.vizier/sessions/`
+- `.vizier/state/`
 
 To validate initialization without mutating files:
 
