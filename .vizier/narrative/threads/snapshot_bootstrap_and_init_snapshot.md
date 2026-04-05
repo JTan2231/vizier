@@ -15,6 +15,7 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
 - Mutating init is idempotent and safe to rerun:
   - Creates missing durable markers with starter content.
   - Rewrites missing or legacy managed ignore entries into the canonical headed block without reordering unrelated `.gitignore` content or duplicating equivalent patterns.
+  - Preserves user-authored managed-path `!` exceptions by re-emitting them after the canonical managed rules so Git last-match precedence still re-includes the intended Vizier paths.
   - Never overwrites existing marker file contents by default.
 - `vizier init --check` validates the same contract without mutating files and exits non-zero with an explicit missing-item list when requirements are not met or a legacy managed block still needs canonicalization.
 
@@ -22,6 +23,7 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
 - `vizier init` on an uninitialized repo creates durable marker files and required ignore entries, then reports initialization applied.
 - Re-running `vizier init` on a satisfied repo produces no file-content changes and reports already satisfied.
 - `vizier init` rewrites a rule-complete legacy Vizier ignore block into the canonical single headed `# Vizier` form while preserving unrelated `.gitignore` content.
+- `vizier init` preserves managed-path `!` exceptions targeting Vizier roots or descendants and rewrites them after the canonical managed rules so those exceptions remain effective.
 - `vizier init --check` exits 0 only when durable markers and the canonical headed Vizier ignore block are present.
 - `vizier init --check` exits non-zero with explicit missing markers/ignore entries or canonicalization-needed `.gitignore` state when requirements are absent.
 - Check mode is non-mutating: it does not create `.vizier`, `.vizier/jobs`, or `.vizier/sessions` as a side effect.
@@ -33,6 +35,7 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
   - Shared init-state evaluator used by mutate and check paths.
   - Idempotent durable scaffolding and equivalence-aware `.gitignore` reconciliation.
   - Init satisfaction now requires the canonical single headed `# Vizier` block; rule-complete legacy blocks fail `--check` and are canonicalized by `vizier init`.
+  - Managed-path `.gitignore` `!` exceptions now survive init rewrites because they are classified with the managed rewrite surface and emitted after the canonical block; `--check` treats that repaired shape as satisfied and flags pre-block managed exceptions for canonicalization.
   - Dispatch now bypasses pre-command `.vizier` directory creation for `vizier init` so `vizier init --check` remains read-only.
   - Integration coverage added for fresh/partial/full/check/outside-git/permission-failure paths.
 - Follow-up:

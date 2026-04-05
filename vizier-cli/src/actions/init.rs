@@ -318,10 +318,24 @@ fn normalized_ignore_targets(contents: &str) -> HashSet<String> {
 }
 
 fn normalize_ignore_pattern(raw_line: &str) -> Option<String> {
-    let mut value = raw_line.trim();
+    let value = raw_line.trim();
     if value.is_empty() || value.starts_with('#') || value.starts_with('!') {
         return None;
     }
+    normalize_gitignore_pattern_body(value)
+}
+
+fn normalize_unignore_pattern(raw_line: &str) -> Option<String> {
+    let value = raw_line.trim();
+    if value.is_empty() || value.starts_with('#') {
+        return None;
+    }
+    let remainder = value.strip_prefix('!')?;
+    normalize_gitignore_pattern_body(remainder)
+}
+
+fn normalize_gitignore_pattern_body(raw_pattern: &str) -> Option<String> {
+    let mut value = raw_pattern.trim();
     if let Some((before_comment, _)) = value.split_once(" #") {
         value = before_comment.trim_end();
     }
@@ -378,16 +392,19 @@ fn canonical_vizier_gitignore_block(line_ending: &str, required_rules: &[String]
 
 fn rewrite_vizier_gitignore_block(existing_contents: &str, required_rules: &[String]) -> String {
     let line_ending = detect_line_ending(existing_contents);
-    let managed_targets = required_rules
-        .iter()
-        .filter_map(|rule| normalize_ignore_pattern(rule))
-        .collect::<HashSet<_>>();
-    let mut preserved_lines = existing_contents
-        .lines()
-        .filter(|line| !is_vizier_gitignore_heading(line))
-        .filter(|line| !is_managed_ignore_rule(line, &managed_targets))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let managed_targets = managed_ignore_targets(required_rules);
+    let mut preserved_lines = Vec::new();
+    let mut managed_unignore_lines = Vec::new();
+    for line in existing_contents.lines() {
+        if is_vizier_gitignore_heading(line) || is_managed_ignore_rule(line, &managed_targets) {
+            continue;
+        }
+        if is_managed_unignore_rule(line, &managed_targets) {
+            managed_unignore_lines.push(line.to_string());
+            continue;
+        }
+        preserved_lines.push(line.to_string());
+    }
 
     while matches!(preserved_lines.last(), Some(line) if line.trim().is_empty()) {
         preserved_lines.pop();
@@ -402,6 +419,10 @@ fn rewrite_vizier_gitignore_block(existing_contents: &str, required_rules: &[Str
         line_ending,
         required_rules,
     ));
+    for line in managed_unignore_lines {
+        updated.push_str(&line);
+        updated.push_str(line_ending);
+    }
     updated
 }
 
@@ -423,11 +444,31 @@ fn is_managed_ignore_rule(raw_line: &str, managed_targets: &HashSet<String>) -> 
     }
 }
 
-fn managed_ignore_rule_counts(contents: &str, required_rules: &[String]) -> HashMap<String, usize> {
-    let managed_targets = required_rules
+fn is_managed_unignore_rule(raw_line: &str, managed_targets: &HashSet<String>) -> bool {
+    match normalize_unignore_pattern(raw_line) {
+        Some(pattern) => targets_managed_root(&pattern, managed_targets),
+        None => false,
+    }
+}
+
+fn targets_managed_root(pattern: &str, managed_targets: &HashSet<String>) -> bool {
+    managed_targets.iter().any(|managed_target| {
+        pattern == managed_target
+            || pattern
+                .strip_prefix(managed_target)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    })
+}
+
+fn managed_ignore_targets(required_rules: &[String]) -> HashSet<String> {
+    required_rules
         .iter()
         .filter_map(|rule| normalize_ignore_pattern(rule))
-        .collect::<HashSet<_>>();
+        .collect()
+}
+
+fn managed_ignore_rule_counts(contents: &str, required_rules: &[String]) -> HashMap<String, usize> {
+    let managed_targets = managed_ignore_targets(required_rules);
     let mut counts = HashMap::new();
 
     for pattern in contents.lines().filter_map(normalize_ignore_pattern) {
@@ -461,10 +502,26 @@ fn has_exactly_one_copy_of_each_managed_rule(
         .all(|rule| counts.get(&rule) == Some(&1))
 }
 
+fn managed_unignore_rules_precede_canonical_block(
+    existing_contents: &str,
+    required_rules: &[String],
+) -> bool {
+    let line_ending = detect_line_ending(existing_contents);
+    let canonical_block = canonical_vizier_gitignore_block(line_ending, required_rules);
+    let Some(block_start) = existing_contents.find(&canonical_block) else {
+        return false;
+    };
+    let managed_targets = managed_ignore_targets(required_rules);
+    existing_contents[..block_start]
+        .lines()
+        .any(|line| is_managed_unignore_rule(line, &managed_targets))
+}
+
 fn gitignore_needs_canonicalization(existing_contents: &str, required_rules: &[String]) -> bool {
     count_vizier_gitignore_headings(existing_contents) != 1
         || !has_canonical_vizier_gitignore_block(existing_contents, required_rules)
         || !has_exactly_one_copy_of_each_managed_rule(existing_contents, required_rules)
+        || managed_unignore_rules_precede_canonical_block(existing_contents, required_rules)
 }
 
 fn set_executable_if_requested(
@@ -520,6 +577,43 @@ mod tests {
     }
 
     #[test]
+    fn normalize_unignore_pattern_accepts_equivalent_forms() {
+        assert_eq!(
+            normalize_unignore_pattern("!./.vizier/jobs/**"),
+            Some(".vizier/jobs".to_string())
+        );
+        assert_eq!(
+            normalize_unignore_pattern("!/.vizier/jobs/keep.json"),
+            Some(".vizier/jobs/keep.json".to_string())
+        );
+        assert_eq!(
+            normalize_unignore_pattern("!**/.vizier/implementation-plans/keep.md"),
+            Some(".vizier/implementation-plans/keep.md".to_string())
+        );
+        assert_eq!(normalize_unignore_pattern(".vizier/jobs/"), None);
+        assert_eq!(normalize_unignore_pattern("# comment"), None);
+    }
+
+    #[test]
+    fn is_managed_unignore_rule_matches_roots_and_descendants_only() {
+        let managed_targets = managed_ignore_targets(&required_ignore_rules());
+        assert!(is_managed_unignore_rule("!.vizier/jobs/", &managed_targets,));
+        assert!(is_managed_unignore_rule(
+            "!/.vizier/jobs/keep.json",
+            &managed_targets,
+        ));
+        assert!(is_managed_unignore_rule(
+            "!**/.vizier/implementation-plans/keep.md",
+            &managed_targets,
+        ));
+        assert!(!is_managed_unignore_rule(
+            "!/.vizier-state/jobs/keep.json",
+            &managed_targets,
+        ));
+        assert!(!is_managed_unignore_rule("!/target", &managed_targets));
+    }
+
+    #[test]
     fn missing_ignore_rules_treats_equivalent_patterns_as_covered() {
         let existing = "\
 /.vizier/tmp/
@@ -543,6 +637,35 @@ mod tests {
         assert_eq!(
             updated,
             "target/\r\n\r\n# Vizier\r\n.vizier/tmp-worktrees/\r\n.vizier/tmp/\r\n.vizier/sessions/\r\n.vizier/jobs/\r\n.vizier/state/\r\n.vizier/implementation-plans\r\n"
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn rewrite_vizier_gitignore_block_moves_managed_unignore_rules_after_canonical_block() {
+        let existing = "\
+target/
+!.vizier/jobs/
+!/.vizier/jobs/keep.json
+# keep working tree docs visible
+!docs/dev/architecture/kernel.md
+.vizier/jobs/
+";
+        let updated = rewrite_vizier_gitignore_block(existing, &required_ignore_rules());
+        assert_eq!(
+            updated,
+            "target/\n# keep working tree docs visible\n!docs/dev/architecture/kernel.md\n\n# Vizier\n.vizier/tmp-worktrees/\n.vizier/tmp/\n.vizier/sessions/\n.vizier/jobs/\n.vizier/state/\n.vizier/implementation-plans\n!.vizier/jobs/\n!/.vizier/jobs/keep.json\n"
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn rewrite_vizier_gitignore_block_preserves_crlf_for_managed_unignore_rules() {
+        let existing = "target/\r\n!.vizier/jobs/\r\n!/.vizier/jobs/keep.json\r\n.vizier/jobs/\r\n";
+        let updated = rewrite_vizier_gitignore_block(existing, &required_ignore_rules());
+        assert_eq!(
+            updated,
+            "target/\r\n\r\n# Vizier\r\n.vizier/tmp-worktrees/\r\n.vizier/tmp/\r\n.vizier/sessions/\r\n.vizier/jobs/\r\n.vizier/state/\r\n.vizier/implementation-plans\r\n!.vizier/jobs/\r\n!/.vizier/jobs/keep.json\r\n"
                 .to_string()
         );
     }
@@ -613,6 +736,60 @@ target/
         assert!(
             !evaluation.needs_canonicalization,
             "canonical headed block should satisfy gitignore shape"
+        );
+    }
+
+    #[test]
+    fn evaluate_gitignore_contents_flags_managed_unignore_rules_before_canonical_block() {
+        let existing = "\
+target/
+!.vizier/jobs/
+!/.vizier/jobs/keep.json
+
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+";
+        let evaluation = evaluate_gitignore_contents(existing, &required_ignore_rules());
+        assert!(
+            evaluation.missing_ignore_rules.is_empty(),
+            "managed unignore ordering should not count as missing rules: {:?}",
+            evaluation.missing_ignore_rules
+        );
+        assert!(
+            evaluation.needs_canonicalization,
+            "managed unignore rules before the canonical block should require canonicalization"
+        );
+    }
+
+    #[test]
+    fn evaluate_gitignore_contents_accepts_canonical_block_with_managed_unignore_rules_after_it() {
+        let existing = "\
+target/
+
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+!.vizier/jobs/
+!/.vizier/jobs/keep.json
+";
+        let evaluation = evaluate_gitignore_contents(existing, &required_ignore_rules());
+        assert!(
+            evaluation.missing_ignore_rules.is_empty(),
+            "canonical block plus preserved managed unignores should stay rule-complete: {:?}",
+            evaluation.missing_ignore_rules
+        );
+        assert!(
+            !evaluation.needs_canonicalization,
+            "managed unignore rules after the canonical block should satisfy gitignore shape"
         );
     }
 

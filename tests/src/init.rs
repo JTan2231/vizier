@@ -75,15 +75,27 @@ fn assert_vizier_gitignore_block(gitignore: &str) {
     );
     for rule in REQUIRED_IGNORE_RULES {
         assert!(
-            gitignore.contains(rule),
+            gitignore.lines().any(|line| line == rule),
             "expected required ignore rule {rule} in .gitignore:\n{gitignore}"
         );
         assert_eq!(
-            gitignore.matches(rule).count(),
+            gitignore.lines().filter(|line| *line == rule).count(),
             1,
             "required ignore rule {rule} should appear once:\n{gitignore}"
         );
     }
+}
+
+fn find_line_index(contents: &str, needle: &str) -> usize {
+    contents
+        .lines()
+        .position(|line| line == needle)
+        .unwrap_or_else(|| panic!("expected line `{needle}` in:\n{contents}"))
+}
+
+fn status_for_path(repo: &IntegrationRepo, rel: &str) -> TestResult<Status> {
+    let repo_handle = repo.repo();
+    repo_handle.status_file(Path::new(rel)).map_err(Into::into)
 }
 
 #[test]
@@ -315,6 +327,123 @@ fn test_init_upgrades_existing_vizier_gitignore_block_to_headed_format() -> Test
         gitignore,
         repo.read(".gitignore")?,
         "canonicalized gitignore should stay stable on rerun"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_init_rewrites_managed_unignore_exceptions_after_canonical_block() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+
+    repo.write(
+        ".gitignore",
+        "\
+/target
+Cargo.lock
+!.vizier/jobs/
+!/.vizier/jobs/keep.json
+# keep docs tracked
+!docs/dev/architecture/kernel.md
+
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/implementation-plans
+",
+    )?;
+    repo.write(".vizier/jobs/keep.json", "{\"keep\":true}\n")?;
+    repo.write(".vizier/jobs/other.json", "{\"other\":true}\n")?;
+
+    let keep_before = status_for_path(&repo, ".vizier/jobs/keep.json")?;
+    let other_before = status_for_path(&repo, ".vizier/jobs/other.json")?;
+    assert!(
+        keep_before.contains(Status::IGNORED),
+        "keep.json should be ignored before repair when the managed exception is before .vizier/jobs/: {keep_before:?}"
+    );
+    assert!(
+        other_before.contains(Status::IGNORED),
+        "other.json should be ignored before repair when the managed root exception is before .vizier/jobs/: {other_before:?}"
+    );
+
+    let check_before = repo.vizier_output_no_follow(&["init", "--check"])?;
+    assert!(
+        !check_before.status.success(),
+        "vizier init --check should fail before repair"
+    );
+    let check_before_stdout = String::from_utf8_lossy(&check_before.stdout);
+    assert!(
+        check_before_stdout.contains("missing: .gitignore: .vizier/state/"),
+        "check output should report the independent missing-rule trigger: {check_before_stdout}"
+    );
+
+    let output = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        output.status.success(),
+        "vizier init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let gitignore = repo.read(".gitignore")?;
+    assert_vizier_gitignore_block(&gitignore);
+    assert!(
+        find_line_index(&gitignore, "!docs/dev/architecture/kernel.md")
+            < find_line_index(&gitignore, "# Vizier"),
+        "unrelated negations should remain outside the managed rewrite block:\n{gitignore}"
+    );
+    assert!(
+        find_line_index(&gitignore, "!.vizier/jobs/")
+            > find_line_index(&gitignore, ".vizier/implementation-plans"),
+        "managed root exception should be rewritten after the canonical block:\n{gitignore}"
+    );
+    assert!(
+        find_line_index(&gitignore, "!/.vizier/jobs/keep.json")
+            > find_line_index(&gitignore, ".vizier/implementation-plans"),
+        "managed descendant exception should be rewritten after the canonical block:\n{gitignore}"
+    );
+
+    let keep_after = status_for_path(&repo, ".vizier/jobs/keep.json")?;
+    let other_after = status_for_path(&repo, ".vizier/jobs/other.json")?;
+    assert!(
+        !keep_after.contains(Status::IGNORED) && keep_after.contains(Status::WT_NEW),
+        "keep.json should be visible to Git after repair: {keep_after:?}"
+    );
+    assert!(
+        !other_after.contains(Status::IGNORED) && other_after.contains(Status::WT_NEW),
+        "other.json should be visible to Git after repair because the managed root exception stayed effective: {other_after:?}"
+    );
+
+    let check_after = repo.vizier_output_no_follow(&["init", "--check"])?;
+    assert!(
+        check_after.status.success(),
+        "vizier init --check should succeed after repair: {}",
+        String::from_utf8_lossy(&check_after.stderr)
+    );
+
+    let rerun = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        rerun.status.success(),
+        "second vizier init failed after exception rewrite: {}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+    let rerun_stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert!(
+        rerun_stdout.contains("already satisfied"),
+        "expected already satisfied after precedence-preserving repair, got: {rerun_stdout}"
+    );
+    assert_eq!(
+        gitignore,
+        repo.read(".gitignore")?,
+        "managed exception rewrite should remain stable on rerun"
     );
     Ok(())
 }
