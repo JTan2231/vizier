@@ -558,7 +558,7 @@ fn discover_batch_specs(
     batch_dir: &str,
 ) -> Result<Vec<DiscoveredBatchSpec>, Box<dyn std::error::Error>> {
     let mut discovered = Vec::<DiscoveredBatchSpec>::new();
-    collect_batch_specs_recursive(canonical_root, batch_root, &mut discovered)?;
+    collect_batch_specs_recursive(canonical_root, batch_dir, batch_root, &mut discovered)?;
     discovered.sort_by(|left, right| left.spec_file.as_bytes().cmp(right.spec_file.as_bytes()));
 
     if discovered.is_empty() {
@@ -572,19 +572,30 @@ fn discover_batch_specs(
 
 fn collect_batch_specs_recursive(
     canonical_root: &Path,
+    batch_dir: &str,
     dir: &Path,
     out: &mut Vec<DiscoveredBatchSpec>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
+    let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|left, right| {
+        relative_display_path(canonical_root, &left.path())
+            .as_bytes()
+            .cmp(relative_display_path(canonical_root, &right.path()).as_bytes())
+    });
+
+    for entry in entries {
+        let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_symlink() {
-            continue;
+            let symlink_path = relative_display_path(canonical_root, &path);
+            return Err(format!(
+                "invalid --spec-dir `{batch_dir}`: symlink entry `{symlink_path}` is unsupported; `--spec-dir` requires regular directories and markdown files"
+            )
+            .into());
         }
 
-        let path = entry.path();
         if file_type.is_dir() {
-            collect_batch_specs_recursive(canonical_root, &path, out)?;
+            collect_batch_specs_recursive(canonical_root, batch_dir, &path, out)?;
             continue;
         }
 

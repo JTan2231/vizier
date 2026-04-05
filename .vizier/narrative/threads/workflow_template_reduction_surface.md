@@ -27,6 +27,10 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-04-05, batch symlink rejection):
+  - `vizier-cli/src/actions/run.rs` now keeps `--spec-dir` root canonicalization unchanged but makes recursive batch discovery fail fast on symlinked files/directories, surfacing `invalid --spec-dir ... symlink entry <repo-relative-path> is unsupported` instead of silently skipping links or misreporting a symlink-only batch as empty.
+  - The rejection stays inside shared batch preparation, so `vizier run --check ... --spec-dir` and enqueue/follow modes fail before per-item template preparation, run-manifest writes, or job creation.
+  - `tests/src/run.rs` now covers a mixed symlinked markdown entry, a symlinked subdirectory, and a symlink-only batch, asserting explicit diagnostics with zero partial enqueue side effects.
 - Update (2026-04-05, batch manifest branch persistence):
   - `vizier-cli/src/actions/run.rs` now injects `branch = draft/<slug>` during `--spec-dir` item preparation so queued run manifests persist the same per-item branch ownership implied by batch-mode slug derivation and shared-branch override rejection.
   - Aggregate batch output is unchanged (`spec_file` + `slug` only); the behavior change is limited to persisted manifest metadata under `.vizier/jobs/runs/<run_id>.json`.

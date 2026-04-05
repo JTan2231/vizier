@@ -98,6 +98,15 @@ branch = \"${{branch}}\"\n",
     Ok(())
 }
 
+#[cfg(unix)]
+fn symlink_path(src: &Path, dst: &Path) -> TestResult {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    std::os::unix::fs::symlink(src, dst)?;
+    Ok(())
+}
+
 fn write_stage_token_dependency_templates(repo: &IntegrationRepo) -> TestResult {
     repo.write(
         ".vizier/workflows/custom-stage-token-producer.toml",
@@ -996,6 +1005,64 @@ fn test_run_check_batch_spec_dir_reports_items_without_enqueueing() -> TestResul
         before_jobs,
         "batch check must not enqueue jobs"
     );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_run_batch_spec_dir_rejects_symlinked_markdown_entries_in_check_and_enqueue_modes()
+-> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("specs/auth.md", "# Auth\n")?;
+    repo.write("linked/shared.md", "# Shared\n")?;
+    symlink_path(
+        &repo.path().join("linked/shared.md"),
+        &repo.path().join("specs/link.md"),
+    )?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+    for (mode_args, mode_label) in [(&["--check"][..], "check"), (&[][..], "enqueue")] {
+        let mut args = vec![
+            "run",
+            "file:.vizier/workflows/batch.toml",
+            "--spec-dir",
+            "specs",
+        ];
+        args.extend_from_slice(mode_args);
+
+        let output = repo.vizier_output(&args)?;
+        assert!(
+            !output.status.success(),
+            "symlinked markdown batch should fail in {mode_label} mode"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(
+                "invalid --spec-dir `specs`: symlink entry `specs/link.md` is unsupported"
+            ),
+            "expected explicit symlink diagnostic in {mode_label} mode, got: {stderr}"
+        );
+        assert!(
+            stderr.contains("`--spec-dir` requires regular directories and markdown files"),
+            "expected unsupported-symlink guidance in {mode_label} mode, got: {stderr}"
+        );
+        assert_eq!(
+            count_run_manifests(&repo)?,
+            before_run_manifests,
+            "symlink failure in {mode_label} mode must not write run manifests"
+        );
+        assert_eq!(
+            count_job_records(&repo)?,
+            before_jobs,
+            "symlink failure in {mode_label} mode must not enqueue jobs"
+        );
+    }
 
     Ok(())
 }
@@ -4780,6 +4847,54 @@ fn test_run_batch_enqueues_sorted_specs_with_per_run_metadata() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn test_run_batch_spec_dir_rejects_symlinked_subdirectory_without_side_effects() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("specs/auth.md", "# Auth\n")?;
+    repo.write("fixtures/shared/linked.md", "# Linked\n")?;
+    symlink_path(
+        &repo.path().join("fixtures/shared"),
+        &repo.path().join("specs/linked-dir"),
+    )?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/batch.toml",
+        "--spec-dir",
+        "specs",
+    ])?;
+    assert!(
+        !output.status.success(),
+        "symlinked subdirectory batch should fail"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "invalid --spec-dir `specs`: symlink entry `specs/linked-dir` is unsupported"
+        ),
+        "expected explicit symlinked-directory diagnostic, got: {stderr}"
+    );
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "symlinked directory failure must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "symlinked directory failure must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_run_batch_spec_dir_rejects_branch_and_source_overrides() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
@@ -4821,6 +4936,53 @@ fn test_run_batch_spec_dir_rejects_branch_and_source_overrides() -> TestResult {
             "failed batch override `{override_value}` must not enqueue jobs"
         );
     }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_run_batch_spec_dir_rejects_symlink_only_batch_before_empty_directory_error() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("linked/only.md", "# Only\n")?;
+    symlink_path(
+        &repo.path().join("linked/only.md"),
+        &repo.path().join("specs/only.md"),
+    )?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/batch.toml",
+        "--spec-dir",
+        "specs",
+        "--check",
+    ])?;
+    assert!(!output.status.success(), "symlink-only batch should fail");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --spec-dir `specs`: symlink entry `specs/only.md` is unsupported"),
+        "expected explicit symlink-only diagnostic, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no markdown spec files found"),
+        "symlink-only batch must not fall through to the empty-directory error: {stderr}"
+    );
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "symlink-only failure must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "symlink-only failure must not enqueue jobs"
+    );
 
     Ok(())
 }
