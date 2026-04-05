@@ -4781,6 +4781,51 @@ fn test_run_batch_enqueues_sorted_specs_with_per_run_metadata() -> TestResult {
 }
 
 #[test]
+fn test_run_batch_spec_dir_rejects_branch_and_source_overrides() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("specs/auth.md", "# Auth\n")?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+    for override_value in ["branch=draft/manual", "source=draft/manual"] {
+        let output = repo.vizier_output(&[
+            "run",
+            "file:.vizier/workflows/batch.toml",
+            "--spec-dir",
+            "specs",
+            "--set",
+            override_value,
+        ])?;
+        assert!(
+            !output.status.success(),
+            "batch run should reject `{override_value}` override"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(
+                "`--spec-dir` cannot be combined with explicit `branch` or `source` overrides because batch items must use distinct branches"
+            ),
+            "expected batch-owned branch override rejection for `{override_value}`, got: {stderr}"
+        );
+        assert_eq!(
+            count_run_manifests(&repo)?,
+            before_run_manifests,
+            "failed batch override `{override_value}` must not write run manifests"
+        );
+        assert_eq!(
+            count_job_records(&repo)?,
+            before_jobs,
+            "failed batch override `{override_value}` must not enqueue jobs"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_run_follow_batch_short_circuits_on_first_failed_item() -> TestResult {
     let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
