@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[cfg(unix)]
@@ -34,6 +34,7 @@ const PROMPT_MERGE_STARTER: &str = include_str!("../../templates/init/prompts/ME
 const PROMPT_COMMIT_STARTER: &str = include_str!("../../templates/init/prompts/COMMIT_PROMPTS.md");
 const CI_SCRIPT_STARTER: &str = include_str!("../../templates/init/ci.sh");
 const VIZIER_GITIGNORE_HEADING: &str = "# Vizier";
+const CANONICAL_VIZIER_GITIGNORE_ITEM: &str = ".gitignore: canonical # Vizier block";
 
 #[derive(Debug, Clone)]
 struct RequiredFile {
@@ -46,11 +47,14 @@ struct RequiredFile {
 struct InitEvaluation {
     missing_files: Vec<String>,
     missing_ignore_rules: Vec<String>,
+    gitignore_needs_canonicalization: bool,
 }
 
 impl InitEvaluation {
     fn contract_satisfied(&self) -> bool {
-        self.missing_files.is_empty() && self.missing_ignore_rules.is_empty()
+        self.missing_files.is_empty()
+            && self.missing_ignore_rules.is_empty()
+            && !self.gitignore_needs_canonicalization
     }
 
     fn missing_items(&self) -> Vec<String> {
@@ -61,8 +65,17 @@ impl InitEvaluation {
                 .iter()
                 .map(|rule| format!(".gitignore: {rule}")),
         );
+        if self.gitignore_needs_canonicalization {
+            items.push(CANONICAL_VIZIER_GITIGNORE_ITEM.to_string());
+        }
         items
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitignoreEvaluation {
+    missing_ignore_rules: Vec<String>,
+    needs_canonicalization: bool,
 }
 
 pub(crate) fn run_init(repo_root: &Path, check: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -143,11 +156,12 @@ fn evaluate_init_state(repo_root: &Path) -> Result<InitEvaluation, Box<dyn std::
     let required_rules = required_ignore_rules();
     let gitignore_path = repo_root.join(".gitignore");
     let gitignore_contents = read_text_lossy(&gitignore_path)?;
-    let missing_ignore_rules = missing_ignore_rules(&gitignore_contents, &required_rules);
+    let gitignore_evaluation = evaluate_gitignore_contents(&gitignore_contents, &required_rules);
 
     Ok(InitEvaluation {
         missing_files,
-        missing_ignore_rules,
+        missing_ignore_rules: gitignore_evaluation.missing_ignore_rules,
+        gitignore_needs_canonicalization: gitignore_evaluation.needs_canonicalization,
     })
 }
 
@@ -155,8 +169,10 @@ fn ensure_gitignore_rules(repo_root: &Path) -> Result<(), Box<dyn std::error::Er
     let required_rules = required_ignore_rules();
     let gitignore_path = repo_root.join(".gitignore");
     let existing = read_text_lossy(&gitignore_path)?;
-    let missing = missing_ignore_rules(&existing, &required_rules);
-    if missing.is_empty() {
+    let gitignore_evaluation = evaluate_gitignore_contents(&existing, &required_rules);
+    if gitignore_evaluation.missing_ignore_rules.is_empty()
+        && !gitignore_evaluation.needs_canonicalization
+    {
         return Ok(());
     }
 
@@ -164,6 +180,20 @@ fn ensure_gitignore_rules(repo_root: &Path) -> Result<(), Box<dyn std::error::Er
     std::fs::write(&gitignore_path, updated)
         .map_err(|err| io_error("write file", &gitignore_path, err))?;
     Ok(())
+}
+
+fn evaluate_gitignore_contents(
+    existing_contents: &str,
+    required_rules: &[String],
+) -> GitignoreEvaluation {
+    let missing_ignore_rules = missing_ignore_rules(existing_contents, required_rules);
+    let needs_canonicalization = missing_ignore_rules.is_empty()
+        && gitignore_needs_canonicalization(existing_contents, required_rules);
+
+    GitignoreEvaluation {
+        missing_ignore_rules,
+        needs_canonicalization,
+    }
 }
 
 fn read_text_lossy(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -335,6 +365,17 @@ fn detect_line_ending(contents: &str) -> &'static str {
     }
 }
 
+fn canonical_vizier_gitignore_block(line_ending: &str, required_rules: &[String]) -> String {
+    let mut block = String::new();
+    block.push_str(VIZIER_GITIGNORE_HEADING);
+    block.push_str(line_ending);
+    for rule in required_rules {
+        block.push_str(rule);
+        block.push_str(line_ending);
+    }
+    block
+}
+
 fn rewrite_vizier_gitignore_block(existing_contents: &str, required_rules: &[String]) -> String {
     let line_ending = detect_line_ending(existing_contents);
     let managed_targets = required_rules
@@ -357,12 +398,10 @@ fn rewrite_vizier_gitignore_block(existing_contents: &str, required_rules: &[Str
         updated.push_str(line_ending);
         updated.push_str(line_ending);
     }
-    updated.push_str(VIZIER_GITIGNORE_HEADING);
-    updated.push_str(line_ending);
-    for rule in required_rules {
-        updated.push_str(rule);
-        updated.push_str(line_ending);
-    }
+    updated.push_str(&canonical_vizier_gitignore_block(
+        line_ending,
+        required_rules,
+    ));
     updated
 }
 
@@ -370,11 +409,62 @@ fn is_vizier_gitignore_heading(raw_line: &str) -> bool {
     raw_line.trim_start().starts_with(VIZIER_GITIGNORE_HEADING)
 }
 
+fn count_vizier_gitignore_headings(contents: &str) -> usize {
+    contents
+        .lines()
+        .filter(|line| is_vizier_gitignore_heading(line))
+        .count()
+}
+
 fn is_managed_ignore_rule(raw_line: &str, managed_targets: &HashSet<String>) -> bool {
     match normalize_ignore_pattern(raw_line) {
         Some(pattern) => managed_targets.contains(&pattern),
         None => false,
     }
+}
+
+fn managed_ignore_rule_counts(contents: &str, required_rules: &[String]) -> HashMap<String, usize> {
+    let managed_targets = required_rules
+        .iter()
+        .filter_map(|rule| normalize_ignore_pattern(rule))
+        .collect::<HashSet<_>>();
+    let mut counts = HashMap::new();
+
+    for pattern in contents.lines().filter_map(normalize_ignore_pattern) {
+        if managed_targets.contains(&pattern) {
+            *counts.entry(pattern).or_insert(0) += 1;
+        }
+    }
+
+    counts
+}
+
+fn has_canonical_vizier_gitignore_block(
+    existing_contents: &str,
+    required_rules: &[String],
+) -> bool {
+    let line_ending = detect_line_ending(existing_contents);
+    existing_contents.contains(&canonical_vizier_gitignore_block(
+        line_ending,
+        required_rules,
+    ))
+}
+
+fn has_exactly_one_copy_of_each_managed_rule(
+    existing_contents: &str,
+    required_rules: &[String],
+) -> bool {
+    let counts = managed_ignore_rule_counts(existing_contents, required_rules);
+    required_rules
+        .iter()
+        .filter_map(|rule| normalize_ignore_pattern(rule))
+        .all(|rule| counts.get(&rule) == Some(&1))
+}
+
+fn gitignore_needs_canonicalization(existing_contents: &str, required_rules: &[String]) -> bool {
+    count_vizier_gitignore_headings(existing_contents) != 1
+        || !has_canonical_vizier_gitignore_block(existing_contents, required_rules)
+        || !has_exactly_one_copy_of_each_managed_rule(existing_contents, required_rules)
 }
 
 fn set_executable_if_requested(
@@ -478,6 +568,55 @@ target/
     }
 
     #[test]
+    fn evaluate_gitignore_contents_flags_rule_complete_legacy_block_for_canonicalization() {
+        let existing = "\
+target/
+
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+";
+        let evaluation = evaluate_gitignore_contents(existing, &required_ignore_rules());
+        assert!(
+            evaluation.missing_ignore_rules.is_empty(),
+            "legacy block should remain rule-complete: {:?}",
+            evaluation.missing_ignore_rules
+        );
+        assert!(
+            evaluation.needs_canonicalization,
+            "rule-complete legacy block should still require canonicalization"
+        );
+    }
+
+    #[test]
+    fn evaluate_gitignore_contents_accepts_canonical_headed_block() {
+        let existing = "\
+target/
+
+# Vizier
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+";
+        let evaluation = evaluate_gitignore_contents(existing, &required_ignore_rules());
+        assert!(
+            evaluation.missing_ignore_rules.is_empty(),
+            "canonical block should cover all required rules: {:?}",
+            evaluation.missing_ignore_rules
+        );
+        assert!(
+            !evaluation.needs_canonicalization,
+            "canonical headed block should satisfy gitignore shape"
+        );
+    }
+
+    #[test]
     fn evaluate_init_state_detects_missing_required_files_and_ignore_rules() {
         let temp = tempfile::tempdir().expect("create tempdir");
         let repo_root = temp.path();
@@ -513,6 +652,52 @@ target/
                 .any(|path| path == ".vizier/prompts/DRAFT_PROMPTS.md"),
             "expected missing .vizier/prompts/DRAFT_PROMPTS.md in evaluation: {:?}",
             evaluation.missing_files
+        );
+        assert!(
+            !evaluation.gitignore_needs_canonicalization,
+            "missing-rule evaluation should not also claim canonicalization: {evaluation:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_init_state_detects_heading_only_gitignore_migration_need() {
+        let temp = tempfile::tempdir().expect("create tempdir");
+        let repo_root = temp.path();
+
+        apply_initialization(repo_root).expect("apply initialization");
+        std::fs::write(
+            repo_root.join(".gitignore"),
+            "\
+target/
+
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+",
+        )
+        .expect("write legacy gitignore");
+
+        let evaluation = evaluate_init_state(repo_root).expect("evaluate init state");
+        assert!(
+            evaluation.missing_files.is_empty(),
+            "expected no missing required files: {:?}",
+            evaluation.missing_files
+        );
+        assert!(
+            evaluation.missing_ignore_rules.is_empty(),
+            "expected no missing ignore rules: {:?}",
+            evaluation.missing_ignore_rules
+        );
+        assert!(
+            evaluation.gitignore_needs_canonicalization,
+            "rule-complete legacy block should still require canonicalization"
+        );
+        assert!(
+            !evaluation.contract_satisfied(),
+            "heading-only migration need should keep init unsatisfied"
         );
     }
 }

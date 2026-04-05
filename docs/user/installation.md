@@ -46,14 +46,15 @@ vizier init
 - `.vizier/prompts/{DRAFT,APPROVE,MERGE,COMMIT}_PROMPTS.md`
 - `./ci.sh`
 
-It also ensures `.gitignore` includes Vizier runtime paths that should stay out of
-history under a `# Vizier` block:
+It also ensures `.gitignore` contains a single canonical `# Vizier` block for
+Vizier-managed paths that should stay out of history:
 
 - `.vizier/tmp/`
 - `.vizier/tmp-worktrees/`
 - `.vizier/jobs/`
 - `.vizier/sessions/`
 - `.vizier/state/`
+- `.vizier/implementation-plans`
 
 To validate initialization without mutating files:
 
@@ -61,8 +62,9 @@ To validate initialization without mutating files:
 vizier init --check
 ```
 
-`--check` exits non-zero and prints a missing-item list when marker files or
-required ignore rules are absent.
+`--check` exits non-zero and prints a missing-item list when marker files,
+required ignore rules, or canonical `# Vizier` block migration are still
+needed.
 
 ## Dry run
 

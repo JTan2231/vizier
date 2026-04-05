@@ -10,6 +10,7 @@
 - **Clap unknown-subcommand path**: Standard parser failure surface used for removed commands; no custom migration text.
 - **Code state**: Snapshot slice for user-visible behavior, interfaces, and constraints.
 - **Commit-style summary**: User-facing one-line narrative maintenance response; detailed deltas stay internal.
+- **Canonical Vizier gitignore block**: The single `# Vizier` block in `.gitignore` that carries each managed Vizier ignore rule exactly once; `vizier init` satisfaction now requires this headed layout, not just raw rule coverage.
 - **Conventional-subject release-note filter**: `vizier release` includes notes only for Conventional Commit subject lines.
 - **Current worktree evidence**: Snapshot code-state line that records the latest local `draft/*` branch inventory plus on-disk and tracked-deletion `.vizier/implementation-plans/*.md` evidence for the active worktree slug (including explicit no-deletion states).
 - **Worktree evidence label**: Parenthetical in the current-worktree-evidence snapshot bullet (`draft/<slug>`, `revalidated <date>`) that identifies which live branch inventory the evidence was sampled from.
@@ -39,7 +40,7 @@
 - **`gen-man` drift gate**: `cargo run -p vizier --bin gen-man -- --check` validation that generated man pages are current.
 - **Help pager contract**: Help text auto-pages only on TTY via `$VIZIER_PAGER` (or fallback pager), prints directly on non-TTY, and can be internally suppressed with hidden `--no-pager`.
 - **HCL placeholder escaping**: Workflow templates authored in `.hcl` must write literal Vizier queue-time placeholders as `$${key}` so HCL decoding yields `${key}` for existing expansion logic.
-- **Init check mode**: `vizier init --check`; validates the init contract without mutating files.
+- **Init check mode**: `vizier init --check`; validates the init contract without mutating files, including canonical `# Vizier` block shape as well as durable markers and managed ignore coverage.
 - **Jobs command surface**: Retained `vizier jobs` operations (`list`, `schedule`, `show`, `status`, `tail`, `attach`, `approve`, `reject`, `retry`, `cancel`, `gc`) over persisted job records.
 - **Jobs raw monitoring mode**: Additive `vizier jobs list|show|schedule --format json --raw` path that emits typed monitoring envelopes (`version`, `generated_at`) instead of display-field-flattened JSON.
 - **Jobs raw JSON gate**: Contract that `--raw` is accepted only with explicit `--format json`; non-JSON or missing-format usage fails fast with CLI errors.

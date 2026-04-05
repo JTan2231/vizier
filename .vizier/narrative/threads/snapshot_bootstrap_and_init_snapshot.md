@@ -11,18 +11,19 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
 - `vizier init` is the canonical bootstrap command.
 - Initialization is contract-driven and machine-checkable:
   - Durable markers: `.vizier/narrative/snapshot.md` and `.vizier/narrative/glossary.md`.
-  - Required `.gitignore` runtime coverage: `.vizier/tmp/`, `.vizier/tmp-worktrees/`, `.vizier/jobs/`, `.vizier/sessions/`.
+  - Required `.gitignore` runtime coverage lives under one canonical `# Vizier` block: `.vizier/tmp/`, `.vizier/tmp-worktrees/`, `.vizier/jobs/`, `.vizier/sessions/`, `.vizier/state/`, `.vizier/implementation-plans`.
 - Mutating init is idempotent and safe to rerun:
   - Creates missing durable markers with starter content.
-  - Appends missing ignore rules without reordering unrelated `.gitignore` content or duplicating equivalent patterns.
+  - Rewrites missing or legacy managed ignore entries into the canonical headed block without reordering unrelated `.gitignore` content or duplicating equivalent patterns.
   - Never overwrites existing marker file contents by default.
-- `vizier init --check` validates the same contract without mutating files and exits non-zero with an explicit missing-item list when requirements are not met.
+- `vizier init --check` validates the same contract without mutating files and exits non-zero with an explicit missing-item list when requirements are not met or a legacy managed block still needs canonicalization.
 
 ## Acceptance criteria
 - `vizier init` on an uninitialized repo creates durable marker files and required ignore entries, then reports initialization applied.
 - Re-running `vizier init` on a satisfied repo produces no file-content changes and reports already satisfied.
-- `vizier init --check` exits 0 only when durable markers and required ignore coverage are present.
-- `vizier init --check` exits non-zero with explicit missing markers/ignore entries when requirements are absent.
+- `vizier init` rewrites a rule-complete legacy Vizier ignore block into the canonical single headed `# Vizier` form while preserving unrelated `.gitignore` content.
+- `vizier init --check` exits 0 only when durable markers and the canonical headed Vizier ignore block are present.
+- `vizier init --check` exits non-zero with explicit missing markers/ignore entries or canonicalization-needed `.gitignore` state when requirements are absent.
 - Check mode is non-mutating: it does not create `.vizier`, `.vizier/jobs`, or `.vizier/sessions` as a side effect.
 - Outside a Git repository, `vizier init` fails with an explicit non-git error.
 
@@ -31,6 +32,7 @@ Thread: Repository initialization contract (`vizier init`) — cross: Narrative 
   - New `vizier init` command surface with `--check`.
   - Shared init-state evaluator used by mutate and check paths.
   - Idempotent durable scaffolding and equivalence-aware `.gitignore` reconciliation.
+  - Init satisfaction now requires the canonical single headed `# Vizier` block; rule-complete legacy blocks fail `--check` and are canonicalized by `vizier init`.
   - Dispatch now bypasses pre-command `.vizier` directory creation for `vizier init` so `vizier init --check` remains read-only.
   - Integration coverage added for fresh/partial/full/check/outside-git/permission-failure paths.
 - Follow-up:

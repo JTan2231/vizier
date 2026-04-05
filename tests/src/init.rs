@@ -28,6 +28,18 @@ const REQUIRED_PROMPT_FILES: [(&str, &str); 4] = [
     ),
 ];
 
+const LEGACY_COMPLETE_VIZIER_GITIGNORE: &str = "\
+/target
+Cargo.lock
+
+.vizier/tmp-worktrees/
+.vizier/tmp/
+.vizier/sessions/
+.vizier/jobs/
+.vizier/state/
+.vizier/implementation-plans
+";
+
 fn assert_matches_repo_template(
     repo: &IntegrationRepo,
     actual_rel: &str,
@@ -272,19 +284,7 @@ fn test_init_upgrades_existing_vizier_gitignore_block_to_headed_format() -> Test
         String::from_utf8_lossy(&bootstrap.stderr)
     );
 
-    repo.write(
-        ".gitignore",
-        "\
-/target
-Cargo.lock
-
-.vizier/tmp-worktrees/
-.vizier/tmp/
-.vizier/sessions/
-.vizier/jobs/
-.vizier/implementation-plans
-",
-    )?;
+    repo.write(".gitignore", LEGACY_COMPLETE_VIZIER_GITIGNORE)?;
 
     let output = repo.vizier_output_no_follow(&["init"])?;
     assert!(
@@ -299,6 +299,59 @@ Cargo.lock
         "existing .gitignore content should remain at top: {gitignore}"
     );
     assert_vizier_gitignore_block(&gitignore);
+
+    let rerun = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        rerun.status.success(),
+        "second vizier init failed after migration: {}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+    let rerun_stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert!(
+        rerun_stdout.contains("already satisfied"),
+        "expected already satisfied after headed migration, got: {rerun_stdout}"
+    );
+    assert_eq!(
+        gitignore,
+        repo.read(".gitignore")?,
+        "canonicalized gitignore should stay stable on rerun"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_init_check_reports_gitignore_migration_needed_for_legacy_complete_block() -> TestResult {
+    let repo = IntegrationRepo::new()?;
+    clean_workdir(&repo)?;
+
+    let bootstrap = repo.vizier_output_no_follow(&["init"])?;
+    assert!(
+        bootstrap.status.success(),
+        "vizier init bootstrap failed: {}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+
+    repo.write(".gitignore", LEGACY_COMPLETE_VIZIER_GITIGNORE)?;
+
+    let output = repo.vizier_output_no_follow(&["init", "--check"])?;
+    assert!(
+        !output.status.success(),
+        "vizier init --check should fail for a rule-complete legacy block"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("missing required items"),
+        "check mode should report unsatisfied init state: {stdout}"
+    );
+    assert!(
+        stdout.contains("missing: .gitignore: canonical # Vizier block"),
+        "check mode should report headed-block migration need: {stdout}"
+    );
+    assert_eq!(
+        LEGACY_COMPLETE_VIZIER_GITIGNORE,
+        repo.read(".gitignore")?,
+        "check mode should not rewrite a legacy rule-complete block"
+    );
     Ok(())
 }
 
