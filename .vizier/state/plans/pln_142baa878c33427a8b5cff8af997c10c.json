@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_142baa878c33427a8b5cff8af997c10c",
+  "slug": "flagship-develop-user-outcome",
+  "branch": "draft/flagship-develop-user-outcome",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_8a4a266a836e4a5a8458034b288acb19-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "Flagship develop spec line for merged user-visible outcome.",
+  "created_at": "2026-04-05T15:04:00.631908034+00:00",
+  "updated_at": "2026-04-05T15:04:00.631908034+00:00",
+  "job_ids": {
+    "persist": "wf-run_8a4a266a836e4a5a8458034b288acb19-develop_draft__persist_plan"
+  }
+}
