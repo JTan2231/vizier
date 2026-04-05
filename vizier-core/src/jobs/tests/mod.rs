@@ -5423,6 +5423,111 @@ fn workflow_runtime_integrate_plan_branch_embeds_plan_and_cleans_source_plan_doc
 }
 
 #[test]
+fn workflow_runtime_integrate_plan_branch_commits_plan_only_history() {
+    let temp = TempDir::new().expect("temp dir");
+    let repo = init_repo(&temp).expect("init repo");
+    seed_repo(&repo).expect("seed repo");
+    let project_root = temp.path();
+    let jobs_root = project_root.join(".vizier/jobs");
+    let target = current_branch_name(project_root).expect("target branch");
+    let before_head = repo
+        .head()
+        .and_then(|head| head.peel_to_commit())
+        .expect("read initial head")
+        .id();
+    let slug = "runtime-plan-only-history";
+    let source_branch = format!("draft/{slug}");
+    let plan_rel = format!(".vizier/implementation-plans/{slug}.md");
+    let plan_doc = format!(
+        "---\nplan: {slug}\nbranch: {source_branch}\n---\n\n## Operator Spec\nPlan-only runtime merge test\n\n## Implementation Plan\n- Preserve history even when tree matches target\n"
+    );
+
+    let checkout = git_status(project_root, &["checkout", "-b", &source_branch]);
+    assert!(checkout.is_ok(), "create draft branch: {checkout:?}");
+    fs::create_dir_all(project_root.join(".vizier/implementation-plans")).expect("create plan dir");
+    fs::write(project_root.join(&plan_rel), plan_doc).expect("write plan doc");
+    git_commit_all(project_root, "feat: add plan-only history");
+    let checkout_target = git_status(project_root, &["checkout", &target]);
+    assert!(
+        checkout_target.is_ok(),
+        "checkout target: {checkout_target:?}"
+    );
+
+    enqueue_job(
+        project_root,
+        &jobs_root,
+        "job-integrate-plan-only-history",
+        &["--help".to_string()],
+        &["vizier".to_string(), "__workflow-node".to_string()],
+        Some(JobMetadata {
+            plan: Some(slug.to_string()),
+            branch: Some(source_branch.clone()),
+            target: Some(target.clone()),
+            ..JobMetadata::default()
+        }),
+        None,
+        Some(JobSchedule::default()),
+    )
+    .expect("enqueue");
+    let record = read_record(&jobs_root, "job-integrate-plan-only-history").expect("record");
+    let node = runtime_executor_node(
+        "integrate",
+        "job-integrate-plan-only-history",
+        "cap.env.builtin.git.integrate_plan_branch",
+        "git.integrate_plan_branch",
+        BTreeMap::from([
+            ("branch".to_string(), source_branch.clone()),
+            ("slug".to_string(), slug.to_string()),
+            ("target_branch".to_string(), target.clone()),
+            ("squash".to_string(), "true".to_string()),
+            ("delete_branch".to_string(), "false".to_string()),
+        ]),
+    );
+    let result =
+        execute_workflow_executor(project_root, &jobs_root, &record, &node).expect("integrate");
+    assert_eq!(result.outcome, WorkflowNodeOutcome::Succeeded);
+
+    let head = repo
+        .head()
+        .and_then(|head| head.peel_to_commit())
+        .expect("read head commit");
+    assert_ne!(
+        head.id(),
+        before_head,
+        "expected merge to materialize a target commit even when the merged tree matches HEAD"
+    );
+    assert_eq!(
+        head.parent_count(),
+        1,
+        "squash merge should keep a single parent"
+    );
+    let message = head.message().unwrap_or_default();
+    assert!(
+        message.contains("feat: merge plan runtime-plan-only-history"),
+        "expected merge subject in message: {message}"
+    );
+    assert!(
+        message.contains("## Implementation Plan"),
+        "expected embedded plan markdown in merge commit: {message}"
+    );
+
+    let draft_tip = repo
+        .find_branch(&source_branch, BranchType::Local)
+        .expect("source branch exists")
+        .get()
+        .peel_to_commit()
+        .expect("source tip");
+    assert!(
+        draft_tip
+            .tree()
+            .expect("source tree")
+            .get_path(Path::new(&plan_rel))
+            .is_err(),
+        "expected source branch tip to remove plan doc before merge finalization"
+    );
+}
+
+#[test]
 fn workflow_runtime_git_save_worktree_patch_writes_command_patch() {
     let temp = TempDir::new().expect("temp dir");
     let repo = init_repo(&temp).expect("init repo");

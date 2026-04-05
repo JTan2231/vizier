@@ -612,8 +612,16 @@ impl AgentRunner for ScriptRunner {
             };
 
             if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(request.prompt.as_bytes()).await?;
-                stdin.shutdown().await?;
+                if let Err(err) = stdin.write_all(request.prompt.as_bytes()).await
+                    && err.kind() != io::ErrorKind::BrokenPipe
+                {
+                    return Err(AgentError::Io(err));
+                }
+                if let Err(err) = stdin.shutdown().await
+                    && err.kind() != io::ErrorKind::BrokenPipe
+                {
+                    return Err(AgentError::Io(err));
+                }
             }
 
             let wait_future = child.wait();

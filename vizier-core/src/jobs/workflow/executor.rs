@@ -827,18 +827,26 @@ pub(crate) fn execute_workflow_executor(
                 }
             };
 
-            let head_tree_matches = match Repository::open(&execution_root) {
-                Ok(repo) => match repo.head().and_then(|head| head.peel_to_commit()) {
-                    Ok(head_commit) => head_commit.tree_id() == merge_ready.tree_oid,
-                    Err(err) => {
-                        return Ok(WorkflowNodeResult::failed(
-                            format!(
-                                "git.integrate_plan_branch could not inspect merge result: {err}"
-                            ),
-                            Some(1),
-                        ));
+            let should_commit = match Repository::open(&execution_root) {
+                Ok(repo) => {
+                    if merge_ready.head_oid == merge_ready.source_oid {
+                        false
+                    } else {
+                        match repo.graph_descendant_of(merge_ready.head_oid, merge_ready.source_oid)
+                        {
+                            Ok(true) => false,
+                            Ok(false) => true,
+                            Err(err) => {
+                                return Ok(WorkflowNodeResult::failed(
+                                    format!(
+                                        "git.integrate_plan_branch could not inspect merge ancestry: {err}"
+                                    ),
+                                    Some(1),
+                                ));
+                            }
+                        }
                     }
-                },
+                }
                 Err(err) => {
                     return Ok(WorkflowNodeResult::failed(
                         format!("git.integrate_plan_branch could not open repository: {err}"),
@@ -847,7 +855,7 @@ pub(crate) fn execute_workflow_executor(
                 }
             };
 
-            if !head_tree_matches {
+            if should_commit {
                 let commit_result = if squash {
                     crate::vcs::commit_squashed_merge_in(
                         &execution_root,
