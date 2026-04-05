@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
-use clap::{ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum};
+use clap::{
+    ArgAction, ArgGroup, Args as ClapArgs, Parser, Subcommand, ValueEnum,
+    builder::NonEmptyStringValueParser,
+};
 use clap_complete::Shell;
 use vizier_core::{config, display};
 
@@ -635,7 +638,12 @@ pub(crate) struct RunCmd {
     pub(crate) check: bool,
 
     /// Expand a directory of markdown specs into serial workflow runs
-    #[arg(long = "spec-dir", value_name = "DIR", conflicts_with = "repeat")]
+    #[arg(
+        long = "spec-dir",
+        value_name = "DIR",
+        conflicts_with = "repeat",
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     pub(crate) spec_dir: Option<String>,
 
     /// External predecessor dependency; root jobs wait on JOB_ID or run:RUN_ID
@@ -1092,6 +1100,17 @@ mod tests {
             panic!("expected run command");
         };
         assert_eq!(cmd.spec_dir.as_deref(), Some("specs"));
+    }
+
+    #[test]
+    fn run_spec_dir_rejects_empty_value() {
+        let err = Cli::try_parse_from(["vizier", "run", "draft", "--spec-dir", ""])
+            .expect_err("empty spec-dir should fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--spec-dir"),
+            "expected clap error to mention --spec-dir: {rendered}"
+        );
     }
 
     #[test]

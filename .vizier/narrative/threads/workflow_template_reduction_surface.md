@@ -27,6 +27,10 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-04-05, empty batch spec-dir guard):
+  - `vizier-cli/src/cli/args.rs` now applies non-empty value parsing to `vizier run --spec-dir <DIR>`, so an explicit empty shell expansion fails as an invalid `--spec-dir` invocation before workflow preflight, repo-root canonicalization, or batch markdown discovery can run.
+  - Batch preparation/runtime behavior for valid non-empty directories is unchanged; the tightened contract only removes the empty-string path that previously aliased `project_root.join(\"\")` to the repository root.
+  - Coverage now includes a CLI parse regression in `vizier-cli::cli::args` plus `tests/src/run.rs` no-side-effect `--check` coverage, and the retained batch spec-dir contract was revalidated with the existing batch discovery/symlink/metadata tests.
 - Update (2026-04-05, batch symlink rejection):
   - `vizier-cli/src/actions/run.rs` now keeps `--spec-dir` root canonicalization unchanged but makes recursive batch discovery fail fast on symlinked files/directories, surfacing `invalid --spec-dir ... symlink entry <repo-relative-path> is unsupported` instead of silently skipping links or misreporting a symlink-only batch as empty.
   - The rejection stays inside shared batch preparation, so `vizier run --check ... --spec-dir` and enqueue/follow modes fail before per-item template preparation, run-manifest writes, or job creation.

@@ -1009,6 +1009,51 @@ fn test_run_check_batch_spec_dir_reports_items_without_enqueueing() -> TestResul
     Ok(())
 }
 
+#[test]
+fn test_run_check_batch_spec_dir_rejects_empty_value_without_side_effects() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("specs/auth.md", "# Auth\n")?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/batch.toml",
+        "--spec-dir",
+        "",
+        "--check",
+    ])?;
+    assert!(
+        !output.status.success(),
+        "empty spec-dir should fail before batch discovery"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--spec-dir"),
+        "expected argument-attributed spec-dir error, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no markdown spec files found"),
+        "empty spec-dir must fail before batch discovery, got: {stderr}"
+    );
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "empty spec-dir failure must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "empty spec-dir failure must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn test_run_batch_spec_dir_rejects_symlinked_markdown_entries_in_check_and_enqueue_modes()
