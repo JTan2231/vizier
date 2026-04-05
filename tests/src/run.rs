@@ -282,6 +282,51 @@ fn load_run_manifest(repo: &IntegrationRepo, run_id: &str) -> TestResult<Value> 
     Ok(serde_json::from_str(&fs::read_to_string(manifest_path)?)?)
 }
 
+fn find_batch_run_manifest(
+    repo: &IntegrationRepo,
+    spec_file: &str,
+    slug: &str,
+) -> TestResult<(String, Value)> {
+    let runs_dir = repo.path().join(".vizier/jobs/runs");
+    let mut matches = Vec::new();
+
+    for entry in fs::read_dir(runs_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(run_id) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        let manifest_spec_file = manifest
+            .pointer("/nodes/single/args/spec_file")
+            .and_then(Value::as_str);
+        let manifest_slug = manifest
+            .pointer("/nodes/single/args/slug")
+            .and_then(Value::as_str);
+        if manifest_spec_file == Some(spec_file) && manifest_slug == Some(slug) {
+            matches.push((run_id, manifest));
+        }
+    }
+
+    match matches.len() {
+        1 => Ok(matches.pop().expect("exactly one manifest match")),
+        0 => {
+            Err(format!("missing batch run manifest for spec_file={spec_file} slug={slug}").into())
+        }
+        _ => Err(format!(
+            "expected one batch run manifest for spec_file={spec_file} slug={slug}, found {}",
+            matches.len()
+        )
+        .into()),
+    }
+}
+
 fn first_root_job_id(payload: &Value) -> TestResult<String> {
     Ok(payload
         .get("root_job_ids")
@@ -4799,6 +4844,69 @@ fn test_run_follow_batch_short_circuits_on_first_failed_item() -> TestResult {
         count_run_manifests(&repo)?,
         3,
         "batch enqueue should persist all run manifests before follow short-circuit"
+    );
+
+    let beta_run_id = repeated_run_id(&payload, 1)?;
+    let beta_manifest = load_run_manifest(&repo, &beta_run_id)?;
+    let beta_root = manifest_node_job_id(&beta_manifest, "single")?;
+
+    let (gamma_run_id, gamma_manifest) = find_batch_run_manifest(&repo, "specs/gamma.md", "gamma")?;
+    assert!(
+        repeated_runs(&payload)?.iter().all(|run| {
+            run.get("run_id").and_then(Value::as_str) != Some(gamma_run_id.as_str())
+        }),
+        "gamma should stay absent from the short-circuited follow payload: {payload}"
+    );
+    assert_eq!(
+        gamma_manifest
+            .pointer("/nodes/single/args/spec_file")
+            .and_then(Value::as_str),
+        Some("specs/gamma.md"),
+        "gamma manifest should preserve spec_file metadata: {gamma_manifest}"
+    );
+    assert_eq!(
+        gamma_manifest
+            .pointer("/nodes/single/args/slug")
+            .and_then(Value::as_str),
+        Some("gamma"),
+        "gamma manifest should preserve slug metadata: {gamma_manifest}"
+    );
+
+    let gamma_root = manifest_node_job_id(&gamma_manifest, "single")?;
+    let gamma_record = read_job_record(&repo, &gamma_root)?;
+    let gamma_status = gamma_record
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or("gamma root missing status")?;
+    assert!(
+        matches!(
+            gamma_status,
+            "queued" | "waiting_on_deps" | "blocked_by_dependency"
+        ),
+        "gamma root should remain dependency-gated and unstarted after beta fails, got {gamma_status}: {gamma_record}"
+    );
+    assert!(
+        gamma_record.get("started_at").is_none_or(Value::is_null),
+        "gamma root should not start after beta fails: {gamma_record}"
+    );
+    assert!(
+        gamma_record.get("finished_at").is_none_or(Value::is_null),
+        "gamma root should not finish after beta fails: {gamma_record}"
+    );
+    if gamma_status != "queued" {
+        assert_eq!(
+            gamma_record
+                .pointer("/schedule/wait_reason/kind")
+                .and_then(Value::as_str),
+            Some("dependencies"),
+            "gamma root should report dependency wait semantics: {gamma_record}"
+        );
+    }
+    assert!(
+        schedule_after_job_ids(&gamma_record)
+            .iter()
+            .any(|job_id| job_id == &beta_root),
+        "gamma root must still depend on beta's root job success sink: {gamma_record}"
     );
 
     Ok(())
