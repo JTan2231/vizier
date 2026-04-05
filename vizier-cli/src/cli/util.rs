@@ -154,6 +154,7 @@ pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
 
         if is_option_with_value(token, "--set")
             || is_option_with_value(token, "--after")
+            || is_option_with_value(token, "--spec-dir")
             || is_option_with_value(token, "--repeat")
             || is_option_with_value(token, "--format")
             || is_option_with_value(token, "--load-session")
@@ -219,6 +220,7 @@ pub(crate) fn normalize_run_invocation_args(args: &[String]) -> Vec<String> {
 fn run_option_with_value(token: &str) -> bool {
     is_option_with_value(token, "--set")
         || is_option_with_value(token, "--after")
+        || is_option_with_value(token, "--spec-dir")
         || is_option_with_value(token, "--repeat")
         || is_option_with_value(token, "--format")
 }
@@ -418,6 +420,8 @@ mod tests {
             "draft".to_string(),
             "--after".to_string(),
             "job-123".to_string(),
+            "--spec-dir".to_string(),
+            "specs".to_string(),
             "--repeat".to_string(),
             "3".to_string(),
             "--format".to_string(),
@@ -455,6 +459,18 @@ mod tests {
     }
 
     #[test]
+    fn normalize_run_preserves_spec_dir_equals_form() {
+        let args = vec![
+            "vizier".to_string(),
+            "run".to_string(),
+            "draft".to_string(),
+            "--spec-dir=specs".to_string(),
+        ];
+
+        assert_eq!(normalize_run_invocation_args(&args), args);
+    }
+
+    #[test]
     fn detects_run_workflow_help_target_with_alias() {
         let args = vec![
             "vizier".to_string(),
@@ -480,6 +496,8 @@ mod tests {
         let args = vec![
             "vizier".to_string(),
             "run".to_string(),
+            "--spec-dir".to_string(),
+            "specs".to_string(),
             "--format".to_string(),
             "json".to_string(),
             "file:.vizier/workflows/draft.hcl".to_string(),

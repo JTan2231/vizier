@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -10,7 +10,10 @@ use uuid::Uuid;
 use vizier_core::display;
 
 use crate::actions::shared::format_block;
-use crate::actions::workflow_preflight::prepare_workflow_template;
+use crate::actions::workflow_preflight::{
+    PreparedWorkflowInvocation, prepare_workflow_invocation, prepare_workflow_template,
+    prepare_workflow_template_from_invocation,
+};
 use crate::cli::args::{RunCmd, RunFormatArg};
 use crate::jobs;
 use crate::workflow_templates::ResolvedWorkflowSource;
@@ -51,6 +54,7 @@ struct EnqueuedRunSummary {
     enqueue: jobs::EnqueueWorkflowRunResult,
     job_ids: Vec<String>,
     root_jobs: Vec<String>,
+    batch: Option<BatchRunItemMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +62,43 @@ struct FollowedRunSummary {
     index: u32,
     run_id: String,
     terminal: FollowResult,
+    batch: Option<BatchRunItemMetadata>,
+}
+
+#[derive(Debug, Clone)]
+struct BatchRunItemMetadata {
+    spec_file: String,
+    slug: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedRunItem {
+    index: u32,
+    template: vizier_core::workflow_template::WorkflowTemplate,
+    batch: Option<BatchRunItemMetadata>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedBatchRun {
+    batch_dir: String,
+    items: Vec<PreparedRunItem>,
+}
+
+#[derive(Debug, Clone)]
+enum MultiRunMode {
+    Repeat {
+        repeat: u32,
+    },
+    Batch {
+        batch_dir: String,
+        spec_count: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredBatchSpec {
+    absolute_path: PathBuf,
+    spec_file: String,
 }
 
 pub(crate) fn run_workflow(
@@ -67,17 +108,6 @@ pub(crate) fn run_workflow(
     vizier_root_existed_before_runtime: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = vizier_core::config::get_config();
-    let prepared = prepare_workflow_template(project_root, &cmd.flow, &cmd.inputs, &cmd.set, &cfg)?;
-    let source = prepared.source;
-    let template = prepared.template;
-
-    if cmd.check {
-        jobs::validate_workflow_run_template(&template)?;
-        emit_validation_summary(cmd.format, &source, &template)?;
-        return Ok(());
-    }
-
-    let repeat = cmd.repeat.get();
     let approval_override = if cmd.require_approval {
         Some(true)
     } else if cmd.no_require_approval {
@@ -88,56 +118,115 @@ pub(crate) fn run_workflow(
     let binary = std::env::current_exe()?;
     let invocation_args = std::env::args().collect::<Vec<_>>();
 
-    if repeat == 1 {
-        let run_id = format!("run_{}", Uuid::new_v4().simple());
-        let enqueue = jobs::enqueue_workflow_run_with_options(
+    if let Some(spec_dir) = cmd.spec_dir.as_ref() {
+        let prepared =
+            prepare_workflow_invocation(project_root, &cmd.flow, &cmd.inputs, &cmd.set, &cfg)?;
+        let batch = prepare_batch_run(project_root, spec_dir, &prepared)?;
+        let first_template = batch
+            .items
+            .first()
+            .map(|item| &item.template)
+            .ok_or("batch discovery returned no items")?;
+
+        if cmd.check {
+            emit_validation_summary(cmd.format, &prepared.source, first_template, Some(&batch))?;
+            return Ok(());
+        }
+
+        let summaries = enqueue_serial_runs(
             project_root,
             jobs_root,
-            &run_id,
-            &source.selector,
-            &template,
+            &prepared.source,
+            &batch.items,
+            &cmd.after,
+            approval_override,
+            &binary,
             &invocation_args,
-            None,
-            jobs::WorkflowRunEnqueueOptions {
-                ephemeral: cmd.ephemeral,
-                vizier_root_existed_before_runtime: cmd
-                    .ephemeral
-                    .then_some(vizier_root_existed_before_runtime),
-            },
+            cmd.ephemeral,
+            vizier_root_existed_before_runtime,
+        )?;
+        let mode = MultiRunMode::Batch {
+            batch_dir: batch.batch_dir.clone(),
+            spec_count: batch.items.len(),
+        };
+
+        if !cmd.follow {
+            emit_multi_enqueue_summary(
+                cmd.format,
+                &prepared.source,
+                &mode,
+                &summaries,
+                cmd.ephemeral,
+            )?;
+            return Ok(());
+        }
+
+        let (followed_runs, terminal_state, exit_code) = follow_serial_runs(
+            project_root,
+            jobs_root,
+            &binary,
+            &summaries,
+            cmd.ephemeral,
+            cmd.format,
+        )?;
+        emit_multi_follow_summary(
+            cmd.format,
+            &prepared.source,
+            &mode,
+            &summaries,
+            &followed_runs,
+            cmd.ephemeral,
+            &terminal_state,
+            exit_code,
         )?;
 
-        let mut job_ids = enqueue.job_ids.values().cloned().collect::<Vec<_>>();
-        job_ids.sort();
-        let mut root_jobs = resolve_root_jobs(jobs_root, &job_ids)?;
-
-        if let Some(alias) = source.command_alias.as_ref() {
-            annotate_alias_metadata(jobs_root, &job_ids, alias.as_str())?;
+        if exit_code == 0 {
+            return Ok(());
         }
+        std::process::exit(exit_code);
+    }
 
-        let normalized_after = normalize_after_dependencies(jobs_root, &cmd.after)?;
-        if !normalized_after.is_empty() {
-            for root in &root_jobs {
-                let dependencies = jobs::resolve_after_dependencies_for_enqueue(
-                    jobs_root,
-                    root,
-                    &normalized_after,
-                )?;
-                apply_after_dependencies(jobs_root, root, &dependencies)?;
-            }
-        }
+    let prepared = prepare_workflow_template(project_root, &cmd.flow, &cmd.inputs, &cmd.set, &cfg)?;
+    let source = prepared.source;
+    let template = prepared.template;
 
-        if let Some(required) = approval_override {
-            for root in &root_jobs {
-                apply_approval_override(jobs_root, root, required)?;
-            }
-        }
+    if cmd.check {
+        jobs::validate_workflow_run_template(&template)?;
+        emit_validation_summary(cmd.format, &source, &template, None)?;
+        return Ok(());
+    }
 
-        // Trigger initial scheduling once after enqueue and root-level overrides.
-        let _ = jobs::scheduler_tick(project_root, jobs_root, &binary)?;
+    let repeat = cmd.repeat.get();
+    let items = (1..=repeat)
+        .map(|index| PreparedRunItem {
+            index,
+            template: template.clone(),
+            batch: None,
+        })
+        .collect::<Vec<_>>();
+    let summaries = enqueue_serial_runs(
+        project_root,
+        jobs_root,
+        &source,
+        &items,
+        &cmd.after,
+        approval_override,
+        &binary,
+        &invocation_args,
+        cmd.ephemeral,
+        vizier_root_existed_before_runtime,
+    )?;
 
-        root_jobs.sort();
+    if repeat == 1 {
+        let summary = summaries.first().ok_or("missing run summary")?;
         if !cmd.follow {
-            emit_enqueue_summary(cmd.format, &source, &enqueue, &root_jobs, cmd.ephemeral)?;
+            emit_enqueue_summary(
+                cmd.format,
+                &source,
+                &summary.enqueue,
+                &summary.root_jobs,
+                cmd.ephemeral,
+            )?;
             return Ok(());
         }
 
@@ -145,16 +234,16 @@ pub(crate) fn run_workflow(
             project_root,
             jobs_root,
             &binary,
-            &run_id,
-            &job_ids,
+            &summary.run_id,
+            &summary.job_ids,
             cmd.ephemeral,
             cmd.format,
         )?;
         emit_follow_summary(
             cmd.format,
             &source,
-            &enqueue,
-            &root_jobs,
+            &summary.enqueue,
+            &summary.root_jobs,
             cmd.ephemeral,
             &terminal,
         )?;
@@ -165,22 +254,68 @@ pub(crate) fn run_workflow(
         std::process::exit(terminal.exit_code);
     }
 
-    let mut summaries = Vec::<EnqueuedRunSummary>::with_capacity(repeat as usize);
+    let mode = MultiRunMode::Repeat { repeat };
+
+    if !cmd.follow {
+        emit_multi_enqueue_summary(cmd.format, &source, &mode, &summaries, cmd.ephemeral)?;
+        return Ok(());
+    }
+
+    let (followed_runs, terminal_state, exit_code) = follow_serial_runs(
+        project_root,
+        jobs_root,
+        &binary,
+        &summaries,
+        cmd.ephemeral,
+        cmd.format,
+    )?;
+    emit_multi_follow_summary(
+        cmd.format,
+        &source,
+        &mode,
+        &summaries,
+        &followed_runs,
+        cmd.ephemeral,
+        &terminal_state,
+        exit_code,
+    )?;
+
+    if exit_code == 0 {
+        Ok(())
+    } else {
+        std::process::exit(exit_code)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enqueue_serial_runs(
+    project_root: &Path,
+    jobs_root: &Path,
+    source: &ResolvedWorkflowSource,
+    items: &[PreparedRunItem],
+    requested_after: &[String],
+    approval_override: Option<bool>,
+    binary: &Path,
+    invocation_args: &[String],
+    ephemeral: bool,
+    vizier_root_existed_before_runtime: bool,
+) -> Result<Vec<EnqueuedRunSummary>, Box<dyn std::error::Error>> {
+    let mut summaries = Vec::<EnqueuedRunSummary>::with_capacity(items.len());
     let mut previous_run_id = None::<String>;
-    for index in 1..=repeat {
+
+    for item in items {
         let run_id = format!("run_{}", Uuid::new_v4().simple());
         let enqueue = jobs::enqueue_workflow_run_with_options(
             project_root,
             jobs_root,
             &run_id,
             &source.selector,
-            &template,
-            &invocation_args,
+            &item.template,
+            invocation_args,
             None,
             jobs::WorkflowRunEnqueueOptions {
-                ephemeral: cmd.ephemeral,
-                vizier_root_existed_before_runtime: cmd
-                    .ephemeral
+                ephemeral,
+                vizier_root_existed_before_runtime: ephemeral
                     .then_some(vizier_root_existed_before_runtime),
             },
         )?;
@@ -193,11 +328,11 @@ pub(crate) fn run_workflow(
             annotate_alias_metadata(jobs_root, &job_ids, alias.as_str())?;
         }
 
-        let mut requested_after = cmd.after.clone();
+        let mut current_after = requested_after.to_vec();
         if let Some(previous) = previous_run_id.as_ref() {
-            requested_after.push(format!("{RUN_AFTER_PREFIX}{previous}"));
+            current_after.push(format!("{RUN_AFTER_PREFIX}{previous}"));
         }
-        let normalized_after = normalize_after_dependencies(jobs_root, &requested_after)?;
+        let normalized_after = normalize_after_dependencies(jobs_root, &current_after)?;
         if !normalized_after.is_empty() {
             for root in &root_jobs {
                 let dependencies = jobs::resolve_after_dependencies_for_enqueue(
@@ -215,48 +350,56 @@ pub(crate) fn run_workflow(
             }
         }
 
-        // Keep deterministic startup by applying per-iteration root overrides before ticking.
-        let _ = jobs::scheduler_tick(project_root, jobs_root, &binary)?;
+        // Keep deterministic startup by applying per-run root overrides before ticking.
+        let _ = jobs::scheduler_tick(project_root, jobs_root, binary)?;
 
         root_jobs.sort();
         summaries.push(EnqueuedRunSummary {
-            index,
+            index: item.index,
             run_id: run_id.clone(),
             enqueue,
             job_ids,
             root_jobs,
+            batch: item.batch.clone(),
         });
         previous_run_id = Some(run_id);
     }
 
-    if !cmd.follow {
-        emit_repeat_enqueue_summary(cmd.format, &source, repeat, &summaries, cmd.ephemeral)?;
-        return Ok(());
-    }
+    Ok(summaries)
+}
 
+fn follow_serial_runs(
+    project_root: &Path,
+    jobs_root: &Path,
+    binary: &Path,
+    summaries: &[EnqueuedRunSummary],
+    ephemeral: bool,
+    format: RunFormatArg,
+) -> Result<(Vec<FollowedRunSummary>, String, i32), Box<dyn std::error::Error>> {
     let mut followed_runs = Vec::<FollowedRunSummary>::new();
-    for summary in &summaries {
+    for summary in summaries {
         let terminal = follow_run(
             project_root,
             jobs_root,
-            &binary,
+            binary,
             &summary.run_id,
             &summary.job_ids,
-            cmd.ephemeral,
-            cmd.format,
+            ephemeral,
+            format,
         )?;
         let should_stop = terminal.exit_code != 0;
         followed_runs.push(FollowedRunSummary {
             index: summary.index,
             run_id: summary.run_id.clone(),
             terminal,
+            batch: summary.batch.clone(),
         });
         if should_stop {
             break;
         }
     }
 
-    let aggregate = followed_runs
+    let (terminal_state, exit_code) = followed_runs
         .last()
         .map(|entry| {
             (
@@ -266,21 +409,231 @@ pub(crate) fn run_workflow(
         })
         .unwrap_or_else(|| ("succeeded".to_string(), 0));
 
-    emit_repeat_follow_summary(
-        cmd.format,
-        &source,
-        repeat,
-        &summaries,
-        &followed_runs,
-        cmd.ephemeral,
-        aggregate.0.as_str(),
-        aggregate.1,
-    )?;
+    Ok((followed_runs, terminal_state, exit_code))
+}
 
-    if aggregate.1 == 0 {
-        Ok(())
+fn prepare_batch_run(
+    project_root: &Path,
+    spec_dir: &str,
+    prepared: &PreparedWorkflowInvocation,
+) -> Result<PreparedBatchRun, Box<dyn std::error::Error>> {
+    validate_batch_invocation(prepared)?;
+
+    let (canonical_root, batch_root, batch_dir) = resolve_batch_dir(project_root, spec_dir)?;
+    let discovered = discover_batch_specs(&canonical_root, &batch_root, &batch_dir)?;
+
+    let mut items = Vec::<PreparedRunItem>::with_capacity(discovered.len());
+    let mut slug_to_path = HashMap::<String, String>::new();
+    for (index, spec) in discovered.into_iter().enumerate() {
+        let slug = derive_batch_slug(&batch_root, &spec.absolute_path)?;
+        if let Some(existing) = slug_to_path.insert(slug.clone(), spec.spec_file.clone()) {
+            return Err(format!(
+                "batch slug collision `{slug}` from `{existing}` and `{}`",
+                spec.spec_file
+            )
+            .into());
+        }
+
+        let mut set_overrides = prepared.set_overrides.clone();
+        set_overrides.insert("spec_file".to_string(), spec.spec_file.clone());
+        set_overrides.insert("slug".to_string(), slug.clone());
+
+        let item_index = (index + 1) as u32;
+        let template = prepare_workflow_template_from_invocation(
+            project_root,
+            &prepared.source,
+            &prepared.input_spec,
+            &set_overrides,
+        )
+        .map_err(|err| {
+            format!(
+                "batch item #{} `{}` failed queue-time preparation: {err}",
+                item_index, spec.spec_file
+            )
+        })?;
+        jobs::validate_workflow_run_template(&template).map_err(|err| {
+            format!(
+                "batch item #{} `{}` failed validation: {err}",
+                item_index, spec.spec_file
+            )
+        })?;
+
+        items.push(PreparedRunItem {
+            index: item_index,
+            template,
+            batch: Some(BatchRunItemMetadata {
+                spec_file: spec.spec_file,
+                slug,
+            }),
+        });
+    }
+
+    Ok(PreparedBatchRun { batch_dir, items })
+}
+
+fn validate_batch_invocation(
+    prepared: &PreparedWorkflowInvocation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !prepared
+        .input_spec
+        .params
+        .iter()
+        .any(|param| param == "spec_file")
+    {
+        return Err(format!(
+            "workflow `{}` does not declare `spec_file`; `--spec-dir` requires a `spec_file` input",
+            prepared.source.selector
+        )
+        .into());
+    }
+
+    if prepared
+        .set_overrides
+        .get("spec_file")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err("`--spec-dir` cannot be combined with explicit `spec_file` input".into());
+    }
+    if prepared
+        .set_overrides
+        .get("slug")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(
+            "`--spec-dir` owns per-item slug assignment and cannot be combined with explicit `slug` or `name` overrides"
+                .into(),
+        );
+    }
+    if prepared
+        .set_overrides
+        .get("branch")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(
+            "`--spec-dir` cannot be combined with explicit `branch` or `source` overrides because batch items must use distinct branches"
+                .into(),
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_batch_dir(
+    project_root: &Path,
+    spec_dir: &str,
+) -> Result<(PathBuf, PathBuf, String), Box<dyn std::error::Error>> {
+    let canonical_root =
+        fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    let candidate = if Path::new(spec_dir).is_absolute() {
+        PathBuf::from(spec_dir)
     } else {
-        std::process::exit(aggregate.1)
+        project_root.join(spec_dir)
+    };
+    let canonical_dir = fs::canonicalize(&candidate)
+        .map_err(|err| format!("invalid --spec-dir `{spec_dir}`: {err}"))?;
+    let metadata = fs::metadata(&canonical_dir)
+        .map_err(|err| format!("invalid --spec-dir `{spec_dir}`: {err}"))?;
+    if !metadata.is_dir() {
+        return Err(format!("invalid --spec-dir `{spec_dir}`: path is not a directory").into());
+    }
+    if !canonical_dir.starts_with(&canonical_root) {
+        return Err(format!(
+            "invalid --spec-dir `{spec_dir}`: directory must stay under repo root `{}`",
+            canonical_root.display()
+        )
+        .into());
+    }
+
+    let batch_dir = relative_display_path(&canonical_root, &canonical_dir);
+    Ok((canonical_root, canonical_dir, batch_dir))
+}
+
+fn discover_batch_specs(
+    canonical_root: &Path,
+    batch_root: &Path,
+    batch_dir: &str,
+) -> Result<Vec<DiscoveredBatchSpec>, Box<dyn std::error::Error>> {
+    let mut discovered = Vec::<DiscoveredBatchSpec>::new();
+    collect_batch_specs_recursive(canonical_root, batch_root, &mut discovered)?;
+    discovered.sort_by(|left, right| left.spec_file.as_bytes().cmp(right.spec_file.as_bytes()));
+
+    if discovered.is_empty() {
+        return Err(
+            format!("invalid --spec-dir `{batch_dir}`: no markdown spec files found").into(),
+        );
+    }
+
+    Ok(discovered)
+}
+
+fn collect_batch_specs_recursive(
+    canonical_root: &Path,
+    dir: &Path,
+    out: &mut Vec<DiscoveredBatchSpec>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_batch_specs_recursive(canonical_root, &path, out)?;
+            continue;
+        }
+
+        if file_type.is_file() && is_markdown_path(&path) {
+            out.push(DiscoveredBatchSpec {
+                spec_file: relative_display_path(canonical_root, &path),
+                absolute_path: path,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+}
+
+fn derive_batch_slug(
+    batch_root: &Path,
+    spec_path: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let relative = spec_path.strip_prefix(batch_root).map_err(|err| {
+        format!(
+            "batch spec path `{}` is outside batch root `{}`: {err}",
+            spec_path.display(),
+            batch_root.display()
+        )
+    })?;
+    let stem = relative.with_extension("");
+    let candidate = normalize_path_for_output(&stem).replace('/', "-");
+    vizier_core::plan::sanitize_name_override(&candidate).map_err(|err| {
+        format!(
+            "batch spec `{}` resolves to invalid slug `{candidate}`: {err}",
+            normalize_path_for_output(relative)
+        )
+        .into()
+    })
+}
+
+fn relative_display_path(root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    normalize_path_for_output(relative)
+}
+
+fn normalize_path_for_output(path: &Path) -> String {
+    let rendered = path.display().to_string().replace('\\', "/");
+    if rendered.is_empty() {
+        ".".to_string()
+    } else {
+        rendered
     }
 }
 
@@ -535,42 +888,88 @@ fn emit_validation_summary(
     format: RunFormatArg,
     source: &ResolvedWorkflowSource,
     template: &vizier_core::workflow_template::WorkflowTemplate,
+    batch: Option<&PreparedBatchRun>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(format, RunFormatArg::Json) {
-        let payload = json!({
-            "outcome": "workflow_validation_passed",
-            "workflow_template_selector": source.selector,
-            "workflow_template_id": &template.id,
-            "workflow_template_version": &template.version,
-            "node_count": template.nodes.len(),
-        });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        let mut payload = serde_json::Map::from_iter([
+            ("outcome".to_string(), json!("workflow_validation_passed")),
+            (
+                "workflow_template_selector".to_string(),
+                json!(source.selector),
+            ),
+            ("workflow_template_id".to_string(), json!(&template.id)),
+            (
+                "workflow_template_version".to_string(),
+                json!(&template.version),
+            ),
+            ("node_count".to_string(), json!(template.nodes.len())),
+        ]);
+        if let Some(batch) = batch {
+            payload.insert("batch_dir".to_string(), json!(&batch.batch_dir));
+            payload.insert("spec_count".to_string(), json!(batch.items.len()));
+            payload.insert(
+                "items".to_string(),
+                serde_json::Value::Array(
+                    batch
+                        .items
+                        .iter()
+                        .filter_map(|item| {
+                            item.batch.as_ref().map(|batch| {
+                                json!({
+                                    "index": item.index,
+                                    "spec_file": &batch.spec_file,
+                                    "slug": &batch.slug,
+                                })
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Object(payload))?
+        );
         return Ok(());
     }
 
-    println!(
-        "{}",
-        format_block(vec![
-            (
-                "Outcome".to_string(),
-                "Workflow validation passed".to_string(),
-            ),
-            ("Selector".to_string(), source.selector.clone()),
-            (
-                "Template".to_string(),
-                format!("{}@{}", template.id, template.version),
-            ),
-            ("Nodes".to_string(), template.nodes.len().to_string()),
-        ])
-    );
+    let mut rows = vec![
+        (
+            "Outcome".to_string(),
+            "Workflow validation passed".to_string(),
+        ),
+        ("Selector".to_string(), source.selector.clone()),
+        (
+            "Template".to_string(),
+            format!("{}@{}", template.id, template.version),
+        ),
+        ("Nodes".to_string(), template.nodes.len().to_string()),
+    ];
+    if let Some(batch) = batch {
+        let items = batch
+            .items
+            .iter()
+            .filter_map(|item| {
+                item.batch
+                    .as_ref()
+                    .map(|batch| format!("#{} {} => {}", item.index, batch.spec_file, batch.slug))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        rows.push(("Batch dir".to_string(), batch.batch_dir.clone()));
+        rows.push(("Specs".to_string(), batch.items.len().to_string()));
+        rows.push(("Items".to_string(), items));
+    }
+
+    println!("{}", format_block(rows));
 
     Ok(())
 }
 
-fn emit_repeat_enqueue_summary(
+fn emit_multi_enqueue_summary(
     format: RunFormatArg,
     source: &ResolvedWorkflowSource,
-    repeat: u32,
+    mode: &MultiRunMode,
     summaries: &[EnqueuedRunSummary],
     ephemeral: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -584,22 +983,44 @@ fn emit_repeat_enqueue_summary(
                     "workflow_template_id": &summary.enqueue.template_id,
                     "workflow_template_version": &summary.enqueue.template_version,
                     "root_job_ids": &summary.root_jobs,
+                    "spec_file": summary.batch.as_ref().map(|batch| batch.spec_file.as_str()),
+                    "slug": summary.batch.as_ref().map(|batch| batch.slug.as_str()),
                 })
             })
             .collect::<Vec<_>>();
-        let payload = json!({
-            "outcome": "workflow_runs_enqueued",
-            "repeat": repeat,
-            "ephemeral": ephemeral,
-            "workflow_template_selector": source.selector,
-            "runs": runs,
-            "next": {
-                "schedule": "vizier jobs schedule",
-                "show": "vizier jobs show <job-id>",
-                "tail": "vizier jobs tail <job-id> --follow"
+        let mut payload = serde_json::Map::from_iter([
+            ("outcome".to_string(), json!("workflow_runs_enqueued")),
+            ("ephemeral".to_string(), json!(ephemeral)),
+            (
+                "workflow_template_selector".to_string(),
+                json!(source.selector),
+            ),
+            ("runs".to_string(), serde_json::Value::Array(runs)),
+            (
+                "next".to_string(),
+                json!({
+                    "schedule": "vizier jobs schedule",
+                    "show": "vizier jobs show <job-id>",
+                    "tail": "vizier jobs tail <job-id> --follow"
+                }),
+            ),
+        ]);
+        match mode {
+            MultiRunMode::Repeat { repeat } => {
+                payload.insert("repeat".to_string(), json!(repeat));
             }
-        });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+            MultiRunMode::Batch {
+                batch_dir,
+                spec_count,
+            } => {
+                payload.insert("batch_dir".to_string(), json!(batch_dir));
+                payload.insert("spec_count".to_string(), json!(spec_count));
+            }
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Object(payload))?
+        );
         return Ok(());
     }
 
@@ -638,22 +1059,50 @@ fn emit_repeat_enqueue_summary(
         })
         .unwrap_or_else(|| "vizier jobs schedule".to_string());
 
-    println!(
-        "{}",
-        format_block(vec![
-            ("Outcome".to_string(), "Workflow runs enqueued".to_string()),
-            ("Repeat".to_string(), repeat.to_string()),
-            ("Runs".to_string(), run_ids.join(", ")),
-            ("Template".to_string(), template),
-            ("Selector".to_string(), source.selector.clone()),
-            (
-                "Ephemeral".to_string(),
-                if ephemeral { "yes" } else { "no" }.to_string(),
-            ),
-            ("Root jobs".to_string(), root_map),
-            ("Next".to_string(), next_hint),
-        ])
-    );
+    let mut rows = vec![
+        ("Outcome".to_string(), "Workflow runs enqueued".to_string()),
+        ("Runs".to_string(), run_ids.join(", ")),
+        ("Template".to_string(), template),
+        ("Selector".to_string(), source.selector.clone()),
+        (
+            "Ephemeral".to_string(),
+            if ephemeral { "yes" } else { "no" }.to_string(),
+        ),
+    ];
+    match mode {
+        MultiRunMode::Repeat { repeat } => {
+            rows.insert(1, ("Repeat".to_string(), repeat.to_string()));
+            rows.push(("Root jobs".to_string(), root_map));
+        }
+        MultiRunMode::Batch {
+            batch_dir,
+            spec_count,
+        } => {
+            let items = summaries
+                .iter()
+                .filter_map(|summary| {
+                    summary.batch.as_ref().map(|batch| {
+                        let roots = if summary.root_jobs.is_empty() {
+                            "none".to_string()
+                        } else {
+                            summary.root_jobs.join(", ")
+                        };
+                        format!(
+                            "#{} {} slug={} run={} roots={roots}",
+                            summary.index, batch.spec_file, batch.slug, summary.run_id
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            rows.insert(1, ("Batch dir".to_string(), batch_dir.clone()));
+            rows.insert(2, ("Specs".to_string(), spec_count.to_string()));
+            rows.push(("Items".to_string(), items));
+        }
+    }
+    rows.push(("Next".to_string(), next_hint));
+
+    println!("{}", format_block(rows));
 
     Ok(())
 }
@@ -863,10 +1312,10 @@ fn emit_follow_summary(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_repeat_follow_summary(
+fn emit_multi_follow_summary(
     format: RunFormatArg,
     source: &ResolvedWorkflowSource,
-    repeat: u32,
+    mode: &MultiRunMode,
     summaries: &[EnqueuedRunSummary],
     followed_runs: &[FollowedRunSummary],
     ephemeral: bool,
@@ -887,19 +1336,38 @@ fn emit_repeat_follow_summary(
                     "blocked": &entry.terminal.blocked,
                     "cancelled": &entry.terminal.cancelled,
                     "ephemeral_cleanup": &entry.terminal.cleanup,
+                    "spec_file": entry.batch.as_ref().map(|batch| batch.spec_file.as_str()),
+                    "slug": entry.batch.as_ref().map(|batch| batch.slug.as_str()),
                 })
             })
             .collect::<Vec<_>>();
-        let payload = json!({
-            "outcome": "workflow_runs_terminal",
-            "repeat": repeat,
-            "ephemeral": ephemeral,
-            "terminal_state": terminal_state,
-            "exit_code": exit_code,
-            "workflow_template_selector": source.selector,
-            "runs": runs,
-        });
-        println!("{}", serde_json::to_string_pretty(&payload)?);
+        let mut payload = serde_json::Map::from_iter([
+            ("outcome".to_string(), json!("workflow_runs_terminal")),
+            ("ephemeral".to_string(), json!(ephemeral)),
+            ("terminal_state".to_string(), json!(terminal_state)),
+            ("exit_code".to_string(), json!(exit_code)),
+            (
+                "workflow_template_selector".to_string(),
+                json!(source.selector),
+            ),
+            ("runs".to_string(), serde_json::Value::Array(runs)),
+        ]);
+        match mode {
+            MultiRunMode::Repeat { repeat } => {
+                payload.insert("repeat".to_string(), json!(repeat));
+            }
+            MultiRunMode::Batch {
+                batch_dir,
+                spec_count,
+            } => {
+                payload.insert("batch_dir".to_string(), json!(batch_dir));
+                payload.insert("spec_count".to_string(), json!(spec_count));
+            }
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Object(payload))?
+        );
         return Ok(());
     }
 
@@ -919,10 +1387,25 @@ fn emit_repeat_follow_summary(
     let run_states = followed_runs
         .iter()
         .map(|entry| {
-            format!(
-                "#{} {} => {} ({})",
-                entry.index, entry.run_id, entry.terminal.terminal_state, entry.terminal.exit_code
-            )
+            if let Some(batch) = entry.batch.as_ref() {
+                format!(
+                    "#{} {} ({}) => {} {} ({})",
+                    entry.index,
+                    batch.spec_file,
+                    batch.slug,
+                    entry.run_id,
+                    entry.terminal.terminal_state,
+                    entry.terminal.exit_code
+                )
+            } else {
+                format!(
+                    "#{} {} => {} ({})",
+                    entry.index,
+                    entry.run_id,
+                    entry.terminal.terminal_state,
+                    entry.terminal.exit_code
+                )
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -938,7 +1421,6 @@ fn emit_repeat_follow_summary(
 
     let mut rows = vec![
         ("Outcome".to_string(), outcome.to_string()),
-        ("Repeat".to_string(), repeat.to_string()),
         ("Runs".to_string(), all_runs.join(", ")),
         (
             "Followed".to_string(),
@@ -956,6 +1438,18 @@ fn emit_repeat_follow_summary(
         ),
         ("Exit".to_string(), exit_code.to_string()),
     ];
+    match mode {
+        MultiRunMode::Repeat { repeat } => {
+            rows.insert(1, ("Repeat".to_string(), repeat.to_string()));
+        }
+        MultiRunMode::Batch {
+            batch_dir,
+            spec_count,
+        } => {
+            rows.insert(1, ("Batch dir".to_string(), batch_dir.clone()));
+            rows.insert(2, ("Specs".to_string(), spec_count.to_string()));
+        }
+    }
     if !run_states.is_empty() {
         rows.push(("Run states".to_string(), run_states));
     }

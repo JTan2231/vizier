@@ -319,8 +319,16 @@ fn test_run_workflow_help_uses_resolved_alias_context() -> TestResult {
         "expected workflow help to document --ephemeral: {stdout}"
     );
     assert!(
+        stdout.contains("--spec-dir <DIR>"),
+        "expected workflow help to document --spec-dir: {stdout}"
+    );
+    assert!(
         stdout.contains("--file <file> -> spec_file") && stdout.contains("--name <name> -> slug"),
         "expected alias mappings in flow help: {stdout}"
+    );
+    assert!(
+        stdout.contains("vizier run draft --spec-dir specs/"),
+        "expected workflow help to include batch example for spec_file flows: {stdout}"
     );
     assert!(
         !stdout.contains("Usage: vizier run [OPTIONS] <FLOW> [INPUT]..."),

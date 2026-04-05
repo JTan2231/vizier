@@ -9,6 +9,12 @@ pub(crate) struct PreparedWorkflowTemplate {
     pub(crate) template: vizier_core::workflow_template::WorkflowTemplate,
 }
 
+pub(crate) struct PreparedWorkflowInvocation {
+    pub(crate) source: ResolvedWorkflowSource,
+    pub(crate) input_spec: WorkflowTemplateInputSpec,
+    pub(crate) set_overrides: BTreeMap<String, String>,
+}
+
 pub(crate) fn prepare_workflow_template(
     project_root: &Path,
     flow: &str,
@@ -16,15 +22,48 @@ pub(crate) fn prepare_workflow_template(
     set: &[String],
     cfg: &vizier_core::config::Config,
 ) -> Result<PreparedWorkflowTemplate, Box<dyn std::error::Error>> {
+    let prepared = prepare_workflow_invocation(project_root, flow, inputs, set, cfg)?;
+    let template = prepare_workflow_template_from_invocation(
+        project_root,
+        &prepared.source,
+        &prepared.input_spec,
+        &prepared.set_overrides,
+    )?;
+    Ok(PreparedWorkflowTemplate {
+        source: prepared.source,
+        template,
+    })
+}
+
+pub(crate) fn prepare_workflow_invocation(
+    project_root: &Path,
+    flow: &str,
+    inputs: &[String],
+    set: &[String],
+    cfg: &vizier_core::config::Config,
+) -> Result<PreparedWorkflowInvocation, Box<dyn std::error::Error>> {
     let source = workflow_templates::resolve_workflow_source(project_root, flow, cfg)?;
     let input_spec = workflow_templates::load_template_input_spec(&source)?;
     let mut set_overrides = parse_set_overrides(set)?;
     apply_named_input_aliases(&source, &input_spec, &mut set_overrides)?;
     apply_positional_inputs(&source, &input_spec, inputs, &mut set_overrides)?;
-    let mut template = workflow_templates::load_template_with_params(&source, &set_overrides)?;
-    validate_entrypoint_input_requirements(&source, &input_spec, &template)?;
+    Ok(PreparedWorkflowInvocation {
+        source,
+        input_spec,
+        set_overrides,
+    })
+}
+
+pub(crate) fn prepare_workflow_template_from_invocation(
+    project_root: &Path,
+    source: &ResolvedWorkflowSource,
+    input_spec: &WorkflowTemplateInputSpec,
+    set_overrides: &BTreeMap<String, String>,
+) -> Result<vizier_core::workflow_template::WorkflowTemplate, Box<dyn std::error::Error>> {
+    let mut template = workflow_templates::load_template_with_params(source, set_overrides)?;
+    validate_entrypoint_input_requirements(source, input_spec, &template)?;
     inline_plan_persist_spec_files(project_root, &mut template)?;
-    Ok(PreparedWorkflowTemplate { source, template })
+    Ok(template)
 }
 
 fn parse_set_overrides(

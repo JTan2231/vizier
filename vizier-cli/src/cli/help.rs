@@ -188,6 +188,12 @@ pub(crate) fn render_run_workflow_help_text(
         if let Some(example) = positional_example(&flow_label, &input_spec) {
             lines.push(format!("  {example}"));
         }
+        if supports_batch_spec_dir(&input_spec) {
+            lines.push(format!("  vizier run {flow_label} --spec-dir specs/"));
+            lines.push(format!(
+                "  vizier run {flow_label} --spec-dir specs/ --follow"
+            ));
+        }
     } else if let Some(param) = input_spec.params.first() {
         lines.push(format!("  vizier run {flow_label} --set {param}=value"));
     } else {
@@ -200,6 +206,7 @@ pub(crate) fn render_run_workflow_help_text(
         [
             "  --set <KEY=VALUE>             Template parameter override (repeatable)",
             "  --check                       Validate queue-time checks without enqueueing",
+            "  --spec-dir <DIR>              Expand a directory of markdown specs into serial runs",
             "  --after <REF>                 Root dependency: JOB_ID or run:RUN_ID",
             "  --ephemeral                   Auto-clean Vizier-owned runtime material after terminal completion",
             "  --require-approval            Require approval before root jobs start",
@@ -414,6 +421,10 @@ fn cli_label_for_param(
     preferred_cli_alias_for_param(input_spec, param)
         .unwrap_or(param)
         .to_string()
+}
+
+fn supports_batch_spec_dir(input_spec: &workflow_templates::WorkflowTemplateInputSpec) -> bool {
+    input_spec.params.iter().any(|param| param == "spec_file")
 }
 
 fn kebab_case_key(value: &str) -> String {

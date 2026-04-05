@@ -67,6 +67,37 @@ script = \"{}\"\n",
     Ok(())
 }
 
+fn write_batch_run_template(repo: &IntegrationRepo, rel: &str, script: &str) -> TestResult {
+    repo.write(
+        rel,
+        &format!(
+            "id = \"template.batch\"\n\
+version = \"v1\"\n\
+[cli]\n\
+positional = [\"spec_file\", \"slug\", \"branch\"]\n\
+[cli.named]\n\
+file = \"spec_file\"\n\
+name = \"slug\"\n\
+source = \"branch\"\n\
+[params]\n\
+spec_file = \"\"\n\
+slug = \"\"\n\
+branch = \"\"\n\
+[[nodes]]\n\
+id = \"single\"\n\
+kind = \"shell\"\n\
+uses = \"cap.env.shell.command.run\"\n\
+[nodes.args]\n\
+script = \"{}\"\n\
+spec_file = \"${{spec_file}}\"\n\
+slug = \"${{slug}}\"\n\
+branch = \"${{branch}}\"\n",
+            script.replace('"', "\\\"")
+        ),
+    )?;
+    Ok(())
+}
+
 fn write_stage_token_dependency_templates(repo: &IntegrationRepo) -> TestResult {
     repo.write(
         ".vizier/workflows/custom-stage-token-producer.toml",
@@ -851,6 +882,74 @@ fn test_run_check_validates_and_writes_no_manifests_or_jobs() -> TestResult {
         count_job_records(&repo)?,
         before_jobs,
         "check mode must not enqueue jobs"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_check_batch_spec_dir_reports_items_without_enqueueing() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("specs/auth.md", "# Auth\n")?;
+    repo.write("specs/api/login.md", "# Login\n")?;
+    repo.write("specs/notes.txt", "ignore me\n")?;
+
+    let before_run_manifests = count_run_manifests(&repo)?;
+    let before_jobs = count_job_records(&repo)?;
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/batch.toml",
+            "--spec-dir",
+            "specs",
+            "--check",
+            "--format",
+            "json",
+        ],
+    )?;
+
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_validation_passed")
+    );
+    assert_eq!(
+        payload.get("batch_dir").and_then(Value::as_str),
+        Some("specs")
+    );
+    assert_eq!(payload.get("spec_count").and_then(Value::as_u64), Some(2));
+
+    let items = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or("missing batch validation items")?;
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[0].get("spec_file").and_then(Value::as_str),
+        Some("specs/api/login.md")
+    );
+    assert_eq!(
+        items[0].get("slug").and_then(Value::as_str),
+        Some("api-login")
+    );
+    assert_eq!(
+        items[1].get("spec_file").and_then(Value::as_str),
+        Some("specs/auth.md")
+    );
+    assert_eq!(items[1].get("slug").and_then(Value::as_str), Some("auth"));
+
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        before_run_manifests,
+        "batch check must not write run manifests"
+    );
+    assert_eq!(
+        count_job_records(&repo)?,
+        before_jobs,
+        "batch check must not enqueue jobs"
     );
 
     Ok(())
@@ -4499,6 +4598,187 @@ fn test_run_follow_repeat_short_circuits_on_first_failed_run() -> TestResult {
     assert_eq!(
         manifest_count, 2,
         "repeat enqueue should persist both run manifests before follow short-circuit"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_run_batch_enqueues_sorted_specs_with_per_run_metadata() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(&repo, ".vizier/workflows/batch.toml", "true")?;
+    repo.write("specs/auth.md", "# Auth\n")?;
+    repo.write("specs/api/login.md", "# Login\n")?;
+    repo.write("specs/001 setup.md", "# Setup\n")?;
+
+    let payload = run_json(
+        &repo,
+        &[
+            "run",
+            "file:.vizier/workflows/batch.toml",
+            "--spec-dir",
+            "specs",
+            "--format",
+            "json",
+        ],
+    )?;
+    assert_eq!(
+        payload.get("outcome").and_then(Value::as_str),
+        Some("workflow_runs_enqueued")
+    );
+    assert_eq!(
+        payload.get("batch_dir").and_then(Value::as_str),
+        Some("specs")
+    );
+    assert_eq!(payload.get("spec_count").and_then(Value::as_u64), Some(3));
+
+    let runs = repeated_runs(&payload)?;
+    assert_eq!(runs.len(), 3);
+    assert_eq!(
+        runs[0].get("spec_file").and_then(Value::as_str),
+        Some("specs/001 setup.md")
+    );
+    assert_eq!(
+        runs[0].get("slug").and_then(Value::as_str),
+        Some("001-setup")
+    );
+    assert_eq!(
+        runs[1].get("spec_file").and_then(Value::as_str),
+        Some("specs/api/login.md")
+    );
+    assert_eq!(
+        runs[1].get("slug").and_then(Value::as_str),
+        Some("api-login")
+    );
+    assert_eq!(
+        runs[2].get("spec_file").and_then(Value::as_str),
+        Some("specs/auth.md")
+    );
+    assert_eq!(runs[2].get("slug").and_then(Value::as_str), Some("auth"));
+
+    let first_run_id = repeated_run_id(&payload, 0)?;
+    let second_run_id = repeated_run_id(&payload, 1)?;
+    let third_run_id = repeated_run_id(&payload, 2)?;
+
+    let first_manifest = load_run_manifest(&repo, &first_run_id)?;
+    let second_manifest = load_run_manifest(&repo, &second_run_id)?;
+    let third_manifest = load_run_manifest(&repo, &third_run_id)?;
+    assert_eq!(
+        first_manifest
+            .pointer("/nodes/single/args/spec_file")
+            .and_then(Value::as_str),
+        Some("specs/001 setup.md")
+    );
+    assert_eq!(
+        first_manifest
+            .pointer("/nodes/single/args/slug")
+            .and_then(Value::as_str),
+        Some("001-setup")
+    );
+    assert_eq!(
+        second_manifest
+            .pointer("/nodes/single/args/spec_file")
+            .and_then(Value::as_str),
+        Some("specs/api/login.md")
+    );
+    assert_eq!(
+        third_manifest
+            .pointer("/nodes/single/args/spec_file")
+            .and_then(Value::as_str),
+        Some("specs/auth.md")
+    );
+
+    let first_root = repeated_root_job_id(&payload, 0)?;
+    let second_root = repeated_root_job_id(&payload, 1)?;
+    let third_root = repeated_root_job_id(&payload, 2)?;
+    let second_record = read_job_record(&repo, &second_root)?;
+    let third_record = read_job_record(&repo, &third_root)?;
+    assert!(
+        schedule_after_job_ids(&second_record)
+            .iter()
+            .any(|job_id| job_id == &first_root),
+        "batch item 2 root must depend on item 1 sink root: {second_record}"
+    );
+    assert!(
+        schedule_after_job_ids(&third_record)
+            .iter()
+            .any(|job_id| job_id == &second_root),
+        "batch item 3 root must depend on item 2 sink root: {third_record}"
+    );
+
+    wait_for_job_completion(&repo, &first_root, Duration::from_secs(10))?;
+    wait_for_job_completion(&repo, &second_root, Duration::from_secs(10))?;
+    wait_for_job_completion(&repo, &third_root, Duration::from_secs(10))?;
+
+    Ok(())
+}
+
+#[test]
+fn test_run_follow_batch_short_circuits_on_first_failed_item() -> TestResult {
+    let repo = IntegrationRepo::new_serial()?;
+    clean_workdir(&repo)?;
+
+    write_batch_run_template(
+        &repo,
+        ".vizier/workflows/batch-fail.toml",
+        "case ${slug} in beta) echo batch-fail >&2; exit 7 ;; *) true ;; esac",
+    )?;
+    repo.write("specs/alpha.md", "# Alpha\n")?;
+    repo.write("specs/beta.md", "# Beta\n")?;
+    repo.write("specs/gamma.md", "# Gamma\n")?;
+
+    let output = repo.vizier_output(&[
+        "run",
+        "file:.vizier/workflows/batch-fail.toml",
+        "--spec-dir",
+        "specs",
+        "--follow",
+        "--format",
+        "json",
+    ])?;
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "failed batch follow should exit 1: stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let payload = serde_json::from_slice::<Value>(&output.stdout)?;
+    assert_eq!(
+        payload.get("terminal_state").and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(payload.get("exit_code").and_then(Value::as_i64), Some(1));
+    assert_eq!(
+        payload.get("batch_dir").and_then(Value::as_str),
+        Some("specs")
+    );
+    assert_eq!(payload.get("spec_count").and_then(Value::as_u64), Some(3));
+    assert_eq!(
+        repeated_runs(&payload)?.len(),
+        2,
+        "batch follow should stop after the first failed item"
+    );
+    assert_eq!(
+        repeated_runs(&payload)?[1]
+            .get("spec_file")
+            .and_then(Value::as_str),
+        Some("specs/beta.md")
+    );
+    assert_eq!(
+        repeated_runs(&payload)?[1]
+            .get("slug")
+            .and_then(Value::as_str),
+        Some("beta")
+    );
+
+    assert_eq!(
+        count_run_manifests(&repo)?,
+        3,
+        "batch enqueue should persist all run manifests before follow short-circuit"
     );
 
     Ok(())

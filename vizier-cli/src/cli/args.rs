@@ -634,6 +634,10 @@ pub(crate) struct RunCmd {
     )]
     pub(crate) check: bool,
 
+    /// Expand a directory of markdown specs into serial workflow runs
+    #[arg(long = "spec-dir", value_name = "DIR", conflicts_with = "repeat")]
+    pub(crate) spec_dir: Option<String>,
+
     /// External predecessor dependency; root jobs wait on JOB_ID or run:RUN_ID
     #[arg(long = "after", value_name = "REF", action = ArgAction::Append)]
     pub(crate) after: Vec<String>,
@@ -1045,6 +1049,7 @@ mod tests {
             panic!("expected run command");
         };
         assert_eq!(cmd.repeat.get(), 1);
+        assert!(cmd.spec_dir.is_none(), "spec-dir should default to none");
     }
 
     #[test]
@@ -1076,6 +1081,35 @@ mod tests {
         assert!(
             rendered.contains("--repeat"),
             "expected clap error to mention --repeat: {rendered}"
+        );
+    }
+
+    #[test]
+    fn run_spec_dir_parses() {
+        let cli = Cli::try_parse_from(["vizier", "run", "draft", "--spec-dir", "specs"])
+            .expect("parse spec-dir");
+        let Commands::Run(cmd) = cli.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(cmd.spec_dir.as_deref(), Some("specs"));
+    }
+
+    #[test]
+    fn run_spec_dir_conflicts_with_repeat() {
+        let err = Cli::try_parse_from([
+            "vizier",
+            "run",
+            "draft",
+            "--spec-dir",
+            "specs",
+            "--repeat",
+            "2",
+        ])
+        .expect_err("spec-dir plus repeat should fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--spec-dir") || rendered.contains("--repeat"),
+            "expected clap error to mention conflicting flags: {rendered}"
         );
     }
 

@@ -27,6 +27,12 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-04-04, batch spec-directory enqueue):
+  - `vizier-cli/src/cli/args.rs` now adds run-local `--spec-dir <DIR>` (conflicts with `--repeat`), `vizier-cli/src/cli/util.rs` preserves it during run-arg normalization, and `vizier-cli/src/cli/help.rs` now documents batch mode plus batch examples for flows that expose `spec_file`.
+  - `vizier-cli/src/actions/workflow_preflight.rs` now separates queue-time invocation prep (flow resolution, input spec loading, alias/positional mapping) from per-item template preparation so batch mode can reuse the same preflight contract as single-run and `--check`.
+  - `vizier-cli/src/actions/run.rs` now expands `--spec-dir` by recursively discovering repo-local `*.md` files in deterministic repo-relative order, deriving sanitized slugs from batch-root relative stems, rejecting explicit single-spec `spec_file`/`slug` inputs plus shared-branch overrides, validating every expanded item before enqueue, and serializing later items on `run:<prev_run_id>` success sinks.
+  - Batch-mode output now reuses the aggregate multi-run summaries with additive `batch_dir`, `spec_count`, and per-run `spec_file`/`slug` metadata; `vizier run --spec-dir ... --check` reports discovered items with no manifests/jobs/scheduler ticks, and follow mode short-circuits on the first non-success terminal batch item.
+  - Coverage additions include CLI parse/normalization checks, flow-help batch examples, no-side-effect batch `--check` assertions, deterministic enqueue/manifest metadata checks, and batch follow short-circuit integration coverage in `tests/src/run.rs`.
 - Update (2026-04-04, run-local ephemeral execution)
   - `vizier-cli/src/cli/args.rs` now adds run-local `--ephemeral` (conflicts with `--check`), and `vizier-cli/src/actions/run.rs` carries the repo's pre-runtime `.vizier` existence into enqueue so ephemeral ownership is measured before `ensure_jobs_root()` creates runtime directories.
   - Queue-time workflow manifests and job metadata now persist additive ephemeral fields: run marker, cleanup requested/state/detail, enqueue-time ownership baseline, and ephemeral-owned branch tracking.

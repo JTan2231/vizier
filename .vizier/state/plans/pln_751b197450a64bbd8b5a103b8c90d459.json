@@ -1,0 +1,16 @@
+{
+  "plan_id": "pln_751b197450a64bbd8b5a103b8c90d459",
+  "slug": "batch",
+  "branch": "draft/batch",
+  "source": "inline",
+  "intent": null,
+  "target_branch": null,
+  "work_ref": "workflow-job:wf-run_b808910808364c90aab6fc39b2c41c2a-develop_draft__persist_plan",
+  "status": "proposed",
+  "summary": "# Batch Spec Directory Enqueue",
+  "created_at": "2026-04-05T02:14:16.548693266+00:00",
+  "updated_at": "2026-04-05T02:14:16.548693266+00:00",
+  "job_ids": {
+    "persist": "wf-run_b808910808364c90aab6fc39b2c41c2a-develop_draft__persist_plan"
+  }
+}
