@@ -4605,6 +4605,12 @@ fn test_run_follow_repeat_short_circuits_on_first_failed_run() -> TestResult {
 
 #[test]
 fn test_run_batch_enqueues_sorted_specs_with_per_run_metadata() -> TestResult {
+    struct ExpectedBatchMetadata<'a> {
+        spec_file: &'a str,
+        slug: &'a str,
+        branch: &'a str,
+    }
+
     let repo = IntegrationRepo::new_serial()?;
     clean_workdir(&repo)?;
 
@@ -4636,59 +4642,73 @@ fn test_run_batch_enqueues_sorted_specs_with_per_run_metadata() -> TestResult {
 
     let runs = repeated_runs(&payload)?;
     assert_eq!(runs.len(), 3);
+    let expected = [
+        ExpectedBatchMetadata {
+            spec_file: "specs/001 setup.md",
+            slug: "001-setup",
+            branch: "draft/001-setup",
+        },
+        ExpectedBatchMetadata {
+            spec_file: "specs/api/login.md",
+            slug: "api-login",
+            branch: "draft/api-login",
+        },
+        ExpectedBatchMetadata {
+            spec_file: "specs/auth.md",
+            slug: "auth",
+            branch: "draft/auth",
+        },
+    ];
     assert_eq!(
-        runs[0].get("spec_file").and_then(Value::as_str),
-        Some("specs/001 setup.md")
+        runs.len(),
+        expected.len(),
+        "expected one queue summary row per batch item"
     );
-    assert_eq!(
-        runs[0].get("slug").and_then(Value::as_str),
-        Some("001-setup")
-    );
-    assert_eq!(
-        runs[1].get("spec_file").and_then(Value::as_str),
-        Some("specs/api/login.md")
-    );
-    assert_eq!(
-        runs[1].get("slug").and_then(Value::as_str),
-        Some("api-login")
-    );
-    assert_eq!(
-        runs[2].get("spec_file").and_then(Value::as_str),
-        Some("specs/auth.md")
-    );
-    assert_eq!(runs[2].get("slug").and_then(Value::as_str), Some("auth"));
+    for (index, expected_item) in expected.iter().enumerate() {
+        let item_number = index + 1;
+        let run = &runs[index];
+        assert_eq!(
+            run.get("spec_file").and_then(Value::as_str),
+            Some(expected_item.spec_file),
+            "batch summary item {item_number} spec_file mismatch: {run}"
+        );
+        assert_eq!(
+            run.get("slug").and_then(Value::as_str),
+            Some(expected_item.slug),
+            "batch summary item {item_number} slug mismatch: {run}"
+        );
+    }
 
-    let first_run_id = repeated_run_id(&payload, 0)?;
-    let second_run_id = repeated_run_id(&payload, 1)?;
-    let third_run_id = repeated_run_id(&payload, 2)?;
+    let mut run_ids = Vec::with_capacity(expected.len());
+    for index in 0..expected.len() {
+        run_ids.push(repeated_run_id(&payload, index)?);
+    }
 
-    let first_manifest = load_run_manifest(&repo, &first_run_id)?;
-    let second_manifest = load_run_manifest(&repo, &second_run_id)?;
-    let third_manifest = load_run_manifest(&repo, &third_run_id)?;
-    assert_eq!(
-        first_manifest
-            .pointer("/nodes/single/args/spec_file")
-            .and_then(Value::as_str),
-        Some("specs/001 setup.md")
-    );
-    assert_eq!(
-        first_manifest
-            .pointer("/nodes/single/args/slug")
-            .and_then(Value::as_str),
-        Some("001-setup")
-    );
-    assert_eq!(
-        second_manifest
-            .pointer("/nodes/single/args/spec_file")
-            .and_then(Value::as_str),
-        Some("specs/api/login.md")
-    );
-    assert_eq!(
-        third_manifest
-            .pointer("/nodes/single/args/spec_file")
-            .and_then(Value::as_str),
-        Some("specs/auth.md")
-    );
+    for (index, expected_item) in expected.iter().enumerate() {
+        let item_number = index + 1;
+        let manifest = load_run_manifest(&repo, &run_ids[index])?;
+        assert_eq!(
+            manifest
+                .pointer("/nodes/single/args/spec_file")
+                .and_then(Value::as_str),
+            Some(expected_item.spec_file),
+            "batch manifest item {item_number} spec_file mismatch: {manifest}"
+        );
+        assert_eq!(
+            manifest
+                .pointer("/nodes/single/args/slug")
+                .and_then(Value::as_str),
+            Some(expected_item.slug),
+            "batch manifest item {item_number} slug mismatch: {manifest}"
+        );
+        assert_eq!(
+            manifest
+                .pointer("/nodes/single/args/branch")
+                .and_then(Value::as_str),
+            Some(expected_item.branch),
+            "batch manifest item {item_number} branch mismatch: {manifest}"
+        );
+    }
 
     let first_root = repeated_root_job_id(&payload, 0)?;
     let second_root = repeated_root_job_id(&payload, 1)?;

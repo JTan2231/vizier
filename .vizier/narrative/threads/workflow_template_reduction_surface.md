@@ -27,6 +27,10 @@ Acceptance criteria
 - Integration coverage keeps wrapper behavior parity while asserting new metadata/reporting surfaces.
 
 Status
+- Update (2026-04-05, batch manifest branch persistence):
+  - `vizier-cli/src/actions/run.rs` now injects `branch = draft/<slug>` during `--spec-dir` item preparation so queued run manifests persist the same per-item branch ownership implied by batch-mode slug derivation and shared-branch override rejection.
+  - Aggregate batch output is unchanged (`spec_file` + `slug` only); the behavior change is limited to persisted manifest metadata under `.vizier/jobs/runs/<run_id>.json`.
+  - `tests/src/run.rs` now asserts one ordered expectation table across all batch items, reusing it for queue-summary checks (`spec_file`/`slug`) and manifest checks (`spec_file`/`slug`/`branch`) with item-scoped failure messages.
 - Update (2026-04-04, batch spec-directory enqueue):
   - `vizier-cli/src/cli/args.rs` now adds run-local `--spec-dir <DIR>` (conflicts with `--repeat`), `vizier-cli/src/cli/util.rs` preserves it during run-arg normalization, and `vizier-cli/src/cli/help.rs` now documents batch mode plus batch examples for flows that expose `spec_file`.
   - `vizier-cli/src/actions/workflow_preflight.rs` now separates queue-time invocation prep (flow resolution, input spec loading, alias/positional mapping) from per-item template preparation so batch mode can reuse the same preflight contract as single-run and `--check`.

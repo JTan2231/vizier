@@ -437,6 +437,10 @@ fn prepare_batch_run(
         let mut set_overrides = prepared.set_overrides.clone();
         set_overrides.insert("spec_file".to_string(), spec.spec_file.clone());
         set_overrides.insert("slug".to_string(), slug.clone());
+        set_overrides.insert(
+            "branch".to_string(),
+            vizier_core::plan::default_branch_for_slug(&slug),
+        );
 
         let item_index = (index + 1) as u32;
         let template = prepare_workflow_template_from_invocation(
